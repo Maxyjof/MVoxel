@@ -22,6 +22,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private ImGuiController? _controller;
     private ImGuiTexture? _logoTexture;
     private readonly EditorFontCatalog _fonts = new();
+    private readonly ProjectAssetBrowser _assetBrowser = new();
     private ImGuiWelcomeWindow? _welcomeWindow;
     private IntPtr _imguiContext;
     private ProjectHandle? _project;
@@ -345,7 +346,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, layout.MainHeight), "Hierarchy");
+        SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, layout.MainHeight));
         if (!_showHierarchy || !ImGui.Begin("层级", ref _showHierarchy, ImGuiWindowFlags.NoCollapse))
         {
             if (_showHierarchy) ImGui.End();
@@ -388,7 +389,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight), "Center");
+        SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
         if (!ImGui.Begin("场景与渲染", ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
@@ -673,18 +674,14 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         drawList.AddCircleFilled(center, radius, fill, 32);
         drawList.AddCircle(center, radius, outline, 32, 1.4F);
 
-        for (var index = 0; index < 48; index++)
-        {
-            var angle = index / 48F * MathF.PI * 2F;
-            var next = (index + 1) / 48F * MathF.PI * 2F;
-            var color = ToPackedColor(Color.FromArgb(90, 122, 142, 162));
-            // Connect consecutive points around ellipses; the previous code
-            // drew diameters through the center and made a starburst.
-            drawList.AddLine(center + new Vector2(MathF.Cos(angle) * radius, MathF.Sin(angle) * radius * 0.28F),
-                center + new Vector2(MathF.Cos(next) * radius, MathF.Sin(next) * radius * 0.28F), color);
-            drawList.AddLine(center + new Vector2(MathF.Cos(angle) * radius * 0.28F, MathF.Sin(angle) * radius),
-                center + new Vector2(MathF.Cos(next) * radius * 0.28F, MathF.Sin(next) * radius), color);
-        }
+        // Keep the orientation globe intentionally spare: one latitude and
+        // one longitude ring.  Earlier versions approximated these with many
+        // independent lines, which looked like a distracting burst at small
+        // sizes.  Four Bezier halves give continuous rings without visual
+        // clutter or a seam through the centre.
+        var ring = ToPackedColor(Color.FromArgb(116, 122, 142, 162));
+        DrawGizmoEllipse(drawList, center, radius * .84F, radius * .23F, ring);
+        DrawGizmoEllipse(drawList, center, radius * .23F, radius * .84F, ring);
 
         var axes = new[]
         {
@@ -712,6 +709,30 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         drawList.AddCircle(center, radius + 3F, ToPackedColor(EditorPalette.Accent), 32, 1.2F);
         return true;
+    }
+
+    private static void DrawGizmoEllipse(ImDrawListPtr drawList, Vector2 center, float horizontalRadius,
+        float verticalRadius, uint color)
+    {
+        const float control = .55228475F;
+        var left = center - new Vector2(horizontalRadius, 0F);
+        var right = center + new Vector2(horizontalRadius, 0F);
+        drawList.AddBezierCubic(
+            left,
+            left - new Vector2(0F, verticalRadius * control),
+            right - new Vector2(0F, verticalRadius * control),
+            right,
+            color,
+            1F,
+            12);
+        drawList.AddBezierCubic(
+            right,
+            right + new Vector2(0F, verticalRadius * control),
+            left + new Vector2(0F, verticalRadius * control),
+            left,
+            color,
+            1F,
+            12);
     }
 
     private static string AxisName(Vector3 axis)
@@ -757,7 +778,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight), "Inspector");
+        SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (!ImGui.Begin("检查器", ref _showInspector, ImGuiWindowFlags.NoCollapse))
         {
             if (_showInspector) ImGui.End();
@@ -865,32 +886,14 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight), "Project Assets");
-        if (!ImGui.Begin("项目资产", ref _showProjectAssets, ImGuiWindowFlags.NoCollapse))
+        SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
+        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets, ImGuiWindowFlags.NoCollapse))
         {
             if (_showProjectAssets) ImGui.End();
             return;
         }
 
-        if (ImGui.BeginTable("##AssetsTable", 3, ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
-        {
-            ImGui.TableSetupColumn("资产", ImGuiTableColumnFlags.WidthStretch);
-            ImGui.TableSetupColumn("类型", ImGuiTableColumnFlags.WidthFixed, 140F);
-            ImGui.TableSetupColumn("状态", ImGuiTableColumnFlags.WidthFixed, 140F);
-            ImGui.TableHeadersRow();
-            foreach (var directory in ProjectLayout.AssetDirectories)
-            {
-                ImGui.TableNextRow();
-                ImGui.TableNextColumn();
-                ImGui.Text(AssetLabel(directory));
-                ImGui.TableNextColumn();
-                ImGui.TextDisabled("文件夹");
-                ImGui.TableNextColumn();
-                ImGui.TextColored(ToColor(EditorPalette.Success), _project is null ? "等待项目" : "就绪");
-            }
-
-            ImGui.EndTable();
-        }
+        _assetBrowser.Draw(_project, SetStatus);
 
         ImGui.End();
     }
@@ -916,28 +919,20 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private static float WorkspaceTop => MenuHeight + ToolbarHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
 
-    private static string AssetLabel(string directory) => directory switch
-    {
-        "Scenes" => "场景", "Prefabs" => "预制件", "VoxelModels" => "体素模型",
-        "Materials" => "材质", "Palettes" => "调色板", "Textures" => "贴图",
-        "Environments" => "环境", "RenderPresets" => "渲染预设", "Generators" => "生成器",
-        _ => directory,
-    };
-
     private LayoutMetrics GetLayoutMetrics(Vector2 display)
     {
         var metrics = _layoutPreset switch
         {
-            LayoutPreset.Modeling => new LayoutMetrics(280F, 300F, 180F),
-            LayoutPreset.Rendering => new LayoutMetrics(210F, 380F, 220F),
-            _ => new LayoutMetrics(245F, 320F, 205F),
+            LayoutPreset.Modeling => new LayoutMetrics(280F, 300F, 250F),
+            LayoutPreset.Rendering => new LayoutMetrics(210F, 380F, 300F),
+            _ => new LayoutMetrics(245F, 320F, 280F),
         };
         var availableWidth = Math.Max(1F, display.X - metrics.LeftWidth - metrics.RightWidth);
         var availableHeight = Math.Max(1F, display.Y - WorkspaceTop - 1F - StatusHeight - metrics.AssetsHeight);
         return metrics with { CenterWidth = availableWidth, MainHeight = availableHeight };
     }
 
-    private void SetPanelDefaults(Vector2 position, Vector2 size, string panelName)
+    private void SetPanelDefaults(Vector2 position, Vector2 size)
     {
         var condition = _applyPreset ? ImGuiCond.Always : ImGuiCond.FirstUseEver;
         ImGui.SetNextWindowPos(position, condition);
@@ -1057,6 +1052,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void OpenProject(ProjectHandle project)
     {
         _project = project;
+        _assetBrowser.Reset();
         RecentProjects.Record(project);
         _statusText = $"已打开项目：{project.Manifest.Name}";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
@@ -1084,6 +1080,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void CloseProject()
     {
         _project = null;
+        _assetBrowser.Reset();
         _statusText = "已关闭项目";
     }
 
@@ -1099,7 +1096,11 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         SetStatus($"项目已保存：{_project.Manifest.Name}");
     }
 
-    private void RefreshProjectAssets() => SetStatus(_project is null ? "没有打开项目" : "资产列表已刷新");
+    private void RefreshProjectAssets()
+    {
+        _assetBrowser.Reset();
+        SetStatus(_project is null ? "资源视图已刷新：未打开项目" : "资源视图已刷新");
+    }
 
     private void SetStatus(string text) => _statusText = text;
 
