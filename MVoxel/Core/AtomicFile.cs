@@ -40,6 +40,35 @@ public static class AtomicFile
         }
     }
 
+    public static void WriteBytes(string path, byte[] contents, string? backupExtension = ".bak")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(contents);
+
+        var absolutePath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(absolutePath)
+            ?? throw new ArgumentException("The path must include a directory.", nameof(path));
+        Directory.CreateDirectory(directory);
+
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(absolutePath)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            WriteAndFlush(temporaryPath, contents);
+            VerifyBytes(temporaryPath, contents);
+            ReplaceTarget(temporaryPath, absolutePath, backupExtension);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
     private static void WriteAndFlush(string path, string contents)
     {
         using var stream = new FileStream(
@@ -55,10 +84,32 @@ public static class AtomicFile
         stream.Flush(flushToDisk: true);
     }
 
+    private static void WriteAndFlush(string path, byte[] contents)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 64 * 1024,
+            options: FileOptions.WriteThrough);
+        stream.Write(contents);
+        stream.Flush(flushToDisk: true);
+    }
+
     private static void VerifyContents(string path, string expected)
     {
         var actual = File.ReadAllText(path, Utf8NoBom);
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new IOException($"Atomic write verification failed for '{path}'.");
+        }
+    }
+
+    private static void VerifyBytes(string path, byte[] expected)
+    {
+        var actual = File.ReadAllBytes(path);
+        if (!actual.AsSpan().SequenceEqual(expected))
         {
             throw new IOException($"Atomic write verification failed for '{path}'.");
         }

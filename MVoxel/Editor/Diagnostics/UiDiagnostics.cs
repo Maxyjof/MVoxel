@@ -42,6 +42,12 @@ internal static class UiDiagnostics
         Enabled && string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_LOADING"), "1", StringComparison.Ordinal) &&
         Interlocked.Exchange(ref _blockingOperationRequested, 1) == 0;
 
+    private static int _exportRequested;
+    internal static bool TakeExportRequest() =>
+        Enabled && _frame >= 160 &&
+        string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_EXPORT_PNG"), "1", StringComparison.Ordinal) &&
+        Interlocked.Exchange(ref _exportRequested, 1) == 0;
+
     internal static bool ShouldCloseWelcome =>
         Enabled && _frame == 30 &&
         string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_CLOSE_WELCOME"), "1", StringComparison.Ordinal);
@@ -53,6 +59,16 @@ internal static class UiDiagnostics
         if (_frame == 150) center = 1;
     }
 
+    internal static void ProbeGlStage(GameWindow window, string stage)
+    {
+        if (!Enabled) return;
+        var error = GL.GetError();
+        if (error != ErrorCode.NoError)
+        {
+            throw new InvalidOperationException($"GL error {stage} at frame {_frame}: {error}");
+        }
+    }
+
     internal static unsafe void Capture(GameWindow window, string name)
     {
         if (!Enabled || _frame % 30 != 15 || (name == "welcome" && _frame > 30)) return;
@@ -60,6 +76,9 @@ internal static class UiDiagnostics
         var width = window.FramebufferSize.X;
         var height = window.FramebufferSize.Y;
         var bytes = new byte[width * height * 4];
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, 0);
         GL.ReadBuffer(ReadBufferMode.Back);
         GL.ReadPixels(0, 0, width, height, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, bytes);
         using var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
@@ -88,7 +107,11 @@ internal static class UiDiagnostics
         _frame++;
         if (_frame == 30) pitch = 0.035F;
         if (_frame == 60) { pitch = 0.48F; distance = 256F; }
-        if (_frame == 90) { yaw = -0.85F; pitch = 0.7F; distance = 18F; pan = new Vector2(12000, -8400); }
+        if (_frame == 90 && !string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_NO_PAN"), "1", StringComparison.Ordinal))
+        {
+            yaw = -0.85F; pitch = 0.7F; distance = 18F; pan = new Vector2(12000, -8400);
+        }
+        if (_frame == 150) { pitch = 0.42F; distance = 33F; }
         if (_frame == 180) window.Close();
     }
 }

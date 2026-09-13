@@ -42,6 +42,16 @@ public readonly record struct VoxelValue(Rgba32 Color, ushort MaterialSlot = 0, 
     public bool IsEmpty => Color.A == 0 && MaterialSlot == 0 && Flags == 0;
 }
 
+/// <summary>Flags stored per voxel that drive shading and path-tracing behaviour.</summary>
+public static class VoxelFlags
+{
+    public const byte None = 0;
+    public const byte Translucent = 1;
+    public const byte Emissive = 2;
+
+    public static bool Has(byte flags, byte flag) => (flags & flag) != 0;
+}
+
 /// <summary>
 /// Editable sparse chunk. Empty cells are absent from the dictionary, so the
 /// world has no fixed maximum canvas and pays only for occupied voxels.
@@ -102,6 +112,63 @@ public sealed class VoxelWorld
     public int LoadedChunkCount => _chunks.Count;
     public IEnumerable<ChunkCoord64> LoadedChunks => _chunks.Keys;
 
+    /// <summary>Increments on every successful write so renderers can detect stale uploads.</summary>
+    public int ContentVersion { get; private set; }
+
+    public int OccupiedVoxelCount
+    {
+        get
+        {
+            var total = 0;
+            foreach (var chunk in _chunks.Values) total += chunk.OccupiedCount;
+            return total;
+        }
+    }
+
+    public IEnumerable<(VoxelCoord64 Coordinate, VoxelValue Value)> EnumerateOccupied()
+    {
+        foreach (var (chunkCoordinate, chunk) in _chunks)
+        foreach (var (index, value) in chunk.Snapshot)
+        {
+            var local = SparseVoxelChunk.FromIndex(index);
+            yield return (
+                new VoxelCoord64(
+                    chunkCoordinate.X * ChunkSize + local.X,
+                    chunkCoordinate.Y * ChunkSize + local.Y,
+                    chunkCoordinate.Z * ChunkSize + local.Z),
+                value);
+        }
+    }
+
+    public bool TryGetBounds(out VoxelCoord64 minimum, out VoxelCoord64 maximum)
+    {
+        minimum = default;
+        maximum = default;
+        var found = false;
+        long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
+        foreach (var (coordinate, _) in EnumerateOccupied())
+        {
+            if (!found)
+            {
+                (minX, minY, minZ) = (coordinate.X, coordinate.Y, coordinate.Z);
+                (maxX, maxY, maxZ) = (minX, minY, minZ);
+                found = true;
+                continue;
+            }
+
+            minX = Math.Min(minX, coordinate.X);
+            minY = Math.Min(minY, coordinate.Y);
+            minZ = Math.Min(minZ, coordinate.Z);
+            maxX = Math.Max(maxX, coordinate.X);
+            maxY = Math.Max(maxY, coordinate.Y);
+            maxZ = Math.Max(maxZ, coordinate.Z);
+        }
+
+        minimum = new VoxelCoord64(minX, minY, minZ);
+        maximum = new VoxelCoord64(maxX, maxY, maxZ);
+        return found;
+    }
+
     public bool TryGet(VoxelCoord64 coordinate, out VoxelValue value)
     {
         var (chunkCoordinate, localCoordinate) = Split(coordinate);
@@ -123,6 +190,7 @@ public sealed class VoxelWorld
             if (_chunks.TryGetValue(chunkCoordinate, out var existing))
             {
                 existing.Remove(localCoordinate);
+                ContentVersion++;
                 if (existing.IsEmpty)
                 {
                     _chunks.Remove(chunkCoordinate);
@@ -139,6 +207,7 @@ public sealed class VoxelWorld
         }
 
         chunk.Set(localCoordinate, value);
+        ContentVersion++;
     }
 
     public bool Remove(VoxelCoord64 coordinate)
@@ -149,6 +218,7 @@ public sealed class VoxelWorld
             return false;
         }
 
+        ContentVersion++;
         if (chunk.IsEmpty)
         {
             _chunks.Remove(chunkCoordinate);

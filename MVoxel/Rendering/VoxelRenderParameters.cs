@@ -1,0 +1,268 @@
+using System.Numerics;
+using System.Text;
+
+namespace MVoxel.Rendering;
+
+/// <summary>
+/// Packs <see cref="RenderSettings"/> plus per-frame camera/region state into a
+/// flat float block that both the C# side and the GLSL shaders index by the
+/// same named slots. The GLSL sources embed <see cref="Defines()"/> so the two
+/// halves can never drift apart.
+/// </summary>
+public sealed class VoxelRenderParameters
+{
+    public const int SlotCount = 96;
+
+    // Camera basis + per-frame scalars.
+    public const int CamX = 0, CamY = 1, CamZ = 2, Focal = 3;
+    public const int ForwardX = 4, ForwardY = 5, ForwardZ = 6, Frame = 7;
+    public const int RightX = 8, RightY = 9, RightZ = 10, ViewWidth = 11;
+    public const int UpX = 12, UpY = 13, UpZ = 14, ViewHeight = 15;
+
+    // Voxel region.
+    public const int RegionMinX = 16, RegionMinY = 17, RegionMinZ = 18, MaxSteps = 19;
+    public const int RegionSizeX = 20, RegionSizeY = 21, RegionSizeZ = 22, LightCount = 23;
+
+    // Sun and shadow.
+    public const int SunX = 24, SunY = 25, SunZ = 26, SunIntensity = 27;
+    public const int SunColorR = 28, SunColorG = 29, SunColorB = 30, ShadowSoftness = 31;
+    public const int ShadowSamples = 32, SunEnabled = 33, GroundFade = 34, GroundShown = 35;
+    public const int GroundR = 36, GroundG = 37, GroundB = 38, NearFade = 39;
+
+    // Sky and fill.
+    public const int SkyTopR = 40, SkyTopG = 41, SkyTopB = 42, SkyAmbient = 43;
+    public const int SkyHorizonR = 44, SkyHorizonG = 45, SkyHorizonB = 46, AmbientTint = 47;
+    public const int FogR = 48, FogG = 49, FogB = 50, FogDensity = 51;
+
+    // Palette shading.
+    public const int Saturation = 52, HueShift = 53, Contrast = 54, Brightness = 55;
+    public const int PaletteShading = 56, Outlines = 57, HuePhase = 58, AoEnabled = 59;
+    public const int AoStrength = 60, AoPower = 61, Reserved1 = 62, Reserved2 = 63;
+
+    // Post.
+    public const int ToneMode = 64, Exposure = 65, Gamma = 66, Vignette = 67;
+    public const int WhiteBalanceR = 68, WhiteBalanceG = 69, WhiteBalanceB = 70, Dither = 71;
+
+    // Path tracer.
+    public const int MaxBounces = 72, Roughness = 73, Metalness = 74, SpecularF0 = 75;
+    public const int RouletteThreshold = 76, RadianceClamp = 77, SamplesPerFrame = 78, Accumulated = 79;
+    public const int EmissiveIntensity = 80, Absorption = 81, Aperture = 82, FocusDistance = 83;
+    public const int DepthOfField = 84, MisEnabled = 85, ModePath = 86, FovDegrees = 87;
+    public const int Pixel = 88, GridStep = 89, GridShown = 90, ReservedR = 91;
+    public const int ReservedS = 92, ReservedT = 93, ReservedU = 94, ReservedV = 95;
+
+    /// <summary>Emit the GLSL #define table so shader sources and C# slots cannot drift.</summary>
+    public static string Defines()
+    {
+        var names = new (string, int)[]
+        {
+            ("P_CAM_X", CamX), ("P_CAM_Y", CamY), ("P_CAM_Z", CamZ), ("P_FOCAL", Focal),
+            ("P_FWD_X", ForwardX), ("P_FWD_Y", ForwardY), ("P_FWD_Z", ForwardZ), ("P_FRAME", Frame),
+            ("P_RIGHT_X", RightX), ("P_RIGHT_Y", RightY), ("P_RIGHT_Z", RightZ), ("P_VIEW_W", ViewWidth),
+            ("P_UP_X", UpX), ("P_UP_Y", UpY), ("P_UP_Z", UpZ), ("P_VIEW_H", ViewHeight),
+            ("P_REGION_MIN_X", RegionMinX), ("P_REGION_MIN_Y", RegionMinY), ("P_REGION_MIN_Z", RegionMinZ), ("P_MAX_STEPS", MaxSteps),
+            ("P_REGION_SIZE_X", RegionSizeX), ("P_REGION_SIZE_Y", RegionSizeY), ("P_REGION_SIZE_Z", RegionSizeZ), ("P_LIGHT_COUNT", LightCount),
+            ("P_SUN_X", SunX), ("P_SUN_Y", SunY), ("P_SUN_Z", SunZ), ("P_SUN_INTENSITY", SunIntensity),
+            ("P_SUN_R", SunColorR), ("P_SUN_G", SunColorG), ("P_SUN_B", SunColorB), ("P_SHADOW_SOFTNESS", ShadowSoftness),
+            ("P_SHADOW_SAMPLES", ShadowSamples), ("P_SUN_ENABLED", SunEnabled), ("P_GROUND_FADE", GroundFade), ("P_GROUND_SHOWN", GroundShown),
+            ("P_GROUND_R", GroundR), ("P_GROUND_G", GroundG), ("P_GROUND_B", GroundB), ("P_NEAR_FADE", NearFade),
+            ("P_SKY_TOP_R", SkyTopR), ("P_SKY_TOP_G", SkyTopG), ("P_SKY_TOP_B", SkyTopB), ("P_SKY_AMBIENT", SkyAmbient),
+            ("P_SKY_HORIZON_R", SkyHorizonR), ("P_SKY_HORIZON_G", SkyHorizonG), ("P_SKY_HORIZON_B", SkyHorizonB), ("P_AMBIENT_TINT", AmbientTint),
+            ("P_FOG_R", FogR), ("P_FOG_G", FogG), ("P_FOG_B", FogB), ("P_FOG_DENSITY", FogDensity),
+            ("P_SATURATION", Saturation), ("P_HUE_SHIFT", HueShift), ("P_CONTRAST", Contrast), ("P_BRIGHTNESS", Brightness),
+            ("P_PALETTE_SHADING", PaletteShading), ("P_OUTLINES", Outlines), ("P_HUE_PHASE", HuePhase), ("P_AO_ENABLED", AoEnabled),
+            ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower),
+            ("P_TONE_MODE", ToneMode), ("P_EXPOSURE", Exposure), ("P_GAMMA", Gamma), ("P_VIGNETTE", Vignette),
+            ("P_WB_R", WhiteBalanceR), ("P_WB_G", WhiteBalanceG), ("P_WB_B", WhiteBalanceB), ("P_DITHER", Dither),
+            ("P_MAX_BOUNCES", MaxBounces), ("P_ROUGHNESS", Roughness), ("P_METALNESS", Metalness), ("P_SPECULAR_F0", SpecularF0),
+            ("P_ROULETTE_THRESHOLD", RouletteThreshold), ("P_RADIANCE_CLAMP", RadianceClamp), ("P_SAMPLES_PER_FRAME", SamplesPerFrame), ("P_ACCUMULATED", Accumulated),
+            ("P_EMISSIVE_INTENSITY", EmissiveIntensity), ("P_ABSORPTION", Absorption), ("P_APERTURE", Aperture), ("P_FOCUS_DISTANCE", FocusDistance),
+            ("P_DEPTH_OF_FIELD", DepthOfField), ("P_MIS", MisEnabled), ("P_MODE_PATH", ModePath), ("P_FOV_DEGREES", FovDegrees),
+            ("P_PIXEL_SEED", Pixel), ("P_GRID_STEP", GridStep), ("P_GRID_SHOWN", GridShown),
+        };
+
+        var builder = new StringBuilder();
+        foreach (var (name, index) in names)
+        {
+            builder.Append("#define ").Append(name).Append(' ').Append(index).Append('\n');
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// White balance from kelvin (Tanner Helland approximation, normalised around 6500 K).
+    /// Exposed for tests and for the settings panel preview.
+    /// </summary>
+    public static Vector3 WhiteBalanceMultiplier(float kelvin)
+    {
+        var temp = Math.Clamp(kelvin, 1500F, 12000F) / 100F;
+        float r, g;
+        if (temp <= 66F)
+        {
+            r = 255F;
+            g = 99.4708025861F * (float)Math.Log(temp) - 161.1195681661F;
+        }
+        else
+        {
+            r = 329.698727446F * (float)Math.Pow(temp - 60F, -0.1332047592F);
+            g = 288.1223940075F * (float)Math.Pow(temp - 60F, -0.0755148492F);
+        }
+
+        var b = temp >= 66F ? 255F
+            : temp <= 19F ? 0F
+            : 138.5177312231F * (float)Math.Log(temp - 10F) - 305.0447927307F;
+
+        // Normalise so 6500 K is exactly neutral and the mean stays near 1.
+        var raw = new Vector3(r, g, b) / new Vector3(255F, 255F, 255F);
+        var reference = new Vector3(1F, 1F, 1F);
+        var neutral = RawAt(6500F);
+        raw /= neutral;
+        return Vector3.Clamp(raw, new Vector3(0.25F), reference * 4F);
+
+        static Vector3 RawAt(float kelvinValue)
+        {
+            var t = kelvinValue / 100F;
+            var rr = 255F;
+            var gg = 99.4708025861F * (float)Math.Log(t) - 161.1195681661F;
+            var bb = t <= 19F ? 0F : 138.5177312231F * (float)Math.Log(t - 10F) - 305.0447927307F;
+            var value = new Vector3(rr, gg, Math.Max(1F, bb)) / 255F;
+            return value;
+        }
+    }
+
+    /// <summary>Fill the shared float block consumed by all three shader stages.</summary>
+    public static float[] Build(RenderSettings settings, in FrameState frame, float pixelSeedSalt)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.ClampAll();
+        var parameters = new float[SlotCount];
+
+        parameters[CamX] = frame.CameraPosition.X;
+        parameters[CamY] = frame.CameraPosition.Y;
+        parameters[CamZ] = frame.CameraPosition.Z;
+        parameters[ForwardX] = frame.CameraForward.X;
+        parameters[ForwardY] = frame.CameraForward.Y;
+        parameters[ForwardZ] = frame.CameraForward.Z;
+        parameters[RightX] = frame.CameraRight.X;
+        parameters[RightY] = frame.CameraRight.Y;
+        parameters[RightZ] = frame.CameraRight.Z;
+        parameters[UpX] = frame.CameraUp.X;
+        parameters[UpY] = frame.CameraUp.Y;
+        parameters[UpZ] = frame.CameraUp.Z;
+        parameters[Focal] = frame.FocalPixels;
+        parameters[Frame] = frame.FrameIndex;
+        parameters[ViewWidth] = frame.ViewWidthPixels;
+        parameters[ViewHeight] = frame.ViewHeightPixels;
+        parameters[Pixel] = pixelSeedSalt;
+
+        parameters[RegionMinX] = frame.RegionMin.X;
+        parameters[RegionMinY] = frame.RegionMin.Y;
+        parameters[RegionMinZ] = frame.RegionMin.Z;
+        parameters[RegionSizeX] = frame.RegionSize.X;
+        parameters[RegionSizeY] = frame.RegionSize.Y;
+        parameters[RegionSizeZ] = frame.RegionSize.Z;
+        parameters[MaxSteps] = frame.MaxSteps;
+        parameters[LightCount] = frame.EmissiveLightCount;
+
+        var sun = settings.SunDirection;
+        parameters[SunX] = sun.X;
+        parameters[SunY] = sun.Y;
+        parameters[SunZ] = sun.Z;
+        parameters[SunIntensity] = settings.SunEnabled ? settings.SunIntensity : 0F;
+        parameters[SunColorR] = settings.SunColor.X;
+        parameters[SunColorG] = settings.SunColor.Y;
+        parameters[SunColorB] = settings.SunColor.Z;
+        parameters[ShadowSoftness] = settings.ShadowSoftness;
+        parameters[ShadowSamples] = settings.ShadowSamples;
+        parameters[SunEnabled] = settings.SunEnabled ? 1F : 0F;
+        parameters[GroundFade] = settings.GroundFade;
+        parameters[GroundShown] = settings.ShowGround ? 1F : 0F;
+        parameters[GroundR] = settings.GroundColor.X;
+        parameters[GroundG] = settings.GroundColor.Y;
+        parameters[GroundB] = settings.GroundColor.Z;
+        parameters[NearFade] = settings.NearFade;
+
+        parameters[SkyTopR] = settings.SkyTop.X;
+        parameters[SkyTopG] = settings.SkyTop.Y;
+        parameters[SkyTopB] = settings.SkyTop.Z;
+        parameters[SkyAmbient] = settings.SkyAmbient;
+        parameters[SkyHorizonR] = settings.SkyHorizon.X;
+        parameters[SkyHorizonG] = settings.SkyHorizon.Y;
+        parameters[SkyHorizonB] = settings.SkyHorizon.Z;
+        parameters[AmbientTint] = settings.AmbientTint;
+        parameters[FogR] = settings.FogColor.X;
+        parameters[FogG] = settings.FogColor.Y;
+        parameters[FogB] = settings.FogColor.Z;
+        parameters[FogDensity] = settings.FogDensity;
+
+        parameters[Saturation] = settings.Saturation;
+        parameters[HueShift] = settings.HueShiftDegrees + (settings.HueCycle ? frame.HuePhaseDegrees : 0F);
+        parameters[Contrast] = settings.ColorContrast;
+        parameters[Brightness] = settings.Brightness;
+        parameters[PaletteShading] = settings.PaletteShading ? 1F : 0F;
+        parameters[Outlines] = frame.ShowOutlines ? 1F : 0F;
+        parameters[HuePhase] = frame.HuePhaseDegrees;
+        parameters[AoEnabled] = settings.AmbientOcclusionEnabled ? 1F : 0F;
+        parameters[AoStrength] = settings.AoStrength;
+        parameters[AoPower] = settings.AoPower;
+
+        parameters[ToneMode] = (float)(int)settings.Tone;
+        parameters[Exposure] = settings.Exposure;
+        parameters[Gamma] = settings.Gamma;
+        parameters[Vignette] = settings.Vignette;
+        var whiteBalance = WhiteBalanceMultiplier(settings.WhiteBalance);
+        parameters[WhiteBalanceR] = whiteBalance.X;
+        parameters[WhiteBalanceG] = whiteBalance.Y;
+        parameters[WhiteBalanceB] = whiteBalance.Z;
+        parameters[Dither] = settings.Dither ? 1F : 0F;
+
+        parameters[MaxBounces] = settings.MaxBounces;
+        parameters[Roughness] = settings.PathRoughness;
+        parameters[Metalness] = settings.PathMetalness;
+        parameters[SpecularF0] = settings.PathSpecularF0;
+        parameters[RouletteThreshold] = settings.RussianRouletteThreshold;
+        parameters[RadianceClamp] = settings.RadianceClamp;
+        parameters[SamplesPerFrame] = settings.PathSamplesPerFrame;
+        parameters[Accumulated] = frame.AccumulatedSamples;
+        parameters[EmissiveIntensity] = settings.EmissiveVoxels ? settings.EmissiveIntensity : 0F;
+        parameters[Absorption] = settings.TransmissiveAbsorption;
+        parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
+        parameters[FocusDistance] = settings.FocusDistance;
+        parameters[DepthOfField] = settings.DepthOfField ? 1F : 0F;
+        parameters[MisEnabled] = settings.DirectLightingMIS ? 1F : 0F;
+        parameters[ModePath] = frame.PathMode ? 1F : 0F;
+        parameters[FovDegrees] = settings.CameraFovDegrees;
+        parameters[GridStep] = frame.GridStep;
+        parameters[GridShown] = frame.ShowGrid ? 1F : 0F;
+
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            if (!float.IsFinite(parameters[index])) parameters[index] = 0F;
+        }
+
+        return parameters;
+    }
+
+    public readonly record struct FrameState(
+        Vector3 CameraPosition,
+        Vector3 CameraForward,
+        Vector3 CameraRight,
+        Vector3 CameraUp,
+        float FocalPixels,
+        int ViewWidthPixels,
+        int ViewHeightPixels,
+        int FrameIndex,
+        Vector3I RegionMin,
+        Vector3I RegionSize,
+        int MaxSteps,
+        int EmissiveLightCount,
+        float HuePhaseDegrees,
+        bool ShowOutlines,
+        int AccumulatedSamples,
+        bool PathMode,
+        float GridStep = 0F,
+        bool ShowGrid = false);
+
+    public readonly record struct Vector3I(int X, int Y, int Z);
+}

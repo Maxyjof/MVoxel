@@ -3,6 +3,9 @@ using System.Numerics;
 using System.Text.Json;
 using ImGuiNET;
 using MVoxel.Project;
+using MVoxel.Core;
+using MVoxel.Rendering;
+using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
@@ -12,10 +15,11 @@ using Color = System.Drawing.Color;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 using Vector3 = OpenTK.Mathematics.Vector3;
+using NumVector3 = System.Numerics.Vector3;
 
 namespace MVoxel.Editor;
 
-internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
+internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
@@ -48,17 +52,40 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _projectLodLevels = 4;
     private readonly float[] _editorLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     private readonly float[] _projectLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
-    private int _renderBackend = 1;
-    private bool _rayTracing;
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
     private bool _showLighting = true;
 
+    // ---------- voxel editing + GPU rendering ----------
+    private VoxelWorld _world = new();
+    private readonly Rgba32[] _palette = VoxelPalette.Build();
+    private readonly CommandHistory _voxelHistory = new();
+    private VoxelRenderPipeline? _pipeline;
+    private RenderSettings _renderSettings = new();
+    private EditorTool _activeTool = EditorTool.Camera;
+    private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
+    private int _brushRadius = 1;
+    private int _paletteIndex = 40;
+    private bool _brushEmissive;
+    private VoxelDda.Hit? _selectedVoxel;
+    private VoxelDda.Hit? _brushPreview;
+    private VoxelCoord64? _lastPaintedCell;
+    private float _elapsedSeconds;
+    private string _accumulationSignature = string.Empty;
+    private string _pipelineStatus = string.Empty;
+
     public ImGuiEditorWindow(string[] args)
-        : base(GameWindowSettings.Default, CreateWindowSettings(args))
+        : this(args, modernApi: true)
+    {
+    }
+
+    private ImGuiEditorWindow(string[] args, bool modernApi)
+        : base(GameWindowSettings.Default, CreateWindowSettings(args, modernApi))
     {
         _startupProjectPath = ResolveStartupProjectPath(args);
     }
+
+    internal static ImGuiEditorWindow Create(string[] args, bool modernApi) => new(args, modernApi);
 
     public event EventHandler? ProjectOpened;
 
@@ -82,10 +109,26 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
 
+    private static OpenTK.Graphics.OpenGL4.DebugProc? _debugProc;
+
     protected override void OnLoad()
     {
         base.OnLoad();
         MakeCurrent();
+        if (UiDiagnostics.Enabled)
+        {
+            GL.Enable(EnableCap.DebugOutput);
+            GL.Enable(EnableCap.DebugOutputSynchronous);
+            _debugProc = (source, type, id, severity, length, message, param) =>
+            {
+                if (type == DebugType.DebugTypeError)
+                {
+                    Console.Error.WriteLine("[GLDBG] " + source + " " + severity + " id=" + id + ": " +
+                        System.Runtime.InteropServices.Marshal.PtrToStringAnsi(message));
+                }
+            };
+            GL.DebugMessageCallback(_debugProc, IntPtr.Zero);
+        }
         GL.ClearColor(EditorPalette.Window);
         _controller = new ImGuiController(this);
         _imguiContext = ImGui.GetCurrentContext();
@@ -93,6 +136,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ConfigureImGui();
         UiDiagnostics.Configure();
         _logoTexture = ImGuiTexture.LoadLogo();
+        InitializeVoxelPipeline();
         if (!string.IsNullOrWhiteSpace(_startupProjectPath))
         {
             TryOpenProject(_startupProjectPath, true);
@@ -102,6 +146,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             RequestWelcomeWindow();
             EnsureWelcomeWindow();
         }
+        UiDiagnostics.ProbeGlStage(this, "end OnLoad");
     }
 
     protected override void OnResize(ResizeEventArgs args)
@@ -119,8 +164,22 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         if (UiDiagnostics.TakeBlockingOperationRequest()) BeginDiagnosticLoad();
+        if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         _projectOperation.Pump();
         EnsureWelcomeWindow();
+        UiDiagnostics.ProbeGlStage(this, "after EnsureWelcome in Update");
+        if (_renderSettingsDirty && (_renderSettingsSaveCountdown -= (float)Math.Max(args.Time, 0.01F)) <= 0F)
+        {
+            _renderSettingsDirty = false;
+            try
+            {
+                _renderSettings.SaveTo(RenderSettingsPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                SetStatus($"渲染配置自动保存失败：{exception.Message}");
+            }
+        }
     }
 
     protected override void OnRenderFrame(FrameEventArgs args)
@@ -128,14 +187,17 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         base.OnRenderFrame(args);
         MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
+        UiDiagnostics.ProbeGlStage(this, "frame top");
         _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
+        _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
         GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
         if (_controller is not null)
         {
             if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.Close();
             DrawEditorFrame();
-            _controller.Render();
+                _controller.Render();
+            UiDiagnostics.ProbeGlStage(this, "after imgui render");
             UiDiagnostics.Capture(this, "editor");
         }
 
@@ -157,6 +219,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _projectOperation.Dispose();
         MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
+        ShutdownVoxelPipeline();
         _logoTexture?.Dispose();
         _controller?.Dispose();
         base.OnUnload();
@@ -180,7 +243,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _welcomeWindow.Focus();
     }
 
-    private static NativeWindowSettings CreateWindowSettings(string[] args)
+    private static NativeWindowSettings CreateWindowSettings(string[] args, bool modernApi)
     {
         return new NativeWindowSettings
         {
@@ -189,7 +252,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             MinimumClientSize = new Vector2i(1000, 680),
             StartVisible = true,
             StartFocused = true,
-            APIVersion = new Version(3, 3),
+            APIVersion = modernApi ? new Version(4, 5) : new Version(3, 3),
             Profile = ContextProfile.Core,
             API = ContextAPI.OpenGL,
             Vsync = VSyncMode.On,
@@ -255,6 +318,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var welcomeIsOpen = _welcomeWindow is not null;
         var operation = _projectOperation.Snapshot;
         var inputBlocked = welcomeIsOpen || operation is not null;
+        if (!inputBlocked) HandleVoxelShortcuts();
         if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
         DrawToolbar();
@@ -367,22 +431,33 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ImGui.SameLine();
         ImGui.TextDisabled("|");
         ImGui.SameLine();
-        if (ImGui.Button("选择")) SetStatus("选择工具已激活");
+        ToolbarToolButton("选择", EditorTool.Pick);
         ImGui.SameLine();
-        if (ImGui.Button("绘制")) SetStatus("绘制工具已激活");
+        ToolbarToolButton("绘制", EditorTool.Draw);
         ImGui.SameLine();
-        if (ImGui.Button("擦除")) SetStatus("擦除工具已激活");
+        ToolbarToolButton("擦除", EditorTool.Erase);
         ImGui.SameLine();
         if (ImGui.Button("场景")) _requestedCenterTab = 0;
         ImGui.SameLine();
         if (ImGui.Button("渲染")) _requestedCenterTab = 1;
         ImGui.SameLine();
-        if (ImGui.Button("灯光预览")) _showLighting = !_showLighting;
-        ImGui.SameLine();
         if (ImGui.Button("渲染设置")) _requestedInspectorTab = 1;
         ImGui.SameLine();
         if (ImGui.Button("刷新资产")) RefreshProjectAssets();
         ImGui.End();
+    }
+
+    private void ToolbarToolButton(string label, EditorTool tool)
+    {
+        var active = _activeTool == tool;
+        if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
+        if (ImGui.Button(label))
+        {
+            _activeTool = tool;
+            _lastPaintedCell = null;
+        }
+
+        if (active) ImGui.PopStyleColor();
     }
 
     private void DrawDockspace()
@@ -476,8 +551,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             }
 
             ImGui.EndTabBar();
-            _requestedCenterTab = null;
         }
+
+        _requestedCenterTab = null;
 
         ImGui.End();
     }
@@ -513,14 +589,23 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius);
         var camera = GetSceneCamera();
 
-        if (_showGrid)
+        var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
+        if (_project is not null && !gpuRendered && _showVoxelOutlines)
         {
+            // Legacy CPU fallback preview (no OpenGL 4.5 compute available).
+            DrawVoxelPreview(drawList, origin, size, camera);
+        }
+
+        if (_showGrid && !gpuRendered)
+        {
+            // CPU fallback grid; the GPU pass draws a depth-correct grid itself.
             SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
         }
 
-        if (_project is not null && _showVoxelOutlines)
+        if (_project is not null && gpuRendered)
         {
-            DrawVoxelPreview(drawList, origin, size, camera);
+            HandleVoxelToolInput(origin, size, camera);
+            DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
 
         DrawSceneWorldAxes(drawList, origin, size, camera);
@@ -542,7 +627,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight * 2F - 8F)));
         ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight - 8F)));
-        ImGui.TextDisabled("左键拖拽旋转  ·  中键平移  ·  滚轮缩放  ·  点击右上角 XYZ 定向");
+        ImGui.TextDisabled(_activeTool == EditorTool.Camera
+            ? "左键拖拽旋转  ·  中键平移  ·  滚轮缩放  ·  点击右上角 XYZ 定向"
+            : "左键绘制/擦除/拾取  ·  右键拖拽旋转  ·  滚轮缩放  ·  Ctrl+Z 撤销");
         ImGui.EndChild();
     }
 
@@ -589,7 +676,10 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
         }
 
-        if (!gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+        var brushOwnsLeftButton = _project is not null && _activeTool != EditorTool.Camera;
+        var orbitLeft = !brushOwnsLeftButton && !gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        var orbitRight = !gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Right);
+        if (orbitLeft || orbitRight)
         {
             _sceneOrbitYaw += io.MouseDelta.X * 0.008F;
             _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
@@ -826,15 +916,77 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var size = ImGui.GetContentRegionAvail();
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
-        drawList.AddCircleFilled(origin + size / 2F, Math.Min(size.X, size.Y) * 0.18F, ToPackedColor(Color.FromArgb(40, 104, 187, 255)));
-        ImGui.SetCursorScreenPos(origin + new Vector2(
-            Math.Max(0F, (size.X - ImGui.CalcTextSize("渲染预览").X) / 2F),
-            Math.Max(0F, size.Y / 2F - ImGui.GetTextLineHeightWithSpacing())));
-        ImGui.TextColored(ToColor(EditorPalette.Text), "渲染预览");
-        ImGui.SetCursorScreenPos(origin + new Vector2(
-            Math.Max(0F, (size.X - ImGui.CalcTextSize("渲染预览正在开发中").X) / 2F), size.Y / 2F));
-        ImGui.TextDisabled("渲染预览正在开发中");
+        var camera = GetSceneCamera();
+        var gpuRendered = _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
+        if (!gpuRendered)
+        {
+            DrawVoxelPreview(drawList, origin, size, camera);
+            ImGui.SetCursorScreenPos(origin + new Vector2(
+                Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
+            ImGui.TextDisabled(_pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 显示为回退预览" : "GPU 路径追踪初始化中");
+        }
+        else
+        {
+            DrawRenderViewOverlay(origin, size, drawList);
+        }
+
         ImGui.EndChild();
+    }
+
+    private void DrawRenderViewOverlay(Vector2 origin, Vector2 size, ImDrawListPtr drawList)
+    {
+        _ = drawList;
+        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
+        var samples = _pipeline?.AccumulatedSamples ?? 0;
+        var maximum = _renderSettings.PathMaxAccumulatedSamples;
+        var converged = samples >= maximum;
+        ImGui.TextColored(ToColor(_settingsTogglePath && !converged ? EditorPalette.Accent : EditorPalette.Success),
+            _settingsTogglePath
+                ? (converged ? $"渲染完成 · {samples} spp" : $"渐进渲染中 · {samples} / {maximum} spp")
+                : "路径追踪已暂停");
+        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing()));
+        if (ImGui.SmallButton(_settingsTogglePath ? "暂停" : "继续"))
+        {
+            _settingsTogglePath = !_settingsTogglePath;
+            _renderSettings.PathTracingEnabled = _settingsTogglePath;
+            if (_settingsTogglePath) _pipeline?.ResetAccumulation();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("重新渲染"))
+        {
+            _settingsTogglePath = true;
+            _pipeline?.ResetAccumulation();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("导出 PNG")) ExportRenderPng();
+        ImGui.SameLine();
+        ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
+        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing() * 2F));
+        ImGui.TextDisabled("渲染页不显示网格与辅助元素；曝光/色调等后期改动不会重置累积");
+    }
+
+    private void ExportRenderPng()
+    {
+        if (_pipeline is not { IsAvailable: true } pipeline)
+        {
+            SetStatus("GPU 渲染不可用，无法导出");
+            return;
+        }
+
+        var projectPath = _project?.RootPath
+            ?? Path.Combine(Path.GetTempPath(), "MVoxel");
+        var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}.png";
+        var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
+        if (pipeline.SaveDisplayPng(path))
+        {
+            SetStatus($"图片已导出：{path}");
+        }
+        else
+        {
+            SetStatus("导出失败：帧缓冲不可读");
+        }
     }
 
     private void DrawInspector()
@@ -867,15 +1019,46 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 ImGui.Text("路径");
                 ImGui.SameLine(90F);
                 ImGui.TextWrapped(_project?.RootPath ?? "欢迎使用 MVoxel");
-                ImGui.Text("选择");
-                ImGui.SameLine(90F);
-                ImGui.TextDisabled("未选择对象");
-                ImGui.Text("坐标");
-                ImGui.SameLine(90F);
-                ImGui.Text("0, 0, 0");
-                ImGui.Text("尺寸");
-                ImGui.SameLine(90F);
-                ImGui.TextWrapped("按作品范围扩展");
+                ImGui.SeparatorText("选择");
+                if (_selectedVoxel is { } selected)
+                {
+                    var voxel = _world.TryGet(selected.Coordinate, out var existing) ? existing : default;
+                    ImGui.Text($"坐标  {selected.Coordinate.X}, {selected.Coordinate.Y}, {selected.Coordinate.Z}");
+                    ImGui.Text($"颜色  #{voxel.Color.R}, {voxel.Color.G}, {voxel.Color.B} · A{voxel.Color.A}");
+                    var flags = voxel.Flags;
+                    ImGui.TextDisabled($"材质标志  {(VoxelFlags.Has(flags, VoxelFlags.Emissive) ? "自发光 " : string.Empty)}" +
+                                       $"{(VoxelFlags.Has(flags, VoxelFlags.Translucent) ? "半透明" : string.Empty)}" +
+                                       (VoxelFlags.Has(flags, VoxelFlags.Emissive | VoxelFlags.Translucent) ? string.Empty : "不透明"));
+                    if (ImGui.Button("取为画笔颜色"))
+                    {
+                        var nearest = 0;
+                        var best = int.MaxValue;
+                        for (var index = 0; index < _palette.Length; index++)
+                        {
+                            var candidate = _palette[index];
+                            var distance = Math.Abs(candidate.R - voxel.Color.R) +
+                                           Math.Abs(candidate.G - voxel.Color.G) +
+                                           Math.Abs(candidate.B - voxel.Color.B) +
+                                           Math.Abs(candidate.A - voxel.Color.A) / 2;
+                            if (distance >= best) continue;
+                            best = distance;
+                            nearest = index;
+                        }
+
+                        _paletteIndex = nearest;
+                        SetStatus($"画笔颜色已取自选中的体素（色板 #{nearest}）");
+                    }
+                }
+                else
+                {
+                    ImGui.TextDisabled("未选择对象 · 使用“选择”工具点击体素");
+                }
+
+                ImGui.SeparatorText("体素世界");
+                ImGui.Text($"占用体素  {_world.OccupiedVoxelCount:N0}");
+                ImGui.Text($"驻留区块  {_world.LoadedChunkCount:N0} × 32³");
+                ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
+                ImGui.TextDisabled("坐标  0, 0, 0");
                 ImGui.SeparatorText("材质");
                 ImGui.TextDisabled("颜色、透明度和表面效果");
                 ImGui.EndTabItem();
@@ -889,8 +1072,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             }
 
             ImGui.EndTabBar();
-            _requestedInspectorTab = null;
         }
+
+        _requestedInspectorTab = null;
 
         ImGui.End();
     }
@@ -899,50 +1083,41 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
         ImGui.TextWrapped("LOD（细节等级）控制远处物体的显示精度，让场景操作更流畅。渲染和导出始终保留完整细节。");
-        ImGui.SeparatorText("新项目的默认 LOD 设置");
-        ImGui.PushItemWidth(Math.Max(64F, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("第 8 级距离").X - 16F));
-        ImGui.SliderInt("等级数量##editor", ref _editorLodLevels, 1, _editorLodDistances.Length);
-        for (var index = 0; index < _editorLodLevels; index++)
+        if (ImGui.CollapsingHeader("LOD 等级（Phase 5 预留，当前版本未参与剔除）"))
         {
-            ImGui.SliderFloat($"第 {index + 1} 级距离##editor", ref _editorLodDistances[index], 1F, 16384F, "%.0f");
+            ImGui.PushItemWidth(Math.Max(64F, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("第 8 级距离").X - 16F));
+            ImGui.SliderInt("等级数量##editor", ref _editorLodLevels, 1, _editorLodDistances.Length);
+            for (var index = 0; index < _editorLodLevels; index++)
+            {
+                ImGui.SliderFloat($"第 {index + 1} 级距离##editor", ref _editorLodDistances[index], 1F, 16384F, "%.0f");
+            }
+
+            ImGui.SliderInt("等级数量##project", ref _projectLodLevels, 1, _projectLodDistances.Length);
+            for (var index = 0; index < _projectLodLevels; index++)
+            {
+                ImGui.SliderFloat($"第 {index + 1} 级距离##project", ref _projectLodDistances[index], 1F, 16384F, "%.0f");
+            }
+
+            ImGui.PopItemWidth();
         }
 
-        ImGui.SeparatorText("当前项目的 LOD 设置");
-        ImGui.SliderInt("等级数量##project", ref _projectLodLevels, 1, _projectLodDistances.Length);
-        for (var index = 0; index < _projectLodLevels; index++)
-        {
-            ImGui.SliderFloat($"第 {index + 1} 级距离##project", ref _projectLodDistances[index], 1F, 16384F, "%.0f");
-        }
-
-        ImGui.SeparatorText("场景画面配置");
+        ImGui.SeparatorText("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
-        ImGui.Checkbox("显示体素外轮廓##scene", ref _showVoxelOutlines);
-        ImGui.Checkbox("环境光预览##scene", ref _showLighting);
-
-        ImGui.SeparatorText("渲染画面配置");
-        ImGui.Text("计算设备");
-        ImGui.SetNextItemWidth(-1F);
-        ImGui.Combo("##renderDevice", ref _renderBackend, new[] { "CPU（处理器）", "GPU（显卡，默认）" }, 2);
-        ImGui.Checkbox("开启光线追踪##render", ref _rayTracing);
-        ImGui.SliderInt("采样次数##render", ref _renderSamples, 1, 1024);
-        ImGui.SliderFloat("曝光##render", ref _renderExposure, -4F, 4F, "%.2f");
-
-        ImGui.SeparatorText("渲染导出画面配置");
-        ImGui.Text("计算设备");
-        ImGui.SetNextItemWidth(-1F);
-        ImGui.Combo("##exportDevice", ref _exportBackend, new[] { "CPU（处理器）", "GPU（显卡，默认）" }, 2);
-        ImGui.Checkbox("开启光线追踪##export", ref _exportRayTracing);
-        ImGui.SliderInt("采样次数##export", ref _exportSamples, 1, 4096);
-        ImGui.Checkbox("透明背景##export", ref _exportAlpha);
-        ImGui.PopItemWidth();
+        ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
+        ImGui.Checkbox("光照预览（关闭仅看底色）##scene", ref _showLighting);
+        ImGui.SeparatorText("渲染设置（GPU 计算 · 实时生效）");
+        var before = _renderSettings.ToJson();
+        DrawRenderSettingsPanel();
+        if (_renderSettings.ToJson() != before)
+        {
+            _renderSettings.ClampAll();
+            _renderSettingsDirty = true;
+            _renderSettingsSaveCountdown = 2F;
+        }
     }
 
-    private int _renderSamples = 64;
-    private int _exportSamples = 128;
-    private int _exportBackend = 1;
-    private float _renderExposure;
-    private bool _exportRayTracing;
-    private bool _exportAlpha = true;
+    private bool _renderSettingsDirty;
+    private float _renderSettingsSaveCountdown;
     private int _projectPathDialogMode;
     private string _projectPathText = string.Empty;
     private string _projectPathError = string.Empty;
@@ -1198,6 +1373,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _project = project;
         _assetBrowser.Reset();
         RecentProjects.Record(project);
+        LoadWorldForProject(project);
         _statusText = $"已打开项目：{project.Manifest.Name}";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
     }
@@ -1225,6 +1401,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         _project = null;
         _assetBrowser.Reset();
+        _world = new VoxelWorld();
+        _voxelHistory.Clear();
+        _selectedVoxel = null;
         _statusText = "已关闭项目";
         RequestWelcomeWindow();
     }
@@ -1238,7 +1417,10 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         ProjectLayout.EnsureDirectories(_project.RootPath);
-        SetStatus($"项目已保存：{_project.Manifest.Name}");
+        if (SaveWorldToProject(_project))
+        {
+            SetStatus($"项目已保存：{_project.Manifest.Name}（{_world.OccupiedVoxelCount} 体素 → Assets/VoxelModels/主场景.vox）");
+        }
     }
 
     private void RefreshProjectAssets()

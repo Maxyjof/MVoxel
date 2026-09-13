@@ -208,9 +208,15 @@ namespace MVoxel.Editor.Rendering
             _vertexBuffer = GL.GenBuffer();
             _indexBuffer = GL.GenBuffer();
 
+            // Objects must be bound into existence before ObjectLabel (GL 4.3+);
+            // Gen* only reserves the name.
+            GL.BindVertexArray(_vertexArray);
             LabelObject(ObjectLabelIdentifier.VertexArray, _vertexArray, "ImGui VAO");
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _vertexBuffer);
             LabelObject(ObjectLabelIdentifier.Buffer, _vertexBuffer, "ImGui VBO");
+            GL.BindBuffer(BufferTarget.ElementArrayBuffer, _indexBuffer);
             LabelObject(ObjectLabelIdentifier.Buffer, _indexBuffer, "ImGui IBO");
+            GL.BindVertexArray(0);
 
             _vertexBufferSize = 10000;
             _indexBufferSize = 2000;
@@ -823,6 +829,7 @@ namespace MVoxel.Editor.Rendering
                         {
                             GL.ActiveTexture(TextureUnit.Texture0);
                             GL.BindTexture(TextureTarget.Texture2D, (int)pcmd.TextureId);
+                            GL.ActiveTexture(TextureUnit.Texture0);
                             lastTextureId = (int)pcmd.TextureId;
                         }
 
