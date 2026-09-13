@@ -23,7 +23,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private ImGuiTexture? _logoTexture;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
+    private readonly BlockingOperationRunner _projectOperation = new();
     private ImGuiWelcomeWindow? _welcomeWindow;
+    private bool _showWelcomeRequested;
     private IntPtr _imguiContext;
     private ProjectHandle? _project;
     private bool _showHierarchy = true;
@@ -65,15 +67,19 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     public bool HasProject => _project is not null;
 
-    public void StartNewProjectFromWelcome(string path) => _pendingActions.Enqueue(() => CreateProjectAt(path));
+    public void StartNewProjectFromWelcome(string path) => _pendingActions.Enqueue(() => BeginCreateProject(path, fromWelcome: true));
 
-    public void OpenProjectFromWelcome(string path) => _pendingActions.Enqueue(() => TryOpenProject(path, true));
+    public void OpenProjectFromWelcome(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: true));
 
-    public void OpenRecentProject(string path) => _pendingActions.Enqueue(() => TryOpenProject(path, true));
+    public void OpenRecentProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: true));
 
-    internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => TryOpenProject(path, true));
+    public bool IsProjectOperationRunning => _projectOperation.IsRunning;
 
-    internal void AttachWelcomeWindow(ImGuiWelcomeWindow welcomeWindow) => _welcomeWindow = welcomeWindow;
+    public BlockingOperationSnapshot? ProjectOperationSnapshot => _projectOperation.Snapshot;
+
+    public void CancelProjectOperation() => _projectOperation.RequestCancel();
+
+    internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
 
     protected override void OnLoad()
     {
@@ -90,6 +96,11 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             TryOpenProject(_startupProjectPath, true);
         }
+        else
+        {
+            RequestWelcomeWindow();
+            EnsureWelcomeWindow();
+        }
     }
 
     protected override void OnResize(ResizeEventArgs args)
@@ -105,6 +116,10 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             action();
         }
+
+        if (UiDiagnostics.TakeBlockingOperationRequest()) BeginDiagnosticLoad();
+        _projectOperation.Pump();
+        EnsureWelcomeWindow();
     }
 
     protected override void OnRenderFrame(FrameEventArgs args)
@@ -117,6 +132,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
         if (_controller is not null)
         {
+            if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.Close();
             DrawEditorFrame();
             _controller.Render();
             UiDiagnostics.Capture(this, "editor");
@@ -135,11 +151,32 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnUnload()
     {
+        _welcomeWindow?.Dispose();
+        _welcomeWindow = null;
+        _projectOperation.Dispose();
         MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         _logoTexture?.Dispose();
         _controller?.Dispose();
         base.OnUnload();
+    }
+
+    private void RequestWelcomeWindow() => _showWelcomeRequested = true;
+
+    private void EnsureWelcomeWindow()
+    {
+        if (!_showWelcomeRequested || _welcomeWindow is not null) return;
+        _showWelcomeRequested = false;
+        _welcomeWindow = new ImGuiWelcomeWindow(this);
+        _welcomeWindow.InitializeForManualLoop();
+        // Initialising the secondary OpenGL context changes the current
+        // context. Restore the editor context before this frame continues.
+        MakeCurrent();
+        ImGui.SetCurrentContext(_imguiContext);
+        // Make the separate welcome window visible above its now-blocked
+        // owner. Without this explicit focus transfer, Windows can leave the
+        // editor's modal dimmer in front and make its buttons look missing.
+        _welcomeWindow.Focus();
     }
 
     private static NativeWindowSettings CreateWindowSettings(string[] args)
@@ -214,6 +251,10 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void DrawEditorFrame()
     {
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
+        var welcomeIsOpen = _welcomeWindow is not null;
+        var operation = _projectOperation.Snapshot;
+        var inputBlocked = welcomeIsOpen || operation is not null;
+        if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
         DrawToolbar();
         DrawDockspace();
@@ -223,6 +264,15 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawProjectAssets();
         DrawStatusBar();
         DrawProjectPathDialog();
+        if (inputBlocked) ImGui.EndDisabled();
+        if (welcomeIsOpen)
+        {
+            BlockingOperationDialog.DrawInteractionBlocker("欢迎窗口已打开", "请先在“欢迎使用 MVoxel”窗口中创建、打开项目或关闭欢迎窗口。");
+        }
+        else if (operation is { } snapshot)
+        {
+            BlockingOperationDialog.Draw(snapshot, CancelProjectOperation);
+        }
         _applyPreset = false;
     }
 
@@ -347,13 +397,16 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, layout.MainHeight));
-        if (!_showHierarchy || !ImGui.Begin("层级", ref _showHierarchy, ImGuiWindowFlags.NoCollapse))
+        if (!_showHierarchy || !ImGui.Begin("层级", ref _showHierarchy,
+                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
         {
             if (_showHierarchy) ImGui.End();
             return;
         }
 
-        ImGui.TextColored(ToColor(EditorPalette.MutedText), _project?.Manifest.Name ?? "未打开项目");
+        ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
+        ImGui.SameLine();
+        ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
         ImGui.Separator();
         if (_project is null)
         {
@@ -390,7 +443,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
-        if (!ImGui.Begin("场景与渲染", ImGuiWindowFlags.NoCollapse))
+        if (!ImGui.Begin("场景与渲染", ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
         {
             ImGui.End();
             return;
@@ -505,6 +558,11 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius)
     {
+        if (_welcomeWindow is not null || _projectOperation.IsRunning)
+        {
+            return false;
+        }
+
         var io = ImGui.GetIO();
         var mouse = io.MousePos;
         var inViewport = mouse.X >= origin.X && mouse.X <= origin.X + size.X &&
@@ -779,12 +837,15 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
-        if (!ImGui.Begin("检查器", ref _showInspector, ImGuiWindowFlags.NoCollapse))
+        if (!ImGui.Begin("检查器", ref _showInspector,
+                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
         {
             if (_showInspector) ImGui.End();
             return;
         }
 
+        ImGui.TextColored(ToColor(EditorPalette.Text), "检查器");
+        ImGui.SameLine();
         ImGui.TextDisabled(_inspectorTab == 0 ? "对象属性" : "画面设置");
         if (ImGui.BeginTabBar("##InspectorTabs"))
         {
@@ -887,7 +948,8 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
-        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets, ImGuiWindowFlags.NoCollapse))
+        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets,
+                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
         {
             if (_showProjectAssets) ImGui.End();
             return;
@@ -1005,48 +1067,119 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             return;
         }
 
-        try
-        {
-            if (_projectPathDialogMode == 1)
-            {
-                if (File.Exists(Path.Combine(Path.GetFullPath(path), ProjectLayout.ProjectFileName)))
-                {
-                    _projectPathError = "所选文件夹已经是 MVoxel 项目，请使用“打开项目”。";
-                    return;
-                }
-
-                var absolutePath = Path.GetFullPath(path);
-                OpenProject(ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name));
-                _projectPathDialogMode = 0;
-            }
-            else if (TryOpenProject(path, true))
-            {
-                _projectPathDialogMode = 0;
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            ShowProjectError(_projectPathDialogMode == 1 ? "创建项目失败" : "打开项目失败", exception);
-        }
+        if (_projectPathDialogMode == 1) BeginCreateProject(path, fromWelcome: false);
+        else BeginOpenProject(path, fromWelcome: false);
     }
 
-    private void CreateProjectAt(string path)
+    private void BeginCreateProject(string path, bool fromWelcome)
     {
         try
         {
             var absolutePath = Path.GetFullPath(path.Trim().Trim('"'));
             if (File.Exists(Path.Combine(absolutePath, ProjectLayout.ProjectFileName)))
             {
-                ShowProjectError("无法新建项目", new InvalidOperationException("所选文件夹已经是 MVoxel 项目，请使用“打开项目”。"));
+                ShowProjectOperationError("无法新建项目",
+                    new InvalidOperationException("所选文件夹已经是 MVoxel 项目，请使用“打开项目”。"),
+                    fromWelcome, editorDialogMode: 1, path);
                 return;
             }
 
-            OpenProject(ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name));
+            var name = new DirectoryInfo(absolutePath).Name;
+            if (!_projectOperation.TryStart(
+                    "正在创建 MVoxel 项目",
+                    "正在检查项目位置…",
+                    (cancellation, report) =>
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在建立标准资产目录…", .34F, CanCancel: true));
+                        cancellation.ThrowIfCancellationRequested();
+                        // From this point ProjectLayout uses atomic file writes.
+                        // It is safer to finish the tiny commit than to leave a
+                        // half-created project because a user clicked cancel.
+                        report(new BlockingOperationProgress("正在写入项目文件…", .68F, CanCancel: false));
+                        var project = ProjectLayout.Create(absolutePath, name);
+                        report(new BlockingOperationProgress("正在完成项目初始化…", .96F, CanCancel: false));
+                        return project;
+                    },
+                    OpenProject,
+                    exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, path),
+                    () => SetStatus("已取消创建项目")))
+            {
+                SetStatus("已有项目操作正在进行");
+                return;
+            }
+
+            _projectPathDialogMode = 0;
+            _projectPathError = string.Empty;
+            SetStatus("正在创建项目…");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            ShowProjectError("创建项目失败", exception);
+            ShowProjectOperationError("创建项目失败", exception, fromWelcome, editorDialogMode: 1, path);
         }
+    }
+
+    private void BeginOpenProject(string path, bool fromWelcome)
+    {
+        try
+        {
+            var absolutePath = Path.GetFullPath(path.Trim().Trim('"'));
+            if (!_projectOperation.TryStart(
+                    "正在加载 MVoxel 项目",
+                    "正在检查项目文件…",
+                    (cancellation, report) =>
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在读取项目清单…", .18F, CanCancel: true));
+                        var project = ProjectLayout.Open(absolutePath);
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在扫描资源目录…", .76F, CanCancel: true));
+                        foreach (var directory in ProjectLayout.AssetDirectories)
+                        {
+                            cancellation.ThrowIfCancellationRequested();
+                            _ = Directory.Exists(Path.Combine(project.AssetsPath, directory));
+                        }
+
+                        report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: true));
+                        return project;
+                    },
+                    OpenProject,
+                    exception => ShowProjectOperationError("打开项目失败", exception, fromWelcome, 2, path),
+                    () => SetStatus("已取消加载项目")))
+            {
+                SetStatus("已有项目操作正在进行");
+                return;
+            }
+
+            _projectPathDialogMode = 0;
+            _projectPathError = string.Empty;
+            SetStatus("正在加载项目…");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            ShowProjectOperationError("打开项目失败", exception, fromWelcome, editorDialogMode: 2, path);
+        }
+    }
+
+    private void BeginDiagnosticLoad()
+    {
+        _projectOperation.TryStart(
+            "正在加载项目资源",
+            "正在准备加载诊断…",
+            (cancellation, report) =>
+            {
+                for (var step = 1; step <= 8; step++)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    Thread.Sleep(38);
+                    report(new BlockingOperationProgress($"正在加载资源索引（{step}/8）…", .10F + step * .10F, CanCancel: true));
+                }
+
+                return true;
+            },
+            _ => SetStatus("加载诊断已完成"),
+            exception => SetStatus($"加载诊断失败：{exception.Message}"),
+            () => SetStatus("加载诊断已取消"));
     }
 
     private void OpenProject(ProjectHandle project)
@@ -1082,6 +1215,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _project = null;
         _assetBrowser.Reset();
         _statusText = "已关闭项目";
+        RequestWelcomeWindow();
     }
 
     private void SaveProject()
@@ -1103,6 +1237,19 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     }
 
     private void SetStatus(string text) => _statusText = text;
+
+    private void ShowProjectOperationError(string title, Exception exception, bool fromWelcome,
+        int editorDialogMode, string path)
+    {
+        _statusText = "项目不可用";
+        _projectPathText = path;
+        if (!fromWelcome)
+        {
+            _projectPathDialogMode = editorDialogMode;
+        }
+
+        ShowProjectError(title, exception);
+    }
 
     private void ShowProjectError(string title, Exception exception)
     {

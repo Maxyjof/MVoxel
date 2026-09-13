@@ -16,9 +16,12 @@ internal interface IEditorWelcomeHost
     event EventHandler? ProjectOpened;
     event EventHandler<ProjectOperationFailedEventArgs>? ProjectOperationFailed;
     bool HasStartupProject { get; }
+    bool IsProjectOperationRunning { get; }
+    BlockingOperationSnapshot? ProjectOperationSnapshot { get; }
     void StartNewProjectFromWelcome(string path);
     void OpenProjectFromWelcome(string path);
     void OpenRecentProject(string path);
+    void CancelProjectOperation();
 }
 
 internal sealed class ProjectOperationFailedEventArgs : EventArgs
@@ -210,6 +213,8 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private void DrawWelcome()
     {
         var display = ImGui.GetIO().DisplaySize;
+        var operation = _editor.ProjectOperationSnapshot;
+        if (operation is not null) ImGui.BeginDisabled();
         ImGui.SetNextWindowPos(Vector2.Zero, ImGuiCond.Always);
         ImGui.SetNextWindowSize(display, ImGuiCond.Always);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
@@ -285,6 +290,11 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
         DrawPathDialog();
         ImGui.End();
+        if (operation is not null)
+        {
+            ImGui.EndDisabled();
+            BlockingOperationDialog.Draw(operation.Value, _editor.CancelProjectOperation);
+        }
     }
 
     private void BeginPathDialog(int mode)

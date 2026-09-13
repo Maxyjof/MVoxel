@@ -16,6 +16,7 @@ internal static class UiDiagnostics
 {
     private static readonly string? Output = Environment.GetEnvironmentVariable("MVOXEL_UI_CAPTURE_DIR");
     private static int _frame;
+    private static int _blockingOperationRequested;
     internal static bool Enabled => !string.IsNullOrEmpty(Output);
     private static string Scenario => _frame < 30 ? "default" : _frame < 60 ? "horizon" :
         _frame < 90 ? "far" : _frame < 120 ? "panned" : _frame < 150 ? "configuration" : "render";
@@ -33,6 +34,17 @@ internal static class UiDiagnostics
     {
         if (Enabled) ImGui.GetIO().NativePtr->IniFilename = null;
     }
+
+    // Test-only controls used by the local screenshot harness. They are
+    // inert unless capture mode is explicitly enabled, so normal editor runs
+    // never create fake work or close the user's welcome window.
+    internal static bool TakeBlockingOperationRequest() =>
+        Enabled && string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_LOADING"), "1", StringComparison.Ordinal) &&
+        Interlocked.Exchange(ref _blockingOperationRequested, 1) == 0;
+
+    internal static bool ShouldCloseWelcome =>
+        Enabled && _frame == 30 &&
+        string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_CLOSE_WELCOME"), "1", StringComparison.Ordinal);
 
     internal static void PrepareTabs(ref int? center, ref int? inspector)
     {
