@@ -264,14 +264,20 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         {
             foreach (var entry in recent)
             {
-                var label = $"{entry.Name}  ·  {entry.LastOpenedUtc.ToLocalTime():yyyy-MM-dd HH:mm}\n{entry.Path}##{entry.Path}";
-                if (ImGui.Selectable(label, false, ImGuiSelectableFlags.None,
-                        new Vector2(-1F, Math.Max(36F, ImGui.GetTextLineHeightWithSpacing() * 2F))))
+                // ImGui Selectable only supports single-line labels; render the
+                // name+time as the clickable row and the path as a caption.
+                ImGui.PushID(entry.Path);
+                var label = $"{entry.Name}  ·  {entry.LastOpenedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
+                if (ImGui.Button(label, new Vector2(-1F, 0F)))
                 {
                     _errorText = string.Empty;
                     _editor.OpenRecentProject(entry.Path);
                 }
 
+                var indent = ImGui.GetCursorPosX() + ImGui.GetStyle().FramePadding.X + 4F;
+                ImGui.SetCursorPosX(indent);
+                ImGui.TextDisabled(entry.Path);
+                ImGui.PopID();
             }
         }
 
