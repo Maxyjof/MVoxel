@@ -36,6 +36,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
     private bool _applyPreset;
+    private bool _editPanelLayout;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
     private string _statusText = "就绪";
     private float _sceneZoom = 1F;
@@ -310,6 +311,11 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("建模布局", null, _layoutPreset == LayoutPreset.Modeling)) SelectLayout(LayoutPreset.Modeling);
             if (ImGui.MenuItem("渲染布局", null, _layoutPreset == LayoutPreset.Rendering)) SelectLayout(LayoutPreset.Rendering);
             ImGui.Separator();
+            if (ImGui.MenuItem(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
+            {
+                _editPanelLayout = !_editPanelLayout;
+                SetStatus(_editPanelLayout ? "面板布局编辑已开启：可拖拽标题栏进行停靠" : "面板布局编辑已完成");
+            }
             if (ImGui.MenuItem("重置当前布局")) SelectLayout(_layoutPreset);
             ImGui.EndMenu();
         }
@@ -397,10 +403,14 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, layout.MainHeight));
-        if (!_showHierarchy || !ImGui.Begin("层级", ref _showHierarchy,
-                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
+        if (!_showHierarchy)
         {
-            if (_showHierarchy) ImGui.End();
+            return;
+        }
+
+        if (!ImGui.Begin("层级##层级面板", PanelWindowFlags))
+        {
+            ImGui.End();
             return;
         }
 
@@ -443,7 +453,7 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
-        if (!ImGui.Begin("场景与渲染", ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
+        if (!ImGui.Begin("场景与渲染##中央面板", PanelWindowFlags))
         {
             ImGui.End();
             return;
@@ -837,10 +847,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
-        if (!ImGui.Begin("检查器", ref _showInspector,
-                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
+        if (!ImGui.Begin("检查器##检查器面板", PanelWindowFlags))
         {
-            if (_showInspector) ImGui.End();
+            ImGui.End();
             return;
         }
 
@@ -948,10 +957,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
-        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets,
-                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
+        if (!ImGui.Begin("项目资产##资源浏览器", PanelWindowFlags))
         {
-            if (_showProjectAssets) ImGui.End();
+            ImGui.End();
             return;
         }
 
@@ -980,6 +988,9 @@ internal sealed class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private static float ToolbarHeight => Math.Max(44F, ImGui.GetFrameHeight() + 16F);
     private static float WorkspaceTop => MenuHeight + ToolbarHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
+
+    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse |
+        (_editPanelLayout ? ImGuiWindowFlags.None : ImGuiWindowFlags.NoTitleBar);
 
     private LayoutMetrics GetLayoutMetrics(Vector2 display)
     {
