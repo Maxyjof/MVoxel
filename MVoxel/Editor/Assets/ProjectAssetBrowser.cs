@@ -1,0 +1,591 @@
+using System.Drawing;
+using ImGuiNET;
+using MVoxel.Project;
+using Vector2 = System.Numerics.Vector2;
+using Vector4 = System.Numerics.Vector4;
+
+namespace MVoxel.Editor;
+
+/// <summary>
+/// A deliberately small, data-driven two-column asset browser. It mirrors the
+/// useful part of Unity's Project window: folders on the left, type-aware
+/// visual assets on the right, with a global search and type filter.
+/// </summary>
+internal sealed class ProjectAssetBrowser
+{
+    private string _selectedFolder = string.Empty;
+    private string _selectedAsset = string.Empty;
+    private string _searchText = string.Empty;
+    private ProjectAssetKind? _filter;
+    private bool _searchAll = true;
+    private float _treeWidth = 216F;
+    private float _tileSize = 76F;
+
+    internal void Reset()
+    {
+        _selectedFolder = string.Empty;
+        _selectedAsset = string.Empty;
+    }
+
+    internal void Draw(ProjectHandle? project, Action<string> reportStatus)
+    {
+        if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
+        {
+            Reset();
+        }
+
+        DrawToolbar(project);
+        ImGui.Separator();
+
+        var bodyHeight = Math.Max(64F, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8F);
+        ImGui.BeginChild("##资源目录树", new Vector2(_treeWidth, bodyHeight), ImGuiChildFlags.Borders);
+        DrawFolderTree(project);
+        ImGui.EndChild();
+
+        ImGui.SameLine(0F, 0F);
+        ImGui.InvisibleButton("##资源面板分隔条", new Vector2(5F, bodyHeight));
+        if (ImGui.IsItemActive())
+        {
+            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 150F, 360F);
+        }
+        if (ImGui.IsItemHovered() || ImGui.IsItemActive())
+        {
+            ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW);
+        }
+
+        ImGui.SameLine(0F, 0F);
+        ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
+        DrawGrid(project, reportStatus);
+        ImGui.EndChild();
+
+        ImGui.Separator();
+        DrawFooter(project);
+    }
+
+    private void DrawToolbar(ProjectHandle? project)
+    {
+        ImGui.TextColored(ToColor(EditorPalette.Text), BuildBreadcrumb(project));
+
+        const float filterWidth = 104F;
+        const float scopeWidth = 52F;
+        const float searchWidth = 176F;
+        var left = ImGui.GetCursorPosX();
+        var right = left + ImGui.GetContentRegionAvail().X;
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(Math.Max(left + 8F, right - filterWidth - scopeWidth - searchWidth - 12F));
+        if (ImGui.Button(_searchAll ? "全局" : "当前", new Vector2(scopeWidth, 0F)))
+        {
+            _searchAll = !_searchAll;
+        }
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(filterWidth);
+        if (ImGui.BeginCombo("##资源类型筛选", FilterLabel(_filter)))
+        {
+            if (ImGui.Selectable("全部类型", _filter is null)) _filter = null;
+            foreach (var kind in ProjectAssetCatalog.FilterKinds)
+            {
+                if (ImGui.Selectable(ProjectAssetCatalog.KindLabel(kind), _filter == kind)) _filter = kind;
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(searchWidth);
+        ImGui.InputTextWithHint("##资源搜索", "搜索资源…", ref _searchText, 256);
+    }
+
+    private void DrawFolderTree(ProjectHandle? project)
+    {
+        ImGui.TextDisabled(project is null ? "新项目资源目录" : "资源");
+        ImGui.Separator();
+        DrawFolderNode(project, string.Empty, "资源", 0);
+        if (project is null)
+        {
+            ImGui.Dummy(new Vector2(0F, 6F));
+            ImGui.TextDisabled("打开项目后显示实际文件");
+        }
+    }
+
+    private void DrawFolderNode(ProjectHandle? project, string relativePath, string displayName, int depth)
+    {
+        var children = ProjectAssetCatalog.Folders(project, relativePath);
+        var isRoot = relativePath.Length == 0;
+        var flags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.SpanAvailWidth;
+        if (isRoot || depth < 2) flags |= ImGuiTreeNodeFlags.DefaultOpen;
+        if (_selectedFolder == relativePath) flags |= ImGuiTreeNodeFlags.Selected;
+        if (children.Count == 0) flags |= ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen;
+
+        var opened = ImGui.TreeNodeEx($"{displayName}##资源树-{relativePath}", flags);
+        if (ImGui.IsItemClicked())
+        {
+            _selectedFolder = relativePath;
+            _selectedAsset = string.Empty;
+        }
+
+        if (children.Count == 0 || !opened) return;
+        foreach (var child in children)
+        {
+            DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
+        }
+
+        ImGui.TreePop();
+    }
+
+    private void DrawGrid(ProjectHandle? project, Action<string> reportStatus)
+    {
+        var entries = CollectEntries(project);
+        if (entries.Count == 0)
+        {
+            ImGui.Dummy(new Vector2(0F, 14F));
+            ImGui.TextDisabled(string.IsNullOrWhiteSpace(_searchText)
+                ? "此文件夹暂时没有资源。"
+                : "没有找到符合条件的资源。");
+            return;
+        }
+
+        var available = ImGui.GetContentRegionAvail();
+        var tileWidth = Math.Max(80F, _tileSize + 28F);
+        var tileHeight = _tileSize + 46F;
+        var columns = Math.Max(1, (int)((available.X + 6F) / (tileWidth + 6F)));
+        var draw = ImGui.GetWindowDrawList();
+
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var entry = entries[index];
+            if (index % columns != 0) ImGui.SameLine(0F, 6F);
+            ImGui.PushID(entry.RelativePath);
+            var selected = _selectedAsset == entry.RelativePath;
+            if (ImGui.Selectable("##资源平铺项", selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(tileWidth, tileHeight)))
+            {
+                _selectedAsset = entry.RelativePath;
+                if (entry.IsFolder && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                {
+                    _selectedFolder = entry.RelativePath;
+                    _selectedAsset = string.Empty;
+                }
+                else
+                {
+                    reportStatus($"已选择{ProjectAssetCatalog.KindLabel(entry.Kind)}：{entry.DisplayName}");
+                }
+            }
+
+            var min = ImGui.GetItemRectMin();
+            var max = ImGui.GetItemRectMax();
+            var hovered = ImGui.IsItemHovered();
+            if (selected || hovered)
+            {
+                var background = selected ? EditorPalette.AccentSoft : EditorPalette.PanelHeader;
+                draw.AddRectFilled(min, max, ToPackedColor(background), 4F);
+                if (selected) draw.AddRect(min, max, ToPackedColor(EditorPalette.Accent), 4F, ImDrawFlags.None, 1F);
+            }
+
+            var iconSize = Math.Min(_tileSize, tileWidth - 24F);
+            var iconMin = new Vector2(min.X + (tileWidth - iconSize) / 2F, min.Y + 7F);
+            AssetIconPainter.Draw(draw, entry.Kind, iconMin, iconSize, selected);
+            DrawCenteredText(draw, entry.DisplayName, min.X, tileWidth, iconMin.Y + iconSize + 4F, EditorPalette.Text);
+            DrawCenteredText(draw, ProjectAssetCatalog.KindLabel(entry.Kind), min.X, tileWidth,
+                iconMin.Y + iconSize + ImGui.GetTextLineHeight() + 5F, EditorPalette.MutedText);
+            ImGui.PopID();
+        }
+    }
+
+    private List<ProjectAssetEntry> CollectEntries(ProjectHandle? project)
+    {
+        var source = string.IsNullOrWhiteSpace(_searchText)
+            ? ProjectAssetCatalog.Children(project, _selectedFolder)
+            : ProjectAssetCatalog.Search(project, _searchText, _searchAll ? null : _selectedFolder);
+        return source
+            .Where(entry => _filter is null || entry.Kind == _filter)
+            .OrderByDescending(entry => entry.IsFolder)
+            .ThenBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    private void DrawFooter(ProjectHandle? project)
+    {
+        var description = project is null
+            ? "未打开项目：显示新项目的标准资源目录"
+            : _selectedAsset.Length == 0
+                ? $"当前文件夹：{ProjectAssetCatalog.DisplayPath(_selectedFolder)}"
+                : $"已选择：{ProjectAssetCatalog.DisplayPath(_selectedAsset)}";
+        var right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
+        ImGui.TextDisabled(description);
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), right - 176F));
+        ImGui.TextDisabled("图标大小");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(110F);
+        ImGui.SliderFloat("##资源图标大小", ref _tileSize, 48F, 112F, "%.0f");
+    }
+
+    private string BuildBreadcrumb(ProjectHandle? project)
+    {
+        var root = project is null ? "资源（未打开项目）" : "资源";
+        var path = ProjectAssetCatalog.DisplayPath(_selectedFolder);
+        return path == "资源" ? root : $"{root}  /  {path["资源".Length..].TrimStart(' ', '/', '／')}";
+    }
+
+    private static string FilterLabel(ProjectAssetKind? kind) => kind is null ? "筛选：全部" : ProjectAssetCatalog.KindLabel(kind.Value);
+
+    private static void DrawCenteredText(ImDrawListPtr draw, string text, float x, float width, float y, Color color)
+    {
+        var truncated = Truncate(text, width - 8F);
+        var textSize = ImGui.CalcTextSize(truncated);
+        draw.AddText(new Vector2(x + Math.Max(4F, (width - textSize.X) / 2F), y), ToPackedColor(color), truncated);
+    }
+
+    private static string Truncate(string value, float width)
+    {
+        if (ImGui.CalcTextSize(value).X <= width) return value;
+        const string suffix = "…";
+        var length = value.Length;
+        while (length > 1 && ImGui.CalcTextSize(value[..length] + suffix).X > width) length--;
+        return value[..length] + suffix;
+    }
+
+    private static Vector4 ToColor(Color color) => new(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F);
+    private static uint ToPackedColor(Color color) => ImGui.ColorConvertFloat4ToU32(ToColor(color));
+}
+
+internal enum ProjectAssetKind
+{
+    Folder,
+    Scene,
+    VoxelModel,
+    Prefab,
+    Material,
+    Palette,
+    Texture,
+    Environment,
+    RenderPreset,
+    Generator,
+    Script,
+    Document,
+    Unknown,
+}
+
+internal sealed record ProjectAssetEntry(string RelativePath, string DisplayName, ProjectAssetKind Kind, bool IsFolder);
+
+internal static class ProjectAssetCatalog
+{
+    internal static readonly ProjectAssetKind[] FilterKinds =
+    {
+        ProjectAssetKind.Folder,
+        ProjectAssetKind.Scene,
+        ProjectAssetKind.VoxelModel,
+        ProjectAssetKind.Prefab,
+        ProjectAssetKind.Material,
+        ProjectAssetKind.Palette,
+        ProjectAssetKind.Texture,
+        ProjectAssetKind.Environment,
+        ProjectAssetKind.RenderPreset,
+        ProjectAssetKind.Generator,
+        ProjectAssetKind.Script,
+        ProjectAssetKind.Document,
+        ProjectAssetKind.Unknown,
+    };
+
+    internal static bool FolderExists(ProjectHandle? project, string relativePath)
+    {
+        if (project is null) return relativePath.Length == 0 || ProjectLayout.AssetDirectories.Contains(relativePath, StringComparer.OrdinalIgnoreCase);
+        var path = ResolveFolder(project, relativePath);
+        return path is not null && Directory.Exists(path);
+    }
+
+    internal static IReadOnlyList<ProjectAssetEntry> Folders(ProjectHandle? project, string relativePath)
+    {
+        if (project is null)
+        {
+            return relativePath.Length == 0
+                ? ProjectLayout.AssetDirectories.Select(directory => Folder(directory, directory)).ToArray()
+                : Array.Empty<ProjectAssetEntry>();
+        }
+
+        var folder = ResolveFolder(project, relativePath);
+        if (folder is null || !Directory.Exists(folder)) return Array.Empty<ProjectAssetEntry>();
+        try
+        {
+            return Directory.EnumerateDirectories(folder)
+                .Where(path => !IsReparsePoint(path))
+                .Select(path => Folder(ToRelative(project, path), Path.GetFileName(path)))
+                .OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+        }
+        catch (IOException) { return Array.Empty<ProjectAssetEntry>(); }
+        catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
+    }
+
+    internal static IReadOnlyList<ProjectAssetEntry> Children(ProjectHandle? project, string relativePath)
+    {
+        if (project is null) return Folders(null, relativePath);
+        var folder = ResolveFolder(project, relativePath);
+        if (folder is null || !Directory.Exists(folder)) return Array.Empty<ProjectAssetEntry>();
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(folder)
+                .Where(path => !IsReparsePoint(path))
+                .Select(path => ToEntry(project, path))
+                .Where(entry => entry is not null)
+                .Cast<ProjectAssetEntry>()
+                .ToArray();
+        }
+        catch (IOException) { return Array.Empty<ProjectAssetEntry>(); }
+        catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
+    }
+
+    internal static IReadOnlyList<ProjectAssetEntry> Search(ProjectHandle? project, string query, string? scopeFolder)
+    {
+        var normalized = query.Trim();
+        if (normalized.Length == 0) return Children(project, scopeFolder ?? string.Empty);
+        if (project is null)
+        {
+            return Folders(null, string.Empty)
+                .Where(entry => entry.DisplayName.Contains(normalized, StringComparison.CurrentCultureIgnoreCase))
+                .ToArray();
+        }
+
+        var folder = ResolveFolder(project, scopeFolder ?? string.Empty);
+        if (folder is null || !Directory.Exists(folder)) return Array.Empty<ProjectAssetEntry>();
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(folder, "*", SearchOption.AllDirectories)
+                .Where(path => !IsReparsePoint(path))
+                .Select(path => ToEntry(project, path))
+                .Where(entry => entry is not null && entry.DisplayName.Contains(normalized, StringComparison.CurrentCultureIgnoreCase))
+                .Cast<ProjectAssetEntry>()
+                .ToArray();
+        }
+        catch (IOException) { return Array.Empty<ProjectAssetEntry>(); }
+        catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
+    }
+
+    internal static string DisplayPath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath)) return "资源";
+        return "资源 / " + string.Join(" / ", relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(DisplayFolderName));
+    }
+
+    internal static string KindLabel(ProjectAssetKind kind) => kind switch
+    {
+        ProjectAssetKind.Folder => "文件夹",
+        ProjectAssetKind.Scene => "场景",
+        ProjectAssetKind.VoxelModel => "体素模型",
+        ProjectAssetKind.Prefab => "预制件",
+        ProjectAssetKind.Material => "材质",
+        ProjectAssetKind.Palette => "调色板",
+        ProjectAssetKind.Texture => "贴图",
+        ProjectAssetKind.Environment => "环境",
+        ProjectAssetKind.RenderPreset => "渲染预设",
+        ProjectAssetKind.Generator => "生成器",
+        ProjectAssetKind.Script => "脚本",
+        ProjectAssetKind.Document => "文档",
+        _ => "其他文件",
+    };
+
+    internal static ProjectAssetKind Classify(string path, bool isFolder)
+    {
+        if (isFolder) return ProjectAssetKind.Folder;
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".mvscene" => ProjectAssetKind.Scene,
+            ".mvmodel" or ".vox" => ProjectAssetKind.VoxelModel,
+            ".mvprefab" => ProjectAssetKind.Prefab,
+            ".mvmaterial" or ".mat" => ProjectAssetKind.Material,
+            ".mvpalette" => ProjectAssetKind.Palette,
+            ".png" or ".jpg" or ".jpeg" or ".tga" or ".bmp" or ".exr" => ProjectAssetKind.Texture,
+            ".mvenvironment" or ".hdr" => ProjectAssetKind.Environment,
+            ".mvrenderpreset" or ".mvrender" => ProjectAssetKind.RenderPreset,
+            ".mvgenerator" => ProjectAssetKind.Generator,
+            ".cs" or ".lua" => ProjectAssetKind.Script,
+            ".txt" or ".md" or ".json" => ProjectAssetKind.Document,
+            _ => ProjectAssetKind.Unknown,
+        };
+    }
+
+    private static ProjectAssetEntry? ToEntry(ProjectHandle project, string path)
+    {
+        try
+        {
+            var isFolder = Directory.Exists(path);
+            return new ProjectAssetEntry(
+                ToRelative(project, path),
+                isFolder ? DisplayFolderName(Path.GetFileName(path)) : Path.GetFileNameWithoutExtension(path),
+                Classify(path, isFolder),
+                isFolder);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    private static ProjectAssetEntry Folder(string relativePath, string name) =>
+        new(relativePath.Replace('\\', '/'), DisplayFolderName(name), ProjectAssetKind.Folder, true);
+
+    private static string? ResolveFolder(ProjectHandle project, string relativePath)
+    {
+        if (Path.IsPathRooted(relativePath)) return null;
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(project.AssetsPath));
+        var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        return candidate.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            ? candidate
+            : null;
+    }
+
+    private static string ToRelative(ProjectHandle project, string path) =>
+        Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/');
+
+    private static bool IsReparsePoint(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch (IOException) { return true; }
+        catch (UnauthorizedAccessException) { return true; }
+    }
+
+    private static string DisplayFolderName(string name) => name switch
+    {
+        "Scenes" => "场景",
+        "Prefabs" => "预制件",
+        "VoxelModels" => "体素模型",
+        "Materials" => "材质",
+        "Palettes" => "调色板",
+        "Textures" => "贴图",
+        "Environments" => "环境",
+        "RenderPresets" => "渲染预设",
+        "Generators" => "生成器",
+        _ => name,
+    };
+}
+
+internal static class AssetIconPainter
+{
+    internal static void Draw(ImDrawListPtr draw, ProjectAssetKind kind, Vector2 min, float size, bool selected)
+    {
+        var main = IconColor(kind, selected);
+        var shade = Color.FromArgb(main.A, Math.Max(0, main.R - 42), Math.Max(0, main.G - 42), Math.Max(0, main.B - 42));
+        var light = Color.FromArgb(main.A, Math.Min(255, main.R + 36), Math.Min(255, main.G + 36), Math.Min(255, main.B + 36));
+        var outline = Color.FromArgb(220, 12, 18, 25);
+        Func<Vector2, Vector2> p = value => min + new Vector2(size * value.X, size * value.Y);
+
+        switch (kind)
+        {
+            case ProjectAssetKind.Folder:
+                draw.AddRectFilled(p(new Vector2(.08F, .27F)), p(new Vector2(.57F, .47F)), ToPackedColor(light), 3F);
+                draw.AddRectFilled(p(new Vector2(.06F, .38F)), p(new Vector2(.94F, .88F)), ToPackedColor(main), 4F);
+                draw.AddRect(p(new Vector2(.06F, .38F)), p(new Vector2(.94F, .88F)), ToPackedColor(outline), 4F, ImDrawFlags.None, 1F);
+                break;
+            case ProjectAssetKind.VoxelModel:
+            case ProjectAssetKind.Prefab:
+                DrawCube(draw, p, main, shade, light, outline, kind == ProjectAssetKind.Prefab);
+                break;
+            case ProjectAssetKind.Scene:
+                draw.AddRectFilled(p(new Vector2(.1F, .12F)), p(new Vector2(.9F, .86F)), ToPackedColor(shade), 3F);
+                draw.AddRect(p(new Vector2(.1F, .12F)), p(new Vector2(.9F, .86F)), ToPackedColor(outline), 3F, ImDrawFlags.None, 1F);
+                draw.AddLine(p(new Vector2(.18F, .72F)), p(new Vector2(.82F, .72F)), ToPackedColor(light), 2F);
+                draw.AddLine(p(new Vector2(.34F, .72F)), p(new Vector2(.62F, .30F)), ToPackedColor(main), 2F);
+                draw.AddLine(p(new Vector2(.62F, .30F)), p(new Vector2(.80F, .72F)), ToPackedColor(main), 2F);
+                break;
+            case ProjectAssetKind.Material:
+            case ProjectAssetKind.Palette:
+                draw.AddCircleFilled(p(new Vector2(.5F, .5F)), size * .34F, ToPackedColor(main), 20);
+                draw.AddCircle(p(new Vector2(.5F, .5F)), size * .34F, ToPackedColor(outline), 20, 1F);
+                draw.AddCircleFilled(p(new Vector2(.40F, .4F)), size * .09F, ToPackedColor(light), 12);
+                if (kind == ProjectAssetKind.Palette)
+                {
+                    draw.AddCircleFilled(p(new Vector2(.62F, .43F)), size * .08F, ToPackedColor(Color.FromArgb(255, 238, 146, 92)), 12);
+                    draw.AddCircleFilled(p(new Vector2(.56F, .62F)), size * .08F, ToPackedColor(Color.FromArgb(255, 110, 205, 151)), 12);
+                }
+                break;
+            case ProjectAssetKind.Texture:
+                DrawTexture(draw, p, main, shade, outline);
+                break;
+            case ProjectAssetKind.Environment:
+                draw.AddCircleFilled(p(new Vector2(.5F, .42F)), size * .23F, ToPackedColor(main), 16);
+                draw.AddCircleFilled(p(new Vector2(.37F, .58F)), size * .18F, ToPackedColor(light), 16);
+                draw.AddCircleFilled(p(new Vector2(.60F, .59F)), size * .20F, ToPackedColor(light), 16);
+                draw.AddLine(p(new Vector2(.18F, .75F)), p(new Vector2(.82F, .75F)), ToPackedColor(outline), 1.3F);
+                break;
+            case ProjectAssetKind.RenderPreset:
+                draw.AddRectFilled(p(new Vector2(.14F, .16F)), p(new Vector2(.86F, .84F)), ToPackedColor(shade), 3F);
+                draw.AddRect(p(new Vector2(.14F, .16F)), p(new Vector2(.86F, .84F)), ToPackedColor(outline), 3F, ImDrawFlags.None, 1F);
+                for (var row = 0; row < 3; row++)
+                {
+                    var y = .32F + row * .18F;
+                    draw.AddLine(p(new Vector2(.28F, y)), p(new Vector2(.72F, y)), ToPackedColor(light), 2F);
+                    draw.AddCircleFilled(p(new Vector2(.42F + row * .11F, y)), size * .055F, ToPackedColor(main), 10);
+                }
+                break;
+            case ProjectAssetKind.Generator:
+            case ProjectAssetKind.Script:
+                DrawDocument(draw, p, main, shade, outline, kind == ProjectAssetKind.Generator);
+                break;
+            default:
+                DrawDocument(draw, p, main, shade, outline, false);
+                break;
+        }
+    }
+
+    private static void DrawCube(ImDrawListPtr draw, Func<Vector2, Vector2> p, Color main, Color shade, Color light, Color outline, bool prefab)
+    {
+        var top = new[] { p(new Vector2(.5F, .1F)), p(new Vector2(.86F, .3F)), p(new Vector2(.5F, .5F)), p(new Vector2(.14F, .3F)) };
+        draw.AddConvexPolyFilled(ref top[0], top.Length, ToPackedColor(light));
+        draw.AddQuadFilled(p(new Vector2(.14F, .3F)), p(new Vector2(.5F, .5F)), p(new Vector2(.5F, .88F)), p(new Vector2(.14F, .66F)), ToPackedColor(shade));
+        draw.AddQuadFilled(p(new Vector2(.5F, .5F)), p(new Vector2(.86F, .3F)), p(new Vector2(.86F, .66F)), p(new Vector2(.5F, .88F)), ToPackedColor(main));
+        draw.AddQuad(p(new Vector2(.14F, .3F)), p(new Vector2(.5F, .5F)), p(new Vector2(.86F, .3F)), p(new Vector2(.5F, .1F)), ToPackedColor(outline), 1F);
+        draw.AddLine(p(new Vector2(.5F, .5F)), p(new Vector2(.5F, .88F)), ToPackedColor(outline), 1F);
+        if (prefab) draw.AddCircleFilled(p(new Vector2(.78F, .78F)), 4F, ToPackedColor(Color.FromArgb(255, 101, 190, 255)), 10);
+    }
+
+    private static void DrawTexture(ImDrawListPtr draw, Func<Vector2, Vector2> p, Color main, Color shade, Color outline)
+    {
+        var start = p(new Vector2(.12F, .12F));
+        var end = p(new Vector2(.88F, .88F));
+        draw.AddRectFilled(start, end, ToPackedColor(main), 3F);
+        for (var y = 0; y < 3; y++)
+        for (var x = 0; x < 3; x++)
+        {
+            if ((x + y) % 2 == 0)
+            {
+                var a = p(new Vector2(.16F + x * .24F, .16F + y * .24F));
+                var b = p(new Vector2(.40F + x * .24F, .40F + y * .24F));
+                draw.AddRectFilled(a, b, ToPackedColor(shade));
+            }
+        }
+        draw.AddRect(start, end, ToPackedColor(outline), 3F, ImDrawFlags.None, 1F);
+    }
+
+    private static void DrawDocument(ImDrawListPtr draw, Func<Vector2, Vector2> p, Color main, Color shade, Color outline, bool generated)
+    {
+        draw.AddRectFilled(p(new Vector2(.2F, .1F)), p(new Vector2(.8F, .9F)), ToPackedColor(main), 3F);
+        draw.AddTriangleFilled(p(new Vector2(.62F, .1F)), p(new Vector2(.8F, .1F)), p(new Vector2(.8F, .28F)), ToPackedColor(shade));
+        draw.AddRect(p(new Vector2(.2F, .1F)), p(new Vector2(.8F, .9F)), ToPackedColor(outline), 3F, ImDrawFlags.None, 1F);
+        for (var row = 0; row < 3; row++)
+        {
+            var y = .40F + row * .14F;
+            draw.AddLine(p(new Vector2(.32F, y)), p(new Vector2(.67F, y)), ToPackedColor(shade), 1.6F);
+        }
+        if (generated) draw.AddCircleFilled(p(new Vector2(.7F, .75F)), 4F, ToPackedColor(Color.FromArgb(255, 100, 218, 151)), 10);
+    }
+
+    private static Color IconColor(ProjectAssetKind kind, bool selected) => kind switch
+    {
+        ProjectAssetKind.Folder => Color.FromArgb(255, 91, 166, 224),
+        ProjectAssetKind.Scene => Color.FromArgb(255, 94, 190, 174),
+        ProjectAssetKind.VoxelModel => Color.FromArgb(255, 115, 163, 245),
+        ProjectAssetKind.Prefab => Color.FromArgb(255, 132, 143, 246),
+        ProjectAssetKind.Material => Color.FromArgb(255, 224, 158, 92),
+        ProjectAssetKind.Palette => Color.FromArgb(255, 206, 122, 216),
+        ProjectAssetKind.Texture => Color.FromArgb(255, 110, 205, 151),
+        ProjectAssetKind.Environment => Color.FromArgb(255, 105, 180, 231),
+        ProjectAssetKind.RenderPreset => Color.FromArgb(255, 223, 192, 103),
+        ProjectAssetKind.Generator => Color.FromArgb(255, 99, 215, 145),
+        ProjectAssetKind.Script => Color.FromArgb(255, 132, 196, 246),
+        ProjectAssetKind.Document => Color.FromArgb(255, 170, 183, 201),
+        _ => selected ? EditorPalette.Icon : Color.FromArgb(255, 143, 157, 177),
+    };
+
+    private static Vector4 ToColor(Color color) => new(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F);
+    private static uint ToPackedColor(Color color) => ImGui.ColorConvertFloat4ToU32(ToColor(color));
+}

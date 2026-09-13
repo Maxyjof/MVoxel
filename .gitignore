@@ -1,0 +1,64 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+artifacts/
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+# IDE and local user state
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.iml
+.fleet/
+imgui.ini
+
+# MVoxel generated project state
+Library/
+Temp/
+Logs/
+UserSettings/
+Plugins/Cache/
+Plugins/Generated/
+*.mvmodel.tmp
+*.mvscene.tmp
+*.mvprefab.tmp
+*.tmp
+*.bak
+*.autosave
+*.journal
+
+# Local configuration and secrets
+*.local.json
+*.local.yaml
+*.local.yml
+.env
+.env.*
+!.env.example
+
+# NuGet and tooling caches
+.nuget/
+packages/
+*.nupkg
+*.snupkg
+
+# Native/build tool intermediates
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+out/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Coverage and profilers
+coverage/
+coverage-report/
+*.coverage
+*.coveragexml
+
+# Keep source, documentation, Assets, project settings, and plugin manifests tracked.

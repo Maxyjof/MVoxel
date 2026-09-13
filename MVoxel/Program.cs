@@ -1,9 +1,11 @@
-﻿namespace MVoxel;
+using MVoxel.Editor;
 
-class Program
+namespace MVoxel;
+
+internal static class Program
 {
-    static void Main(string[] args)
+    private static void Main(string[] args)
     {
-        Console.WriteLine("Hello, World!");
+        EditorApplication.Run(args);
     }
 }
