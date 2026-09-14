@@ -437,8 +437,15 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             Check(_surfaceApi.GetPhysicalDeviceSurfaceFormats(_physicalDevice, _surface, &formatCount, formatsPointer), "读取 Vulkan Surface 格式");
         }
 
+        // ImGui 的颜色值已经是显示空间颜色，优先使用 UNORM 交换链，避免再次经过 sRGB 编码导致整体变亮
         SurfaceFormatKHR selectedFormat = formats.FirstOrDefault(static format =>
-            format.Format == Format.B8G8R8A8Srgb && format.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr);
+            format.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr &&
+            (format.Format == Format.B8G8R8A8Unorm || format.Format == Format.R8G8B8A8Unorm));
+        if (selectedFormat.Format == Format.Undefined)
+        {
+            selectedFormat = formats.FirstOrDefault(static format =>
+                format.Format == Format.B8G8R8A8Srgb && format.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr);
+        }
         if (selectedFormat.Format == Format.Undefined)
         {
             selectedFormat = formats[0];

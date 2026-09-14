@@ -105,11 +105,14 @@ internal static class UiDiagnostics
         var font = io.Fonts.Fonts.Size > 0 ? io.Fonts.Fonts[0] : default;
         var missing = font.NativePtr is null ? "字体图集未创建" : string.Concat("渲染场景检查器资产细节等级新建项目欢迎使用坐标方向球光线追踪透明背景".Distinct()
             .Where(c => font.FindGlyphNoFallback(c).NativePtr == null));
+        var style = ImGui.GetStyle();
+        var windowBackground = style.Colors[(int)ImGuiCol.WindowBg];
         AtomicFile.WriteText(Path.Combine(Output!, $"{name}-{Scenario}.txt"),
             $"Backend=Vulkan\nFramebuffer={window.FramebufferSize.X}x{window.FramebufferSize.Y}\n" +
             $"Display={io.DisplaySize}\nScale={io.DisplayFramebufferScale}\n" +
             $"FontLine={(font.NativePtr is null ? 0 : font.FontSize)}\nChineseAdvance={(font.NativePtr is null ? 0 : font.GetCharAdvance('中'))}\n" +
-            $"Missing={missing}\nVertices={ImGui.GetDrawData().TotalVtxCount}\nVulkan=Ready\n");
+            $"Missing={missing}\nWindowBg={windowBackground.X:F3},{windowBackground.Y:F3},{windowBackground.Z:F3}\n" +
+            $"Vertices={ImGui.GetDrawData().TotalVtxCount}\nVulkan=Ready\n");
         if (missing.Length != 0) throw new InvalidOperationException("界面字体回归验证失败");
     }
 
