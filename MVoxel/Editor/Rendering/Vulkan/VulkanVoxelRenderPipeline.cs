@@ -734,7 +734,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 rayDirection = normalize(
                 vec3(values[4], values[5], values[6]) +
                 vec3(values[8], values[9], values[10]) * screenPosition.x * float(width) / focalPixels +
-                vec3(values[12], values[13], values[14]) * screenPosition.y * float(height) / focalPixels);
+                vec3(values[12], values[13], values[14]) * -screenPosition.y * float(height) / focalPixels);
             vec3 rayOrigin = vec3(values[0], values[1], values[2]);
 
             vec3 skyTop = vec3(values[40], values[41], values[42]);

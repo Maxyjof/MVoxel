@@ -357,7 +357,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                 draw.AddText(rowMin + new Vector2(16F, 10F), textColor, entry.Name);
                 var date = entry.LastOpenedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                 var dateWidth = ImGui.CalcTextSize(date).X;
-                draw.AddText(rowMax - new Vector2(dateWidth + 16F, rowHeight - 60F), mutedColor, date);
+                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 16F, 10F), mutedColor, date);
                 draw.AddText(rowMin + new Vector2(16F, 39F), mutedColor, entry.Path);
                 if (clicked)
                 {
