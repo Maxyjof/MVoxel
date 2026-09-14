@@ -31,6 +31,22 @@ public enum ToneCurve
 }
 
 /// <summary>
+/// 渲染计算后端
+/// </summary>
+public enum RenderBackend
+{
+    /// <summary>
+    /// 使用 Vulkan GPU 计算，设备不可用时回退 CPU
+    /// </summary>
+    Gpu = 0,
+
+    /// <summary>
+    /// 强制使用 CPU 预览
+    /// </summary>
+    Cpu = 1,
+}
+
+/// <summary>
 /// 两个视口全部可调参数的单一来源，公开字段直接供 ImGui 以 ref 绑定，
 /// 渲染管线把它上传为扁平 float 块，默认值保持 MagicaVoxel 观感，
 /// 路径追踪部分暴露物理控制。加载与每次上传前都会 ClampAll 与净化 NaN，
@@ -234,6 +250,11 @@ public sealed class RenderSettings
     public bool UseHardwareRayTracing;
 
     /// <summary>
+    /// 渲染计算后端，默认使用 Vulkan GPU
+    /// </summary>
+    public RenderBackend Backend = RenderBackend.Gpu;
+
+    /// <summary>
     /// 每帧新增样本数
     /// </summary>
     public int PathSamplesPerFrame = 1;
@@ -391,6 +412,7 @@ public sealed class RenderSettings
         ApertureRadius = Math.Clamp(ApertureRadius, 0F, 1F);
         FocusDistance = Math.Clamp(FocusDistance, 1F, 512F);
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
+        Backend = Enum.IsDefined(Backend) ? Backend : RenderBackend.Gpu;
     }
 
     /// <summary>

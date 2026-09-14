@@ -44,6 +44,14 @@ public sealed class EditorSettingsDocument
     public string Theme = EditorPalette.DefaultThemeName;
     public bool EnableGpuDiagnostics;
     public bool UseHardwareRayTracing;
+    public int SceneLodLevels = 4;
+    public float[] SceneLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
+    public bool ShowSceneGrid = true;
+    public bool ShowVoxelOutlines = true;
+    public float SceneMoveSpeed = 12F;
+    public float SceneNearClip = 0.05F;
+    public float SceneFarClip = 100000F;
+    public float SceneFieldOfView = 50F;
     public RenderSettings SceneRenderSettings = new();
     public RenderSettings RenderViewSettings = new();
     public RenderSettings ExportRenderSettings = new();
@@ -98,6 +106,28 @@ public sealed class EditorSettingsDocument
         Theme = string.IsNullOrWhiteSpace(Theme) ? EditorPalette.DefaultThemeName : Theme.Trim();
         UndoRepeatDelayMs = Math.Clamp(UndoRepeatDelayMs, 100, 2000);
         UndoRepeatIntervalMs = Math.Clamp(UndoRepeatIntervalMs, 20, 500);
+        SceneLodDistances ??= Array.Empty<float>();
+        if (SceneLodDistances.Length != 8)
+        {
+            SceneLodDistances = SceneLodDistances
+                .Concat(new[] { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F })
+                .Take(8)
+                .ToArray();
+        }
+
+        SceneLodLevels = Math.Clamp(SceneLodLevels, 1, SceneLodDistances.Length);
+        for (var index = 0; index < SceneLodDistances.Length; index++)
+        {
+            var fallback = index == 0 ? 64F : SceneLodDistances[index - 1] * 2F;
+            SceneLodDistances[index] = float.IsFinite(SceneLodDistances[index])
+                ? Math.Clamp(SceneLodDistances[index], index == 0 ? 1F : SceneLodDistances[index - 1], 16384F)
+                : Math.Clamp(fallback, index == 0 ? 1F : SceneLodDistances[index - 1], 16384F);
+        }
+
+        SceneMoveSpeed = float.IsFinite(SceneMoveSpeed) ? Math.Clamp(SceneMoveSpeed, 0.1F, 256F) : 12F;
+        SceneNearClip = float.IsFinite(SceneNearClip) ? Math.Clamp(SceneNearClip, 0.001F, 1000F) : 0.05F;
+        SceneFarClip = float.IsFinite(SceneFarClip) ? Math.Clamp(SceneFarClip, SceneNearClip + 1F, 100000000F) : 100000F;
+        SceneFieldOfView = float.IsFinite(SceneFieldOfView) ? Math.Clamp(SceneFieldOfView, 20F, 120F) : 50F;
         SceneRenderSettings ??= new RenderSettings();
         RenderViewSettings ??= new RenderSettings();
         ExportRenderSettings ??= new RenderSettings();
@@ -133,6 +163,10 @@ public sealed class ProjectSettingsDocument
     public string DefaultRenderPreset = "默认";
     public bool AutoSave = true;
     public int AutoSaveSeconds = 120;
+    public float SceneMoveSpeed = 12F;
+    public float SceneNearClip = 0.05F;
+    public float SceneFarClip = 100000F;
+    public float SceneFieldOfView = 50F;
     public RenderSettings SceneRenderSettings = new();
     public RenderSettings RenderSettings = new();
     public RenderSettings ExportRenderSettings = new();
@@ -163,6 +197,10 @@ public sealed class ProjectSettingsDocument
         AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
         VoxelUnit = string.IsNullOrWhiteSpace(VoxelUnit) ? "1 格 = 1 体素单位" : VoxelUnit.Trim();
         DefaultRenderPreset = string.IsNullOrWhiteSpace(DefaultRenderPreset) ? "默认" : DefaultRenderPreset.Trim();
+        SceneMoveSpeed = float.IsFinite(SceneMoveSpeed) ? Math.Clamp(SceneMoveSpeed, 0.1F, 256F) : 12F;
+        SceneNearClip = float.IsFinite(SceneNearClip) ? Math.Clamp(SceneNearClip, 0.001F, 1000F) : 0.05F;
+        SceneFarClip = float.IsFinite(SceneFarClip) ? Math.Clamp(SceneFarClip, SceneNearClip + 1F, 100000000F) : 100000F;
+        SceneFieldOfView = float.IsFinite(SceneFieldOfView) ? Math.Clamp(SceneFieldOfView, 20F, 120F) : 50F;
         RenderSettings ??= new RenderSettings();
         SceneRenderSettings ??= new RenderSettings();
         ExportRenderSettings ??= new RenderSettings();

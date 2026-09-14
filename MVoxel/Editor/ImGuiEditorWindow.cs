@@ -188,7 +188,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             _renderSettingsDirty = false;
             try
             {
-                _renderSettings.SaveTo(RenderSettingsPath);
+                if (_project is null) SaveEditorSettings();
+                else SaveProjectSettings();
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -1635,6 +1636,14 @@ DockId=0x6A3C3007,0
                         ProjectTemplateCatalog.Populate(project, templateId,
                             (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
                         var projectSettings = SettingsStore.LoadProject(project);
+                        projectSettings.LodLevels = _editorSettings.SceneLodLevels;
+                        projectSettings.LodDistances = _editorSettings.SceneLodDistances.ToArray();
+                        projectSettings.ShowGrid = _editorSettings.ShowSceneGrid;
+                        projectSettings.ShowVoxelOutlines = _editorSettings.ShowVoxelOutlines;
+                        projectSettings.SceneMoveSpeed = _editorSettings.SceneMoveSpeed;
+                        projectSettings.SceneNearClip = _editorSettings.SceneNearClip;
+                        projectSettings.SceneFarClip = _editorSettings.SceneFarClip;
+                        projectSettings.SceneFieldOfView = _editorSettings.SceneFieldOfView;
                         projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings;
                         projectSettings.RenderSettings = _editorSettings.RenderViewSettings;
                         projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
@@ -1765,7 +1774,7 @@ DockId=0x6A3C3007,0
         _selectedVoxel = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
-        _renderSettings = RenderSettings.LoadFrom(RenderSettingsPath);
+        ApplyEditorSettingsToUi();
         SyncSettingsToggles();
         _statusText = "已关闭项目";
         RequestWelcomeWindow();

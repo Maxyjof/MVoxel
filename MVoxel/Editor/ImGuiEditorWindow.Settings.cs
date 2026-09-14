@@ -29,6 +29,7 @@ internal sealed partial class ImGuiEditorWindow
     private void LoadEditorSettings()
     {
         _editorSettings = SettingsStore.LoadEditor();
+        ApplyEditorSettingsToUi();
         _selectedShortcutScheme = Math.Clamp(
             _editorSettings.ShortcutSchemes.FindIndex(scheme => string.Equals(
                 scheme.Name, _editorSettings.ActiveShortcutScheme, StringComparison.OrdinalIgnoreCase)),
@@ -64,7 +65,27 @@ internal sealed partial class ImGuiEditorWindow
         _showVoxelOutlines = _projectSettings.ShowVoxelOutlines;
         _renderSettings = _projectSettings.RenderSettings;
         _useHardwareRayTracing = _projectSettings.RenderSettings.UseHardwareRayTracing;
+        _sceneMoveSpeed = _projectSettings.SceneMoveSpeed;
+        _sceneNearClip = _projectSettings.SceneNearClip;
+        _sceneFarClip = _projectSettings.SceneFarClip;
+        _sceneFieldOfView = _projectSettings.SceneFieldOfView;
         SyncSettingsToggles();
+    }
+
+    /// <summary>
+    /// 将编辑器级场景设置应用到未打开项目时的运行状态
+    /// </summary>
+    private void ApplyEditorSettingsToUi()
+    {
+        _editorLodLevels = Math.Clamp(_editorSettings.SceneLodLevels, 1, _editorLodDistances.Length);
+        Array.Copy(_editorSettings.SceneLodDistances, _editorLodDistances, _editorLodDistances.Length);
+        _showGrid = _editorSettings.ShowSceneGrid;
+        _showVoxelOutlines = _editorSettings.ShowVoxelOutlines;
+        _sceneMoveSpeed = _editorSettings.SceneMoveSpeed;
+        _sceneNearClip = _editorSettings.SceneNearClip;
+        _sceneFarClip = _editorSettings.SceneFarClip;
+        _sceneFieldOfView = _editorSettings.SceneFieldOfView;
+        _renderSettings = _editorSettings.RenderViewSettings;
     }
 
     private void CaptureProjectSettingsFromUi()
@@ -73,6 +94,10 @@ internal sealed partial class ImGuiEditorWindow
         Array.Copy(_projectLodDistances, _projectSettings.LodDistances, _projectLodDistances.Length);
         _projectSettings.ShowGrid = _showGrid;
         _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
+        _projectSettings.SceneMoveSpeed = _sceneMoveSpeed;
+        _projectSettings.SceneNearClip = _sceneNearClip;
+        _projectSettings.SceneFarClip = _sceneFarClip;
+        _projectSettings.SceneFieldOfView = _sceneFieldOfView;
         _projectSettings.RenderSettings = _renderSettings;
         _projectSettings.RenderSettings.UseHardwareRayTracing = _useHardwareRayTracing;
         _projectSettings.Normalize();
@@ -112,6 +137,17 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Begin("设置##MVoxelSettings", ref open,
                 ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
         {
+            ImGui.TextColored(ToColor(EditorPalette.Accent), "配置中心");
+            ImGui.SameLine();
+            ImGui.TextDisabled("编辑器级配置保存个人偏好，项目级配置随项目保存");
+            if (ImGui.Button("保存编辑器设置")) SaveEditorSettings();
+            if (_project is not null)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button("保存项目设置")) SaveProjectSettings();
+            }
+
+            ImGui.Separator();
             if (ImGui.BeginTabBar("##SettingsScopes"))
             {
                 if (ImGui.BeginTabItem("编辑器设置"))
@@ -157,6 +193,8 @@ internal sealed partial class ImGuiEditorWindow
                 default: DrawEditorPerformanceSettings(); break;
             }
         });
+        _editorSettings.Normalize();
+        if (_project is null) ApplyEditorSettingsToUi();
     }
 
     private void DrawProjectSettingsSurface()
@@ -172,14 +210,24 @@ internal sealed partial class ImGuiEditorWindow
                 default: DrawProjectAssetSettings(); break;
             }
         });
+        _projectSettings.LodLevels = _projectLodLevels;
+        Array.Copy(_projectLodDistances, _projectSettings.LodDistances, _projectLodDistances.Length);
+        _projectSettings.ShowGrid = _showGrid;
+        _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
+        _projectSettings.SceneMoveSpeed = _sceneMoveSpeed;
+        _projectSettings.SceneNearClip = _sceneNearClip;
+        _projectSettings.SceneFarClip = _sceneFarClip;
+        _projectSettings.SceneFieldOfView = _sceneFieldOfView;
+        _projectSettings.Normalize();
+        ApplyProjectSettingsToUi();
     }
 
     private static void DrawSettingsSidebar(IReadOnlyList<string> categories, ref int selected,
         string id, Action drawContent)
     {
         var contentHeight = Math.Max(1F, ImGui.GetContentRegionAvail().Y);
-        ImGui.BeginChild(id, new Vector2(148F, contentHeight), ImGuiChildFlags.Borders);
-        ImGui.TextDisabled("设置分类");
+        ImGui.BeginChild(id, new Vector2(184F, contentHeight), ImGuiChildFlags.Borders);
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "设置分类");
         ImGui.Separator();
         for (var index = 0; index < categories.Count; index++)
         {
@@ -268,6 +316,20 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.TextWrapped("场景窗口固定使用无光照的纯体素预览，网格和体素棱线由场景辅助显示控制");
                 ImGui.TextDisabled("LOD 只在场景窗口生效，硬件 RT 不参与场景预览");
+                ImGui.SeparatorText("场景辅助显示");
+                ImGui.Checkbox("显示场景网格", ref _editorSettings.ShowSceneGrid);
+                ImGui.Checkbox("显示体素轮廓", ref _editorSettings.ShowVoxelOutlines);
+                ImGui.SeparatorText("场景 LOD");
+                SliderInt("LOD 等级数量", ref _editorSettings.SceneLodLevels, 1, _editorSettings.SceneLodDistances.Length);
+                for (var index = 0; index < _editorSettings.SceneLodLevels; index++)
+                    SliderFloat($"LOD 第 {index + 1} 级距离", ref _editorSettings.SceneLodDistances[index],
+                        1F, 16384F, "%.0f 格");
+                ImGui.SeparatorText("场景相机");
+                SliderFloat("移动速度", ref _editorSettings.SceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
+                SliderFloat("近处裁剪", ref _editorSettings.SceneNearClip, 0.001F, 1000F, "%.3f 格");
+                SliderFloat("远处裁剪", ref _editorSettings.SceneFarClip, 1F, 100000000F, "%.0f 格");
+                SliderFloat("视场角 FOV", ref _editorSettings.SceneFieldOfView, 20F, 120F, "%.0f°");
+                ImGui.SeparatorText("场景背景");
                 DrawColorSlider("场景窗口背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
                 ImGui.TextDisabled("未打开项目时使用此颜色，新项目会继承该颜色作为初始值");
                 ImGui.EndTabItem();
@@ -292,13 +354,92 @@ internal sealed partial class ImGuiEditorWindow
 
     private static void DrawEditorRenderConfiguration(RenderSettings settings, string context)
     {
-        ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU");
-        var pathTracing = settings.PathTracingEnabled;
-        if (ImGui.Checkbox($"{context}开启光线追踪", ref pathTracing)) settings.PathTracingEnabled = pathTracing;
+        DrawFullRenderConfiguration(settings, context);
+    }
+
+    private static void DrawFullRenderConfiguration(RenderSettings settings, string context)
+    {
+        ImGui.PushID(context);
+        ImGui.TextDisabled($"{context}独立保存，默认使用 Vulkan GPU；GPU 不可用时安全回退 CPU");
+
+        ImGui.SeparatorText("计算后端");
+        var backend = (int)settings.Backend;
+        if (ImGui.Combo("计算后端", ref backend, "GPU（Vulkan）\0CPU\0", 2))
+            settings.Backend = (RenderBackend)Math.Clamp(backend, 0, 1);
+        ImGui.TextDisabled(settings.Backend == RenderBackend.Gpu
+            ? "GPU 模式优先执行 Vulkan Compute 或硬件 RT"
+            : "CPU 模式用于兼容性、调试和无独立显卡环境");
         var hardwareRayTracing = settings.UseHardwareRayTracing;
-        if (ImGui.Checkbox($"{context}使用硬件 RT（默认关闭）", ref hardwareRayTracing)) settings.UseHardwareRayTracing = hardwareRayTracing;
-        ImGui.SliderInt($"{context}路径样本/帧", ref settings.PathSamplesPerFrame, 1, 8);
-        ImGui.SliderInt($"{context}最大弹射次数", ref settings.MaxBounces, 1, 12);
+        if (settings.Backend == RenderBackend.Cpu) hardwareRayTracing = false;
+        ImGui.BeginDisabled(settings.Backend == RenderBackend.Cpu);
+        ImGui.Checkbox("启用硬件 RT", ref hardwareRayTracing);
+        ImGui.EndDisabled();
+        settings.UseHardwareRayTracing = hardwareRayTracing;
+        ImGui.TextDisabled("硬件 RT 默认关闭，需要设备支持；不可用时自动回退 Vulkan Compute");
+
+        ImGui.SeparatorText("光照与环境");
+        ImGui.Checkbox("太阳平行光", ref settings.SunEnabled);
+        SliderFloat("太阳方位角", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
+        SliderFloat("太阳仰角", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
+        SliderFloat("太阳强度", ref settings.SunIntensity, 0F, 8F, "%.2f");
+        DrawColorSlider("太阳颜色", ref settings.SunColor);
+        SliderFloat("阴影柔和度", ref settings.ShadowSoftness, 0F, 0.5F, "%.3f");
+        SliderInt("阴影采样数", ref settings.ShadowSamples, 1, 8);
+        ImGui.Checkbox("显示地面平面", ref settings.ShowGround);
+        DrawColorSlider("地面颜色", ref settings.GroundColor);
+        SliderFloat("地面淡出距离", ref settings.GroundFade, 8F, 1024F, "%.0f 格");
+        DrawColorSlider("天空顶部颜色", ref settings.SkyTop);
+        DrawColorSlider("天空地平线颜色", ref settings.SkyHorizon);
+        SliderFloat("天空环境光", ref settings.SkyAmbient, 0F, 2F, "%.2f");
+        SliderFloat("暖色环境补光", ref settings.AmbientTint, 0F, 1F, "%.2f");
+        ImGui.Checkbox("环境光遮蔽 AO", ref settings.AmbientOcclusionEnabled);
+        SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
+        SliderFloat("AO 对比度", ref settings.AoPower, 0.2F, 4F, "%.2f");
+        DrawColorSlider("雾颜色", ref settings.FogColor);
+        SliderFloat("雾浓度", ref settings.FogDensity, 0F, 0.02F, "%.4f");
+        SliderFloat("近处淡入距离", ref settings.NearFade, 0F, 256F, "%.0f 格");
+
+        ImGui.SeparatorText("颜色与输出");
+        ImGui.Checkbox("调色板着色", ref settings.PaletteShading);
+        SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
+        SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
+        SliderFloat("颜色对比度", ref settings.ColorContrast, 0.2F, 2.5F, "%.2f");
+        SliderFloat("颜色明度", ref settings.Brightness, 0.1F, 3F, "%.2f");
+        ImGui.Checkbox("色相环动画", ref settings.HueCycle);
+        SliderFloat("色相环速度", ref settings.HueCycleSpeed, 0F, 90F, "%.0f°/秒");
+        var tone = (int)settings.Tone;
+        if (ImGui.Combo("色调曲线", ref tone, "线性截断\0Reinhard\0ACES（Narkowicz）\0Filmic（HV）\0", 4))
+            settings.Tone = (ToneCurve)Math.Clamp(tone, 0, 3);
+        SliderFloat("曝光", ref settings.Exposure, -6F, 6F, "%.2f EV");
+        SliderFloat("Gamma", ref settings.Gamma, 1F, 3.5F, "%.2f");
+        SliderFloat("白平衡色温", ref settings.WhiteBalance, 2000F, 12000F, "%.0f K");
+        SliderFloat("暗角", ref settings.Vignette, 0F, 1F, "%.2f");
+        ImGui.Checkbox("输出抖动", ref settings.Dither);
+
+        ImGui.SeparatorText("路径追踪质量");
+        ImGui.Checkbox("启用路径追踪", ref settings.PathTracingEnabled);
+        SliderInt("每帧样本数", ref settings.PathSamplesPerFrame, 1, 8);
+        SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192);
+        SliderFloat("内部渲染分辨率", ref settings.ResolutionScale, 0.25F, 1F, "%.2fx");
+        SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
+        SliderFloat("俄罗斯轮盘阈值", ref settings.RussianRouletteThreshold, 0.0005F, 0.05F, "%.4f");
+        SliderFloat("辐射度截断", ref settings.RadianceClamp, 1F, 200F, "%.1f");
+        ImGui.Checkbox("快速降噪", ref settings.PathDenoising);
+        SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
+        SliderFloat("材质粗糙度", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
+        SliderFloat("材质金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
+        SliderFloat("介电反射率 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
+        SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
+        ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
+        SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
+        ImGui.Checkbox("直接光 MIS 采样", ref settings.DirectLightingMIS);
+
+        ImGui.SeparatorText("渲染相机");
+        SliderFloat("视场角 FOV", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");
+        ImGui.Checkbox("景深", ref settings.DepthOfField);
+        SliderFloat("光圈半径", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
+        SliderFloat("对焦距离", ref settings.FocusDistance, 1F, 256F, "%.1f 格");
+        ImGui.PopID();
     }
 
     private void DrawEditorInputSettings()
@@ -512,6 +653,22 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Text("体素单位");
                 ImGui.SameLine(120F);
                 ImGui.InputText("##体素单位", ref _projectSettings.VoxelUnit, 64);
+                ImGui.Text("项目模板");
+                ImGui.SameLine(120F);
+                ImGui.TextDisabled(_projectSettings.TemplateId);
+                ImGui.Text("默认渲染预设");
+                ImGui.SameLine(120F);
+                var preset = _projectSettings.DefaultRenderPreset;
+                if (ImGui.BeginCombo("##默认渲染预设", preset))
+                {
+                    foreach (var option in new[] { "默认", "大世界稀疏预览", "LOD 练习", "光追工作室", "程序化地形" })
+                    {
+                        if (ImGui.Selectable(option, option == preset))
+                            _projectSettings.DefaultRenderPreset = option;
+                    }
+
+                    ImGui.EndCombo();
+                }
                 ImGui.EndTabItem();
             }
 
@@ -535,16 +692,22 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("LOD"))
             {
                 ImGui.TextWrapped("LOD 仅用于场景窗口交互流畅度，渲染窗口和导出不会使用 LOD。");
-                ImGui.SliderInt("等级数量", ref _projectSettings.LodLevels, 1, _projectSettings.LodDistances.Length);
-                for (var index = 0; index < _projectSettings.LodLevels; index++)
-                    ImGui.SliderFloat($"第 {index + 1} 级距离", ref _projectSettings.LodDistances[index], 1F, 16384F, "%.0f 格");
+                SliderInt("等级数量", ref _projectLodLevels, 1, _projectLodDistances.Length);
+                for (var index = 0; index < _projectLodLevels; index++)
+                    SliderFloat($"第 {index + 1} 级距离", ref _projectLodDistances[index], 1F, 16384F, "%.0f 格");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("辅助显示"))
             {
-                ImGui.Checkbox("显示网格", ref _projectSettings.ShowGrid);
-                ImGui.Checkbox("显示体素棱线", ref _projectSettings.ShowVoxelOutlines);
+                ImGui.Checkbox("显示网格", ref _showGrid);
+                ImGui.Checkbox("显示体素棱线", ref _showVoxelOutlines);
+                ImGui.TextDisabled("网格和轮廓只出现在场景窗口，不会进入渲染窗口或导出结果");
+                ImGui.SeparatorText("场景相机");
+                SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
+                SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
+                SliderFloat("远处裁剪", ref _sceneFarClip, 1F, 100000000F, "%.0f 格");
+                SliderFloat("视场角 FOV", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
                 ImGui.EndTabItem();
             }
 
@@ -560,8 +723,6 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("场景画面"))
             {
                 ImGui.TextWrapped("场景画面配置：网格、辅助线、体素轮廓和编辑视图质量。场景窗口只显示体素原色，不使用光照渲染。LOD 只在这里生效。");
-                ImGui.Checkbox("场景网格", ref _projectSettings.ShowGrid);
-                ImGui.Checkbox("体素轮廓", ref _projectSettings.ShowVoxelOutlines);
                 DrawColorSlider("场景窗口背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
                 ImGui.TextDisabled("打开项目后优先使用项目级背景色");
                 ImGui.EndTabItem();
@@ -569,43 +730,19 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("渲染画面"))
             {
-                DrawProjectRenderBackendControls(_projectSettings.RenderSettings, "渲染窗口");
+                DrawFullRenderConfiguration(_projectSettings.RenderSettings, "渲染窗口");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("渲染导出画面"))
             {
-                DrawProjectRenderBackendControls(_projectSettings.ExportRenderSettings, "导出画面");
+                DrawFullRenderConfiguration(_projectSettings.ExportRenderSettings, "导出画面");
                 ImGui.TextDisabled("导出使用完整体素数据，不使用场景 LOD。");
                 ImGui.EndTabItem();
             }
 
             ImGui.EndTabBar();
         }
-    }
-
-    private void DrawProjectRenderBackendControls(RenderSettings settings, string context)
-    {
-        ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU。");
-        var pathTracing = settings.PathTracingEnabled;
-        if (ImGui.Checkbox($"{context}开启光线追踪", ref pathTracing))
-        {
-            settings.PathTracingEnabled = pathTracing;
-            if (ReferenceEquals(settings, _projectSettings.RenderSettings)) _settingsTogglePath = pathTracing;
-        }
-        var hardwareRayTracing = settings.UseHardwareRayTracing;
-        if (ImGui.Checkbox($"{context}使用硬件 RT（默认关闭）", ref hardwareRayTracing))
-        {
-            settings.UseHardwareRayTracing = hardwareRayTracing;
-            if (ReferenceEquals(settings, _projectSettings.RenderSettings))
-            {
-                _useHardwareRayTracing = hardwareRayTracing;
-                _renderSettings.UseHardwareRayTracing = hardwareRayTracing;
-            }
-        }
-        ImGui.TextDisabled("场景窗口固定为纯体素预览，以下选项仅作用于渲染窗口和导出画面");
-        ImGui.SliderInt($"{context}路径样本/帧", ref settings.PathSamplesPerFrame, 1, 8);
-        ImGui.SliderInt($"{context}最大弹射次数", ref settings.MaxBounces, 1, 12);
     }
 
     private void DrawProjectAssetSettings()

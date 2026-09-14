@@ -45,8 +45,6 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleHueCycle;
     private bool _brushPreviewErase;
 
-    internal static string RenderSettingsPath => AppPaths.ConfigPath("render-settings.json");
-
     private void InitializeVoxelPipeline()
     {
         _pipeline?.Dispose();
@@ -63,15 +61,7 @@ internal sealed partial class ImGuiEditorWindow
             MVoxelLog.Error("Vulkan Compute 管线初始化失败，已切换 CPU 预览", exception);
         }
 
-        try
-        {
-            if (File.Exists(RenderSettingsPath)) _renderSettings = RenderSettings.LoadFrom(RenderSettingsPath);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            MVoxelLog.Warn($"渲染配置读取失败，继续使用默认配置：{exception.Message}");
-        }
-
+        _renderSettings = _editorSettings.RenderViewSettings;
         SyncSettingsToggles();
     }
 
@@ -93,14 +83,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void ShutdownVoxelPipeline()
     {
-        try
-        {
-            _renderSettings.SaveTo(RenderSettingsPath);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            MVoxelLog.Warn($"渲染配置保存失败：{exception.Message}");
-        }
+        if (_project is null) SaveEditorSettings();
+        else SaveProjectSettings();
 
         _pipeline?.Dispose();
         _pipeline = null;
@@ -313,7 +297,9 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
             .Append(',').Append(settings.DirectLightingMIS).Append(',').Append(settings.RussianRouletteThreshold)
-            .Append(',').Append(settings.TransmissiveAbsorption);
+            .Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
+            .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
+            .Append(',').Append(settings.SceneBackgroundColor.Z);
         return buffer.ToString();
     }
 
@@ -322,7 +308,8 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
+        if (_gpuRenderingDisabled || _renderSettings.Backend == RenderBackend.Cpu ||
+            _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
             pipeline.SyncWorld(_world);
@@ -708,7 +695,12 @@ internal sealed partial class ImGuiEditorWindow
 
         if (ImGui.Button("恢复默认参数"))
         {
-            _renderSettings = new RenderSettings();
+            var defaults = new RenderSettings();
+            if (_project is null)
+                _editorSettings.RenderViewSettings = defaults;
+            else
+                _projectSettings.RenderSettings = defaults;
+            _renderSettings = defaults;
             SyncSettingsToggles();
             _pipeline?.ResetAccumulation();
         }
@@ -718,8 +710,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             try
             {
-                _renderSettings.SaveTo(RenderSettingsPath);
-                SetStatus($"渲染配置已保存：{RenderSettingsPath}");
+                if (_project is null) SaveEditorSettings();
+                else SaveProjectSettings();
+                SetStatus(_project is null ? "编辑器渲染设置已保存" : "项目渲染设置已保存");
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
