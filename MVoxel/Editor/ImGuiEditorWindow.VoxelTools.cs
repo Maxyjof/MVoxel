@@ -25,10 +25,8 @@ internal enum EditorTool
 }
 
 /// <summary>
-/// GPU viewport wiring, brush tools, undo hooks and the render-settings panel.
-/// Everything here stays on the editor thread; the pipeline only receives
-/// immutable snapshots plus flat parameter blocks, matching the "renderers
-/// consume frame snapshots" rule in Docs/Maintainers/05.
+/// GPU 视口接线、笔刷工具、撤销入口和渲染设置面板
+/// 所有操作都在编辑器线程执行，渲染管线只接收不可变快照和扁平参数块
 /// </summary>
 internal sealed partial class ImGuiEditorWindow
 {
@@ -42,6 +40,7 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleEmissive;
     private bool _settingsToggleDither;
     private bool _settingsToggleHueCycle;
+    private bool _brushPreviewErase;
 
     internal static string RenderSettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel", "render-settings.json");
@@ -63,7 +62,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Keep the built-in defaults; never block startup on settings I/O.
+            // 保留内置默认值，设置文件读写失败不阻塞启动
         }
 
         SyncSettingsToggles();
@@ -139,6 +138,7 @@ internal sealed partial class ImGuiEditorWindow
                 MathF.Pow((float)(max.Y - min.Y + 1), 2) +
                 MathF.Pow((float)(max.Z - min.Z + 1), 2));
             _scenePan = center;
+            _sceneFreeMoveHeight = 0F;
             _sceneCameraDistance = Math.Clamp(diagonal * 1.15F, 12F, 240F);
             _sceneOrbitYaw = MathF.PI / 4F;
             _sceneOrbitPitch = 0.42F;
@@ -146,6 +146,7 @@ internal sealed partial class ImGuiEditorWindow
         else
         {
             _scenePan = Vector2.Zero;
+            _sceneFreeMoveHeight = 0F;
             _sceneCameraDistance = 18F;
         }
     }
@@ -184,7 +185,7 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    // ---------- GPU viewport ----------
+    // GPU 视口
 
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
@@ -210,7 +211,9 @@ internal sealed partial class ImGuiEditorWindow
             ShowGrid: showGrid);
     }
 
-    /// <summary>Renders the scene tab through the GPU workset; true when it drew the frame.</summary>
+    /// <summary>
+    /// 通过 GPU 工作集绘制场景标签页
+    /// </summary>
     private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         if (_pipeline is not { IsAvailable: true } pipeline) return false;
@@ -238,8 +241,8 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// Only lighting/geometry/camera changes invalidate the accumulation;
-    /// post-processing edits re-present without restarting the path trace.
+    /// 只有光照、几何体和相机变化会使累积失效
+    /// 后期处理变化直接重新呈现，不重启路径追踪
     /// </summary>
     private string TraceSignature(Vector2 size, float deviceScale)
     {
@@ -248,7 +251,8 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_sceneOrbitYaw.ToString("F4")).Append(',')
             .Append(_sceneOrbitPitch.ToString("F4")).Append(',')
             .Append(_sceneCameraDistance.ToString("F3")).Append(',')
-            .Append(_scenePan.X.ToString("F2")).Append(',').Append(_scenePan.Y.ToString("F2")).Append('|')
+            .Append(_scenePan.X.ToString("F2")).Append(',').Append(_scenePan.Y.ToString("F2")).Append(',')
+            .Append(_sceneFreeMoveHeight.ToString("F2")).Append('|')
             .Append(size.X.ToString("F1")).Append('x').Append(size.Y.ToString("F1")).Append('@').Append(deviceScale.ToString("F2")).Append('|')
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')
@@ -262,7 +266,9 @@ internal sealed partial class ImGuiEditorWindow
         return buffer.ToString();
     }
 
-    /// <summary>Renders the progressive render tab; returns false when GPU is unavailable.</summary>
+    /// <summary>
+    /// 绘制渐进式渲染标签页，GPU 不可用时返回 false
+    /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         if (_pipeline is not { IsAvailable: true } pipeline) return false;
@@ -292,7 +298,7 @@ internal sealed partial class ImGuiEditorWindow
         return true;
     }
 
-    // ---------- brush tools ----------
+    // 体素笔刷工具
 
     private VoxelDda.Hit? PickVoxel(Vector2 screenPixel, Vector2 origin, Vector2 size, SceneCamera camera)
     {
@@ -310,20 +316,17 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (_activeTool == EditorTool.Camera)
+        var mouse = io.MousePos;
+        if (!ImGui.IsWindowHovered() || mouse.X < origin.X || mouse.X > origin.X + size.X ||
+            mouse.Y < origin.Y || mouse.Y > origin.Y + size.Y)
         {
             _brushPreview = null;
             return;
         }
 
-        var mouse = io.MousePos;
-        if (!ImGui.IsWindowHovered() || mouse.X < origin.X || mouse.X > origin.X + size.X ||
-            mouse.Y < origin.Y || mouse.Y > origin.Y + size.Y)
-        {
-            return;
-        }
-
-        if (_activeTool == EditorTool.Pick)
+        var capsLockMode = KeyboardState.IsKeyDown(OpenTK.Windowing.GraphicsLibraryFramework.Keys.CapsLock);
+        var shiftPressed = io.KeyShift;
+        if (_activeTool == EditorTool.Pick && !capsLockMode && !shiftPressed)
         {
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
@@ -336,21 +339,37 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        // Draw / Erase: left button paints (also on drag); orbit moves to the
-        // right button while a brush tool owns the left button.
-        if (!ImGui.IsMouseDown(ImGuiMouseButton.Left) && !ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+        var leftAction = ViewportInputPolicy.Resolve(EditorMouseButton.Left, shiftPressed, capsLockMode,
+            _editorSettings.McMode);
+        var rightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, shiftPressed, capsLockMode,
+            _editorSettings.McMode);
+        var handled = false;
+        handled |= ApplyMouseVoxelAction(leftAction, ImGuiMouseButton.Left, mouse, origin, size, camera);
+        handled |= ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
+        if (!handled)
         {
             _lastPaintedCell = null;
-            return;
+            _brushPreview = null;
         }
+    }
+
+    private bool ApplyMouseVoxelAction(ViewportMouseAction action, ImGuiMouseButton button,
+        Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (action is ViewportMouseAction.None or ViewportMouseAction.Orbit ||
+            (!ImGui.IsMouseDown(button) && !ImGui.IsMouseClicked(button)))
+        {
+            return false;
+        }
+
+        var erase = action == ViewportMouseAction.Destroy;
         var hit = PickVoxel(mouse, origin, size, camera);
         if (hit is null)
         {
-            // Empty canvas: allow starting a stroke directly on the ground plane.
             var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
             var origin3 = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
             var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
-            if (_activeTool == EditorTool.Draw &&
+            if (!erase &&
                 VoxelDda.TryGroundHit(origin3, direction3, _sceneCameraDistance * 8F + 256F, out var groundPoint))
             {
                 var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
@@ -359,17 +378,18 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             _brushPreview = null;
-            return;
+            return true;
         }
 
         _brushPreview = hit;
-        if (_lastPaintedCell == hit.Value.Coordinate) return;
-        ApplyStroke(hit.Value);
+        _brushPreviewErase = erase;
+        if (_lastPaintedCell == hit.Value.Coordinate) return true;
+        ApplyStroke(hit.Value, erase);
+        return true;
     }
 
-    private void ApplyStroke(VoxelDda.Hit hit)
+    private void ApplyStroke(VoxelDda.Hit hit, bool erase)
     {
-        var erase = _activeTool == EditorTool.Erase;
         var radius = erase ? Math.Max(1, (_brushRadius + 1) / 2) : _brushRadius;
         var cells = erase
             ? VoxelBrush.CellsAround(hit.Coordinate, _brushShape, radius)
@@ -436,6 +456,7 @@ internal sealed partial class ImGuiEditorWindow
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.focus"))
         {
             _scenePan = Vector2.Zero;
+            _sceneFreeMoveHeight = 0F;
             _sceneOrbitYaw = MathF.PI / 4F;
             _sceneOrbitPitch = 0.48F;
             _sceneCameraDistance = 18F;
@@ -445,8 +466,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawVoxelBrushPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_brushPreview is not { } hit || _activeTool is EditorTool.Camera or EditorTool.Pick) return;
-        var cell = _activeTool == EditorTool.Erase ? hit.Coordinate : hit.Coordinate + hit.Normal;
+        if (_brushPreview is not { } hit) return;
+        var cell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
         var center = new Vector3((float)cell.X + 0.5F, (float)cell.Y + 0.5F, (float)cell.Z + 0.5F);
         var half = 0.52F;
         var corners = new[]
@@ -462,8 +483,8 @@ internal sealed partial class ImGuiEditorWindow
             if (!SceneProjection.Project(corners[index], origin, size, camera, out points[index], out _)) return;
         }
 
-        var outline = ToPackedColor(Color.FromArgb(_activeTool == EditorTool.Erase ? 210 : 235,
-            _activeTool == EditorTool.Erase ? 255 : 93, _activeTool == EditorTool.Erase ? 112 : 187, _activeTool == EditorTool.Erase ? 120 : 255));
+        var outline = ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
+            _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255));
         foreach (var (start, end) in new[]
                  {
                      (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
@@ -473,7 +494,7 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    // ---------- toolbar / palette ----------
+    // 工具栏和色板
 
     private void DrawBrushToolbarRow()
     {
@@ -489,10 +510,10 @@ internal sealed partial class ImGuiEditorWindow
         _lastPaintedCell = null;
         SetStatus(_activeTool switch
         {
-            EditorTool.Camera => "相机工具：左键旋转 · 中键平移 · 滚轮缩放",
+            EditorTool.Camera => "视口工具：左键放置 · 右键破坏 · Shift+左键环绕 · 中键平移",
             EditorTool.Pick => "选择工具：点击体素查看坐标与颜色（可取色）",
-            EditorTool.Draw => "绘制工具：左键涂抹体素 · 右键拖拽旋转",
-            _ => "擦除工具：左键擦除体素 · 右键拖拽旋转",
+            EditorTool.Draw => "绘制工具：左键放置 · 右键破坏",
+            _ => "擦除工具：左键放置 · 右键破坏",
         });
     }
 
@@ -544,7 +565,7 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    // ---------- settings panel ----------
+    // 设置面板
 
     private void DrawRenderSettingsPanel()
     {

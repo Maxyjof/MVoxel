@@ -251,9 +251,9 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("MC 模式（交换左右键）", ref _editorSettings.McMode);
                 ImGui.TextWrapped(_editorSettings.McMode
-                    ? "当前：左键破坏、右键放置；Shift + 右键环绕原点。"
+                    ? "当前：左键破坏、右键放置；Shift + 左键环绕原点。"
                     : "当前：左键放置、右键破坏；Shift + 左键环绕原点。");
-                ImGui.TextDisabled("中键平移；Caps Lock 开启后 WASD 八向移动，Q/E 升降。");
+                ImGui.TextDisabled("中键平移；Caps Lock 开启后鼠标转向，WASD 八向移动，Q/E 升降，光标锁定在视口中心。");
                 ImGui.EndTabItem();
             }
 

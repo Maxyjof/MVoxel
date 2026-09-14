@@ -12,7 +12,9 @@ using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
+using OpenTK.Windowing.GraphicsLibraryFramework;
 using Color = System.Drawing.Color;
+using OpenTkCursorState = OpenTK.Windowing.Common.CursorState;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 using Vector3 = OpenTK.Mathematics.Vector3;
@@ -22,10 +24,10 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
+    private const uint MainDockspaceId = 0x6A3C1001;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
     private ImGuiController? _controller;
-    private ImGuiTexture? _logoTexture;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
     private readonly BlockingOperationRunner _projectOperation = new();
@@ -49,6 +51,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneOrbitPitch = 0.48F;
     private float _sceneCameraDistance = 18F;
     private Vector2 _scenePan;
+    private float _sceneFreeMoveHeight;
     private int _editorLodLevels = 4;
     private int _projectLodLevels = 4;
     private readonly float[] _editorLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
@@ -56,8 +59,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
     private bool _showLighting = true;
+    private bool _sceneMouseCaptured;
 
-    // ---------- voxel editing + GPU rendering ----------
+    // 体素编辑和 GPU 渲染
     private VoxelWorld _world = new();
     private Rgba32[] _palette = VoxelPalette.Build();
     private bool _paletteIsProjectLevel;
@@ -138,7 +142,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ConfigureImGui();
         UiDiagnostics.Configure();
         LoadEditorSettings();
-        _logoTexture = ImGuiTexture.LoadLogo();
         _palette = EditorPalettes.ResolveEditorPalette();
         InitializeVoxelPipeline();
         if (!string.IsNullOrWhiteSpace(_startupProjectPath))
@@ -162,6 +165,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnUpdateFrame(FrameEventArgs args)
     {
         base.OnUpdateFrame(args);
+        if (!IsFocused || !KeyboardState.IsKeyDown(Keys.CapsLock))
+        {
+            EndSceneMouseCapture();
+        }
+
         while (_pendingActions.TryDequeue(out var action))
         {
             action();
@@ -219,6 +227,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnUnload()
     {
+        EndSceneMouseCapture();
         SaveEditorSettings();
         SaveProjectSettings();
         _welcomeWindow?.Dispose();
@@ -227,7 +236,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
-        _logoTexture?.Dispose();
         _controller?.Dispose();
         base.OnUnload();
     }
@@ -240,13 +248,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _showWelcomeRequested = false;
         _welcomeWindow = new ImGuiWelcomeWindow(this);
         _welcomeWindow.InitializeForManualLoop();
-        // Initialising the secondary OpenGL context changes the current
-        // context. Restore the editor context before this frame continues.
+        // 初始化独立 OpenGL 上下文会改变当前上下文
+        // 继续当前帧前恢复编辑器上下文
         MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
-        // Make the separate welcome window visible above its now-blocked
-        // owner. Without this explicit focus transfer, Windows can leave the
-        // editor's modal dimmer in front and make its buttons look missing.
+        // 把独立欢迎窗口置于被阻塞主窗口之前
+        // 显式转移焦点，避免 Windows 把主窗口遮罩层置于欢迎窗口之前
         _welcomeWindow.Focus();
     }
 
@@ -282,6 +289,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (File.Exists(layoutPath))
         {
             ImGui.LoadIniSettingsFromDisk(layoutPath);
+        }
+        else
+        {
+            ImGui.LoadIniSettingsFromMemory(DefaultDockLayout);
         }
 
         var style = ImGui.GetStyle();
@@ -328,7 +339,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) HandleVoxelShortcuts();
         if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
-        DrawToolbar();
         DrawDockspace();
         DrawHierarchy();
         DrawCenter();
@@ -412,66 +422,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ImGui.EndMainMenuBar();
     }
 
-    private void DrawToolbar()
-    {
-        var display = ImGui.GetIO().DisplaySize;
-        ImGui.SetNextWindowPos(new Vector2(0F, MenuHeight), ImGuiCond.Always);
-        ImGui.SetNextWindowSize(new Vector2(display.X, ToolbarHeight), ImGuiCond.Always);
-        var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
-                    ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
-        if (!ImGui.Begin("##MVoxelToolbar", flags))
-        {
-            ImGui.End();
-            return;
-        }
-
-        if (_logoTexture is not null)
-        {
-            ImGui.Image(_logoTexture.ImGuiHandle, new Vector2(26F, 26F));
-            ImGui.SameLine();
-        }
-
-        ImGui.TextColored(ToColor(EditorPalette.Text), "M V O X E L");
-        ImGui.SameLine();
-        ImGui.TextDisabled(_centerTab == 0 ? "场景" : "渲染");
-        ImGui.SameLine();
-        if (ImGui.Button("新建")) ShowProjectPathDialog(create: true);
-        ImGui.SameLine();
-        if (ImGui.Button("打开")) ShowProjectPathDialog(create: false);
-        ImGui.SameLine();
-        if (ImGui.Button("保存")) SaveProject();
-        ImGui.SameLine();
-        ImGui.TextDisabled("|");
-        ImGui.SameLine();
-        ToolbarToolButton("选择", EditorTool.Pick);
-        ImGui.SameLine();
-        ToolbarToolButton("绘制", EditorTool.Draw);
-        ImGui.SameLine();
-        ToolbarToolButton("擦除", EditorTool.Erase);
-        ImGui.SameLine();
-        if (ImGui.Button("场景")) _requestedCenterTab = 0;
-        ImGui.SameLine();
-        if (ImGui.Button("渲染")) _requestedCenterTab = 1;
-        ImGui.SameLine();
-        if (ImGui.Button("渲染设置")) _requestedInspectorTab = 1;
-        ImGui.SameLine();
-        if (ImGui.Button("刷新资产")) RefreshProjectAssets();
-        ImGui.End();
-    }
-
-    private void ToolbarToolButton(string label, EditorTool tool)
-    {
-        var active = _activeTool == tool;
-        if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
-        if (ImGui.Button(label))
-        {
-            _activeTool = tool;
-            _lastPaintedCell = null;
-        }
-
-        if (active) ImGui.PopStyleColor();
-    }
-
     private void DrawDockspace()
     {
         var display = ImGui.GetIO().DisplaySize;
@@ -481,9 +431,28 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoBringToFrontOnFocus |
                     ImGuiWindowFlags.NoNavFocus | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelDockspaceHost", flags);
-        ImGui.DockSpace(ImGui.GetID("MVoxelMainDockSpace"), Vector2.Zero, ImGuiDockNodeFlags.PassthruCentralNode);
+        ImGui.DockSpace(MainDockspaceId, Vector2.Zero, ImGuiDockNodeFlags.PassthruCentralNode);
         ImGui.End();
     }
+
+    private const string DefaultDockLayout = """
+[Docking][Data]
+DockSpace ID=0x6A3C1001 Pos=0,24 Size=1440,840 Split=X Selected=0x6A3C1002
+  DockNode ID=0x6A3C1002 Parent=0x6A3C1001 SizeRef=260,840 Selected=0xD7AC1001
+  DockNode ID=0x6A3C1003 Parent=0x6A3C1001 SizeRef=1180,840 Split=Y Selected=0x6A3C1004
+    DockNode ID=0x6A3C1004 Parent=0x6A3C1003 SizeRef=1180,615 Split=X Selected=0xD7AC1002
+      DockNode ID=0x6A3C1005 Parent=0x6A3C1004 SizeRef=880,615 Selected=0xD7AC1002
+      DockNode ID=0x6A3C1006 Parent=0x6A3C1004 SizeRef=300,615 Selected=0xD7AC1003
+    DockNode ID=0x6A3C1007 Parent=0x6A3C1003 SizeRef=1180,225 Selected=0xD7AC1004
+[Window][层级##层级面板]
+DockId=0x6A3C1002,0
+[Window][场景与渲染##中央面板]
+DockId=0x6A3C1005,0
+[Window][检查器##检查器面板]
+DockId=0x6A3C1006,0
+[Window][项目资产##资源浏览器]
+DockId=0x6A3C1007,0
+""";
 
     private void DrawHierarchy()
     {
@@ -572,8 +541,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private static unsafe bool BeginPanelTab(string label, bool requested)
     {
-        // Null p_open keeps these primary tabs non-closable while allowing
-        // toolbar/menu requests to select the actual ImGui tab.
+        // 空 p_open 让主标签不可关闭，同时允许工具栏和菜单选择标签
         var length = System.Text.Encoding.UTF8.GetByteCount(label);
         Span<byte> utf8 = stackalloc byte[length + 1];
         System.Text.Encoding.UTF8.GetBytes(label, utf8);
@@ -598,23 +566,23 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         var gizmoCenter = origin + new Vector2(size.X - 78F, 78F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.11F, 42F, 58F);
-        var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius);
+        var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius, allowMouseCapture: true);
         var camera = GetSceneCamera();
 
         var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered && _showVoxelOutlines)
         {
-            // Legacy CPU fallback preview (no OpenGL 4.5 compute available).
+            // OpenGL 4.5 不可用时使用 CPU 回退预览
             DrawVoxelPreview(drawList, origin, size, camera);
         }
 
         if (_showGrid && !gpuRendered)
         {
-            // CPU fallback grid; the GPU pass draws a depth-correct grid itself.
+            // CPU 回退网格，GPU 通道会自行绘制带深度关系的网格
             SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
         }
 
-        if (_project is not null && gpuRendered)
+        if (_project is not null)
         {
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
@@ -622,6 +590,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         DrawSceneWorldAxes(drawList, origin, size, camera);
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
+        if (_sceneMouseCaptured)
+        {
+            DrawSceneCrosshair(drawList, origin + size * 0.5F);
+        }
 
         ImGui.SetCursorPos(new Vector2(14F, 12F));
         if (_project is null)
@@ -639,15 +611,15 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight * 2F - 8F)));
         ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight - 8F)));
-        ImGui.TextDisabled(_activeTool == EditorTool.Camera
-            ? "左键拖拽旋转  ·  中键平移  ·  滚轮缩放  ·  点击右上角 XYZ 定向"
-            : "左键绘制/擦除/拾取  ·  右键拖拽旋转  ·  滚轮缩放  ·  Ctrl+Z 撤销");
+        ImGui.TextDisabled(KeyboardState.IsKeyDown(Keys.CapsLock)
+            ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏"
+            : "左键放置 · 右键破坏 · 中键平移 · Shift+左键环绕 · 滚轮缩放 · 点击右上角 XYZ 定向");
         ImGui.EndChild();
     }
 
     private SceneCamera GetSceneCamera()
     {
-        var target = new Vector3(_scenePan.X, 0F, _scenePan.Y);
+        var target = new Vector3(_scenePan.X, _sceneFreeMoveHeight, _scenePan.Y);
         var direction = new Vector3(
             MathF.Cos(_sceneOrbitPitch) * MathF.Sin(_sceneOrbitYaw),
             MathF.Sin(_sceneOrbitPitch),
@@ -665,10 +637,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         return new SceneCamera(position, target, forward, right, up);
     }
 
-    private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius)
+    private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
+        bool allowMouseCapture)
     {
         if (_welcomeWindow is not null || _projectOperation.IsRunning)
         {
+            EndSceneMouseCapture();
             return false;
         }
 
@@ -679,6 +653,26 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var gizmoHovered = inViewport && Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
+            EndSceneMouseCapture();
+            return false;
+        }
+
+        var capsLockMode = KeyboardState.IsKeyDown(Keys.CapsLock);
+        if (allowMouseCapture && capsLockMode)
+        {
+            BeginSceneMouseCapture();
+            gizmoHovered = false;
+        }
+        else
+        {
+            EndSceneMouseCapture();
+        }
+
+        if (_sceneMouseCaptured)
+        {
+            _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
+            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
+            UpdateFreeMove(GetSceneCamera(), io.DeltaTime);
             return false;
         }
 
@@ -688,12 +682,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
         }
 
-        var brushOwnsLeftButton = _project is not null && _activeTool != EditorTool.Camera;
-        var orbitLeft = !brushOwnsLeftButton && !gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
-        var orbitRight = !gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Right);
-        if (orbitLeft || orbitRight)
+        var orbitLeft = !gizmoHovered && io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        if (orbitLeft)
         {
-            _sceneOrbitYaw += io.MouseDelta.X * 0.008F;
+            _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
             _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
         }
 
@@ -727,6 +719,75 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         return gizmoHovered;
+    }
+
+    private void BeginSceneMouseCapture()
+    {
+        if (_sceneMouseCaptured)
+        {
+            return;
+        }
+
+        CursorState = OpenTkCursorState.Grabbed;
+        _sceneMouseCaptured = true;
+    }
+
+    private void EndSceneMouseCapture()
+    {
+        if (!_sceneMouseCaptured)
+        {
+            return;
+        }
+
+        CursorState = OpenTkCursorState.Normal;
+        _sceneMouseCaptured = false;
+    }
+
+    private void UpdateFreeMove(SceneCamera camera, float deltaTime)
+    {
+        var forward = new Vector3(camera.Forward.X, 0F, camera.Forward.Z);
+        if (forward.LengthSquared > 0.0001F)
+        {
+            forward = Vector3.Normalize(forward);
+        }
+
+        var right = new Vector3(camera.Right.X, 0F, camera.Right.Z);
+        if (right.LengthSquared > 0.0001F)
+        {
+            right = Vector3.Normalize(right);
+        }
+
+        var movement = Vector3.Zero;
+        if (KeyboardState.IsKeyDown(Keys.W)) movement += forward;
+        if (KeyboardState.IsKeyDown(Keys.S)) movement -= forward;
+        if (KeyboardState.IsKeyDown(Keys.D)) movement += right;
+        if (KeyboardState.IsKeyDown(Keys.A)) movement -= right;
+        if (movement.LengthSquared > 0.0001F)
+        {
+            movement = Vector3.Normalize(movement);
+            var speed = MathF.Max(4F, _sceneCameraDistance * 0.75F);
+            _scenePan += new Vector2(movement.X, movement.Z) * speed * MathF.Max(deltaTime, 0.001F);
+        }
+
+        if (KeyboardState.IsKeyDown(Keys.E))
+        {
+            _sceneFreeMoveHeight += MathF.Max(4F, _sceneCameraDistance * 0.75F) * MathF.Max(deltaTime, 0.001F);
+        }
+
+        if (KeyboardState.IsKeyDown(Keys.Q))
+        {
+            _sceneFreeMoveHeight -= MathF.Max(4F, _sceneCameraDistance * 0.75F) * MathF.Max(deltaTime, 0.001F);
+        }
+    }
+
+    private static void DrawSceneCrosshair(ImDrawListPtr drawList, Vector2 center)
+    {
+        var dark = ToPackedColor(Color.FromArgb(235, 10, 12, 16));
+        var light = ToPackedColor(Color.FromArgb(255, 242, 246, 250));
+        drawList.AddLine(center - new Vector2(10F, 0F), center + new Vector2(10F, 0F), dark, 3F);
+        drawList.AddLine(center - new Vector2(0F, 10F), center + new Vector2(0F, 10F), dark, 3F);
+        drawList.AddLine(center - new Vector2(8F, 0F), center + new Vector2(8F, 0F), light, 1F);
+        drawList.AddLine(center - new Vector2(0F, 8F), center + new Vector2(0F, 8F), light, 1F);
     }
 
     private static void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
@@ -844,11 +905,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         drawList.AddCircleFilled(center, radius, fill, 32);
         drawList.AddCircle(center, radius, outline, 32, 1.4F);
 
-        // Keep the orientation globe intentionally spare: one latitude and
-        // one longitude ring.  Earlier versions approximated these with many
-        // independent lines, which looked like a distracting burst at small
-        // sizes.  Four Bezier halves give continuous rings without visual
-        // clutter or a seam through the centre.
+        // 方向球只保留一条纬线和一条经线
+        // 使用四段贝塞尔曲线绘制连续环线，避免小尺寸下出现线束噪声
         var ring = ToPackedColor(Color.FromArgb(116, 122, 142, 162));
         DrawGizmoEllipse(drawList, center, radius * .84F, radius * .23F, ring);
         DrawGizmoEllipse(drawList, center, radius * .23F, radius * .84F, ring);
@@ -926,6 +984,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
+        HandleSceneNavigation(origin, size, new Vector2(-100000F, -100000F), 0F, allowMouseCapture: false);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
         var camera = GetSceneCamera();
@@ -1170,8 +1229,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     }
 
     private static float MenuHeight => ImGui.GetFrameHeight();
-    private static float ToolbarHeight => Math.Max(44F, ImGui.GetFrameHeight() + 16F);
-    private static float WorkspaceTop => MenuHeight + ToolbarHeight;
+    private static float WorkspaceTop => MenuHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
 
     private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse |
@@ -1288,9 +1346,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在建立标准资产目录…", .34F, CanCancel: true));
                         cancellation.ThrowIfCancellationRequested();
-                        // From this point ProjectLayout uses atomic file writes.
-                        // It is safer to finish the tiny commit than to leave a
-                        // half-created project because a user clicked cancel.
+                        // 从这里开始由 ProjectLayout 使用原子文件写入
+                        // 完成小规模提交比留下半成品项目更安全
                         report(new BlockingOperationProgress("正在写入项目文件…", .68F, CanCancel: false));
                         var project = ProjectLayout.Create(absolutePath, name);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .96F, CanCancel: false));
