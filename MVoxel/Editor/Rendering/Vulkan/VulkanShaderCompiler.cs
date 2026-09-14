@@ -11,7 +11,7 @@ internal static unsafe class VulkanShaderCompiler
     /// <summary>
     /// 把 GLSL 源码编译为 Vulkan 可加载的 SPIR-V 字节码
     /// </summary>
-    internal static uint[] Compile(string source, ShaderKind shaderKind, string sourceName)
+    internal static uint[] Compile(string source, ShaderKind shaderKind, string sourceName, bool rayTracing = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(source);
         ArgumentException.ThrowIfNullOrEmpty(sourceName);
@@ -32,9 +32,11 @@ internal static unsafe class VulkanShaderCompiler
         byte[] sourceBytes = System.Text.Encoding.UTF8.GetBytes(source);
         try
         {
-            compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan, (uint)EnvVersion.Vulkan10);
-            // Vulkan 1.0 语义使用 SPIR-V 1.0，适配 Vulkan 1.2 以上的设备
-            compilerApi.CompileOptionsSetTargetSpirv(options, SpirvVersion.Shaderc10);
+            compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan,
+                (uint)(rayTracing ? EnvVersion.Vulkan12 : EnvVersion.Vulkan10));
+            // 硬件 RT 扩展需要 SPIR-V 1.4，普通 Compute 保持基础目标版本
+            compilerApi.CompileOptionsSetTargetSpirv(options,
+                rayTracing ? SpirvVersion.Shaderc14 : SpirvVersion.Shaderc10);
             compilerApi.CompileOptionsSetOptimizationLevel(options, OptimizationLevel.Zero);
             fixed (byte* sourcePointer = sourceBytes)
             {

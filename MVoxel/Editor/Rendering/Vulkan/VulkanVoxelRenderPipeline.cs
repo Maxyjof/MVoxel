@@ -26,6 +26,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private readonly Vk? _api;
     private readonly Device _device;
     private readonly VulkanImGuiRenderer? _imguiRenderer;
+    private VulkanHardwareRayTracingPipeline? _hardwareRayTracingPipeline;
     private VkBuffer _voxelBuffer;
     private DeviceMemory _voxelMemory;
     private ulong _voxelBufferCapacity;
@@ -55,6 +56,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private float[]? _lastParameters;
     private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private bool _disposed;
+    private bool _usingHardwareRayTracing;
 
     /// <summary>
     /// 创建体素 Vulkan 资源边界
@@ -81,7 +83,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取显示纹理句柄
     /// </summary>
-    internal IntPtr DisplayTextureId => _displayTextureId;
+    internal IntPtr DisplayTextureId => _usingHardwareRayTracing && _hardwareRayTracingPipeline is not null
+        ? _hardwareRayTracingPipeline.DisplayTextureId
+        : _displayTextureId;
+
+    /// <summary>
+    /// 获取最近一次渲染是否实际使用硬件 RT
+    /// </summary>
+    internal bool UsingHardwareRayTracing => _usingHardwareRayTracing;
+
+    /// <summary>
+    /// 获取硬件 RT 最近一次错误
+    /// </summary>
+    internal string? HardwareRayTracingError => _hardwareRayTracingPipeline?.LastError;
 
     /// <summary>
     /// 获取显示纹理有效区域
@@ -181,6 +195,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderSceneView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
+        _usingHardwareRayTracing = false;
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: false);
     }
 
@@ -190,6 +205,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
+        if (settings.UseHardwareRayTracing && _context is not null && _imguiRenderer is not null &&
+            _context.SupportsHardwareRayTracing)
+        {
+            _hardwareRayTracingPipeline ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
+            if (_hardwareRayTracingPipeline.TryRender(_workset, settings, frameState, widthPixels, heightPixels))
+            {
+                _usingHardwareRayTracing = true;
+                return true;
+            }
+        }
+
+        _usingHardwareRayTracing = false;
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: true);
     }
 
@@ -231,6 +258,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         if (_api is { } api)
         {
             api.DeviceWaitIdle(_device);
+            _hardwareRayTracingPipeline?.Dispose();
+            _hardwareRayTracingPipeline = null;
             if (_displayTextureId != IntPtr.Zero)
             {
                 _imguiRenderer?.UnregisterTexture(_displayTextureId);

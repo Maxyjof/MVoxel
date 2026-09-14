@@ -1514,6 +1514,9 @@ DockId=0x6A3C3007,0
                         ProjectTemplateCatalog.Populate(project, templateId,
                             (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
                         var projectSettings = SettingsStore.LoadProject(project);
+                        projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings;
+                        projectSettings.RenderSettings = _editorSettings.RenderViewSettings;
+                        projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
                         projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
                         projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
                         SettingsStore.SaveProject(project, projectSettings);

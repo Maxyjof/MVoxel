@@ -284,6 +284,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')
             .Append(settings.SunIntensity).Append(',').Append(settings.ShadowSoftness).Append(settings.PathTracingEnabled)
+            .Append(',').Append(settings.UseHardwareRayTracing)
             .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)

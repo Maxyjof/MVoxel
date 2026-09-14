@@ -137,7 +137,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawEditorSettingsSurface()
     {
-        var categories = new[] { "常规", "布局", "输入", "外观", "性能" };
+        var categories = new[] { "常规", "布局", "输入", "画面", "外观", "性能" };
         DrawSettingsSidebar(categories, ref _editorSettingsCategory, "##编辑器设置分类", () =>
         {
             switch (_editorSettingsCategory)
@@ -145,7 +145,8 @@ internal sealed partial class ImGuiEditorWindow
                 case 0: DrawEditorGeneralSettings(); break;
                 case 1: DrawEditorLayoutSettings(); break;
                 case 2: DrawEditorInputSettings(); break;
-                case 3: DrawEditorAppearanceSettings(); break;
+                case 3: DrawEditorVisualSettings(); break;
+                case 4: DrawEditorAppearanceSettings(); break;
                 default: DrawEditorPerformanceSettings(); break;
             }
         });
@@ -249,6 +250,46 @@ internal sealed partial class ImGuiEditorWindow
 
             ImGui.EndTabBar();
         }
+    }
+
+    private void DrawEditorVisualSettings()
+    {
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "画面默认值");
+        if (ImGui.BeginTabBar("##EditorVisualTabs"))
+        {
+            if (ImGui.BeginTabItem("场景画面"))
+            {
+                ImGui.TextWrapped("场景窗口固定使用无光照的纯体素预览，网格和体素棱线由场景辅助显示控制");
+                ImGui.TextDisabled("LOD 只在场景窗口生效，硬件 RT 不参与场景预览");
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("渲染画面"))
+            {
+                DrawEditorRenderConfiguration(_editorSettings.RenderViewSettings, "渲染窗口");
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("渲染导出画面"))
+            {
+                DrawEditorRenderConfiguration(_editorSettings.ExportRenderSettings, "导出画面");
+                ImGui.TextDisabled("导出使用完整体素数据，不使用场景 LOD");
+                ImGui.EndTabItem();
+            }
+
+            ImGui.EndTabBar();
+        }
+    }
+
+    private static void DrawEditorRenderConfiguration(RenderSettings settings, string context)
+    {
+        ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU");
+        var pathTracing = settings.PathTracingEnabled;
+        if (ImGui.Checkbox($"{context}开启光线追踪", ref pathTracing)) settings.PathTracingEnabled = pathTracing;
+        var hardwareRayTracing = settings.UseHardwareRayTracing;
+        if (ImGui.Checkbox($"{context}使用硬件 RT（默认关闭）", ref hardwareRayTracing)) settings.UseHardwareRayTracing = hardwareRayTracing;
+        ImGui.SliderInt($"{context}路径样本/帧", ref settings.PathSamplesPerFrame, 1, 8);
+        ImGui.SliderInt($"{context}最大弹射次数", ref settings.MaxBounces, 1, 12);
     }
 
     private void DrawEditorInputSettings()

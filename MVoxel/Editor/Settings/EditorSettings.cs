@@ -44,6 +44,9 @@ public sealed class EditorSettingsDocument
     public string Theme = EditorPalette.DefaultThemeName;
     public bool EnableGpuDiagnostics;
     public bool UseHardwareRayTracing;
+    public RenderSettings SceneRenderSettings = new();
+    public RenderSettings RenderViewSettings = new();
+    public RenderSettings ExportRenderSettings = new();
     public int UndoRepeatDelayMs = 350;
     public int UndoRepeatIntervalMs = 70;
 
@@ -95,6 +98,15 @@ public sealed class EditorSettingsDocument
         Theme = string.IsNullOrWhiteSpace(Theme) ? EditorPalette.DefaultThemeName : Theme.Trim();
         UndoRepeatDelayMs = Math.Clamp(UndoRepeatDelayMs, 100, 2000);
         UndoRepeatIntervalMs = Math.Clamp(UndoRepeatIntervalMs, 20, 500);
+        SceneRenderSettings ??= new RenderSettings();
+        RenderViewSettings ??= new RenderSettings();
+        ExportRenderSettings ??= new RenderSettings();
+        SceneRenderSettings.SanitizeNaN();
+        SceneRenderSettings.ClampAll();
+        RenderViewSettings.SanitizeNaN();
+        RenderViewSettings.ClampAll();
+        ExportRenderSettings.SanitizeNaN();
+        ExportRenderSettings.ClampAll();
     }
 
     private static ShortcutScheme CreateDefaultScheme()
