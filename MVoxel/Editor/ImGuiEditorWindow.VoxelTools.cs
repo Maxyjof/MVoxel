@@ -51,8 +51,16 @@ internal sealed partial class ImGuiEditorWindow
     private void InitializeVoxelPipeline()
     {
         _pipeline?.Dispose();
-        _pipeline = new VulkanVoxelRenderPipeline(_vulkan);
         _pipelineStatus = "Vulkan 体素管线正在初始化";
+        try
+        {
+            _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
+        {
+            _pipeline = null;
+            _pipelineStatus = $"Vulkan Compute 管线初始化失败，当前使用 CPU 预览：{exception.Message}";
+        }
 
         try
         {

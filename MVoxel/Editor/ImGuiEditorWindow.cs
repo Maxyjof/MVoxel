@@ -566,7 +566,7 @@ DockId=0x6A3C1007,0
         var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered && _showVoxelOutlines)
         {
-            // 当前 Vulkan 体素资源管线使用 CPU 预览
+            // Vulkan 设备不可用时保留 CPU 预览
             DrawVoxelPreview(drawList, origin, size, camera);
         }
 

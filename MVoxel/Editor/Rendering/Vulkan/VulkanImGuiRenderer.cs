@@ -92,8 +92,48 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         var textureSet = AllocateDescriptorSet(_textureDescriptorSetLayout);
         UpdateTextureDescriptor(textureSet, view);
         var id = (nint)Interlocked.Increment(ref _nextTextureId);
-        _textures.Add(id, new TextureResource(image, memory, view, textureSet));
+        _textures.Add(id, new TextureResource(image, memory, view, textureSet, true));
         return id;
+    }
+
+    /// <summary>
+    /// 注册由其他 Vulkan 管线拥有的采样图像
+    /// </summary>
+    /// <param name="imageView">已转换为着色器只读布局的图像视图</param>
+    /// <returns>可传给 ImGui.Image 的纹理句柄</returns>
+    internal nint RegisterExternalTexture(ImageView imageView)
+    {
+        if (imageView.Handle == 0)
+        {
+            throw new ArgumentException("Vulkan 外部图像视图为空", nameof(imageView));
+        }
+
+        var textureSet = AllocateDescriptorSet(_textureDescriptorSetLayout);
+        UpdateTextureDescriptor(textureSet, imageView);
+        var id = (nint)Interlocked.Increment(ref _nextTextureId);
+        _textures.Add(id, new TextureResource(default, default, imageView, textureSet, false));
+        return id;
+    }
+
+    /// <summary>
+    /// 注销外部管线使用的 ImGui 纹理描述符
+    /// </summary>
+    /// <param name="textureId">纹理句柄</param>
+    internal void UnregisterTexture(nint textureId)
+    {
+        if (!_textures.Remove(textureId, out var texture))
+        {
+            return;
+        }
+
+        var descriptorSet = texture.TextureSet;
+        _api.FreeDescriptorSets(_device, _descriptorPool, 1, in descriptorSet);
+        if (texture.OwnsImage)
+        {
+            _api.DestroyImageView(_device, texture.View, null);
+            _api.DestroyImage(_device, texture.Image, null);
+            _api.FreeMemory(_device, texture.Memory, null);
+        }
     }
 
     /// <summary>
@@ -193,9 +233,12 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         _api.DestroyPipelineLayout(_device, _pipelineLayout, null);
         foreach (var texture in _textures.Values)
         {
-            _api.DestroyImageView(_device, texture.View, null);
-            _api.DestroyImage(_device, texture.Image, null);
-            _api.FreeMemory(_device, texture.Memory, null);
+            if (texture.OwnsImage)
+            {
+                _api.DestroyImageView(_device, texture.View, null);
+                _api.DestroyImage(_device, texture.Image, null);
+                _api.FreeMemory(_device, texture.Memory, null);
+            }
         }
 
         _api.DestroyDescriptorPool(_device, _descriptorPool, null);
@@ -520,7 +563,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     /// ImGui 纹理对应的 Vulkan 资源
     /// </summary>
     private readonly record struct TextureResource(Image Image, DeviceMemory Memory, ImageView View,
-        DescriptorSet TextureSet);
+        DescriptorSet TextureSet, bool OwnsImage);
 
     /// <summary>
     /// 创建图形管线布局

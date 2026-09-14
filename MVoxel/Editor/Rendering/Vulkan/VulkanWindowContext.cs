@@ -341,7 +341,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     }
 
     /// <summary>
-    /// 选择同时支持图形与呈现的物理设备和队列
+    /// 选择同时支持图形、计算与呈现的物理设备和队列
     /// </summary>
     private (PhysicalDevice Device, uint QueueFamilyIndex) SelectPhysicalDevice()
     {
@@ -371,9 +371,10 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             for (uint index = 0; index < queueCount; index++)
             {
                 bool graphics = (queueFamilies[index].QueueFlags & QueueFlags.GraphicsBit) != 0;
+                bool compute = (queueFamilies[index].QueueFlags & QueueFlags.ComputeBit) != 0;
                 Bool32 present = false;
                 _surfaceApi.GetPhysicalDeviceSurfaceSupport(device, index, _surface, out present);
-                if (graphics && present.Value != 0)
+                if (graphics && compute && present.Value != 0)
                 {
                     return (device, index);
                 }

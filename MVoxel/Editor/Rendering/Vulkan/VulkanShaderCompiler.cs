@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Silk.NET.Shaderc;
 
 namespace MVoxel.Editor.Rendering.Vulkan;
@@ -66,13 +67,8 @@ internal static unsafe class VulkanShaderCompiler
                         throw new InvalidOperationException($"Vulkan Shader 编译结果无效：{sourceName}");
                     }
 
-                    var words = new uint[(int)(byteLength / sizeof(uint))];
-                    for (int index = 0; index < words.Length; index++)
-                    {
-                        words[index] = resultBytes[index];
-                    }
-
-                    return words;
+                    var byteSpan = new ReadOnlySpan<byte>(resultBytes, checked((int)byteLength));
+                    return MemoryMarshal.Cast<byte, uint>(byteSpan).ToArray();
                 }
                 finally
                 {
