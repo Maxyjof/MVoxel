@@ -399,6 +399,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void HandleVoxelShortcuts()
     {
+        var io = ImGui.GetIO();
+        if (io.WantTextInput) return;
         var scheme = _editorSettings.ActiveScheme();
         if (ShortcutBindingRouter.IsPressed(scheme, "edit.undo"))
         {
@@ -415,6 +417,29 @@ internal sealed partial class ImGuiEditorWindow
                 SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
                 _pipeline?.ResetAccumulation();
             }
+        }
+
+        if (ShortcutBindingRouter.IsPressed(scheme, "project.new")) ShowProjectPathDialog(create: true);
+        if (ShortcutBindingRouter.IsPressed(scheme, "project.open")) ShowProjectPathDialog(create: false);
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.camera")) _activeTool = EditorTool.Camera;
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.toggleGrid")) _showGrid = !_showGrid;
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.togglePanels"))
+        {
+            var visible = _showHierarchy && _showProjectAssets && _showInspector;
+            _showHierarchy = !visible;
+            _showProjectAssets = !visible;
+            _showInspector = !visible;
+        }
+
+        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.focus"))
+        {
+            _scenePan = Vector2.Zero;
+            _sceneOrbitYaw = MathF.PI / 4F;
+            _sceneOrbitPitch = 0.48F;
+            _sceneCameraDistance = 18F;
+            _sceneZoom = 1F;
         }
     }
 
