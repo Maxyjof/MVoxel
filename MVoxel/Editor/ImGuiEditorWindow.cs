@@ -27,6 +27,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private const uint MainDockspaceId = 0x6A3C1001;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
+    private string? _imguiLayoutPath;
     private ImGuiController? _controller;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
@@ -228,6 +229,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnUnload()
     {
         EndSceneMouseCapture();
+        if (!UiDiagnostics.Enabled && _imguiLayoutPath is not null)
+        {
+            ImGui.SaveIniSettingsToDisk(_imguiLayoutPath);
+        }
+
         SaveEditorSettings();
         SaveProjectSettings();
         _welcomeWindow?.Dispose();
@@ -286,6 +292,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel");
         Directory.CreateDirectory(configDirectory);
         var layoutPath = Path.Combine(configDirectory, "imgui-layout.ini");
+        _imguiLayoutPath = layoutPath;
         if (File.Exists(layoutPath))
         {
             ImGui.LoadIniSettingsFromDisk(layoutPath);
