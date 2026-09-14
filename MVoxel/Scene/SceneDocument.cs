@@ -5,12 +5,12 @@ namespace MVoxel.Scene;
 
 /// <summary>
 /// 场景文档（.mvox 文件的内存形态）：格式版本、稳定 ID、名称与对象列表
-/// 序列化走共享原子保存，任何时刻磁盘上都是完整旧版或完整新版
+/// 序列化走共享原子保存，任何时刻磁盘上都是完整文件或完整备份
 /// </summary>
 public sealed class SceneDocument
 {
     /// <summary>
-    /// 文件格式版本，读旧写新时用于迁移判断
+    /// 文件格式版本，用于校验文档结构
     /// </summary>
     public int FormatVersion { get; set; } = 1;
 
@@ -118,7 +118,7 @@ public sealed class SceneGraph
     /// <summary>
     /// 新建对象并加入场景
     /// </summary>
-    /// <param name="name">显示名，空白时回退为 Object</param>
+    /// <param name="name">显示名，空白时使用 Object</param>
     /// <param name="parentId">可选父级，必须已存在</param>
     /// <param name="transform">可选初始变换</param>
     /// <returns>新对象</returns>

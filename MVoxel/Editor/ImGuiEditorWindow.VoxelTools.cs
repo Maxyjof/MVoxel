@@ -49,7 +49,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void InitializeVoxelPipeline()
     {
-        // Vulkan 体素管线的设备资源尚未创建时不初始化占位对象
+        // Vulkan 体素管线未提供设备资源时保持空引用，场景使用 CPU 预览
         _pipeline = null;
         _pipelineStatus = "Vulkan 体素管线正在初始化";
 

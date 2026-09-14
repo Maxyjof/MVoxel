@@ -8,7 +8,7 @@ namespace MVoxel.Editor;
 
 /// <summary>
 /// 刻意保持小巧的数据驱动两栏资源浏览器，对齐 Unity Project 窗口的有用部分：
-/// 左侧目录树、右侧按类型呈现的资产卡片，配全局搜索与类型筛选。
+/// 左侧目录树、右侧按类型呈现的资产卡片，配全局搜索与类型筛选
 /// 目录遍历拒绝符号链接与 Assets 根之外的路径
 /// </summary>
 internal sealed class ProjectAssetBrowser
@@ -301,7 +301,7 @@ internal sealed record ProjectAssetEntry(string RelativePath, string DisplayName
 
 /// <summary>
 /// 资产目录扫描的唯一入口：所有枚举、搜索与分类都经过这里，
-/// 越界路径与重解析点（符号链接）在进入结果集之前就被排除
+/// 越界路径与重解析点（符号链接）在结果集筛选阶段排除
 /// </summary>
 internal static class ProjectAssetCatalog
 {
@@ -459,7 +459,7 @@ internal static class ProjectAssetCatalog
     };
 
     /// <summary>
-    /// 按扩展名分类资产（扩展名规范见 Docs/Maintainers/11-coding-conventions.md）
+    /// 按扩展名分类资产，扩展名规范见 Docs/Maintainers/11-coding-conventions.md
     /// </summary>
     /// <param name="path">文件路径</param>
     /// <param name="isFolder">是否为目录</param>

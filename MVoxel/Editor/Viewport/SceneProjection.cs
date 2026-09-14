@@ -87,8 +87,8 @@ internal static class SceneProjection
     }
 
     /// <summary>
-    /// 由屏幕点反算世界空间单位射线，是 Project 的精确逆运算。
-    /// 地面网格覆盖范围因此来自真实视锥而不是围绕注视点的猜测方块
+    /// 由屏幕点反算世界空间单位射线，作为 Project 的精确逆运算
+    /// 地面网格覆盖范围来自真实视锥与地面的交点
     /// </summary>
     /// <param name="screen">屏幕坐标</param>
     /// <param name="origin">视口左上角屏幕坐标</param>

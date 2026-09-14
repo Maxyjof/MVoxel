@@ -59,7 +59,7 @@ internal sealed class EditorFontCatalog
     }
 
     /// <summary>
-    /// 为给定 DPI 挑选（基础像素字号, 整数倍率）组合，目标正文高度 12 像素每 DPI 单位。
+    /// 为给定 DPI 挑选基础像素字号和整数倍率，目标正文高度为每 DPI 单位 12 像素
     /// 8px 点阵的汉字笔画损失过大，只留给紧凑装饰，正文最低从 10px 起
     /// </summary>
     /// <param name="dpiScale">当前 DPI 缩放</param>

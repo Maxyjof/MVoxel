@@ -89,7 +89,7 @@ public static class VoxelBrush
 }
 
 /// <summary>
-/// 一次可撤销的描边：逐格记录旧值，Undo 精确恢复，
+/// 一次可撤销的描边，逐格记录原值，Undo 精确恢复，
 /// 同时持有世界引用供 Redo 重新施加
 /// </summary>
 public sealed class VoxelStrokeCommand : IEditorCommand

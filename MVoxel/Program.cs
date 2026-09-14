@@ -3,7 +3,7 @@ using MVoxel.Editor;
 namespace MVoxel;
 
 /// <summary>
-/// 应用入口，直接启动体素编辑器而不是命令行处理器
+/// 应用入口，直接启动体素编辑器
 /// 纯 GLFW 与 ImGui 路径不使用 COM，因此无需 [STAThread] 套间特性
 /// </summary>
 internal static class Program

@@ -6,7 +6,7 @@ using Vector4 = System.Numerics.Vector4;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// 回退模式（无 GPU 管线）下的 CPU 地面网格绘制：按真实视锥与地面交点计算
+/// CPU 地面网格绘制，按真实视锥与地面交点计算
 /// 覆盖范围，远距离自动采用 2 的幂步长，近处、地平线与超大平移位置都
 /// 受有界线数预算保护。GPU 管线启用后网格改在着色器内绘制以获得深度正确性，
 /// 这里仅作为无计算能力时的后备
@@ -24,8 +24,8 @@ internal static class SceneGrid
     /// <returns>世界单位步长</returns>
     internal static float Spacing(float cameraDistance, Vector2 size)
     {
-        // 这是注视点处的基准间距，Plan 只在可见地面覆盖需要的线数超限时才提升它。
-        // 旧版按距离平方淡出加固定小补丁的做法会让网格在贴近相机和地平线两端都消失
+        // 这是注视点处的基准间距，网格计划会在可见线数超限时提升它
+        // 采用可见范围和幂次间距计算网格，保证近处与远景都有连续覆盖
         var desired = Math.Max(1F, cameraDistance * 12F / Math.Max(1F, SceneProjection.FocalLength(size)));
         return NextPowerOfTwo(desired);
     }
@@ -77,7 +77,7 @@ internal static class SceneGrid
 
         void DrawGroundLine(Vector3 start, Vector3 direction, bool major)
         {
-            // 分段只为平滑淡出，覆盖范围来自视锥与地面交点而不是分段衰减
+            // 分段用于平滑淡出，覆盖范围来自视锥与地面交点
             var segments = Math.Clamp((int)MathF.Ceiling(2F * extent / (step * 40F)), 4, 10);
             for (var index = 0; index < segments; index++)
             {
@@ -86,7 +86,7 @@ internal static class SceneGrid
                 var mid = (a + b) / 2F;
                 var depth = Vector3.Dot(mid - camera.Position, camera.Forward);
                 // 地平线附近一格可能小于一个像素：副线淡出，
-                // 但保留克制的主线，让远景可读而不是整片消失
+            // 保留克制的主线，让远景保持可读
                 var spacingPixels = step * SceneProjection.FocalLength(size) /
                                     Math.Max(SceneProjection.Near, depth);
                 var densityFade = major

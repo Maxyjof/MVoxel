@@ -45,7 +45,7 @@ public sealed class RenderSettings
         Converters = { new JsonStringEnumConverter() },
     };
 
-    // ---------- 场景视图（MagicaVoxel 风格 raycast） ----------
+    // 场景视图参数，使用 MagicaVoxel 风格光线求交
 
     /// <summary>
     /// 是否显示无限地面平面
@@ -132,7 +132,7 @@ public sealed class RenderSettings
     /// </summary>
     public float AmbientTint = 0.15F;
 
-    // ---------- MagicaVoxel 调色着色族 ----------
+    // MagicaVoxel 风格调色着色参数
 
     /// <summary>
     /// 是否启用调色着色（色相、饱和、对比、明度）
@@ -184,7 +184,7 @@ public sealed class RenderSettings
     /// </summary>
     public float NearFade;
 
-    // ---------- 共享后期 ----------
+    // 共享后期参数
 
     /// <summary>
     /// 色调曲线
@@ -216,7 +216,7 @@ public sealed class RenderSettings
     /// </summary>
     public bool Dither = true;
 
-    // ---------- 渲染视图（渐进式路径追踪） ----------
+    // 渲染视图参数，使用渐进式路径追踪
 
     /// <summary>
     /// 路径追踪总开关，关闭后渲染页只呈现最后一次累积结果
@@ -416,7 +416,7 @@ public sealed class RenderSettings
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
 
     /// <summary>
-    /// 从文件加载配置，损坏文件静默回退默认值，绝不阻塞编辑器启动
+    /// 从文件加载配置，损坏内容使用默认值，保证编辑器可以启动
     /// </summary>
     /// <param name="path">配置文件路径</param>
     /// <returns>可用的配置实例</returns>

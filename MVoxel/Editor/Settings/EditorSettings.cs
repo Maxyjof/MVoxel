@@ -9,12 +9,12 @@ using MVoxel.Rendering;
 namespace MVoxel.Editor.Settings;
 
 /// <summary>
-/// 可重新绑定的编辑器命令。命令 ID 稳定，显示名称可以随中文界面演进。
+/// 可重新绑定的编辑器命令，命令 ID 稳定，显示名称支持中文界面
 /// </summary>
 public sealed record ShortcutCommandDefinition(string Id, string DisplayName, string DefaultBinding, string Category);
 
 /// <summary>
-/// 一组用户可切换的快捷键方案。
+/// 一组用户可切换的快捷键方案
 /// </summary>
 public sealed class ShortcutScheme
 {
@@ -32,7 +32,7 @@ public sealed class ShortcutScheme
 }
 
 /// <summary>
-/// 用户目录中的编辑器设置。它只保存个人偏好，不把用户布局强塞进项目。
+/// 用户目录中的编辑器设置，只保存个人偏好，不把用户布局写入项目
 /// </summary>
 public sealed class EditorSettingsDocument
 {
@@ -102,7 +102,7 @@ public sealed class EditorSettingsDocument
 
 /// <summary>
 /// 项目级配置。LOD 只影响场景编辑视图；RenderSettings 供渲染页和导出使用，
-/// 统一写进项目设置后，新机器打开项目也能得到相同的画面。
+/// 统一写进项目设置后，项目可以保存一致的画面配置
 /// </summary>
 public sealed class ProjectSettingsDocument
 {
@@ -152,7 +152,7 @@ public sealed class ProjectSettingsDocument
 }
 
 /// <summary>
-/// 内置命令清单。快捷键方案只修改绑定，不修改这些稳定 ID。
+/// 内置命令清单，快捷键方案只修改绑定，不修改稳定 ID
 /// </summary>
 public static class ShortcutCommands
 {
@@ -172,7 +172,7 @@ public static class ShortcutCommands
 }
 
 /// <summary>
-/// 设置文件的容错读写入口。所有写入都走原子替换，损坏文件回退默认值。
+/// 设置文件的容错读写入口，所有写入都走原子替换，损坏文件使用默认值
 /// </summary>
 public static class SettingsStore
 {
@@ -241,7 +241,7 @@ public static class SettingsStore
 
 /// <summary>
 /// 将方案中的简单文本绑定转换为 ImGui 按键判断。未知绑定会安全地返回 false，
-/// 不会让文本输入框或插件快捷键误触发编辑命令。
+/// 防止文本输入框或插件快捷键误触发编辑命令
 /// </summary>
 public static class ShortcutBindingRouter
 {

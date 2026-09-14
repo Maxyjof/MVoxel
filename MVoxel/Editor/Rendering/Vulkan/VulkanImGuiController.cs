@@ -26,7 +26,7 @@ internal sealed class VulkanImGuiController : IDisposable
     private bool _cursorOverridden;
 
     /// <summary>
-    /// 创建一个不依赖旧图形上下文的 ImGui 输入上下文
+    /// 为 NoAPI 窗口创建 ImGui 输入上下文
     /// </summary>
     internal VulkanImGuiController(GameWindow window)
     {

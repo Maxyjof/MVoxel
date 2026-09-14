@@ -32,7 +32,7 @@ internal static unsafe class VulkanShaderCompiler
         try
         {
             compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan, (uint)EnvVersion.Vulkan10);
-            // Vulkan 1.0 语义使用 SPIR-V 1.0，兼容 Vulkan 1.2 以上的设备
+            // Vulkan 1.0 语义使用 SPIR-V 1.0，适配 Vulkan 1.2 以上的设备
             compilerApi.CompileOptionsSetTargetSpirv(options, SpirvVersion.Shaderc10);
             compilerApi.CompileOptionsSetOptimizationLevel(options, OptimizationLevel.Zero);
             fixed (byte* sourcePointer = sourceBytes)

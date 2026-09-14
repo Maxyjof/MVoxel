@@ -24,7 +24,7 @@ public sealed class ProjectManifest
     public string Name { get; set; } = "MVoxel Project";
 
     /// <summary>
-    /// 写入清单的引擎版本，便于未来迁移与兼容性提示
+    /// 写入清单的引擎版本，用于识别项目结构
     /// </summary>
     public string EngineVersion { get; set; } = "0.1.0-dev";
 }

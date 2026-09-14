@@ -16,13 +16,13 @@ public interface IEditorCommand
     void Execute();
 
     /// <summary>
-    /// 撤销该命令，必须把状态恢复到 Execute 之前
+    /// 撤销该命令，必须把状态恢复到执行前
     /// </summary>
     void Undo();
 }
 
 /// <summary>
-/// 小型确定性的撤销重做历史，供编辑器工具和插件共用
+    /// 小型确定性的撤销重做记录，供编辑器工具和插件共用
 /// 只管理命令对象本身，不关心数据如何变更
 /// </summary>
 public sealed class CommandHistory
@@ -41,7 +41,7 @@ public sealed class CommandHistory
     public int RedoCount => _redo.Count;
 
     /// <summary>
-    /// 立即执行命令并压入撤销栈，同时清空重做栈（新分支丢弃旧未来）
+    /// 立即执行命令并压入撤销栈，同时清空重做栈
     /// </summary>
     /// <param name="command">要执行的命令</param>
     public void Execute(IEditorCommand command)
@@ -85,7 +85,7 @@ public sealed class CommandHistory
     }
 
     /// <summary>
-    /// 清空全部历史（例如关闭项目时），不会撤销任何已生效的修改
+    /// 清空全部撤销记录，例如关闭项目时调用
     /// </summary>
     public void Clear()
     {

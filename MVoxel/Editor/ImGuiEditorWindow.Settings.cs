@@ -34,7 +34,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (IOException)
         {
-            // 设置写入失败不应阻断正在编辑的场景，下一次启动仍会使用默认值。
+            // 设置写入失败不阻断正在编辑的场景，启动时使用默认值
         }
         catch (UnauthorizedAccessException)
         {
@@ -520,7 +520,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectRenderBackendControls(string context)
     {
-        ImGui.TextDisabled($"{context}默认使用 GPU；GPU 不可用时安全回退 CPU。");
+        ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU。");
         ImGui.Checkbox("开启光线追踪", ref _settingsTogglePath);
         ImGui.Checkbox("开启 GPU（默认）", ref _showLighting);
         ImGui.SliderInt("路径样本/帧", ref _renderSettings.PathSamplesPerFrame, 1, 8);

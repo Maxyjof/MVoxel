@@ -44,7 +44,7 @@ internal sealed class BlockingOperationRunner : IDisposable
     }
 
     /// <summary>
-    /// 启动一个后台操作。已有操作运行时返回 false。
+    /// 启动一个后台操作，已有操作运行时返回 false
     /// 不把取消令牌交给 Task.Run：调度与实际执行之间被取消也必须产生
     /// 正常结果，让 UI 能确定性地消费并清理
     /// </summary>

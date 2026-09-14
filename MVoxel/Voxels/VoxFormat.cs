@@ -202,10 +202,9 @@ public static class VoxFormat
     }
 
     /// <summary>
-    /// 历史 256 色 .vox 调色板的近似展开，仅在导入老文件时使用，
-    /// MVoxel 自身永远写出 XYZA 全色
+    /// 将 256 色 .vox 调色板索引展开为 RGB 颜色
     /// </summary>
-    /// <param name="index">老调色板索引</param>
+    /// <param name="index">调色板索引</param>
     /// <returns>近似 RGB 颜色</returns>
     private static (byte, byte, byte) LegacyColor(int index) => index switch
     {

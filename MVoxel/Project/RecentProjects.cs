@@ -96,7 +96,7 @@ public static class RecentProjects
     }
 
     /// <summary>
-    /// 记录一次项目打开：同路径旧条目被替换，列表重新按时间截断后原子落盘
+    /// 记录一次项目打开，同路径条目更新后按时间排序并原子落盘
     /// </summary>
     /// <param name="project">刚打开的项目</param>
     /// <param name="storagePath">可选的自定义存储路径（测试用）</param>

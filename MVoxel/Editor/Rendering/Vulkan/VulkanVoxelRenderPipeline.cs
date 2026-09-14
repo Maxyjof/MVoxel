@@ -8,9 +8,9 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// Vulkan 体素视口管线的资源边界
 /// </summary>
 /// <remarks>
-/// ImGui 与交换链已经使用 Vulkan
-/// 体素场景的 GPU 工作集、渐进光追和导出资源将在本边界内继续接入
-/// 在资源管线完成前，编辑器使用 CPU 预览，保证不会误回退到其他图形后端
+/// ImGui 与交换链使用 Vulkan
+/// 体素场景的 GPU 工作集、渐进光追和导出资源在本边界内接入
+/// 当前体素视口采用 CPU 预览并保持 Vulkan 资源边界
 /// </remarks>
 internal sealed class VulkanVoxelRenderPipeline : IDisposable
 {

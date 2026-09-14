@@ -71,7 +71,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
     /// <summary>
     /// 手动推进独立 GLFW 窗口
-    /// 所有者循环必须在收到关闭请求后释放窗口，只观察 IsExiting 会留下原生标题栏
+    /// 所有者循环负责处理关闭请求并释放窗口资源
     /// </summary>
     internal bool PumpFrame(double deltaSeconds)
     {

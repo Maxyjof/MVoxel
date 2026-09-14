@@ -3,7 +3,7 @@ using System.Text;
 namespace MVoxel.Core;
 
 /// <summary>
-/// 用户文件的原子写入工具，任何时刻磁盘上都只有完整旧版或完整新版
+/// 用户文件的原子写入工具，任何时刻磁盘上都只有完整文件或完整备份
 /// 写入流程固定为：同目录临时文件、落盘、回读校验、替换目标并保留 .bak 备份
 /// 绝不允许清空原文件后直接重写
 /// </summary>
@@ -19,7 +19,7 @@ public static class AtomicFile
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="contents">完整文件内容</param>
-    /// <param name="backupExtension">备份后缀，传 null 表示不保留旧版</param>
+    /// <param name="backupExtension">备份后缀，传 null 表示不保留备份</param>
     public static void WriteText(string path, string contents, string? backupExtension = ".bak")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -55,7 +55,7 @@ public static class AtomicFile
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="contents">完整字节内容</param>
-    /// <param name="backupExtension">备份后缀，传 null 表示不保留旧版</param>
+    /// <param name="backupExtension">备份后缀，传 null 表示不保留备份</param>
     public static void WriteBytes(string path, byte[] contents, string? backupExtension = ".bak")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);

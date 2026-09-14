@@ -430,7 +430,7 @@ public sealed class VoxelWorld
     }
 
     /// <summary>
-    /// 向下取整除法：-1 除以 32 得 -1 而不是向零截断的 0
+    /// 向下取整除法，保证负坐标正确映射到所属 Chunk
     /// </summary>
     /// <param name="value">被除数</param>
     /// <param name="divisor">正除数</param>

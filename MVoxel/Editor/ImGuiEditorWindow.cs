@@ -243,8 +243,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         // 独立欢迎窗口使用独立 Vulkan Surface
         // 继续当前帧前恢复编辑器 ImGui 上下文
         ImGui.SetCurrentContext(_imguiContext);
-        // 把独立欢迎窗口置于被阻塞主窗口之前
-        // 显式转移焦点，避免 Windows 把主窗口遮罩层置于欢迎窗口之前
+            // 把独立欢迎窗口置于被阻塞主窗口上层
+            // 显式转移焦点，保证欢迎窗口接收用户输入
         _welcomeWindow.Focus();
     }
 
@@ -558,13 +558,13 @@ DockId=0x6A3C1007,0
         var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered && _showVoxelOutlines)
         {
-            // Vulkan 体素资源管线尚未就绪时使用 CPU 回退预览
+            // 当前 Vulkan 体素资源管线使用 CPU 预览
             DrawVoxelPreview(drawList, origin, size, camera);
         }
 
         if (_showGrid && !gpuRendered)
         {
-            // CPU 回退网格，GPU 通道会自行绘制带深度关系的网格
+            // CPU 网格，GPU 通道自行绘制带深度关系的网格
             SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
         }
 
@@ -1008,7 +1008,7 @@ DockId=0x6A3C1007,0
             DrawVoxelPreview(drawList, origin, size, camera);
             ImGui.SetCursorScreenPos(origin + new Vector2(
                 Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
-            ImGui.TextDisabled(_pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 显示为回退预览" : "GPU 路径追踪初始化中");
+            ImGui.TextDisabled(_pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中");
         }
         else
         {
