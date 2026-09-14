@@ -322,14 +322,6 @@ internal sealed partial class ImGuiEditorWindow
     {
         var settings = _renderSettings;
         var buffer = new StringBuilder()
-            .Append(_sceneOrbitYaw.ToString("F4")).Append(',')
-            .Append(_sceneOrbitPitch.ToString("F4")).Append(',')
-            .Append(_sceneCameraDistance.ToString("F3")).Append(',')
-            .Append(_scenePan.X.ToString("F2")).Append(',').Append(_scenePan.Y.ToString("F2")).Append(',')
-            .Append(_sceneFreeMoveHeight.ToString("F2")).Append(',')
-            .Append(_sceneNearClip.ToString("F3")).Append(',').Append(_sceneFarClip.ToString("F1")).Append(',')
-            .Append(_sceneFieldOfView.ToString("F1")).Append('|')
-            .Append(RenderCameraSignature()).Append('|')
             .Append(size.X.ToString("F1")).Append('x').Append(size.Y.ToString("F1")).Append('@').Append(deviceScale.ToString("F2")).Append('|')
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')
@@ -343,6 +335,22 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
             .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
             .Append(',').Append(settings.SceneBackgroundColor.Z);
+        if (GetActiveRenderCameraObject() is null)
+        {
+            buffer.Append("|scene:")
+                .Append(_sceneOrbitYaw.ToString("F4")).Append(',')
+                .Append(_sceneOrbitPitch.ToString("F4")).Append(',')
+                .Append(_sceneCameraDistance.ToString("F3")).Append(',')
+                .Append(_scenePan.X.ToString("F2")).Append(',').Append(_scenePan.Y.ToString("F2")).Append(',')
+                .Append(_sceneFreeMoveHeight.ToString("F2")).Append(',')
+                .Append(_sceneNearClip.ToString("F3")).Append(',').Append(_sceneFarClip.ToString("F1")).Append(',')
+                .Append(_sceneFieldOfView.ToString("F1"));
+        }
+        else
+        {
+            buffer.Append('|').Append(RenderCameraSignature());
+        }
+
         return buffer.ToString();
     }
 

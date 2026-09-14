@@ -131,6 +131,16 @@ internal sealed partial class ImGuiEditorWindow
             right = Vector3.Cross(forward, Vector3.UnitY);
         }
 
+        if (right.LengthSquared < 0.0001F)
+        {
+            right = Vector3.Cross(forward, Vector3.UnitZ);
+        }
+
+        if (right.LengthSquared < 0.0001F)
+        {
+            right = Vector3.UnitX;
+        }
+
         right = Vector3.Normalize(right);
         up = Vector3.Normalize(Vector3.Cross(right, forward));
         var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(SceneComponentTypes.IsCamera));
@@ -216,6 +226,17 @@ internal sealed partial class ImGuiEditorWindow
             right = Vector3.Cross(forward, up);
         }
 
+        if (right.LengthSquared < 0.0001F)
+        {
+            up = Vector3.UnitZ;
+            right = Vector3.Cross(forward, up);
+        }
+
+        if (right.LengthSquared < 0.0001F)
+        {
+            right = Vector3.UnitX;
+        }
+
         right = Vector3.Normalize(right);
         up = Vector3.Normalize(Vector3.Cross(right, forward));
         var upNumber = new NumVector3(up.X, up.Y, up.Z);
@@ -263,7 +284,9 @@ internal sealed partial class ImGuiEditorWindow
         var free = cameraObject.Transform.Mode == TransformMode.Free
             ? cameraObject.Transform.Free
             : FreeTransform.Identity;
+        var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(SceneComponentTypes.IsCamera));
         return $"object:{cameraObject.Id}:{free.Position.X:F4},{free.Position.Y:F4},{free.Position.Z:F4}:" +
-               $"{free.Rotation.X:F5},{free.Rotation.Y:F5},{free.Rotation.Z:F5},{free.Rotation.W:F5}";
+               $"{free.Rotation.X:F5},{free.Rotation.Y:F5},{free.Rotation.Z:F5},{free.Rotation.W:F5}:" +
+               $"{data.FieldOfViewDegrees:F2},{data.NearClip:F4},{data.FarClip:F1}";
     }
 }
