@@ -130,6 +130,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void FrameCameraOnWorld()
     {
+        var limits = GetSceneZoomLimits();
         if (_world.TryGetBounds(out var min, out var max))
         {
             var center = new Vector2((float)((min.X + max.X) / 2.0), (float)((min.Z + max.Z) / 2.0));
@@ -139,7 +140,7 @@ internal sealed partial class ImGuiEditorWindow
                 MathF.Pow((float)(max.Z - min.Z + 1), 2));
             _scenePan = center;
             _sceneFreeMoveHeight = 0F;
-            _sceneCameraDistance = Math.Clamp(diagonal * 1.15F, 12F, 240F);
+            _sceneCameraDistance = Math.Clamp(diagonal * 1.15F, limits.MinimumDistance, limits.MaximumDistance);
             _sceneOrbitYaw = MathF.PI / 4F;
             _sceneOrbitPitch = 0.42F;
         }
@@ -147,8 +148,21 @@ internal sealed partial class ImGuiEditorWindow
         {
             _scenePan = Vector2.Zero;
             _sceneFreeMoveHeight = 0F;
-            _sceneCameraDistance = 18F;
+            _sceneCameraDistance = Math.Clamp(18F, limits.MinimumDistance, limits.MaximumDistance);
         }
+    }
+
+    private SceneZoomLimits GetSceneZoomLimits()
+    {
+        if (!_world.TryGetBounds(out var min, out var max))
+        {
+            return SceneZoomPolicy.Default();
+        }
+
+        return SceneZoomPolicy.FromBounds(
+            max.X - min.X + 1D,
+            max.Y - min.Y + 1D,
+            max.Z - min.Z + 1D);
     }
 
     private bool SaveWorldToProject(ProjectHandle project)
@@ -455,11 +469,12 @@ internal sealed partial class ImGuiEditorWindow
 
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.focus"))
         {
+            var limits = GetSceneZoomLimits();
             _scenePan = Vector2.Zero;
             _sceneFreeMoveHeight = 0F;
             _sceneOrbitYaw = MathF.PI / 4F;
             _sceneOrbitPitch = 0.48F;
-            _sceneCameraDistance = 18F;
+            _sceneCameraDistance = Math.Clamp(18F, limits.MinimumDistance, limits.MaximumDistance);
             _sceneZoom = 1F;
         }
     }

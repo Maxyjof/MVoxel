@@ -685,7 +685,10 @@ DockId=0x6A3C1007,0
 
         if (Math.Abs(io.MouseWheel) > float.Epsilon && !gizmoHovered)
         {
-            _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * MathF.Pow(0.82F, io.MouseWheel), 4F, 256F);
+            var limits = GetSceneZoomLimits();
+            var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
+            _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * continuousFactor,
+                limits.MinimumDistance, limits.MaximumDistance);
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
         }
 

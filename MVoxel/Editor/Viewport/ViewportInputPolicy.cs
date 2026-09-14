@@ -76,3 +76,41 @@ internal static class ViewportInputPolicy
         return !isRenderViewport;
     }
 }
+
+/// <summary>
+/// 场景相机允许使用的观察距离范围
+/// </summary>
+internal readonly record struct SceneZoomLimits(float MinimumDistance, float MaximumDistance);
+
+/// <summary>
+/// 根据场景包围框计算连续缩放范围
+/// </summary>
+internal static class SceneZoomPolicy
+{
+    /// <summary>
+    /// 没有场景对象时返回默认缩放范围
+    /// </summary>
+    /// <returns>默认观察距离范围</returns>
+    public static SceneZoomLimits Default()
+    {
+        return new SceneZoomLimits(1.25F, 256F);
+    }
+
+    /// <summary>
+    /// 根据场景总包围框的三个边长计算缩放范围
+    /// </summary>
+    /// <param name="width">包围框 X 轴边长</param>
+    /// <param name="height">包围框 Y 轴边长</param>
+    /// <param name="depth">包围框 Z 轴边长</param>
+    /// <returns>放大下限和缩小上限</returns>
+    public static SceneZoomLimits FromBounds(double width, double height, double depth)
+    {
+        var diagonal = Math.Sqrt(
+            Math.Max(0D, width) * Math.Max(0D, width) +
+            Math.Max(0D, height) * Math.Max(0D, height) +
+            Math.Max(0D, depth) * Math.Max(0D, depth));
+        var minimum = 1.25F;
+        var maximum = MathF.Max(minimum * 2F, (float)diagonal * 3F);
+        return new SceneZoomLimits(minimum, maximum);
+    }
+}
