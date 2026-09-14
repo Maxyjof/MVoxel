@@ -130,7 +130,7 @@ public sealed class ProjectSettingsDocument
             var fallback = index == 0 ? 64F : LodDistances[index - 1] * 2F;
             LodDistances[index] = float.IsFinite(LodDistances[index])
                 ? Math.Clamp(LodDistances[index], index == 0 ? 1F : LodDistances[index - 1], 16384F)
-                : fallback;
+                : Math.Clamp(fallback, index == 0 ? 1F : LodDistances[index - 1], 16384F);
         }
 
         AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);

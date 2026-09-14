@@ -267,6 +267,7 @@ internal sealed partial class ImGuiEditorWindow
         var schemes = _editorSettings.ShortcutSchemes;
         _selectedShortcutScheme = Math.Clamp(_selectedShortcutScheme, 0, schemes.Count - 1);
         var scheme = schemes[_selectedShortcutScheme];
+        if (_renameShortcutScheme.Length == 0) _renameShortcutScheme = scheme.Name;
 
         ImGui.BeginChild("##快捷键方案列表", new Vector2(190F, 0F), ImGuiChildFlags.Borders);
         ImGui.TextDisabled("方案");
