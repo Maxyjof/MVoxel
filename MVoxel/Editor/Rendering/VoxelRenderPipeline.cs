@@ -66,6 +66,8 @@ internal sealed class VoxelRenderPipeline : IDisposable
         GL.BindVertexArray(0);
         _paramsBuffer = GL.GenBuffer();
         _lightsBuffer = GL.GenBuffer();
+        if (string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_SHADER_PROBE"), "1", StringComparison.Ordinal))
+            ProbeCommonShader();
         _sceneProgram = CompileProgram(VoxelGpuShaders.SceneFragment, "scene");
         _traceProgram = CompileProgram(VoxelGpuShaders.TraceFragment, "trace");
         _postProgram = CompileProgram(VoxelGpuShaders.PostFragment, "post");
@@ -82,6 +84,62 @@ internal sealed class VoxelRenderPipeline : IDisposable
     internal int EmissiveLightCount => _emissiveLightCount;
     internal bool Truncated { get; private set; }
     private string? _lastShaderLog;
+
+    private static void ProbeCommonShader()
+    {
+        var output = Environment.GetEnvironmentVariable("MVOXEL_UI_CAPTURE_DIR");
+        var preambles = new[]
+        {
+            "",
+            "layout(std430, binding = 0) readonly buffer MVParams { float U[]; };",
+            "layout(std430, binding = 0) readonly buffer MVParams { float U[]; };\nlayout(std430, binding = 1) readonly buffer MVLights { vec4 MVLight[]; };",
+            "layout(std430, binding = 0) readonly buffer MVParams { float U[]; };\nlayout(std430, binding = 1) readonly buffer MVLights { vec4 MVLight[]; };\nuniform sampler3D uColors;\nuniform usampler3D uFlags;",
+            "layout(std430, binding = 0) readonly buffer MVParams { float U[]; };\nlayout(std430, binding = 1) readonly buffer MVLights { vec4 MVLight[]; };\nuniform sampler3D uColors;\nuniform usampler3D uFlags;\nconst float PI = 3.141592653589793;",
+        };
+        for (var index = 0; index < preambles.Length; index++)
+            ProbeShaderSource($"shader-preamble-{index:00}",
+                $"#version 450\n{preambles[index]}\nlayout(location = 0) out vec4 FragColor; void main(){{ FragColor = vec4(1.0); }}\n", output);
+
+        var common = VoxelGpuShaders.BuildCommon();
+        var markers = new[]
+        {
+            "// ImGui 在四边形顶边采样纹理第 0 行",
+            "// ===== 色彩空间 =====",
+            "// ===== 区域采样 =====",
+            "// ===== Amanatides 与 Woo 体素遍历 =====",
+            "// ===== 地面平面(y = 0) =====",
+            "// ===== MagicaVoxel 风格角点 AO =====",
+            "// ===== 相机 =====",
+            "// ===== BSDF 组件 =====",
+            "// ===== 色调曲线与呈现 =====",
+        };
+
+        for (var index = 0; index <= markers.Length; index++)
+        {
+            var end = index == markers.Length ? common.Length : common.IndexOf(markers[index], StringComparison.Ordinal);
+            if (end < 0) continue;
+            ProbeShaderSource($"shader-common-{index:00}",
+                "#version 450\n" + common[..end] +
+                "\nlayout(location = 0) out vec4 FragColor; void main(){ FragColor = vec4(1.0); }\n", output);
+        }
+    }
+
+    private static void ProbeShaderSource(string label, string source, string? output)
+    {
+        var shader = GL.CreateShader(ShaderType.FragmentShader);
+        GL.ShaderSource(shader, DriverSafeShaderSource(source));
+        GL.CompileShader(shader);
+        GL.GetShader(shader, ShaderParameter.CompileStatus, out var status);
+        var log = GL.GetShaderInfoLog(shader);
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            Directory.CreateDirectory(output);
+            File.WriteAllText(Path.Combine(output, $"{label}.frag"), source);
+            File.WriteAllText(Path.Combine(output, $"{label}.log"), $"status={status}\n{log}");
+        }
+
+        GL.DeleteShader(shader);
+    }
 
     /// <summary>Diagnosis mode only: attribute GL errors to a pipeline stage.</summary>
     private static void CheckStage(string stage)
@@ -495,10 +553,10 @@ internal sealed class VoxelRenderPipeline : IDisposable
     private int CompileProgram(string fragmentSource, string label)
     {
         var vertex = GL.CreateShader(ShaderType.VertexShader);
-        GL.ShaderSource(vertex, VoxelGpuShaders.Vertex);
+        GL.ShaderSource(vertex, DriverSafeShaderSource(VoxelGpuShaders.Vertex));
         GL.CompileShader(vertex);
         var fragment = GL.CreateShader(ShaderType.FragmentShader);
-        GL.ShaderSource(fragment, VoxelGpuShaders.Compose(fragmentSource));
+        GL.ShaderSource(fragment, DriverSafeShaderSource(VoxelGpuShaders.Compose(fragmentSource)));
         GL.CompileShader(fragment);
         GL.GetShader(fragment, ShaderParameter.CompileStatus, out var fragmentStatus);
         GL.GetShader(vertex, ShaderParameter.CompileStatus, out var vertexStatus);
@@ -531,6 +589,24 @@ internal sealed class VoxelRenderPipeline : IDisposable
         GL.DeleteShader(vertex);
         GL.DeleteShader(fragment);
         return program;
+    }
+
+    /// <summary>
+    /// 某些 Windows 驱动栈通过 ANSI 路径接收 OpenTK 的 GLSL 字符串，
+    /// 中文注释在进入驱动时会被截断，表现为文件末尾 EOF 语法错误。
+    /// 注释不参与 shader 语义，因此只把送入驱动的副本规整为 ASCII；
+    /// DumpOnFailure 仍保存完整原文，方便定位真实的 shader 内容。
+    /// </summary>
+    private static string DriverSafeShaderSource(string source)
+    {
+        var safe = new char[source.Length];
+        for (var index = 0; index < source.Length; index++)
+        {
+            var character = source[index];
+            safe[index] = character <= 0x7F || character is '\r' or '\n' or '\t' ? character : ' ';
+        }
+
+        return new string(safe);
     }
 
     private void DumpOnFailure(string label, string source, string? log = null)
