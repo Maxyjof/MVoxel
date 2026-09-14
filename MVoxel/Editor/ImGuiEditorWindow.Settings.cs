@@ -416,7 +416,7 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("诊断"))
             {
-                ImGui.TextWrapped("诊断模式会检查字体缺字、OpenGL 错误、帧缓冲尺寸和绘制顶点数。");
+                ImGui.TextWrapped("诊断模式会检查字体缺字、Vulkan 帧尺寸和绘制顶点数。");
                 ImGui.TextDisabled("仅建议开发和回归测试时开启。");
                 ImGui.EndTabItem();
             }

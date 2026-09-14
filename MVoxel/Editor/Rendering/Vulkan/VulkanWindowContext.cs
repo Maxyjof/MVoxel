@@ -74,10 +74,81 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal Extent2D Extent => _extent;
 
     /// <summary>
+    /// 当前 Vulkan API 绑定
+    /// </summary>
+    internal Vk Api => _api;
+
+    /// <summary>
+    /// 当前逻辑设备
+    /// </summary>
+    internal Device Device => _device;
+
+    /// <summary>
+    /// 当前物理设备
+    /// </summary>
+    internal PhysicalDevice PhysicalDevice => _physicalDevice;
+
+    /// <summary>
+    /// 当前图形队列
+    /// </summary>
+    internal Queue GraphicsQueue => _queue;
+
+    /// <summary>
+    /// 当前主命令缓冲
+    /// </summary>
+    internal CommandBuffer CommandBuffer => _commandBuffer;
+
+    /// <summary>
+    /// 当前图形队列族索引
+    /// </summary>
+    internal uint QueueFamilyIndex => _queueFamilyIndex;
+
+    /// <summary>
+    /// 当前 RenderPass
+    /// </summary>
+    internal RenderPass RenderPass => _renderPass;
+
+    /// <summary>
+    /// 当前颜色格式
+    /// </summary>
+    internal Format ColorFormat => _format;
+
+    /// <summary>
+    /// 执行一次立即提交并等待完成的初始化命令
+    /// </summary>
+    internal void ExecuteImmediate(Action<CommandBuffer> recordCommands)
+    {
+        ArgumentNullException.ThrowIfNull(recordCommands);
+        _api.ResetCommandBuffer(_commandBuffer, 0);
+        CommandBufferBeginInfo beginInfo = new() { SType = StructureType.CommandBufferBeginInfo };
+        Check(_api.BeginCommandBuffer(_commandBuffer, in beginInfo), "开始 Vulkan 初始化命令");
+        recordCommands(_commandBuffer);
+        Check(_api.EndCommandBuffer(_commandBuffer), "结束 Vulkan 初始化命令");
+        CommandBuffer commandBuffer = _commandBuffer;
+        SubmitInfo submitInfo = new()
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &commandBuffer
+        };
+        Check(_api.QueueSubmit(_queue, 1, in submitInfo, default), "提交 Vulkan 初始化命令");
+        Check(_api.QueueWaitIdle(_queue), "等待 Vulkan 初始化命令");
+    }
+
+    /// <summary>
     /// 以 Vulkan 命令提交一帧纯色清屏
     /// </summary>
     internal void RenderClear(Vector4 color)
     {
+        RenderFrame(color, static _ => { });
+    }
+
+    /// <summary>
+    /// 在当前 Vulkan RenderPass 中记录自定义绘制命令并提交一帧
+    /// </summary>
+    internal void RenderFrame(Vector4 color, Action<CommandBuffer> recordCommands)
+    {
+        ArgumentNullException.ThrowIfNull(recordCommands);
         uint imageIndex = 0;
         Result result = _swapchainApi.AcquireNextImage(
             _device, _swapchain, ulong.MaxValue, _imageAvailable, default, ref imageIndex);
@@ -115,6 +186,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             PClearValues = &clearValue
         };
         _api.CmdBeginRenderPass(_commandBuffer, in passInfo, SubpassContents.Inline);
+        recordCommands(_commandBuffer);
         _api.CmdEndRenderPass(_commandBuffer);
         _api.EndCommandBuffer(_commandBuffer);
 
@@ -404,13 +476,24 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             ColorAttachmentCount = 1,
             PColorAttachments = &colorReference
         };
+        SubpassDependency dependency = new()
+        {
+            SrcSubpass = Vk.SubpassExternal,
+            DstSubpass = 0,
+            SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            SrcAccessMask = 0,
+            DstAccessMask = AccessFlags.ColorAttachmentWriteBit
+        };
         RenderPassCreateInfo createInfo = new()
         {
             SType = StructureType.RenderPassCreateInfo,
             AttachmentCount = 1,
             PAttachments = &attachment,
             SubpassCount = 1,
-            PSubpasses = &subpass
+            PSubpasses = &subpass,
+            DependencyCount = 1,
+            PDependencies = &dependency
         };
         RenderPass renderPass = default;
         Check(_api.CreateRenderPass(_device, &createInfo, null, &renderPass), "创建 Vulkan RenderPass");

@@ -1,0 +1,89 @@
+using Silk.NET.Shaderc;
+
+namespace MVoxel.Editor.Rendering.Vulkan;
+
+/// <summary>
+/// Vulkan GLSL 到 SPIR-V 的运行时编译器
+/// </summary>
+internal static unsafe class VulkanShaderCompiler
+{
+    /// <summary>
+    /// 把 GLSL 源码编译为 Vulkan 可加载的 SPIR-V 字节码
+    /// </summary>
+    internal static uint[] Compile(string source, ShaderKind shaderKind, string sourceName)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(source);
+        ArgumentException.ThrowIfNullOrEmpty(sourceName);
+        Shaderc compilerApi = Shaderc.GetApi();
+        Compiler* compiler = compilerApi.CompilerInitialize();
+        if (compiler is null)
+        {
+            throw new InvalidOperationException("无法创建 shaderc 编译器");
+        }
+
+        CompileOptions* options = compilerApi.CompileOptionsInitialize();
+        if (options is null)
+        {
+            compilerApi.CompilerRelease(compiler);
+            throw new InvalidOperationException("无法创建 shaderc 编译选项");
+        }
+
+        byte[] sourceBytes = System.Text.Encoding.UTF8.GetBytes(source);
+        try
+        {
+            compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan, (uint)EnvVersion.Vulkan10);
+            // Vulkan 1.0 语义使用 SPIR-V 1.0，兼容 Vulkan 1.2 以上的设备
+            compilerApi.CompileOptionsSetTargetSpirv(options, SpirvVersion.Shaderc10);
+            compilerApi.CompileOptionsSetOptimizationLevel(options, OptimizationLevel.Zero);
+            fixed (byte* sourcePointer = sourceBytes)
+            {
+                CompilationResult* result = compilerApi.CompileIntoSpv(
+                    compiler,
+                    sourcePointer,
+                    (nuint)sourceBytes.Length,
+                    shaderKind,
+                    sourceName,
+                    "main",
+                    options);
+                if (result is null)
+                {
+                    throw new InvalidOperationException($"shaderc 没有返回编译结果：{sourceName}");
+                }
+
+                try
+                {
+                    CompilationStatus status = compilerApi.ResultGetCompilationStatus(result);
+                    if (status != CompilationStatus.Success)
+                    {
+                        string message = compilerApi.ResultGetErrorMessageS(result) ?? "未知 shaderc 错误";
+                        throw new InvalidOperationException($"Vulkan Shader 编译失败 {sourceName}：{message}");
+                    }
+
+                    nuint byteLength = compilerApi.ResultGetLength(result);
+                    byte* resultBytes = compilerApi.ResultGetBytes(result);
+                    if (resultBytes is null || byteLength == 0 || byteLength % sizeof(uint) != 0)
+                    {
+                        throw new InvalidOperationException($"Vulkan Shader 编译结果无效：{sourceName}");
+                    }
+
+                    var words = new uint[(int)(byteLength / sizeof(uint))];
+                    for (int index = 0; index < words.Length; index++)
+                    {
+                        words[index] = resultBytes[index];
+                    }
+
+                    return words;
+                }
+                finally
+                {
+                    compilerApi.ResultRelease(result);
+                }
+            }
+        }
+        finally
+        {
+            compilerApi.CompileOptionsRelease(options);
+            compilerApi.CompilerRelease(compiler);
+        }
+    }
+}

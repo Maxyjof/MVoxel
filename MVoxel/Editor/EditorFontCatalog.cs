@@ -1,6 +1,5 @@
 using ImGuiNET;
-using MVoxel.Editor.Rendering;
-using OpenTK.Graphics.OpenGL4;
+using MVoxel.Editor.Rendering.Vulkan;
 
 namespace MVoxel.Editor;
 
@@ -22,7 +21,7 @@ internal sealed class EditorFontCatalog
     /// </summary>
     /// <param name="controller">持有 ImGui 上下文的控制器</param>
     /// <param name="dpiScale">当前 DPI 缩放（1 到 4）</param>
-    internal unsafe void Load(ImGuiController controller, float dpiScale = 1F)
+    internal unsafe void Load(VulkanImGuiController controller, float dpiScale = 1F)
     {
         // 控制器构造时开启了第一个空帧，改图集前先把它结束掉
         controller.Render();
@@ -40,12 +39,7 @@ internal sealed class EditorFontCatalog
         Title = AddPixelFont(12, Math.Max(2, (int)MathF.Round(dpiScale * 2F)), atlas.GetGlyphRangesDefault());
         controller.RecreateFontDeviceTexture();
 
-        // 像素字体必须最近邻采样，且关闭 ImGui 用图集纹理画的抗锯齿线
-        GL.GetInteger(GetPName.TextureBinding2D, out var previousTexture);
-        GL.BindTexture(TextureTarget.Texture2D, (int)atlas.TexID);
-        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        GL.BindTexture(TextureTarget.Texture2D, previousTexture);
+        // 像素字体的最近邻采样由 Vulkan Sampler 统一设置
         ImGui.GetIO().FontGlobalScale = 1F;
         ImGui.GetStyle().AntiAliasedLinesUseTex = false;
         _dpiScale = dpiScale;
@@ -56,7 +50,7 @@ internal sealed class EditorFontCatalog
     /// </summary>
     /// <param name="controller">持有 ImGui 上下文的控制器</param>
     /// <param name="dpiScale">当前 DPI 缩放</param>
-    internal void Refresh(ImGuiController controller, float dpiScale)
+    internal void Refresh(VulkanImGuiController controller, float dpiScale)
     {
         if (Math.Abs(_dpiScale - dpiScale) > 0.01F)
         {

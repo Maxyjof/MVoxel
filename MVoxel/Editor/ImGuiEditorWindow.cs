@@ -7,8 +7,8 @@ using MVoxel.Core;
 using MVoxel.Rendering;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
+using MVoxel.Editor.Rendering.Vulkan;
 using MVoxel.Editor.Settings;
-using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
@@ -28,7 +28,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
     private string? _imguiLayoutPath;
-    private ImGuiController? _controller;
+    private VulkanImGuiController? _controller;
+    private VulkanWindowContext? _vulkan;
+    private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
     private readonly BlockingOperationRunner _projectOperation = new();
@@ -67,7 +69,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private Rgba32[] _palette = VoxelPalette.Build();
     private bool _paletteIsProjectLevel;
     private readonly CommandHistory _voxelHistory = new();
-    private VoxelRenderPipeline? _pipeline;
+    private VulkanVoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
     private EditorTool _activeTool = EditorTool.Camera;
     private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
@@ -82,17 +84,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _pipelineStatus = string.Empty;
 
     public ImGuiEditorWindow(string[] args)
-        : this(args, modernApi: true)
-    {
-    }
-
-    private ImGuiEditorWindow(string[] args, bool modernApi)
-        : base(GameWindowSettings.Default, CreateWindowSettings(args, modernApi))
+        : base(GameWindowSettings.Default, CreateWindowSettings(args))
     {
         _startupProjectPath = ResolveStartupProjectPath(args);
     }
 
-    internal static ImGuiEditorWindow Create(string[] args, bool modernApi) => new(args, modernApi);
+    internal static ImGuiEditorWindow Create(string[] args) => new(args);
 
     public event EventHandler? ProjectOpened;
 
@@ -116,30 +113,14 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
 
-    private static OpenTK.Graphics.OpenGL4.DebugProc? _debugProc;
-
     protected override void OnLoad()
     {
         base.OnLoad();
-        MakeCurrent();
-        if (UiDiagnostics.Enabled)
-        {
-            GL.Enable(EnableCap.DebugOutput);
-            GL.Enable(EnableCap.DebugOutputSynchronous);
-            _debugProc = (source, type, id, severity, length, message, param) =>
-            {
-                if (type == DebugType.DebugTypeError)
-                {
-                    Console.Error.WriteLine("[GLDBG] " + source + " " + severity + " id=" + id + ": " +
-                        System.Runtime.InteropServices.Marshal.PtrToStringAnsi(message));
-                }
-            };
-            GL.DebugMessageCallback(_debugProc, IntPtr.Zero);
-        }
-        GL.ClearColor(EditorPalette.Window);
-        _controller = new ImGuiController(this);
+        _vulkan = new VulkanWindowContext(this);
+        _controller = new VulkanImGuiController(this);
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
+        _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
         ConfigureImGui();
         UiDiagnostics.Configure();
         LoadEditorSettings();
@@ -154,13 +135,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             RequestWelcomeWindow();
             EnsureWelcomeWindow();
         }
-        UiDiagnostics.ProbeGlStage(this, "end OnLoad");
     }
 
     protected override void OnResize(ResizeEventArgs args)
     {
         base.OnResize(args);
-        GL.Viewport(0, 0, FramebufferSize.X, FramebufferSize.Y);
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
@@ -181,7 +160,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         _projectOperation.Pump();
         EnsureWelcomeWindow();
-        UiDiagnostics.ProbeGlStage(this, "after EnsureWelcome in Update");
         if (_renderSettingsDirty && (_renderSettingsSaveCountdown -= (float)Math.Max(args.Time, 0.01F)) <= 0F)
         {
             _renderSettingsDirty = false;
@@ -199,29 +177,31 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnRenderFrame(FrameEventArgs args)
     {
         base.OnRenderFrame(args);
-        MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
-        UiDiagnostics.ProbeGlStage(this, "frame top");
         _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
         _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
-        GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
         if (_controller is not null)
         {
             if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.Close();
             DrawEditorFrame();
                 _controller.Render();
-            UiDiagnostics.ProbeGlStage(this, "after imgui render");
             UiDiagnostics.Capture(this, "editor");
         }
 
-        SwapBuffers();
+        _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
+        {
+            if (_imguiRenderer is not null && _controller is not null)
+            {
+                _imguiRenderer.Record(commandBuffer, _controller);
+            }
+        });
+
         if (_welcomeWindow is not null && !_welcomeWindow.PumpFrame(Math.Max(args.Time, 1.0 / 120.0)))
         {
             _welcomeWindow.Dispose();
             _welcomeWindow = null;
         }
-        MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
     }
@@ -239,10 +219,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _welcomeWindow?.Dispose();
         _welcomeWindow = null;
         _projectOperation.Dispose();
-        MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
+        _imguiRenderer?.Dispose();
+        _imguiRenderer = null;
         _controller?.Dispose();
+        _vulkan?.Dispose();
+        _vulkan = null;
         base.OnUnload();
     }
 
@@ -254,16 +237,15 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _showWelcomeRequested = false;
         _welcomeWindow = new ImGuiWelcomeWindow(this);
         _welcomeWindow.InitializeForManualLoop();
-        // 初始化独立 OpenGL 上下文会改变当前上下文
-        // 继续当前帧前恢复编辑器上下文
-        MakeCurrent();
+        // 独立欢迎窗口使用独立 Vulkan Surface
+        // 继续当前帧前恢复编辑器 ImGui 上下文
         ImGui.SetCurrentContext(_imguiContext);
         // 把独立欢迎窗口置于被阻塞主窗口之前
         // 显式转移焦点，避免 Windows 把主窗口遮罩层置于欢迎窗口之前
         _welcomeWindow.Focus();
     }
 
-    private static NativeWindowSettings CreateWindowSettings(string[] args, bool modernApi)
+    private static NativeWindowSettings CreateWindowSettings(string[] args)
     {
         return new NativeWindowSettings
         {
@@ -272,9 +254,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             MinimumClientSize = new Vector2i(1000, 680),
             StartVisible = true,
             StartFocused = true,
-            APIVersion = modernApi ? new Version(4, 5) : new Version(3, 3),
-            Profile = ContextProfile.Core,
-            API = ContextAPI.OpenGL,
+            API = ContextAPI.NoAPI,
             Vsync = VSyncMode.On,
             Icon = AppBranding.LoadWindowIcon(),
         };
@@ -579,7 +559,7 @@ DockId=0x6A3C1007,0
         var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered && _showVoxelOutlines)
         {
-            // OpenGL 4.5 不可用时使用 CPU 回退预览
+            // Vulkan 体素资源管线尚未就绪时使用 CPU 回退预览
             DrawVoxelPreview(drawList, origin, size, camera);
         }
 

@@ -48,14 +48,9 @@ internal sealed partial class ImGuiEditorWindow
 
     private void InitializeVoxelPipeline()
     {
-        _pipeline = new VoxelRenderPipeline();
-        if (!_pipeline.IsAvailable)
-        {
-            _pipelineStatus = _pipeline.ShaderLog is { Length: > 0 } log
-                ? $"GPU 体素渲染不可用（已回退 CPU 预览）：{log[..Math.Min(200, log.Length)]}"
-                : "GPU 体素渲染不可用（OpenGL < 4.5 或着色器编译失败），已回退 CPU 预览。";
-            SetStatus(_pipelineStatus);
-        }
+        // Vulkan 体素管线的设备资源尚未创建时不初始化占位对象
+        _pipeline = null;
+        _pipelineStatus = "Vulkan 体素管线正在初始化";
 
         try
         {

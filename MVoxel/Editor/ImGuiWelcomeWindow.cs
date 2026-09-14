@@ -1,7 +1,7 @@
 using ImGuiNET;
 using MVoxel.Project;
 using MVoxel.Editor.Rendering;
-using OpenTK.Graphics.OpenGL4;
+using MVoxel.Editor.Rendering.Vulkan;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
@@ -41,8 +41,9 @@ internal sealed class ProjectOperationFailedEventArgs : EventArgs
 internal sealed class ImGuiWelcomeWindow : GameWindow
 {
     private readonly IEditorWelcomeHost _editor;
-    private ImGuiController? _controller;
-    private ImGuiTexture? _logoTexture;
+    private VulkanImGuiController? _controller;
+    private VulkanWindowContext? _vulkan;
+    private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
     private IntPtr _imguiContext;
     private string _pathText = string.Empty;
@@ -62,7 +63,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
     internal void InitializeForManualLoop()
     {
-        MakeCurrent();
         OnLoad();
     }
 
@@ -84,7 +84,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             return false;
         }
 
-        MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         OnUpdateFrame(new FrameEventArgs(deltaSeconds));
         if (!IsExiting && Volatile.Read(ref _closeRequested) == 0)
@@ -98,13 +97,13 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     protected override void OnLoad()
     {
         base.OnLoad();
-        GL.ClearColor(EditorPalette.Window);
-        _controller = new ImGuiController(this);
+        _vulkan = new VulkanWindowContext(this);
+        _controller = new VulkanImGuiController(this);
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
+        _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
         ConfigureImGui();
         UiDiagnostics.Configure();
-        _logoTexture = ImGuiTexture.LoadLogo();
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
@@ -128,7 +127,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     {
         base.OnRenderFrame(args);
         _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
-        GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
         if (_controller is not null)
         {
@@ -137,7 +135,13 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             UiDiagnostics.Capture(this, "welcome");
         }
 
-        SwapBuffers();
+        _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
+        {
+            if (_imguiRenderer is not null && _controller is not null)
+            {
+                _imguiRenderer.Record(commandBuffer, _controller);
+            }
+        });
     }
 
     protected override void OnUnload()
@@ -149,20 +153,20 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private void ReleaseResources()
     {
         if (_controller is null) return;
-        MakeCurrent();
         ImGui.SetCurrentContext(_imguiContext);
         _editor.ProjectOpened -= OnProjectOpened;
         _editor.ProjectOperationFailed -= OnProjectOperationFailed;
-        _logoTexture?.Dispose();
-        _logoTexture = null;
         _controller.Dispose();
         _controller = null;
+        _imguiRenderer?.Dispose();
+        _imguiRenderer = null;
+        _vulkan?.Dispose();
+        _vulkan = null;
     }
 
     public override void Dispose()
     {
-        // This independent window uses a manual loop, so GameWindow.Run does
-        // not invoke OnUnload for it. Release its own GL/context before GLFW.
+        // 这个独立窗口使用手动循环，因此必须在 GLFW 销毁前释放自己的 Vulkan 资源
         ReleaseResources();
         base.Dispose();
     }
@@ -176,9 +180,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             MinimumClientSize = new Vector2i(680, 520),
             StartVisible = true,
             StartFocused = true,
-            APIVersion = new Version(3, 3),
-            Profile = ContextProfile.Core,
-            API = ContextAPI.OpenGL,
+            API = ContextAPI.NoAPI,
             Vsync = VSyncMode.On,
             Icon = AppBranding.LoadWindowIcon(),
         };
@@ -224,12 +226,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         var contentWidth = Math.Min(660F, display.X - 68F);
         var contentLeft = MathF.Floor(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
-        if (_logoTexture is not null)
-        {
-            ImGui.Image(_logoTexture.ImGuiHandle, new Vector2(104F, 104F));
-            ImGui.SameLine(0F, 22F);
-        }
-
         ImGui.BeginGroup();
         ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 13F);
         ImGui.PushFont(_fonts.Title);
