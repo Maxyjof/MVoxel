@@ -92,8 +92,8 @@ public readonly struct LocalCoord : IEquatable<LocalCoord>
 }
 
 /// <summary>
-/// 完整 RGB/RGBA 颜色，不受 256 色调色板限制
-/// 调色板只是编辑便利，存储层永远是逐体素的 32 位颜色
+/// 体素材质的基础色快照
+/// 编辑器中的基础色必须从当前调色板选择，存储时保留 RGBA 值以保证项目可独立读取
 /// </summary>
 /// <param name="R">红通道</param>
 /// <param name="G">绿通道</param>
@@ -113,10 +113,10 @@ public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255)
 }
 
 /// <summary>
-/// 体素的存储值：颜色加材质槽加标志位
+/// 体素的存储值：调色板基础色快照、材质槽和标志位
 /// </summary>
 /// <param name="Color">RGBA 颜色</param>
-/// <param name="MaterialSlot">材质槽索引，供未来 .material 资产引用</param>
+/// <param name="MaterialSlot">材质槽索引，对应项目材质属性</param>
 /// <param name="Flags">材质标志，见 <see cref="VoxelFlags"/></param>
 public readonly record struct VoxelValue(Rgba32 Color, ushort MaterialSlot = 0, byte Flags = 0)
 {

@@ -141,7 +141,6 @@ public static class ProjectLayout
         "VoxelModels",
         "Materials",
         "Palettes",
-        "Textures",
         "Environments",
         "RenderPresets",
         "Generators",

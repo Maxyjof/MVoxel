@@ -274,8 +274,6 @@ internal enum ProjectAssetKind
     Material,
     /// <summary>调色板 .palette</summary>
     Palette,
-    /// <summary>贴图</summary>
-    Texture,
     /// <summary>环境</summary>
     Environment,
     /// <summary>渲染预设</summary>
@@ -316,7 +314,6 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Prefab,
         ProjectAssetKind.Material,
         ProjectAssetKind.Palette,
-        ProjectAssetKind.Texture,
         ProjectAssetKind.Environment,
         ProjectAssetKind.RenderPreset,
         ProjectAssetKind.Generator,
@@ -449,7 +446,6 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Prefab => "预制件",
         ProjectAssetKind.Material => "材质",
         ProjectAssetKind.Palette => "调色板",
-        ProjectAssetKind.Texture => "贴图",
         ProjectAssetKind.Environment => "环境",
         ProjectAssetKind.RenderPreset => "渲染预设",
         ProjectAssetKind.Generator => "生成器",
@@ -474,8 +470,7 @@ internal static class ProjectAssetCatalog
             ".prefab" => ProjectAssetKind.Prefab,
             ".material" => ProjectAssetKind.Material,
             ".palette" or ".pal" => ProjectAssetKind.Palette,
-            ".png" or ".jpg" or ".jpeg" or ".tga" or ".bmp" or ".exr" => ProjectAssetKind.Texture,
-            ".mvenvironment" or ".hdr" => ProjectAssetKind.Environment,
+            ".mvenvironment" or ".hdr" or ".exr" => ProjectAssetKind.Environment,
             ".mvrenderpreset" or ".mvrender" => ProjectAssetKind.RenderPreset,
             ".mvgenerator" => ProjectAssetKind.Generator,
             ".cs" or ".lua" => ProjectAssetKind.Script,
@@ -530,7 +525,6 @@ internal static class ProjectAssetCatalog
         "VoxelModels" => "体素模型",
         "Materials" => "材质",
         "Palettes" => "调色板",
-        "Textures" => "贴图",
         "Environments" => "环境",
         "RenderPresets" => "渲染预设",
         "Generators" => "生成器",
@@ -588,9 +582,6 @@ internal static class AssetIconPainter
                     draw.AddCircleFilled(p(new Vector2(.56F, .62F)), size * .08F, ToPackedColor(Color.FromArgb(255, 110, 205, 151)), 12);
                 }
                 break;
-            case ProjectAssetKind.Texture:
-                DrawTexture(draw, p, main, shade, outline);
-                break;
             case ProjectAssetKind.Environment:
                 draw.AddCircleFilled(p(new Vector2(.5F, .42F)), size * .23F, ToPackedColor(main), 16);
                 draw.AddCircleFilled(p(new Vector2(.37F, .58F)), size * .18F, ToPackedColor(light), 16);
@@ -628,24 +619,6 @@ internal static class AssetIconPainter
         if (prefab) draw.AddCircleFilled(p(new Vector2(.78F, .78F)), 4F, ToPackedColor(Color.FromArgb(255, 101, 190, 255)), 10);
     }
 
-    private static void DrawTexture(ImDrawListPtr draw, Func<Vector2, Vector2> p, Color main, Color shade, Color outline)
-    {
-        var start = p(new Vector2(.12F, .12F));
-        var end = p(new Vector2(.88F, .88F));
-        draw.AddRectFilled(start, end, ToPackedColor(main), 3F);
-        for (var y = 0; y < 3; y++)
-        for (var x = 0; x < 3; x++)
-        {
-            if ((x + y) % 2 == 0)
-            {
-                var a = p(new Vector2(.16F + x * .24F, .16F + y * .24F));
-                var b = p(new Vector2(.40F + x * .24F, .40F + y * .24F));
-                draw.AddRectFilled(a, b, ToPackedColor(shade));
-            }
-        }
-        draw.AddRect(start, end, ToPackedColor(outline), 3F, ImDrawFlags.None, 1F);
-    }
-
     private static void DrawDocument(ImDrawListPtr draw, Func<Vector2, Vector2> p, Color main, Color shade, Color outline, bool generated)
     {
         draw.AddRectFilled(p(new Vector2(.2F, .1F)), p(new Vector2(.8F, .9F)), ToPackedColor(main), 3F);
@@ -667,7 +640,6 @@ internal static class AssetIconPainter
         ProjectAssetKind.Prefab => Color.FromArgb(255, 132, 143, 246),
         ProjectAssetKind.Material => Color.FromArgb(255, 224, 158, 92),
         ProjectAssetKind.Palette => Color.FromArgb(255, 206, 122, 216),
-        ProjectAssetKind.Texture => Color.FromArgb(255, 110, 205, 151),
         ProjectAssetKind.Environment => Color.FromArgb(255, 105, 180, 231),
         ProjectAssetKind.RenderPreset => Color.FromArgb(255, 223, 192, 103),
         ProjectAssetKind.Generator => Color.FromArgb(255, 99, 215, 145),

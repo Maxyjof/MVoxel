@@ -752,7 +752,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("目录"))
             {
-                ImGui.TextWrapped("Assets 下的 Scenes、Prefabs、VoxelModels、Materials、Palettes、Textures 等目录由项目结构自动维护。");
+                ImGui.TextWrapped("Assets 下的场景、预制件、体素模型、材质、调色板、环境、渲染预设和生成器目录由项目结构自动维护。体素材质不使用贴图，基础色只能从当前调色板选择。");
                 ImGui.TextDisabled("项目设置文件：ProjectSettings/settings.json");
                 ImGui.EndTabItem();
             }

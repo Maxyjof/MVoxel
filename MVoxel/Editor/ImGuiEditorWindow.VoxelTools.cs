@@ -879,7 +879,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPaletteSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("调色与笔刷", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        if (!ImGui.CollapsingHeader("材质基础色与笔刷", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.TextWrapped("体素表面使用纯色。材质基础色来自当前调色板，材质属性只控制粗糙度、金属度、透明和自发光等效果，不提供 UV 或贴图输入。");
         Toggle("MagicaVoxel 调色着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
         SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
         SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
