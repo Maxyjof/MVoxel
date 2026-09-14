@@ -105,6 +105,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     protected override void OnLoad()
     {
         base.OnLoad();
+        CenterOnCurrentMonitor();
         _vulkan = new VulkanWindowContext(this);
         _controller = new VulkanImGuiController(this);
         _imguiContext = ImGui.GetCurrentContext();
@@ -135,6 +136,19 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     {
         base.OnResize(args);
         _vulkan?.RequestResize();
+    }
+
+    /// <summary>
+    /// 将欢迎窗口放到当前显示器工作区中央
+    /// </summary>
+    private void CenterOnCurrentMonitor()
+    {
+        var workArea = Monitors.GetMonitorFromWindow(this).WorkArea;
+        var windowSize = Bounds.Size;
+        if (windowSize.X <= 0 || windowSize.Y <= 0) windowSize = ClientSize;
+        Location = workArea.Min + new Vector2i(
+            Math.Max(0, (workArea.Size.X - windowSize.X) / 2),
+            Math.Max(0, (workArea.Size.Y - windowSize.Y) / 2));
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs args)
@@ -226,8 +240,8 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         style.FrameRounding = 4F;
         style.WindowBorderSize = 1F;
         style.FrameBorderSize = 1F;
+        style.WindowPadding = Vector2.Zero;
         style.ItemSpacing = new Vector2(10F, 8F);
-        style.WindowPadding = new Vector2(34F, 28F);
         style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);

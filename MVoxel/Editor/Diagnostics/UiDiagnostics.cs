@@ -109,6 +109,7 @@ internal static class UiDiagnostics
         var windowBackground = style.Colors[(int)ImGuiCol.WindowBg];
         AtomicFile.WriteText(Path.Combine(Output!, $"{name}-{Scenario}.txt"),
             $"Backend=Vulkan\nFramebuffer={window.FramebufferSize.X}x{window.FramebufferSize.Y}\n" +
+            $"Location={window.Location.X},{window.Location.Y}\n" +
             $"Display={io.DisplaySize}\nScale={io.DisplayFramebufferScale}\n" +
             $"FontLine={(font.NativePtr is null ? 0 : font.FontSize)}\nChineseAdvance={(font.NativePtr is null ? 0 : font.GetCharAdvance('中'))}\n" +
             $"Missing={missing}\nWindowBg={windowBackground.X:F3},{windowBackground.Y:F3},{windowBackground.Z:F3}\n" +

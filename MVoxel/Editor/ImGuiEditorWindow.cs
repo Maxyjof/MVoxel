@@ -117,6 +117,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnLoad()
     {
         base.OnLoad();
+        CenterOnCurrentMonitor();
         _vulkan = new VulkanWindowContext(this);
         _controller = new VulkanImGuiController(this);
         _imguiContext = ImGui.GetCurrentContext();
@@ -143,6 +144,19 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         base.OnResize(args);
         _vulkan?.RequestResize();
+    }
+
+    /// <summary>
+    /// 将主窗口放到当前显示器工作区中央
+    /// </summary>
+    private void CenterOnCurrentMonitor()
+    {
+        var workArea = Monitors.GetMonitorFromWindow(this).WorkArea;
+        var windowSize = Bounds.Size;
+        if (windowSize.X <= 0 || windowSize.Y <= 0) windowSize = ClientSize;
+        Location = workArea.Min + new Vector2i(
+            Math.Max(0, (workArea.Size.X - windowSize.X) / 2),
+            Math.Max(0, (workArea.Size.Y - windowSize.Y) / 2));
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
