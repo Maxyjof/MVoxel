@@ -11,7 +11,7 @@ internal static class EditorPalette
     /// <summary>
     /// 默认主题名称
     /// </summary>
-    internal const string DefaultThemeName = "MVoxel 浅白";
+    internal const string DefaultThemeName = "MVoxel 暗色";
 
     /// <summary>
     /// 可用主题名称
@@ -19,7 +19,7 @@ internal static class EditorPalette
     internal static readonly string[] ThemeNames =
     {
         DefaultThemeName,
-        "MVoxel 深色",
+        "柔和浅色",
         "石墨灰",
         "高对比度",
         "海蓝清新",
@@ -100,13 +100,13 @@ internal static class EditorPalette
         (Window, Panel, PanelHeader, Input, Border, Accent, AccentSoft, Text, MutedText, Icon, Success, Error) =
             theme switch
             {
-                "MVoxel 深色" => (
-                    Color.FromArgb(255, 18, 23, 30), Color.FromArgb(255, 34, 40, 50),
-                    Color.FromArgb(255, 48, 58, 73), Color.FromArgb(255, 22, 28, 37),
-                    Color.FromArgb(255, 105, 122, 144), Color.FromArgb(255, 93, 187, 255),
-                    Color.FromArgb(255, 40, 92, 130), Color.FromArgb(255, 245, 247, 250),
-                    Color.FromArgb(255, 189, 199, 212), Color.FromArgb(255, 220, 235, 247),
-                    Color.FromArgb(255, 99, 215, 145), Color.FromArgb(255, 255, 112, 120)),
+                "柔和浅色" => (
+                    Color.FromArgb(255, 232, 237, 243), Color.FromArgb(255, 247, 249, 251),
+                    Color.FromArgb(255, 204, 214, 225), Color.FromArgb(255, 239, 243, 247),
+                    Color.FromArgb(255, 128, 145, 163), Color.FromArgb(255, 43, 103, 155),
+                    Color.FromArgb(255, 198, 218, 236), Color.FromArgb(255, 25, 37, 51),
+                    Color.FromArgb(255, 83, 98, 115), Color.FromArgb(255, 52, 83, 112),
+                    Color.FromArgb(255, 37, 139, 94), Color.FromArgb(255, 194, 64, 76)),
                 "石墨灰" => (
                     Color.FromArgb(255, 39, 42, 47), Color.FromArgb(255, 52, 56, 62),
                     Color.FromArgb(255, 66, 71, 78), Color.FromArgb(255, 31, 34, 39),
@@ -128,12 +128,12 @@ internal static class EditorPalette
                     Color.FromArgb(255, 27, 117, 143), Color.FromArgb(255, 25, 150, 105),
                     Color.FromArgb(255, 198, 65, 72)),
                 _ => (
-                    Color.FromArgb(255, 232, 237, 243), Color.FromArgb(255, 247, 249, 251),
-                    Color.FromArgb(255, 204, 214, 225), Color.FromArgb(255, 239, 243, 247),
-                    Color.FromArgb(255, 128, 145, 163), Color.FromArgb(255, 43, 103, 155),
-                    Color.FromArgb(255, 198, 218, 236), Color.FromArgb(255, 25, 37, 51),
-                    Color.FromArgb(255, 83, 98, 115), Color.FromArgb(255, 52, 83, 112),
-                    Color.FromArgb(255, 37, 139, 94), Color.FromArgb(255, 194, 64, 76)),
+                    Color.FromArgb(255, 16, 21, 28), Color.FromArgb(255, 27, 35, 45),
+                    Color.FromArgb(255, 38, 49, 63), Color.FromArgb(255, 18, 26, 34),
+                    Color.FromArgb(255, 70, 87, 106), Color.FromArgb(255, 215, 168, 79),
+                    Color.FromArgb(255, 92, 69, 32), Color.FromArgb(255, 235, 240, 246),
+                    Color.FromArgb(255, 155, 170, 188), Color.FromArgb(255, 184, 202, 220),
+                    Color.FromArgb(255, 104, 214, 147), Color.FromArgb(255, 255, 102, 112)),
             };
     }
 }

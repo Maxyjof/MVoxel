@@ -25,7 +25,7 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
-    private const uint MainDockspaceId = 0x6A3C1001;
+    private const uint MainDockspaceId = 0x6A3C2001;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
     private string? _imguiLayoutPath;
@@ -277,7 +277,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var layoutPath = Path.Combine(configDirectory, "imgui-layout.ini");
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
-        var hasCurrentPanelLayout = savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
+        var hasCurrentPanelLayout = savedLayout.Contains("DockSpace ID=0x6A3C2001", StringComparison.Ordinal) &&
+                                     savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][检查器##检查器窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染配置##渲染配置窗口]", StringComparison.Ordinal) &&
@@ -291,17 +292,25 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.LoadIniSettingsFromMemory(DefaultDockLayout);
         }
 
+        ApplyImGuiStyle();
+    }
+
+    /// <summary>
+    /// 应用当前主题的 ImGui 间距、圆角、边框和控件颜色
+    /// </summary>
+    private void ApplyImGuiStyle()
+    {
         var style = ImGui.GetStyle();
-        style.WindowRounding = 4F;
-        style.ChildRounding = 3F;
-        style.FrameRounding = 3F;
-        style.PopupRounding = 4F;
-        style.ScrollbarRounding = 3F;
-        style.GrabRounding = 3F;
+        style.WindowRounding = 2F;
+        style.ChildRounding = 2F;
+        style.FrameRounding = 2F;
+        style.PopupRounding = 2F;
+        style.ScrollbarRounding = 2F;
+        style.GrabRounding = 2F;
         style.WindowBorderSize = 1F;
         style.FrameBorderSize = 1F;
-        style.ItemSpacing = new Vector2(8F, 6F);
-        style.WindowPadding = new Vector2(8F, 8F);
+        style.ItemSpacing = new Vector2(7F, 5F);
+        style.WindowPadding = new Vector2(7F, 7F);
         style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Panel);
@@ -343,6 +352,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) HandleVoxelShortcuts();
         if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
+        DrawCommandToolbar();
         DrawDockspace();
         DrawHierarchy();
         DrawCenter();
@@ -427,6 +437,79 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ImGui.EndMainMenuBar();
     }
 
+    /// <summary>
+    /// 绘制固定在菜单栏下方的工作区工具栏
+    /// </summary>
+    private void DrawCommandToolbar()
+    {
+        var display = ImGui.GetIO().DisplaySize;
+        ImGui.SetNextWindowPos(new Vector2(0F, MenuHeight), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(display.X, ToolbarHeight), ImGuiCond.Always);
+        var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
+                    ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
+        if (!ImGui.Begin("##MVoxelCommandToolbar", flags))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "视图");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("场景")) _requestedCenterTab = 0;
+        ImGui.SameLine();
+        if (ImGui.SmallButton("渲染")) _requestedCenterTab = 1;
+        ImGui.SameLine();
+        ImGui.TextDisabled("│");
+        ImGui.SameLine();
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "工具");
+        ImGui.SameLine();
+        ToolButton("相机", EditorTool.Camera);
+        ImGui.SameLine();
+        ToolButton("选择", EditorTool.Pick);
+        ImGui.SameLine();
+        ToolButton("绘制", EditorTool.Draw);
+        ImGui.SameLine();
+        ToolButton("擦除", EditorTool.Erase);
+        ImGui.SameLine();
+        ImGui.TextDisabled("│");
+        ImGui.SameLine();
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "布局");
+        ImGui.SameLine();
+        var layoutName = _layoutPreset switch
+        {
+            LayoutPreset.Modeling => "建模",
+            LayoutPreset.Rendering => "渲染工作台",
+            _ => "默认",
+        };
+        if (ImGui.BeginCombo("##ToolbarLayout", layoutName, ImGuiComboFlags.NoArrowButton))
+        {
+            if (ImGui.Selectable("默认", _layoutPreset == LayoutPreset.Default)) SelectLayout(LayoutPreset.Default);
+            if (ImGui.Selectable("建模", _layoutPreset == LayoutPreset.Modeling)) SelectLayout(LayoutPreset.Modeling);
+            if (ImGui.Selectable("渲染工作台", _layoutPreset == LayoutPreset.Rendering)) SelectLayout(LayoutPreset.Rendering);
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "主题");
+        ImGui.SameLine();
+        var theme = _editorSettings.Theme;
+        if (ImGui.BeginCombo("##ToolbarTheme", theme, ImGuiComboFlags.NoArrowButton))
+        {
+            foreach (var themeName in EditorPalette.ThemeNames)
+            {
+                if (!ImGui.Selectable(themeName, theme == themeName)) continue;
+                _editorSettings.Theme = themeName;
+                EditorPalette.ApplyTheme(themeName);
+                ApplyImGuiStyle();
+                SaveEditorSettings();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.End();
+    }
+
     private void DrawDockspace()
     {
         var display = ImGui.GetIO().DisplaySize;
@@ -436,31 +519,32 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoBringToFrontOnFocus |
                     ImGuiWindowFlags.NoNavFocus | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelDockspaceHost", flags);
-        ImGui.DockSpace(MainDockspaceId, Vector2.Zero, ImGuiDockNodeFlags.PassthruCentralNode);
+        ImGui.DockSpace(MainDockspaceId, Vector2.Zero,
+            ImGuiDockNodeFlags.PassthruCentralNode | ImGuiDockNodeFlags.AutoHideTabBar);
         ImGui.End();
     }
 
     private const string DefaultDockLayout = """
 [Docking][Data]
-DockSpace ID=0x6A3C1001 Pos=0,24 Size=1440,840 Split=X Selected=0x6A3C1002
-  DockNode ID=0x6A3C1002 Parent=0x6A3C1001 SizeRef=260,840 Selected=0xD7AC1001
-  DockNode ID=0x6A3C1003 Parent=0x6A3C1001 SizeRef=1180,840 Split=Y Selected=0x6A3C1004
-    DockNode ID=0x6A3C1004 Parent=0x6A3C1003 SizeRef=1180,615 Split=X Selected=0xD7AC1002
-      DockNode ID=0x6A3C1005 Parent=0x6A3C1004 SizeRef=880,615 Selected=0xD7AC1002
-      DockNode ID=0x6A3C1006 Parent=0x6A3C1004 SizeRef=300,615 Selected=0xD7AC1003
-    DockNode ID=0x6A3C1007 Parent=0x6A3C1003 SizeRef=1180,225 Selected=0xD7AC1004
+DockSpace ID=0x6A3C2001 Pos=0,60 Size=1440,804 Split=Y Selected=0x6A3C2002
+  DockNode ID=0x6A3C2002 Parent=0x6A3C2001 SizeRef=1440,615 Split=X Selected=0x6A3C2003
+    DockNode ID=0x6A3C2003 Parent=0x6A3C2002 SizeRef=260,615 Selected=0xD7AC1001
+    DockNode ID=0x6A3C2004 Parent=0x6A3C2002 SizeRef=1180,615 Split=X Selected=0x6A3C2005
+      DockNode ID=0x6A3C2005 Parent=0x6A3C2004 SizeRef=880,615 Selected=0xD7AC1002
+      DockNode ID=0x6A3C2006 Parent=0x6A3C2004 SizeRef=300,615 Selected=0xD7AC1003
+  DockNode ID=0x6A3C2007 Parent=0x6A3C2001 SizeRef=1440,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
-DockId=0x6A3C1002,0
+DockId=0x6A3C2003,0
 [Window][场景##场景窗口]
-DockId=0x6A3C1005,0
+DockId=0x6A3C2005,0
 [Window][渲染##渲染窗口]
-DockId=0x6A3C1005,1
+DockId=0x6A3C2005,1
 [Window][检查器##检查器窗口]
-DockId=0x6A3C1006,0
+DockId=0x6A3C2006,0
 [Window][渲染配置##渲染配置窗口]
-DockId=0x6A3C1006,1
+DockId=0x6A3C2006,1
 [Window][项目资产##资源浏览器]
-DockId=0x6A3C1007,0
+DockId=0x6A3C2007,0
 """;
 
     private void DrawHierarchy()
@@ -1255,11 +1339,11 @@ DockId=0x6A3C1007,0
     }
 
     private static float MenuHeight => ImGui.GetFrameHeight();
-    private static float WorkspaceTop => MenuHeight;
+    private static float ToolbarHeight => ImGui.GetFrameHeight() + 10F;
+    private static float WorkspaceTop => MenuHeight + ToolbarHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
 
-    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse |
-        (_editPanelLayout ? ImGuiWindowFlags.None : ImGuiWindowFlags.NoTitleBar);
+    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse;
 
     private LayoutMetrics GetLayoutMetrics(Vector2 display)
     {

@@ -61,7 +61,8 @@ public sealed class EditorSettingsDocument
 
     public void Normalize()
     {
-        if (FormatVersion < 2 && string.Equals(Theme, "MVoxel 深色", StringComparison.Ordinal))
+        if (string.Equals(Theme, "MVoxel 浅白", StringComparison.Ordinal) ||
+            string.Equals(Theme, "MVoxel 深色", StringComparison.Ordinal))
         {
             Theme = EditorPalette.DefaultThemeName;
         }

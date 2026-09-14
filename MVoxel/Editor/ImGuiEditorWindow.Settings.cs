@@ -215,7 +215,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("面板"))
             {
-                ImGui.TextWrapped("默认布局：左侧层级、中间场景/渲染、右侧检查器、下方项目资产。");
+                ImGui.TextWrapped("默认布局：左侧层级、中间场景与渲染标签页、右侧检查器与渲染配置标签页，下方项目资产横跨全宽。");
                 if (ImGui.Button("应用默认布局")) SelectLayout(LayoutPreset.Default);
                 ImGui.SameLine();
                 if (ImGui.Button("应用建模布局")) SelectLayout(LayoutPreset.Modeling);
@@ -226,7 +226,7 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("停靠"))
             {
-                ImGui.TextWrapped("开启布局编辑后，可拖拽面板标题栏停靠、悬浮和调整分割线；默认状态隐藏多余标题栏。");
+                ImGui.TextWrapped("开启布局编辑后，可拖拽面板标题栏停靠、悬浮和调整分割线；固定停靠的单窗口隐藏多余标签栏，浮动窗口保留标题栏。");
                 if (ImGui.Button(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
                     _editPanelLayout = !_editPanelLayout;
                 ImGui.EndTabItem();
@@ -392,7 +392,7 @@ internal sealed partial class ImGuiEditorWindow
                         {
                             _editorSettings.Theme = item;
                             EditorPalette.ApplyTheme(item);
-                            ConfigureImGui();
+                            ApplyImGuiStyle();
                             SaveEditorSettings();
                         }
                     }
