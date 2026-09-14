@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
+using Silk.NET.Vulkan.Extensions.KHR;
 
 namespace MVoxel.Editor.Rendering.Vulkan;
 
@@ -164,10 +165,31 @@ internal sealed class VulkanDeviceProbe : IDisposable
                 }
             }
 
+            var extensionNames = EnumerateDeviceExtensions(runtime, physicalDevice);
             PhysicalDeviceFeatures2 features = new()
             {
                 SType = StructureType.PhysicalDeviceFeatures2
             };
+            PhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = new()
+            {
+                SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr
+            };
+            PhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures = new()
+            {
+                SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr
+            };
+            PhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = new()
+            {
+                SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr
+            };
+            PhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = new()
+            {
+                SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures
+            };
+            features.PNext = &accelerationStructureFeatures;
+            accelerationStructureFeatures.PNext = &rayTracingPipelineFeatures;
+            rayTracingPipelineFeatures.PNext = &rayQueryFeatures;
+            rayQueryFeatures.PNext = &bufferDeviceAddressFeatures;
             runtime.Api.GetPhysicalDeviceFeatures2(physicalDevice, &features);
 
             string name = ReadFixedString(properties.DeviceName);
@@ -177,12 +199,16 @@ internal sealed class VulkanDeviceProbe : IDisposable
                 FormatVersion(properties.ApiVersion),
                 properties.DeviceType,
                 supportsGraphicsQueue,
-                false,
-                false,
-                false,
-                false,
-                false,
-                $"基础 Feature 已读取，启用的核心 Feature 数量未知"));
+                extensionNames.Contains(KhrSwapchain.ExtensionName, StringComparer.Ordinal),
+                extensionNames.Contains(KhrAccelerationStructure.ExtensionName, StringComparer.Ordinal) &&
+                    accelerationStructureFeatures.AccelerationStructure,
+                extensionNames.Contains(KhrRayTracingPipeline.ExtensionName, StringComparer.Ordinal) &&
+                    rayTracingPipelineFeatures.RayTracingPipeline,
+                extensionNames.Contains("VK_KHR_ray_query", StringComparer.Ordinal) &&
+                    rayQueryFeatures.RayQuery,
+                (extensionNames.Contains(KhrBufferDeviceAddress.ExtensionName, StringComparer.Ordinal) ||
+                    properties.ApiVersion >= Vk.Version12) && bufferDeviceAddressFeatures.BufferDeviceAddress,
+                $"已读取设备扩展 {extensionNames.Count} 项与光追 Feature 链"));
         }
 
         return devices;
@@ -200,6 +226,43 @@ internal sealed class VulkanDeviceProbe : IDisposable
         }
 
         return Marshal.PtrToStringUTF8((nint)value, length) ?? "未命名 Vulkan 设备";
+    }
+
+    /// <summary>
+    /// 读取物理设备扩展名称
+    /// </summary>
+    private static unsafe HashSet<string> EnumerateDeviceExtensions(VulkanRuntime runtime, PhysicalDevice physicalDevice)
+    {
+        uint extensionCount = 0;
+        Result result = runtime.Api.EnumerateDeviceExtensionProperties(
+            physicalDevice, (byte*)null, &extensionCount, null);
+        if (result != Result.Success || extensionCount == 0)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        ExtensionProperties[] properties = new ExtensionProperties[extensionCount];
+        fixed (ExtensionProperties* propertiesPointer = properties)
+        {
+            result = runtime.Api.EnumerateDeviceExtensionProperties(
+                physicalDevice, (byte*)null, &extensionCount, propertiesPointer);
+        }
+
+        if (result != Result.Success)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        for (int index = 0; index < extensionCount; index++)
+        {
+            fixed (byte* name = properties[index].ExtensionName)
+            {
+                names.Add(ReadFixedString(name, 256));
+            }
+        }
+
+        return names;
     }
 
     /// <summary>
