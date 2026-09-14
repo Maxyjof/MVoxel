@@ -41,6 +41,7 @@ internal sealed class ProjectOperationFailedEventArgs : EventArgs
 /// </summary>
 internal sealed class ImGuiWelcomeWindow : GameWindow
 {
+    private const float TitleBarHeight = 34F;
     private readonly IEditorWelcomeHost _editor;
     private VulkanImGuiController? _controller;
     private VulkanWindowContext? _vulkan;
@@ -204,6 +205,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             Title = "欢迎使用 MVoxel",
             ClientSize = new Vector2i(780, 620),
             MinimumClientSize = new Vector2i(680, 520),
+            WindowBorder = WindowBorder.Hidden,
             StartVisible = true,
             StartFocused = true,
             API = ContextAPI.NoAPI,
@@ -250,6 +252,28 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelWelcome", flags);
+
+        var titleBarPosition = ImGui.GetCursorScreenPos();
+        ImGui.InvisibleButton("##WelcomeTitleBar", new Vector2(display.X, TitleBarHeight));
+        var titleBarMax = titleBarPosition + new Vector2(display.X, TitleBarHeight);
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddRectFilled(titleBarPosition, titleBarMax, ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.PanelHeader)));
+        drawList.AddLine(titleBarMax - new Vector2(0F, 1F), titleBarMax - new Vector2(display.X, 1F),
+            ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Border)), 1F);
+        drawList.AddText(titleBarPosition + new Vector2(14F, (TitleBarHeight - ImGui.GetTextLineHeight()) * 0.5F),
+            ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Text)), "欢迎使用 MVoxel");
+        if (ImGui.IsItemHovered() && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
+        {
+            var delta = ImGui.GetIO().MouseDelta;
+            if (delta.LengthSquared() > 0F)
+            {
+                Location = new Vector2i(
+                    Location.X + (int)MathF.Round(delta.X),
+                    Location.Y + (int)MathF.Round(delta.Y));
+            }
+        }
+
+        ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight));
 
         var contentWidth = Math.Min(660F, display.X - 68F);
         var contentLeft = MathF.Floor(Math.Max(34F, (display.X - contentWidth) / 2F));
