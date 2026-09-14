@@ -30,6 +30,11 @@ public enum ProjectTemplateId
     MaterialLab,
 
     /// <summary>
+    /// 展示调色板基础色和纯色体素材质
+    /// </summary>
+    PaletteWorkshop,
+
+    /// <summary>
     /// 展示负坐标、远距离对象和稀疏区块
     /// </summary>
     SparseWorld,
@@ -53,6 +58,11 @@ public enum ProjectTemplateId
     /// 展示墙体、拱门、立柱和模块化建筑
     /// </summary>
     Architecture,
+
+    /// <summary>
+    /// 展示多相机对象和渲染视图切换
+    /// </summary>
+    CameraGallery,
 
     /// <summary>
     /// 展示 1024×1024×14 的超大型稀疏场景和长距离视锥
@@ -82,11 +92,13 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素模型", "适合从零开始"),
         new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "小屋、树木、石板路、玻璃窗和自发光提灯", "基础建模 · 材质 · 自发光"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "不透明、半透明、自发光和材质槽的对照场景", "材质 · 透明 · 发光"),
+        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用当前调色板生成纯色体素材质色阶和材质槽对照", "调色板 · 纯色材质 · 材质属性"),
         new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "负坐标、多区块、远距离建筑和少量占用体素", "大世界 · 稀疏存储 · 负坐标"),
         new(ProjectTemplateId.LodPlayground, "LOD 练习场", "从近到远排列不同复杂度的建筑组，方便调试 LOD", "LOD · 场景性能 · 批量对象"),
         new(ProjectTemplateId.RayTracingStudio, "光追工作室", "发光面、玻璃屏、彩色材质和暗室布光", "路径追踪 · 直接光 · 透明"),
         new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "由高度函数生成的分层山谷、平台和水面", "程序化 · 地形 · 大量体素"),
         new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
+        new(ProjectTemplateId.CameraGallery, "多相机构图室", "同一体素场景配置三个相机，演示渲染视图切换和相机对象联动", "相机 · 构图 · 渲染视图"),
         new(ProjectTemplateId.LargeWorld, "超大型场景 · 1024×1024×14", "1024×1024 的超大地表、分散高柱和远距离视角性能验证", "大世界 · LOD · 性能压力"),
     ];
 
@@ -124,7 +136,8 @@ public static class ProjectTemplateCatalog
             {
                 var world = BuildWorld(id, VoxelPalette.Build());
                 VoxFormat.Write(modelPath, world);
-                WriteScene(project, Get(id), world.OccupiedVoxelCount);
+                WriteScene(project, Get(id), world.OccupiedVoxelCount,
+                    cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1);
             }
         }
 
@@ -145,11 +158,13 @@ public static class ProjectTemplateCatalog
         {
             ProjectTemplateId.Showcase => VoxelDemoScene.Build(palette),
             ProjectTemplateId.MaterialLab => BuildMaterialLab(),
+            ProjectTemplateId.PaletteWorkshop => BuildPaletteWorkshop(palette),
             ProjectTemplateId.SparseWorld => BuildSparseWorld(),
             ProjectTemplateId.LodPlayground => BuildLodPlayground(),
             ProjectTemplateId.RayTracingStudio => BuildRayTracingStudio(),
             ProjectTemplateId.ProceduralTerrain => BuildProceduralTerrain(),
             ProjectTemplateId.Architecture => BuildArchitecture(),
+            ProjectTemplateId.CameraGallery => BuildCameraGallery(),
             ProjectTemplateId.LargeWorld => LargeWorldFormat.BuildDemoWorld(),
             _ => new VoxelWorld(),
         };
@@ -187,6 +202,10 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.EmissiveIntensity = 18F;
                 settings.RenderSettings.TransmissiveAbsorption = .35F;
                 break;
+            case ProjectTemplateId.PaletteWorkshop:
+                settings.DefaultRenderPreset = "调色板材质展示";
+                settings.RenderSettings.PathMaxAccumulatedSamples = 256;
+                break;
             case ProjectTemplateId.ProceduralTerrain:
                 settings.LodLevels = 5;
                 settings.DefaultRenderPreset = "程序化地形";
@@ -198,6 +217,10 @@ public static class ProjectTemplateCatalog
                 settings.DefaultRenderPreset = "超大型场景性能验证";
                 settings.RenderSettings.ResolutionScale = .65F;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 64;
+                break;
+            case ProjectTemplateId.CameraGallery:
+                settings.DefaultRenderPreset = "多相机构图";
+                settings.RenderSettings.PathMaxAccumulatedSamples = 256;
                 break;
         }
 
@@ -212,7 +235,7 @@ public static class ProjectTemplateCatalog
     /// <param name="template">模板定义</param>
     /// <param name="voxelCount">体素数量</param>
     private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
-        string modelAssetPath = "Assets/VoxelModels/主场景.vox")
+        string modelAssetPath = "Assets/VoxelModels/主场景.vox", int cameraCount = 1)
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
@@ -228,9 +251,21 @@ public static class ProjectTemplateCatalog
                 template = template.Id.ToString(),
             }),
         });
-        var cameraObject = graph.Add("主相机", transform: TransformComponent.FromFree(new FreeTransform(
-            new Double3(0D, 8D, 18D), CreateCameraRotation(new Vector3(0F, -0.2F, -1F), Vector3.UnitY))));
-        cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
+        var positions = new[]
+        {
+            new Double3(0D, 8D, 18D),
+            new Double3(22D, 7D, 4D),
+            new Double3(-20D, 10D, -16D),
+        };
+        for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
+        {
+            var position = positions[index];
+            var forward = Vector3.Normalize(new Vector3((float)-position.X, -3.5F, (float)-position.Z));
+            var cameraObject = graph.Add(index == 0 ? "主相机" : $"相机 {index + 1}",
+                transform: TransformComponent.FromFree(new FreeTransform(
+                    position, CreateCameraRotation(forward, Vector3.UnitY))));
+            cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
+        }
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
     }
 
@@ -266,6 +301,31 @@ public static class ProjectTemplateCatalog
         FillBox(world, -12, 5, -5, -6, 11, 1, new VoxelValue(new Rgba32(86, 142, 228), MaterialSlot: 1));
         FillBox(world, -1, 5, -5, 5, 11, 1, new VoxelValue(new Rgba32(112, 218, 242, 96), MaterialSlot: 2, Flags: VoxelFlags.Translucent));
         FillBox(world, 9, 5, -5, 13, 11, 1, new VoxelValue(new Rgba32(255, 132, 58), MaterialSlot: 3, Flags: VoxelFlags.Emissive));
+        return world;
+    }
+
+    /// <summary>
+    /// 构建调色板基础色展示场
+    /// </summary>
+    /// <param name="palette">当前生效的调色板</param>
+    /// <returns>调色板展示世界</returns>
+    private static VoxelWorld BuildPaletteWorkshop(Rgba32[] palette)
+    {
+        var world = new VoxelWorld();
+        var floor = new VoxelValue(new Rgba32(34, 40, 52));
+        FillBox(world, -36, 0, -20, 36, 0, 20, floor);
+        for (var index = 1; index < Math.Min(VoxelPalette.EntryCount, 129); index++)
+        {
+            var column = (index - 1) % 16;
+            var row = (index - 1) / 16;
+            var height = 1 + index % 7;
+            var color = palette[index];
+            var flags = (byte)(color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None);
+            FillBox(world, -31 + column * 4, 1, -16 + row * 5,
+                -29 + column * 4, height, -14 + row * 5,
+                new VoxelValue(color, MaterialSlot: (ushort)(index % 8), Flags: flags));
+        }
+
         return world;
     }
 
@@ -398,6 +458,31 @@ public static class ProjectTemplateCatalog
             FillBox(world, x - 2, 1, -5, x + 2, 10, 5, trim);
         for (var layer = 0; layer < 4; layer++)
             FillBox(world, -15 + layer, 14 + layer, -11 + layer, 15 - layer, 14 + layer, 11 - layer, roof);
+        return world;
+    }
+
+    /// <summary>
+    /// 构建适合多相机构图的中心展台
+    /// </summary>
+    /// <returns>多相机展示世界</returns>
+    private static VoxelWorld BuildCameraGallery()
+    {
+        var world = new VoxelWorld();
+        var floor = new VoxelValue(new Rgba32(54, 72, 82));
+        var platform = new VoxelValue(new Rgba32(90, 140, 182));
+        var warm = new VoxelValue(new Rgba32(232, 160, 72));
+        var cool = new VoxelValue(new Rgba32(76, 168, 224));
+        FillBox(world, -28, 0, -22, 28, 0, 22, floor);
+        FillBox(world, -10, 1, -10, 10, 2, 10, platform);
+        for (var layer = 0; layer < 5; layer++)
+        {
+            FillBox(world, -8 + layer, 3 + layer, -8 + layer,
+                8 - layer, 3 + layer, 8 - layer, layer % 2 == 0 ? warm : cool);
+        }
+
+        foreach (var x in new[] { -20L, 20L })
+        foreach (var z in new[] { -14L, 14L })
+            FillBox(world, x - 2, 1, z - 2, x + 2, 12, z + 2, platform);
         return world;
     }
 

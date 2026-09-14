@@ -19,6 +19,7 @@ internal interface IEditorWelcomeHost
     bool HasStartupProject { get; }
     bool IsProjectOperationRunning { get; }
     BlockingOperationSnapshot? ProjectOperationSnapshot { get; }
+    string DefaultProjectRootPath { get; }
     void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId);
     void OpenProjectFromWelcome(string path);
     void OpenRecentProject(string path);
@@ -395,7 +396,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     {
         _pathMode = mode;
         if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
-        _pathText = string.Empty;
+        _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
         _errorText = string.Empty;
     }
 

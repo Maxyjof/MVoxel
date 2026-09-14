@@ -108,6 +108,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     public bool HasProject => _project is not null;
 
+    public string DefaultProjectRootPath => string.IsNullOrWhiteSpace(_editorSettings.ProjectRootPath)
+        ? EditorSettingsDocument.DefaultProjectRootPath
+        : _editorSettings.ProjectRootPath.Trim().Trim('"');
+
     public void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId) =>
         _pendingActions.Enqueue(() => BeginCreateProject(path, templateId, fromWelcome: true));
 
@@ -1525,7 +1529,9 @@ DockId=0x6A3C3007,0
     {
         _projectPathDialogMode = create ? 1 : 2;
         if (create) _selectedProjectTemplate = ProjectTemplateId.Empty;
-        _projectPathText = string.Empty;
+        _projectPathText = create
+            ? Path.Combine(DefaultProjectRootPath, "新项目")
+            : string.Empty;
         _projectPathError = string.Empty;
     }
 

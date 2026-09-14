@@ -36,7 +36,13 @@ public sealed class ShortcutScheme
 /// </summary>
 public sealed class EditorSettingsDocument
 {
+    /// <summary>
+    /// 新建项目对话框默认使用的项目根目录
+    /// </summary>
+    public const string DefaultProjectRootPath = @"D:\MVoxel_Workspae";
+
     public int FormatVersion = 2;
+    public string ProjectRootPath = DefaultProjectRootPath;
     public string ActiveShortcutScheme = "标准";
     public List<ShortcutScheme> ShortcutSchemes = new();
     public bool McMode;
@@ -81,6 +87,9 @@ public sealed class EditorSettingsDocument
         }
 
         FormatVersion = 2;
+        ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
+            ? DefaultProjectRootPath
+            : ProjectRootPath.Trim().Trim('"');
         ShortcutSchemes ??= new List<ShortcutScheme>();
         if (ShortcutSchemes.Count == 0) ShortcutSchemes.Add(CreateDefaultScheme());
 

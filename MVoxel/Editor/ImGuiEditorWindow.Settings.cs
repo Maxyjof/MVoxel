@@ -249,6 +249,16 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("基本"))
             {
+                ImGui.TextWrapped("新建项目默认放在项目根目录下，你也可以在新建项目对话框中改成其他路径");
+                ImGui.SetNextItemWidth(-1F);
+                ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048);
+
+                if (ImGui.Button("恢复默认项目根目录"))
+                {
+                    _editorSettings.ProjectRootPath = EditorSettingsDocument.DefaultProjectRootPath;
+                }
+                ImGui.SameLine();
+                ImGui.TextDisabled(EditorSettingsDocument.DefaultProjectRootPath);
                 ImGui.Checkbox("启用 GPU 诊断输出", ref _editorSettings.EnableGpuDiagnostics);
                 ImGui.Checkbox("新项目优先使用硬件 RT", ref _editorSettings.UseHardwareRayTracing);
                 ImGui.TextDisabled("硬件 RT 默认关闭，仅在新建项目时作为项目渲染设置的初始值");
