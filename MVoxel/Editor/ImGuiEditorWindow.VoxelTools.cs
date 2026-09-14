@@ -259,7 +259,7 @@ internal sealed partial class ImGuiEditorWindow
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
                 showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
             // 场景窗口只显示体素原色，完整光照和路径追踪仅由渲染窗口执行
-            if (!pipeline.RenderSceneView(_renderSettings, frame, width, height)) return false;
+            if (!pipeline.RenderSceneView(CurrentSceneRenderSettings, frame, width, height)) return false;
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                 Vector2.Zero, pipeline.DisplayUvMax);
             return true;

@@ -1028,7 +1028,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     if (!pathMode)
                     {
-                        radiance += vec3(0.025, 0.035, 0.05);
+                        radiance += vec3(values[98], values[99], values[100]);
                         break;
                     }
 
@@ -1045,7 +1045,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     if (!pathMode)
                     {
-                        radiance += vec3(0.025, 0.035, 0.05);
+                        radiance += vec3(values[98], values[99], values[100]);
                     }
                     else
                     {

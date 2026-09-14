@@ -19,6 +19,13 @@ internal sealed partial class ImGuiEditorWindow
     private string _newShortcutSchemeName = string.Empty;
     private string _renameShortcutScheme = string.Empty;
 
+    /// <summary>
+    /// 获取当前场景窗口实际使用的画面配置
+    /// </summary>
+    /// <returns>项目配置优先，未打开项目时返回编辑器默认配置</returns>
+    private RenderSettings CurrentSceneRenderSettings =>
+        _project is null ? _editorSettings.SceneRenderSettings : _projectSettings.SceneRenderSettings;
+
     private void LoadEditorSettings()
     {
         _editorSettings = SettingsStore.LoadEditor();
@@ -261,6 +268,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.TextWrapped("场景窗口固定使用无光照的纯体素预览，网格和体素棱线由场景辅助显示控制");
                 ImGui.TextDisabled("LOD 只在场景窗口生效，硬件 RT 不参与场景预览");
+                DrawColorSlider("场景窗口背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
+                ImGui.TextDisabled("未打开项目时使用此颜色，新项目会继承该颜色作为初始值");
                 ImGui.EndTabItem();
             }
 
@@ -553,6 +562,8 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextWrapped("场景画面配置：网格、辅助线、体素轮廓和编辑视图质量。场景窗口只显示体素原色，不使用光照渲染。LOD 只在这里生效。");
                 ImGui.Checkbox("场景网格", ref _projectSettings.ShowGrid);
                 ImGui.Checkbox("体素轮廓", ref _projectSettings.ShowVoxelOutlines);
+                DrawColorSlider("场景窗口背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
+                ImGui.TextDisabled("打开项目后优先使用项目级背景色");
                 ImGui.EndTabItem();
             }
 

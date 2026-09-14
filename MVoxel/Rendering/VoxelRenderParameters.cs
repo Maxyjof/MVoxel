@@ -13,7 +13,7 @@ public sealed class VoxelRenderParameters
     /// <summary>
     /// 参数块总槽数（float 个数），SSBO 按此大小上传
     /// </summary>
-    public const int SlotCount = 98;
+    public const int SlotCount = 101;
 
     // 相机基向量与逐帧标量
     /// <summary>相机位置 X</summary>
@@ -80,6 +80,8 @@ public sealed class VoxelRenderParameters
     public const int VoxelCount = 94, BvhNodeCount = 95;
     /// <summary>场景相机近平面与远平面</summary>
     public const int NearClip = 96, FarClip = 97;
+    /// <summary>场景窗口背景色的线性 RGB 分量</summary>
+    public const int SceneBackgroundR = 98, SceneBackgroundG = 99, SceneBackgroundB = 100;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -115,6 +117,8 @@ public sealed class VoxelRenderParameters
             ("P_DENOISE_ENABLED", DenoiseEnabled), ("P_DENOISE_STRENGTH", DenoiseStrength),
             ("P_VOXEL_COUNT", VoxelCount), ("P_BVH_NODE_COUNT", BvhNodeCount),
             ("P_NEAR_CLIP", NearClip), ("P_FAR_CLIP", FarClip),
+            ("P_SCENE_BACKGROUND_R", SceneBackgroundR), ("P_SCENE_BACKGROUND_G", SceneBackgroundG),
+            ("P_SCENE_BACKGROUND_B", SceneBackgroundB),
         };
 
         var builder = new StringBuilder();
@@ -287,6 +291,9 @@ public sealed class VoxelRenderParameters
             : 100_000_000F;
         parameters[NearClip] = nearClip;
         parameters[FarClip] = farClip;
+        parameters[SceneBackgroundR] = settings.SceneBackgroundColor.X;
+        parameters[SceneBackgroundG] = settings.SceneBackgroundColor.Y;
+        parameters[SceneBackgroundB] = settings.SceneBackgroundColor.Z;
 
         for (var index = 0; index < parameters.Length; index++)
         {

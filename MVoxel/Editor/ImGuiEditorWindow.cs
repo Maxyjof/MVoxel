@@ -607,7 +607,8 @@ DockId=0x6A3C3007,0
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
         var drawList = ImGui.GetWindowDrawList();
-        drawList.AddRectFilled(origin, origin + size, ToPackedColor(EditorPalette.Window));
+        var sceneSettings = CurrentSceneRenderSettings;
+        drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(sceneSettings)));
 
         DrawSceneCameraButton(origin, size);
         var gizmoCenter = origin + new Vector2(size.X - 78F, 78F);
@@ -667,6 +668,21 @@ DockId=0x6A3C3007,0
             : "左键放置 · 右键破坏 · 中键平移 · Shift+左键环绕 · 滚轮缩放 · 点击右上角 XYZ 定向");
         DrawSceneCameraPopup();
         ImGui.EndChild();
+    }
+
+    /// <summary>
+    /// 将场景配置中的线性背景色转换为 ImGui 使用的显示色
+    /// </summary>
+    /// <param name="settings">场景画面配置</param>
+    /// <returns>显示色</returns>
+    private static Color SceneBackgroundDisplayColor(RenderSettings settings)
+    {
+        var color = ToSrgbVector(settings.SceneBackgroundColor);
+        return Color.FromArgb(
+            255,
+            Math.Clamp((int)MathF.Round(color.X * 255F), 0, 255),
+            Math.Clamp((int)MathF.Round(color.Y * 255F), 0, 255),
+            Math.Clamp((int)MathF.Round(color.Z * 255F), 0, 255));
     }
 
     private SceneCamera GetSceneCamera()

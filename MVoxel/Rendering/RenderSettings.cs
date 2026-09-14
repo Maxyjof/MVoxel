@@ -53,6 +53,11 @@ public sealed class RenderSettings
     public bool ShowGround = true;
 
     /// <summary>
+    /// 场景窗口的纯色背景，按线性空间存储
+    /// </summary>
+    public Vector3 SceneBackgroundColor = new(0.025F, 0.035F, 0.05F);
+
+    /// <summary>
     /// 地面颜色（线性空间存储，面板按 sRGB 编辑）
     /// </summary>
     public Vector3 GroundColor = new(0.42F, 0.46F, 0.52F);
@@ -345,6 +350,7 @@ public sealed class RenderSettings
     public void ClampAll()
     {
         GroundColor = ClampChannel(GroundColor);
+        SceneBackgroundColor = ClampChannel(SceneBackgroundColor);
         SunColor = ClampChannel(SunColor);
         SkyTop = ClampChannel(SkyTop);
         SkyHorizon = ClampChannel(SkyHorizon);
@@ -488,6 +494,7 @@ public sealed class RenderSettings
         FocusDistance = Safe(FocusDistance, 18F);
         CameraFovDegrees = Safe(CameraFovDegrees, 50F);
         GroundColor = SafeChannel(GroundColor, new Vector3(0.42F, 0.46F, 0.52F));
+        SceneBackgroundColor = SafeChannel(SceneBackgroundColor, new Vector3(0.025F, 0.035F, 0.05F));
         SunColor = SafeChannel(SunColor, Vector3.One);
         SkyTop = SafeChannel(SkyTop, new Vector3(0.24F, 0.45F, 0.78F));
         SkyHorizon = SafeChannel(SkyHorizon, new Vector3(0.62F, 0.72F, 0.85F));

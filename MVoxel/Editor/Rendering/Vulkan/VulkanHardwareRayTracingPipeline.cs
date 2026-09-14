@@ -916,7 +916,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             vec3 direction = normalize(vec3(p[4], p[5], p[6]) +
                 vec3(p[8], p[9], p[10]) * uv.x * size.x / focal -
                 vec3(p[12], p[13], p[14]) * uv.y * size.y / focal);
-            payload = vec4(0.025, 0.035, 0.05, 1.0);
+            payload = vec4(p[98], p[99], p[100], 1.0);
             traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, p[96], direction, p[97], 0);
             imageStore(outputImage, pixel, payload);
         }
@@ -925,8 +925,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private const string MissShader = """
         #version 460
         #extension GL_EXT_ray_tracing : require
+        layout(set = 0, binding = 2, std430) readonly buffer Parameters { float p[]; };
         layout(location = 0) rayPayloadInEXT vec4 payload;
-        void main() { payload = vec4(0.025, 0.035, 0.05, 1.0); }
+        void main() { payload = vec4(p[98], p[99], p[100], 1.0); }
         """;
 
     private const string ClosestHitShader = """
