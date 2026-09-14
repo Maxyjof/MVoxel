@@ -9,11 +9,11 @@ namespace MVoxel.Editor.Rendering;
 /// <summary>
 /// GPU 体素视口渲染管线，管理 RGBA8 与 R8UI 区域工作集
 /// 工作集是覆盖稀疏世界的区块式 3D 纹理窗口，同时管理 HDR 双缓冲累积目标和 ImGui 使用的 LDR 显示纹理
-/// 
+///
 /// 所有通道都使用全屏片元写入 FBO 颜色附件
 /// 这是针对当前驱动栈的验证结果，因为 compute imageStore 在该驱动上会静默丢失
 /// SSBO 参数块和 3D 纹理采样器在片元阶段可以稳定工作，因此不改变光追核心
-/// 
+///
 /// 窗口优先请求 OpenGL 4.5
 /// 驱动不支持时 <see cref="IsAvailable"/> 为 false，编辑器回退到 CPU 预览
 /// </summary>
