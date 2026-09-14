@@ -51,7 +51,7 @@ internal sealed partial class ImGuiEditorWindow
     private void InitializeVoxelPipeline()
     {
         _pipeline?.Dispose();
-        _pipeline = new VulkanVoxelRenderPipeline();
+        _pipeline = new VulkanVoxelRenderPipeline(_vulkan);
         _pipelineStatus = "Vulkan 体素管线正在初始化";
 
         try
@@ -127,6 +127,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"模型读取失败，已载入示范场景：{exception.Message}");
         }
 
+        _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         FrameCameraOnWorld();
@@ -434,6 +435,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _lastPaintedCell = marker;
+        _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
     }
 
@@ -447,6 +449,7 @@ internal sealed partial class ImGuiEditorWindow
             if (_voxelHistory.Undo())
             {
                 SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
+                _pipeline?.SyncWorld(_world);
                 _pipeline?.ResetAccumulation();
             }
         }
@@ -455,6 +458,7 @@ internal sealed partial class ImGuiEditorWindow
             if (_voxelHistory.Redo())
             {
                 SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
+                _pipeline?.SyncWorld(_world);
                 _pipeline?.ResetAccumulation();
             }
         }
@@ -593,7 +597,10 @@ internal sealed partial class ImGuiEditorWindow
         var settings = _renderSettings;
         if (_pipeline is not { IsAvailable: true })
         {
-            ImGui.TextColored(ToColor(EditorPalette.Error), "GPU 计算渲染不可用：参数已保留，当前为 CPU 回退预览。");
+            var message = _pipeline?.GpuWorksetUploaded == true
+                ? "GPU 体素工作集已上传，GPU 绘制管线仍在初始化，当前使用 CPU 预览。"
+                : "GPU 体素工作集尚未上传，当前使用 CPU 预览。";
+            ImGui.TextColored(ToColor(EditorPalette.Accent), message);
             if (!string.IsNullOrEmpty(_pipelineStatus)) ImGui.TextWrapped(_pipelineStatus);
         }
 
