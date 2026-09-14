@@ -683,7 +683,8 @@ DockId=0x6A3C1007,0
         if (orbitLeft)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
-            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
+            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch + ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y),
+                -1.35F, 1.35F);
         }
 
         if (!gizmoHovered && ImGui.IsMouseDragging(ImGuiMouseButton.Middle))

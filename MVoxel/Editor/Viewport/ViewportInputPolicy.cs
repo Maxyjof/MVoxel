@@ -67,6 +67,17 @@ internal static class ViewportInputPolicy
     }
 
     /// <summary>
+    /// 把垂直鼠标位移转换为轨道相机的俯仰角增量
+    /// </summary>
+    /// <param name="mouseDeltaY">鼠标在垂直方向的位移</param>
+    /// <param name="sensitivity">相机旋转灵敏度</param>
+    /// <returns>轨道相机的俯仰角增量</returns>
+    public static float OrbitPitchDelta(float mouseDeltaY, float sensitivity = 0.008F)
+    {
+        return mouseDeltaY * sensitivity;
+    }
+
+    /// <summary>
     /// 判断指定视口是否允许改变体素数据
     /// </summary>
     /// <param name="isRenderViewport">是否为渲染视口</param>
