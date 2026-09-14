@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Numerics;
+using MVoxel.Core;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using Silk.NET.Vulkan;
@@ -43,6 +44,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private Extent2D _extent;
     private Format _format;
     private bool _resizePending;
+    private bool _deviceLost;
     private bool _disposed;
 
     /// <summary>
@@ -118,6 +120,11 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal Format ColorFormat => _format;
 
     /// <summary>
+    /// 获取设备是否已经丢失
+    /// </summary>
+    internal bool IsDeviceLost => _deviceLost;
+
+    /// <summary>
     /// 标记窗口尺寸变化，下一帧按需重建交换链资源
     /// </summary>
     internal void RequestResize()
@@ -160,7 +167,21 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// </summary>
     internal void RenderFrame(Vector4 color, Action<CommandBuffer> recordCommands)
     {
+        try
+        {
+            RenderFrameCore(color, recordCommands);
+        }
+        catch (Exception exception) when (IsDeviceLostException(exception))
+        {
+            _deviceLost = true;
+            MVoxelLog.Error("Vulkan 设备丢失，停止后续呈现", exception);
+        }
+    }
+
+    private void RenderFrameCore(Vector4 color, Action<CommandBuffer> recordCommands)
+    {
         ArgumentNullException.ThrowIfNull(recordCommands);
+        if (_deviceLost || _disposed) return;
         if (!TryRecreateSwapchain())
         {
             return;
@@ -224,7 +245,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             SignalSemaphoreCount = 1,
             PSignalSemaphores = &renderFinished
         };
-        _api.QueueSubmit(_queue, 1, in submitInfo, _inFlight);
+        Check(_api.QueueSubmit(_queue, 1, in submitInfo, _inFlight), "提交 Vulkan 帧命令");
 
         PresentInfoKHR presentInfo = new()
         {
@@ -246,6 +267,12 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             throw new InvalidOperationException($"Vulkan 呈现交换链图像失败：{result}");
         }
     }
+
+    /// <summary>
+    /// 判断异常是否由 Vulkan 设备丢失引起
+    /// </summary>
+    private static bool IsDeviceLostException(Exception exception) =>
+        exception.ToString().Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 释放 Vulkan 窗口上下文和所有呈现资源
@@ -695,6 +722,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     {
         if (result != Result.Success)
         {
+            MVoxelLog.Error($"Vulkan 调用失败：{operation}，结果：{result}");
             throw new InvalidOperationException($"{operation}失败：{result}");
         }
     }

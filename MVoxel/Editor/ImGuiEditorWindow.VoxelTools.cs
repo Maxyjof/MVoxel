@@ -45,12 +45,12 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleHueCycle;
     private bool _brushPreviewErase;
 
-    internal static string RenderSettingsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel", "render-settings.json");
+    internal static string RenderSettingsPath => AppPaths.ConfigPath("render-settings.json");
 
     private void InitializeVoxelPipeline()
     {
         _pipeline?.Dispose();
+        _gpuRenderingDisabled = false;
         _pipelineStatus = "Vulkan 体素管线正在初始化";
         try
         {
@@ -60,6 +60,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             _pipeline = null;
             _pipelineStatus = $"Vulkan Compute 管线初始化失败，当前使用 CPU 预览：{exception.Message}";
+            MVoxelLog.Error("Vulkan Compute 管线初始化失败，已切换 CPU 预览", exception);
         }
 
         try
@@ -68,7 +69,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // 保留内置默认值，设置文件读写失败不阻塞启动
+            MVoxelLog.Warn($"渲染配置读取失败，继续使用默认配置：{exception.Message}");
         }
 
         SyncSettingsToggles();
@@ -98,6 +99,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            MVoxelLog.Warn($"渲染配置保存失败：{exception.Message}");
         }
 
         _pipeline?.Dispose();
@@ -243,18 +245,26 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_pipeline is not { IsAvailable: true } pipeline) return false;
-        pipeline.SyncWorld(_world);
-        var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-        var width = Math.Max(16, (int)(size.X * scale));
-        var height = Math.Max(16, (int)(size.Y * scale));
-        var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
-            showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
-        var lighting = _showLighting ? _renderSettings : FlatLightingClone();
-        if (!pipeline.RenderSceneView(lighting, frame, width, height)) return false;
-        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-            Vector2.Zero, pipeline.DisplayUvMax);
-        return true;
+        if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
+        try
+        {
+            pipeline.SyncWorld(_world);
+            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            var width = Math.Max(16, (int)(size.X * scale));
+            var height = Math.Max(16, (int)(size.Y * scale));
+            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
+                showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
+            var lighting = _showLighting ? _renderSettings : FlatLightingClone();
+            if (!pipeline.RenderSceneView(lighting, frame, width, height)) return false;
+            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                Vector2.Zero, pipeline.DisplayUvMax);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DisableGpuRendering(exception);
+            return false;
+        }
     }
 
     private RenderSettings FlatLightingClone()
@@ -299,32 +309,62 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_pipeline is not { IsAvailable: true } pipeline) return false;
-        pipeline.SyncWorld(_world);
-        var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-        var width = Math.Max(16, (int)(size.X * scale));
-        var height = Math.Max(16, (int)(size.Y * scale));
-        var signature = TraceSignature(size, scale);
-        if (signature != _accumulationSignature)
+        if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
+        try
         {
-            _accumulationSignature = signature;
-            pipeline.ResetAccumulation();
+            pipeline.SyncWorld(_world);
+            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            var width = Math.Max(16, (int)(size.X * scale));
+            var height = Math.Max(16, (int)(size.Y * scale));
+            var signature = TraceSignature(size, scale);
+            if (signature != _accumulationSignature)
+            {
+                _accumulationSignature = signature;
+                pipeline.ResetAccumulation();
+            }
+
+            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
+            var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < _renderSettings.PathMaxAccumulatedSamples;
+            if (wantTrace)
+            {
+                pipeline.RenderPathView(_renderSettings, frame, width, height);
+            }
+            else
+            {
+                pipeline.Present(_renderSettings, frame, width, height);
+            }
+
+            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                Vector2.Zero, pipeline.DisplayUvMax);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DisableGpuRendering(exception);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 记录 GPU 设备异常并安全切换到 CPU 预览
+    /// </summary>
+    /// <param name="exception">导致 GPU 管线不可用的异常</param>
+    private void DisableGpuRendering(Exception exception)
+    {
+        if (_gpuRenderingDisabled) return;
+        _gpuRenderingDisabled = true;
+        _pipelineStatus = "Vulkan 设备不可用，当前使用 CPU 预览";
+        MVoxelLog.Error("Vulkan 体素渲染失败，已切换 CPU 预览", exception);
+        try
+        {
+            _pipeline?.Dispose();
+        }
+        catch (Exception disposeException)
+        {
+            MVoxelLog.Error("释放故障 Vulkan 资源时发生异常", disposeException);
         }
 
-        var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
-        var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < _renderSettings.PathMaxAccumulatedSamples;
-        if (wantTrace)
-        {
-            pipeline.RenderPathView(_renderSettings, frame, width, height);
-        }
-        else
-        {
-            pipeline.Present(_renderSettings, frame, width, height);
-        }
-
-        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-            Vector2.Zero, pipeline.DisplayUvMax);
-        return true;
+        _pipeline = null;
     }
 
     // 体素笔刷工具

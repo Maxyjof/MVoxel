@@ -1,5 +1,6 @@
 using MVoxel.Project;
 using MVoxel.Voxels;
+using MVoxel.Core;
 
 namespace MVoxel.Editor;
 
@@ -15,10 +16,9 @@ public static class EditorPalettes
     public const string ProjectPaletteName = "主调色板.palette";
 
     /// <summary>
-    /// 编辑器级调色板路径，位于 %AppData%/MVoxel 下，与渲染配置同级
+    /// 编辑器级调色板路径，位于程序目录的 MVoxelData/Config 下
     /// </summary>
-    public static string EditorPalettePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel", "editor.palette");
+    public static string EditorPalettePath => AppPaths.ConfigPath("editor.palette");
 
     /// <summary>
     /// 解析当前生效的编辑器级调色板：文件缺失或损坏时落回内置默认色板并顺手修复磁盘文件

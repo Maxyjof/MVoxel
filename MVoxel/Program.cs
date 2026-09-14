@@ -1,3 +1,4 @@
+using MVoxel.Core;
 using MVoxel.Editor;
 
 namespace MVoxel;
@@ -14,6 +15,20 @@ internal static class Program
     /// <param name="args">命令行参数，支持 --project 指定启动项目</param>
     private static void Main(string[] args)
     {
-        EditorApplication.Run(args);
+        MVoxelLog.Initialize();
+        MVoxelLog.Info($"启动 MVoxel，程序目录：{AppPaths.BaseDirectory}");
+        try
+        {
+            EditorApplication.Run(args);
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("应用主循环异常结束", exception);
+            Environment.ExitCode = 1;
+        }
+        finally
+        {
+            MVoxelLog.Shutdown();
+        }
     }
 }

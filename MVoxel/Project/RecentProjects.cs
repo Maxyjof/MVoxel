@@ -41,15 +41,11 @@ public static class RecentProjects
     };
 
     /// <summary>
-    /// 默认存储位置：%AppData%/MVoxel/recent-projects.json
+    /// 默认存储位置：程序目录/MVoxelData/Config/recent-projects.json
     /// </summary>
     public static string DefaultStoragePath
     {
-        get
-        {
-            var applicationData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            return Path.Combine(applicationData, "MVoxel", "recent-projects.json");
-        }
+        get => AppPaths.ConfigPath("recent-projects.json");
     }
 
     /// <summary>

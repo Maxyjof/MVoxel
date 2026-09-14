@@ -83,6 +83,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _undoRepeatAccumulator;
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
+    private bool _gpuRenderingDisabled;
 
     public ImGuiEditorWindow(string[] args)
         : base(GameWindowSettings.Default, CreateWindowSettings(args))
@@ -286,10 +287,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         io.ConfigWindowsMoveFromTitleBarOnly = true;
         io.ConfigDockingWithShift = false;
         io.ConfigViewportsNoTaskBarIcon = false;
-        var configDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel");
-        Directory.CreateDirectory(configDirectory);
-        var layoutPath = Path.Combine(configDirectory, "imgui-layout.ini");
+        AppPaths.EnsureDirectories();
+        var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
         var hasCurrentPanelLayout = savedLayout.Contains("DockSpace ID=0x6A3C3001", StringComparison.Ordinal) &&
@@ -840,7 +839,7 @@ DockId=0x6A3C3007,0
         drawList.AddLine(center - new Vector2(0F, 8F), center + new Vector2(0F, 8F), light, 1F);
     }
 
-    private static void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+    private void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var axisLength = GetInfiniteAxisLength(camera);
         DrawBidirectionalAxis(drawList, Vector3.UnitX, axisLength, origin, size, camera,
@@ -864,22 +863,68 @@ DockId=0x6A3C3007,0
     /// <summary>
     /// 绘制穿过原点并向正负方向延伸的双向坐标轴
     /// </summary>
-    private static void DrawBidirectionalAxis(ImDrawListPtr drawList, Vector3 axis, float length,
+    private void DrawBidirectionalAxis(ImDrawListPtr drawList, Vector3 axis, float length,
         Vector2 origin, Vector2 size, SceneCamera camera, Color color)
     {
         var positive = ToPackedColor(color);
         var negative = ToPackedColor(Color.FromArgb(color.A / 2, color.R, color.G, color.B));
-        DrawProjectedLine(drawList, Vector3.Zero, axis * length, origin, size, camera, positive, 2F);
-        DrawProjectedLine(drawList, Vector3.Zero, -axis * length, origin, size, camera, negative, 2F);
+        DrawOcclusionAwareAxis(drawList, Vector3.Zero, axis * length, origin, size, camera, positive, 2F);
+        DrawOcclusionAwareAxis(drawList, Vector3.Zero, -axis * length, origin, size, camera, negative, 2F);
     }
 
-    private static void DrawProjectedLine(ImDrawListPtr drawList, Vector3 start, Vector3 end, Vector2 origin, Vector2 size,
+    private void DrawOcclusionAwareAxis(ImDrawListPtr drawList, Vector3 start, Vector3 end, Vector2 origin, Vector2 size,
         SceneCamera camera, uint color, float thickness)
     {
-        if (SceneProjection.ClipLine(start, end, origin, size, camera, out var startPoint, out var endPoint))
+        if (!SceneProjection.ClipLineWithWorld(start, end, origin, size, camera,
+                out var clippedStart, out var clippedEnd, out var startPoint, out var endPoint))
+        {
+            return;
+        }
+
+        if (_world.OccupiedVoxelCount == 0)
         {
             drawList.AddLine(startPoint, endPoint, color, thickness);
+            return;
         }
+
+        var screenLength = Vector2.Distance(startPoint, endPoint);
+        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 3F), 48, 384);
+        var previousScreen = startPoint;
+        var previousVisible = IsAxisPointVisible(clippedStart, origin, size, camera);
+        for (var index = 1; index <= sampleCount; index++)
+        {
+            var t = index / (float)sampleCount;
+            var worldPoint = Vector3.Lerp(clippedStart, clippedEnd, t);
+            if (!SceneProjection.Project(worldPoint, origin, size, camera, out var screenPoint, out _))
+            {
+                previousVisible = false;
+                continue;
+            }
+
+            var visible = IsAxisPointVisible(worldPoint, origin, size, camera);
+            if (previousVisible && visible)
+            {
+                drawList.AddLine(previousScreen, screenPoint, color, thickness);
+            }
+
+            previousScreen = screenPoint;
+            previousVisible = visible;
+        }
+    }
+
+    /// <summary>
+    /// 判断坐标轴采样点是否位于模型表面之前
+    /// </summary>
+    private bool IsAxisPointVisible(Vector3 worldPoint, Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (!SceneProjection.Project(worldPoint, origin, size, camera, out var screenPoint, out _)) return false;
+        var ray = SceneProjection.RayFromScreen(screenPoint, origin, size, camera);
+        var cameraPosition = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
+        var direction = new NumVector3(ray.X, ray.Y, ray.Z);
+        var pointDistance = Vector3.Distance(camera.Position, worldPoint);
+        var hit = VoxelDda.RayCast(_world, cameraPosition, direction,
+            MathF.Max(pointDistance + 2F, _sceneCameraDistance * 8F + 256F));
+        return hit is null || hit.Value.Distance + 0.35F >= pointDistance;
     }
 
     private static void DrawVoxelPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
@@ -1109,7 +1154,7 @@ DockId=0x6A3C3007,0
         }
 
         var projectPath = _project?.RootPath
-            ?? Path.Combine(Path.GetTempPath(), "MVoxel");
+            ?? AppPaths.DataDirectory;
         var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}.png";
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
         if (pipeline.SaveDisplayPng(path))

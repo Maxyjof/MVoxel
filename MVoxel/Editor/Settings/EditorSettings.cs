@@ -187,8 +187,7 @@ public static class SettingsStore
         Converters = { new JsonStringEnumConverter() },
     };
 
-    public static string EditorSettingsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MVoxel", "editor-settings.json");
+    public static string EditorSettingsPath => AppPaths.ConfigPath("editor-settings.json");
 
     public static EditorSettingsDocument LoadEditor()
     {

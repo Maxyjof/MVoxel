@@ -66,6 +66,44 @@ internal static class SceneProjection
     }
 
     /// <summary>
+    /// 裁剪线段并同时返回裁剪后的世界端点
+    /// </summary>
+    /// <param name="start">世界起点</param>
+    /// <param name="end">世界终点</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="clippedStart">裁剪后的世界起点</param>
+    /// <param name="clippedEnd">裁剪后的世界终点</param>
+    /// <param name="a">裁剪后的屏幕起点</param>
+    /// <param name="b">裁剪后的屏幕终点</param>
+    /// <returns>线段是否有可见部分</returns>
+    internal static bool ClipLineWithWorld(Vector3 start, Vector3 end, Vector2 origin, Vector2 size,
+        SceneCamera camera, out Vector3 clippedStart, out Vector3 clippedEnd, out Vector2 a, out Vector2 b)
+    {
+        clippedStart = clippedEnd = default;
+        a = b = default;
+        if (size.X <= 0 || size.Y <= 0) return false;
+        var p = ToCamera(start, camera);
+        var q = ToCamera(end, camera);
+        var xSlope = size.X / (2F * FocalLength(size));
+        var ySlope = size.Y / (2F * FocalLength(size));
+        var lower = 0F;
+        var upper = 1F;
+        if (!ClipPlane(p.Z - Near, q.Z - Near, ref lower, ref upper) ||
+            !ClipPlane(p.Z * xSlope + p.X, q.Z * xSlope + q.X, ref lower, ref upper) ||
+            !ClipPlane(p.Z * xSlope - p.X, q.Z * xSlope - q.X, ref lower, ref upper) ||
+            !ClipPlane(p.Z * ySlope + p.Y, q.Z * ySlope + q.Y, ref lower, ref upper) ||
+            !ClipPlane(p.Z * ySlope - p.Y, q.Z * ySlope - q.Y, ref lower, ref upper)) return false;
+
+        clippedStart = start + (end - start) * lower;
+        clippedEnd = start + (end - start) * upper;
+        a = ProjectCamera(p + (q - p) * lower, origin, size);
+        b = ProjectCamera(p + (q - p) * upper, origin, size);
+        return float.IsFinite(a.X) && float.IsFinite(a.Y) && float.IsFinite(b.X) && float.IsFinite(b.Y);
+    }
+
+    /// <summary>
     /// 投影一个世界点到屏幕
     /// </summary>
     /// <param name="world">世界坐标</param>
