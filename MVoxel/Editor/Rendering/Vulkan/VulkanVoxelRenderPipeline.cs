@@ -1009,7 +1009,22 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
                 if (!pathMode)
                 {
-                    radiance += hitColor.rgb;
+                    vec3 localPoint = clamp(fract(hitPoint), vec3(0.0), vec3(1.0));
+                    float edgeDistance;
+                    if (abs(hitNormal.x) > 0.5)
+                        edgeDistance = min(min(localPoint.y, 1.0 - localPoint.y),
+                            min(localPoint.z, 1.0 - localPoint.z));
+                    else if (abs(hitNormal.y) > 0.5)
+                        edgeDistance = min(min(localPoint.x, 1.0 - localPoint.x),
+                            min(localPoint.z, 1.0 - localPoint.z));
+                    else
+                        edgeDistance = min(min(localPoint.x, 1.0 - localPoint.x),
+                            min(localPoint.y, 1.0 - localPoint.y));
+                    float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
+                    float outlineAmount = values[57] > 0.5
+                        ? 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance)
+                        : 0.0;
+                    radiance += mix(hitColor.rgb, vec3(0.012, 0.014, 0.018), outlineAmount);
                     break;
                 }
 

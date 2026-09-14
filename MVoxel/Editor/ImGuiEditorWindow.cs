@@ -611,10 +611,10 @@ DockId=0x6A3C3007,0
         var camera = GetSceneCamera();
 
         var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
-        if (_project is not null && !gpuRendered && _showVoxelOutlines)
+        if (_project is not null && !gpuRendered)
         {
             // Vulkan 设备不可用时保留 CPU 预览
-            DrawVoxelPreview(drawList, origin, size, camera);
+            DrawVoxelPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
         if (_showGrid && !gpuRendered)
@@ -888,7 +888,7 @@ DockId=0x6A3C3007,0
         }
 
         var screenLength = Vector2.Distance(startPoint, endPoint);
-        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 3F), 48, 384);
+        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 1.5F), 96, 1024);
         var previousScreen = startPoint;
         var previousVisible = IsAxisPointVisible(clippedStart, origin, size, camera);
         for (var index = 1; index <= sampleCount; index++)
@@ -922,12 +922,19 @@ DockId=0x6A3C3007,0
         var cameraPosition = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
         var direction = new NumVector3(ray.X, ray.Y, ray.Z);
         var pointDistance = Vector3.Distance(camera.Position, worldPoint);
+        if (pointDistance <= SceneProjection.Near)
+        {
+            return true;
+        }
+
+        // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
         var hit = VoxelDda.RayCast(_world, cameraPosition, direction,
-            MathF.Max(pointDistance + 2F, _sceneCameraDistance * 8F + 256F));
-        return hit is null || hit.Value.Distance + 0.35F >= pointDistance;
+            MathF.Max(pointDistance - 0.01F, SceneProjection.Near));
+        return hit is null;
     }
 
-    private static void DrawVoxelPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+    private static void DrawVoxelPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        bool showOutlines)
     {
         var samples = new[]
         {
@@ -940,12 +947,12 @@ DockId=0x6A3C3007,0
 
         foreach (var voxel in samples.OrderByDescending(item => Vector3.Dot(item.Center - camera.Position, camera.Forward)))
         {
-            DrawVoxelCube(drawList, voxel.Center, 1F, voxel.Color, origin, size, camera);
+            DrawVoxelCube(drawList, voxel.Center, 1F, voxel.Color, origin, size, camera, showOutlines);
         }
     }
 
     private static void DrawVoxelCube(ImDrawListPtr drawList, Vector3 center, float side, Color baseColor,
-        Vector2 origin, Vector2 size, SceneCamera camera)
+        Vector2 origin, Vector2 size, SceneCamera camera, bool showOutline)
     {
         var half = side / 2F;
         var corners = new[]
@@ -982,6 +989,11 @@ DockId=0x6A3C3007,0
         {
             var polygon = face.Indices.Select(index => points[index]).ToArray();
             drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(face.Color));
+        }
+
+        if (!showOutline)
+        {
+            return;
         }
 
         var outline = ToPackedColor(Color.FromArgb(245, 4, 7, 11));
@@ -1111,7 +1123,7 @@ DockId=0x6A3C3007,0
         var gpuRendered = _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
         {
-            DrawVoxelPreview(drawList, origin, size, camera);
+            DrawVoxelPreview(drawList, origin, size, camera, showOutlines: false);
             ImGui.SetCursorScreenPos(origin + new Vector2(
                 Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
             ImGui.TextDisabled(_pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中");
