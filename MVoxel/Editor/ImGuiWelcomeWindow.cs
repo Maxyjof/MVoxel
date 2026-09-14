@@ -331,24 +331,40 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         ImGui.BeginChild("##RecentProjects", new Vector2(contentWidth, recentHeight), ImGuiChildFlags.Borders);
         if (recent.Count == 0)
         {
+            ImGui.Dummy(new Vector2(0F, 18F));
+            ImGui.SetCursorPosX(18F);
             ImGui.TextWrapped("还没有最近项目。点击上方“新建项目”，开始你的第一个作品。");
         }
         else
         {
             foreach (var entry in recent)
             {
-                // ImGui Selectable 适合单行标签，因此把名称和时间作为可点击行，把路径作为说明文字
                 ImGui.PushID(entry.Path);
-                var label = $"{entry.Name}  ·  {entry.LastOpenedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
-                if (ImGui.Button(label, new Vector2(-1F, 0F)))
+                var rowWidth = ImGui.GetContentRegionAvail().X;
+                const float rowHeight = 70F;
+                var rowMin = ImGui.GetCursorScreenPos();
+                var clicked = ImGui.InvisibleButton("##RecentProjectCard", new Vector2(rowWidth, rowHeight));
+                var rowMax = rowMin + new Vector2(rowWidth, rowHeight);
+                var draw = ImGui.GetWindowDrawList();
+                var background = ImGui.IsItemHovered() ? EditorPalette.PanelHeader : EditorPalette.Input;
+                var border = ImGui.IsItemHovered() ? EditorPalette.Accent : EditorPalette.Border;
+                var textColor = ToPackedColor(EditorPalette.Text);
+                var mutedColor = ToPackedColor(EditorPalette.MutedText);
+                draw.AddRectFilled(rowMin, rowMax, ToPackedColor(background), 6F);
+                draw.AddRect(rowMin, rowMax, ToPackedColor(border), 6F, ImDrawFlags.None, 1F);
+                draw.AddRectFilled(rowMin, rowMin + new Vector2(4F, rowHeight), ToPackedColor(EditorPalette.Accent), 6F,
+                    ImDrawFlags.RoundCornersLeft);
+                draw.AddText(rowMin + new Vector2(16F, 10F), textColor, entry.Name);
+                var date = entry.LastOpenedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+                var dateWidth = ImGui.CalcTextSize(date).X;
+                draw.AddText(rowMax - new Vector2(dateWidth + 16F, rowHeight - 60F), mutedColor, date);
+                draw.AddText(rowMin + new Vector2(16F, 39F), mutedColor, entry.Path);
+                if (clicked)
                 {
                     _errorText = string.Empty;
                     _editor.OpenRecentProject(entry.Path);
                 }
-
-                var indent = ImGui.GetCursorPosX() + ImGui.GetStyle().FramePadding.X + 4F;
-                ImGui.SetCursorPosX(indent);
-                ImGui.TextDisabled(entry.Path);
+                ImGui.Dummy(new Vector2(0F, 8F));
                 ImGui.PopID();
             }
         }
@@ -462,4 +478,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;
 
     private static Vector4 ToColor(Color color) => new(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F);
+
+    /// <summary>
+    /// 将系统颜色转换为 ImGui 绘图颜色
+    /// </summary>
+    private static uint ToPackedColor(Color color) => ImGui.ColorConvertFloat4ToU32(ToColor(color));
 }

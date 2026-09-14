@@ -43,6 +43,8 @@ public sealed class EditorSettingsDocument
     public float UiScale = 1F;
     public string Theme = EditorPalette.DefaultThemeName;
     public bool EnableGpuDiagnostics;
+    public int UndoRepeatDelayMs = 350;
+    public int UndoRepeatIntervalMs = 70;
 
     public static EditorSettingsDocument CreateDefault()
     {
@@ -90,6 +92,8 @@ public sealed class EditorSettingsDocument
 
         UiScale = float.IsFinite(UiScale) ? Math.Clamp(UiScale, 0.75F, 2F) : 1F;
         Theme = string.IsNullOrWhiteSpace(Theme) ? EditorPalette.DefaultThemeName : Theme.Trim();
+        UndoRepeatDelayMs = Math.Clamp(UndoRepeatDelayMs, 100, 2000);
+        UndoRepeatIntervalMs = Math.Clamp(UndoRepeatIntervalMs, 20, 500);
     }
 
     private static ShortcutScheme CreateDefaultScheme()
@@ -245,19 +249,50 @@ public static class SettingsStore
 /// </summary>
 public static class ShortcutBindingRouter
 {
+    /// <summary>
+    /// 判断快捷键是否在当前帧首次按下
+    /// </summary>
     public static bool IsPressed(ShortcutScheme scheme, string commandId)
     {
+        return TryResolve(scheme, commandId, out var imguiKey, out var ctrl, out var shift, out var alt) &&
+               ModifiersMatch(ctrl, shift, alt) && ImGui.IsKeyPressed(imguiKey, false);
+    }
+
+    /// <summary>
+    /// 判断快捷键是否仍处于按住状态
+    /// </summary>
+    public static bool IsDown(ShortcutScheme scheme, string commandId)
+    {
+        return TryResolve(scheme, commandId, out var imguiKey, out var ctrl, out var shift, out var alt) &&
+               ModifiersMatch(ctrl, shift, alt) && ImGui.IsKeyDown(imguiKey);
+    }
+
+    /// <summary>
+    /// 解析方案中的按键和修饰键
+    /// </summary>
+    private static bool TryResolve(ShortcutScheme scheme, string commandId, out ImGuiKey imguiKey,
+        out bool ctrl, out bool shift, out bool alt)
+    {
+        imguiKey = ImGuiKey.None;
+        ctrl = false;
+        shift = false;
+        alt = false;
         if (!scheme.Bindings.TryGetValue(commandId, out var binding)) return false;
         var parts = binding.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length == 0) return false;
+        if (parts.Length == 0 || !TryGetImGuiKey(parts[^1], out imguiKey)) return false;
+        ctrl = parts.Any(part => part.Equals("Ctrl", StringComparison.OrdinalIgnoreCase));
+        shift = parts.Any(part => part.Equals("Shift", StringComparison.OrdinalIgnoreCase));
+        alt = parts.Any(part => part.Equals("Alt", StringComparison.OrdinalIgnoreCase));
+        return true;
+    }
 
-        var key = parts[^1];
-        var ctrl = parts.Any(part => part.Equals("Ctrl", StringComparison.OrdinalIgnoreCase));
-        var shift = parts.Any(part => part.Equals("Shift", StringComparison.OrdinalIgnoreCase));
-        var alt = parts.Any(part => part.Equals("Alt", StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// 判断当前帧的修饰键状态是否符合绑定
+    /// </summary>
+    private static bool ModifiersMatch(bool ctrl, bool shift, bool alt)
+    {
         var io = ImGui.GetIO();
-        if (io.KeyCtrl != ctrl || io.KeyShift != shift || io.KeyAlt != alt) return false;
-        return TryGetImGuiKey(key, out var imguiKey) && ImGui.IsKeyPressed(imguiKey, false);
+        return io.KeyCtrl == ctrl && io.KeyShift == shift && io.KeyAlt == alt;
     }
 
     public static bool TryGetImGuiKey(string text, out ImGuiKey key)

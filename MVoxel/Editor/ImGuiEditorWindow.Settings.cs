@@ -203,6 +203,18 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("撤回"))
+            {
+                ImGui.TextWrapped("Ctrl+Z 第一次按下立即撤回，持续按住达到延迟后按设定速度重复撤回");
+                var changed = false;
+                changed |= ImGui.SliderInt("开始持续撤回延迟（毫秒）", ref _editorSettings.UndoRepeatDelayMs, 100, 2000);
+                changed |= ImGui.SliderInt("持续撤回间隔（毫秒）", ref _editorSettings.UndoRepeatIntervalMs, 20, 500);
+                _editorSettings.Normalize();
+                ImGui.TextDisabled($"当前速度：{1000F / _editorSettings.UndoRepeatIntervalMs:0.0} 次/秒");
+                if (changed) SaveEditorSettings();
+                ImGui.EndTabItem();
+            }
+
             ImGui.EndTabBar();
         }
     }

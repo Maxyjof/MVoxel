@@ -78,8 +78,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _brushEmissive;
     private VoxelDda.Hit? _selectedVoxel;
     private VoxelDda.Hit? _brushPreview;
-    private VoxelCoord64? _lastPaintedCell;
     private float _elapsedSeconds;
+    private float _undoHeldSeconds;
+    private float _undoRepeatAccumulator;
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
 

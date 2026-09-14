@@ -377,7 +377,6 @@ internal sealed partial class ImGuiEditorWindow
         handled |= ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
         if (!handled)
         {
-            _lastPaintedCell = null;
             _brushPreview = null;
         }
     }
@@ -386,7 +385,7 @@ internal sealed partial class ImGuiEditorWindow
         Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         if (action is ViewportMouseAction.None or ViewportMouseAction.Orbit ||
-            (!ImGui.IsMouseDown(button) && !ImGui.IsMouseClicked(button)))
+            !ImGui.IsMouseClicked(button))
         {
             return false;
         }
@@ -402,8 +401,7 @@ internal sealed partial class ImGuiEditorWindow
                 VoxelDda.TryGroundHit(origin3, direction3, _sceneCameraDistance * 8F + 256F, out var groundPoint))
             {
                 var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
-                CommitStroke(cells, erase: false, marker: new VoxelCoord64(
-                    (long)MathF.Floor(groundPoint.X), 0, (long)MathF.Floor(groundPoint.Z)));
+                CommitStroke(cells, erase: false);
             }
 
             _brushPreview = null;
@@ -412,7 +410,6 @@ internal sealed partial class ImGuiEditorWindow
 
         _brushPreview = hit;
         _brushPreviewErase = erase;
-        if (_lastPaintedCell == hit.Value.Coordinate) return true;
         ApplyStroke(hit.Value, erase);
         return true;
     }
@@ -423,10 +420,10 @@ internal sealed partial class ImGuiEditorWindow
         var cells = erase
             ? VoxelBrush.CellsAround(hit.Coordinate, _brushShape, radius)
             : VoxelBrush.CellsForStroke(hit, erase: false, _brushShape, radius);
-        CommitStroke(cells, erase, hit.Coordinate);
+        CommitStroke(cells, erase);
     }
 
-    private void CommitStroke(IReadOnlyList<VoxelCoord64> cells, bool erase, VoxelCoord64 marker)
+    private void CommitStroke(IReadOnlyList<VoxelCoord64> cells, bool erase)
     {
         if (cells.Count == 0) return;
         var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
@@ -442,7 +439,6 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        _lastPaintedCell = marker;
         _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
     }
@@ -450,25 +446,47 @@ internal sealed partial class ImGuiEditorWindow
     private void HandleVoxelShortcuts()
     {
         var io = ImGui.GetIO();
-        if (io.WantTextInput) return;
         var scheme = _editorSettings.ActiveScheme();
-        if (ShortcutBindingRouter.IsPressed(scheme, "edit.undo"))
+        var undoDown = ShortcutBindingRouter.IsDown(scheme, "edit.undo");
+        if (io.WantTextInput)
         {
-            if (_voxelHistory.Undo())
+            _undoHeldSeconds = 0F;
+            _undoRepeatAccumulator = 0F;
+            return;
+        }
+        else if (undoDown)
+        {
+            if (ShortcutBindingRouter.IsPressed(scheme, "edit.undo"))
             {
-                SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
-                _pipeline?.SyncWorld(_world);
-                _pipeline?.ResetAccumulation();
+                ApplyUndo();
+                _undoHeldSeconds = 0F;
+                _undoRepeatAccumulator = 0F;
+            }
+            else
+            {
+                _undoHeldSeconds += Math.Max(0F, io.DeltaTime);
+                var delay = _editorSettings.UndoRepeatDelayMs / 1000F;
+                if (_undoHeldSeconds >= delay)
+                {
+                    _undoRepeatAccumulator += Math.Max(0F, io.DeltaTime);
+                    var interval = _editorSettings.UndoRepeatIntervalMs / 1000F;
+                    while (_undoRepeatAccumulator >= interval)
+                    {
+                        _undoRepeatAccumulator -= interval;
+                        if (!ApplyUndo())
+                        {
+                            _undoRepeatAccumulator = 0F;
+                            break;
+                        }
+                    }
+                }
             }
         }
-        else if (ShortcutBindingRouter.IsPressed(scheme, "edit.redo"))
+        else
         {
-            if (_voxelHistory.Redo())
-            {
-                SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
-                _pipeline?.SyncWorld(_world);
-                _pipeline?.ResetAccumulation();
-            }
+            _undoHeldSeconds = 0F;
+            _undoRepeatAccumulator = 0F;
+            if (ShortcutBindingRouter.IsPressed(scheme, "edit.redo")) ApplyRedo();
         }
 
         if (ShortcutBindingRouter.IsPressed(scheme, "project.new")) ShowProjectPathDialog(create: true);
@@ -495,6 +513,30 @@ internal sealed partial class ImGuiEditorWindow
             _sceneCameraDistance = Math.Clamp(18F, limits.MinimumDistance, limits.MaximumDistance);
             _sceneZoom = 1F;
         }
+    }
+
+    /// <summary>
+    /// 执行一次撤销并同步体素渲染数据
+    /// </summary>
+    private bool ApplyUndo()
+    {
+        if (!_voxelHistory.Undo()) return false;
+        SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
+        _pipeline?.SyncWorld(_world);
+        _pipeline?.ResetAccumulation();
+        return true;
+    }
+
+    /// <summary>
+    /// 执行一次重做并同步体素渲染数据
+    /// </summary>
+    private bool ApplyRedo()
+    {
+        if (!_voxelHistory.Redo()) return false;
+        SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
+        _pipeline?.SyncWorld(_world);
+        _pipeline?.ResetAccumulation();
+        return true;
     }
 
     private void DrawVoxelBrushPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
@@ -540,7 +582,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         ToolButton("擦除", EditorTool.Erase);
         if (previousTool == _activeTool) return;
-        _lastPaintedCell = null;
         SetStatus(_activeTool switch
         {
             EditorTool.Camera => "视口工具：左键放置 · 右键破坏 · Shift+左键环绕 · 中键平移",
