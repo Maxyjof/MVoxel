@@ -5,6 +5,7 @@ using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Rendering;
+using MVoxel.Editor.Settings;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
 using OpenTK.Mathematics;
@@ -398,9 +399,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void HandleVoxelShortcuts()
     {
-        var io = ImGui.GetIO();
-        if (!io.KeyCtrl) return;
-        if (ImGui.IsKeyPressed(ImGuiKey.Z, false))
+        var scheme = _editorSettings.ActiveScheme();
+        if (ShortcutBindingRouter.IsPressed(scheme, "edit.undo"))
         {
             if (_voxelHistory.Undo())
             {
@@ -408,7 +408,7 @@ internal sealed partial class ImGuiEditorWindow
                 _pipeline?.ResetAccumulation();
             }
         }
-        else if (ImGui.IsKeyPressed(ImGuiKey.Y, false))
+        else if (ShortcutBindingRouter.IsPressed(scheme, "edit.redo"))
         {
             if (_voxelHistory.Redo())
             {

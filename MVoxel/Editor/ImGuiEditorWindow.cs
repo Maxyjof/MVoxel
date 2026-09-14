@@ -7,6 +7,7 @@ using MVoxel.Core;
 using MVoxel.Rendering;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
+using MVoxel.Editor.Settings;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
@@ -136,6 +137,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         ConfigureImGui();
         UiDiagnostics.Configure();
+        LoadEditorSettings();
         _logoTexture = ImGuiTexture.LoadLogo();
         _palette = EditorPalettes.ResolveEditorPalette();
         InitializeVoxelPipeline();
@@ -166,6 +168,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         if (UiDiagnostics.TakeBlockingOperationRequest()) BeginDiagnosticLoad();
+        if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2);
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         _projectOperation.Pump();
         EnsureWelcomeWindow();
@@ -216,6 +219,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnUnload()
     {
+        SaveEditorSettings();
+        SaveProjectSettings();
         _welcomeWindow?.Dispose();
         _welcomeWindow = null;
         _projectOperation.Dispose();
@@ -332,6 +337,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawStatusBar();
         DrawProjectPathDialog();
         if (inputBlocked) ImGui.EndDisabled();
+        if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen)
         {
             BlockingOperationDialog.DrawInteractionBlocker("欢迎窗口已打开", "请先在“欢迎使用 MVoxel”窗口中创建、打开项目或关闭欢迎窗口。");
@@ -388,7 +394,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("设置"))
         {
-            if (ImGui.MenuItem("LOD 与画面设置")) _requestedInspectorTab = 1;
+            if (ImGui.MenuItem("编辑器设置")) OpenSettings(0);
+            if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2);
+            if (ImGui.MenuItem("项目设置", enabled: _project is not null)) OpenSettings(1);
+            ImGui.Separator();
+            if (ImGui.MenuItem("快速画面设置")) _requestedInspectorTab = 1;
             ImGui.EndMenu();
         }
 
@@ -1085,6 +1095,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
         ImGui.TextWrapped("LOD（细节等级）控制远处物体的显示精度，让场景操作更流畅。渲染和导出始终保留完整细节。");
+        if (ImGui.Button("打开完整设置")) OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
+        ImGui.SameLine();
+        ImGui.TextDisabled("编辑器设置 / 项目设置 / 快捷键方案");
         if (ImGui.CollapsingHeader("LOD 等级（Phase 5 预留，当前版本未参与剔除）"))
         {
             ImGui.PushItemWidth(Math.Max(64F, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("第 8 级距离").X - 16F));
@@ -1153,11 +1166,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelStatusBar", flags);
-        ImGui.Text("MVoxel");
-        ImGui.SameLine(display.X / 2F - 40F);
-        ImGui.TextColored(ToColor(EditorPalette.MutedText), _statusText);
-        ImGui.SameLine(display.X - ImGui.CalcTextSize("体素建模 · 开发预览版").X - 12F);
-        ImGui.TextDisabled("体素建模 · 开发预览版");
         ImGui.End();
     }
 
@@ -1193,7 +1201,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         _layoutPreset = preset;
         _applyPreset = true;
-        _statusText = $"已切换布局：{preset switch { LayoutPreset.Modeling => "建模", LayoutPreset.Rendering => "渲染", _ => "默认" }}";
     }
 
     private void ShowProjectPathDialog(bool create)
@@ -1375,6 +1382,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _project = project;
         _assetBrowser.Reset();
         RecentProjects.Record(project);
+        LoadProjectSettings(project);
         LoadWorldForProject(project);
         _statusText = $"已打开项目：{project.Manifest.Name}";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
@@ -1401,6 +1409,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void CloseProject()
     {
+        SaveProjectSettings();
         _project = null;
         _assetBrowser.Reset();
         _world = new VoxelWorld();
@@ -1408,6 +1417,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _selectedVoxel = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
+        _renderSettings = RenderSettings.LoadFrom(RenderSettingsPath);
+        SyncSettingsToggles();
         _statusText = "已关闭项目";
         RequestWelcomeWindow();
     }
@@ -1421,6 +1432,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         ProjectLayout.EnsureDirectories(_project.RootPath);
+        SaveProjectSettings();
         if (SaveWorldToProject(_project))
         {
             SetStatus($"项目已保存：{_project.Manifest.Name}（{_world.OccupiedVoxelCount} 体素 → Assets/VoxelModels/主场景.vox）");

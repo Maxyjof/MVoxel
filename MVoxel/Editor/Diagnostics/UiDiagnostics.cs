@@ -21,6 +21,7 @@ internal static class UiDiagnostics
     private static readonly string? Output = Environment.GetEnvironmentVariable("MVOXEL_UI_CAPTURE_DIR");
     private static int _frame;
     private static int _blockingOperationRequested;
+    private static int _settingsRequested;
 
     /// <summary>
     /// 捕获模式是否启用
@@ -65,6 +66,14 @@ internal static class UiDiagnostics
     internal static bool TakeBlockingOperationRequest() =>
         Enabled && string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_LOADING"), "1", StringComparison.Ordinal) &&
         Interlocked.Exchange(ref _blockingOperationRequested, 1) == 0;
+
+    /// <summary>
+    /// 在 UI 回归剧本中打开完整设置窗口，检查侧边栏和子标签页是否真的可见。
+    /// </summary>
+    internal static bool TakeSettingsRequest() =>
+        Enabled && _frame == 45 &&
+        string.Equals(Environment.GetEnvironmentVariable("MVOXEL_UI_TEST_SETTINGS"), "1", StringComparison.Ordinal) &&
+        Interlocked.Exchange(ref _settingsRequested, 1) == 0;
 
     private static int _exportRequested;
 

@@ -112,6 +112,11 @@ public sealed class ProjectHandle
     /// 插件目录（Plugins）
     /// </summary>
     public string PluginsPath => Path.Combine(RootPath, "Plugins");
+
+    /// <summary>
+    /// 项目级设置目录中的统一配置文件
+    /// </summary>
+    public string ProjectSettingsPath => Path.Combine(RootPath, "ProjectSettings", "settings.json");
 }
 
 /// <summary>
@@ -196,6 +201,7 @@ public static class ProjectLayout
     {
         Directory.CreateDirectory(Path.Combine(rootPath, "Assets"));
         Directory.CreateDirectory(Path.Combine(rootPath, "Plugins"));
+        Directory.CreateDirectory(Path.Combine(rootPath, "ProjectSettings"));
         foreach (var directory in AssetDirectories)
         {
             Directory.CreateDirectory(Path.Combine(rootPath, "Assets", directory));

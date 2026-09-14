@@ -437,7 +437,7 @@ public sealed class RenderSettings
     /// <summary>
     /// 把 NaN 与无穷替换为各自默认值，先于 ClampAll 执行
     /// </summary>
-    private void SanitizeNaN()
+    public void SanitizeNaN()
     {
         SunAzimuthDegrees = Safe(SunAzimuthDegrees, 135F);
         SunElevationDegrees = Safe(SunElevationDegrees, 55F);
