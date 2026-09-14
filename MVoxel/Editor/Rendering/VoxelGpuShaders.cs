@@ -148,6 +148,28 @@ struct VHit
     float t;
 };
 
+bool voxel_region_ray(vec3 origin, vec3 direction, out float nearDistance, out float farDistance)
+{
+    vec3 minimum = vec3(region_min());
+    vec3 maximum = minimum + vec3(region_size());
+    if (abs(direction.x) < 1e-7 && (origin.x < minimum.x || origin.x > maximum.x)) return false;
+    if (abs(direction.y) < 1e-7 && (origin.y < minimum.y || origin.y > maximum.y)) return false;
+    if (abs(direction.z) < 1e-7 && (origin.z < minimum.z || origin.z > maximum.z)) return false;
+
+    vec3 safeDirection = vec3(
+        abs(direction.x) < 1e-7 ? 1.0 : direction.x,
+        abs(direction.y) < 1e-7 ? 1.0 : direction.y,
+        abs(direction.z) < 1e-7 ? 1.0 : direction.z);
+    vec3 inverseDirection = 1.0 / safeDirection;
+    vec3 first = (minimum - origin) * inverseDirection;
+    vec3 second = (maximum - origin) * inverseDirection;
+    vec3 lower = min(first, second);
+    vec3 upper = max(first, second);
+    nearDistance = max(max(lower.x, lower.y), lower.z);
+    farDistance = min(min(upper.x, upper.y), upper.z);
+    return farDistance >= max(nearDistance, 0.0);
+}
+
 VHit voxel_ray(vec3 origin, vec3 direction, float maxDistance, ivec3 skipCell)
 {
     VHit result;
@@ -159,11 +181,20 @@ VHit voxel_ray(vec3 origin, vec3 direction, float maxDistance, ivec3 skipCell)
     result.flags = 0U;
     result.color = vec4(0.0);
 
+    float regionNear;
+    float regionFar;
+    if (!voxel_region_ray(origin, direction, regionNear, regionFar) || regionNear > maxDistance)
+    {
+        return result;
+    }
+
+    float travelled = max(regionNear, 0.0);
+    vec3 entryPoint = origin + direction * travelled + direction * 0.0001;
     vec3 stepSign = sign(direction);
     ivec3 step = ivec3(stepSign);
-    ivec3 cell = ivec3(floor(origin)) - region_min();
+    ivec3 cell = ivec3(floor(entryPoint)) - region_min();
 
-    vec3 o = origin - vec3(region_min());
+    vec3 o = entryPoint - vec3(region_min());
     float tMax[3];
     float tDelta[3];
     float absDir[3] = float[3](abs(direction.x), abs(direction.y), abs(direction.z));
@@ -174,7 +205,7 @@ VHit voxel_ray(vec3 origin, vec3 direction, float maxDistance, ivec3 skipCell)
     {
         tDelta[axis] = absDir[axis] < 1e-7 ? 1e30 : 1.0 / max(absDir[axis], 1e-30);
         float boundary = sgn[axis] > 0.0 ? floor(oo[axis]) + 1.0 : floor(oo[axis]);
-        tMax[axis] = absDir[axis] < 1e-7 ? 1e30 : abs((boundary - oo[axis]) / dd[axis]);
+        tMax[axis] = absDir[axis] < 1e-7 ? 1e30 : travelled + abs((boundary - oo[axis]) / dd[axis]);
     }
 
     // 射线起点已在体素内部时的入射面: 取主导轴
@@ -183,7 +214,6 @@ VHit voxel_ray(vec3 origin, vec3 direction, float maxDistance, ivec3 skipCell)
     else if (absDir[1] >= absDir[2]) entryNormal = vec3(0.0, -stepSign.y, 0.0);
     else entryNormal = vec3(0.0, 0.0, -stepSign.z);
 
-    float travelled = 0.0;
     int budget = int(U[P_MAX_STEPS]);
     while (budget-- > 0)
     {
@@ -757,17 +787,19 @@ void main()
                 float envT;
                 VHit envHit = voxel_ray(point + normal * 0.02, scatter, 512.0);
                 bool envGround = ground_hit(point + normal * 0.02, scatter, envT);
-                if (!envHit.hit || (envGround && envT < envHit.t))
+                bool environmentVisible = !envHit.hit || (envGround && envT < envHit.t);
+                if (environmentVisible)
                 {
                     environment = envGround
                         ? ground_radiance(point + normal * 0.02 + scatter * envT, scatter)
                         : sky_color(scatter);
+                    radianceSum += throughput * base * environment * weight;
+                    break;
                 }
                 else
                 {
-                    environment = vec3(0.0); // 间接命中由继续传输来求解
+                    environment = vec3(0.0);
                 }
-                radianceSum += throughput * base * environment * weight;
                 throughput *= base;
             }
 
@@ -803,13 +835,40 @@ void main()
 layout(binding = 7) uniform sampler2D uAccum;
 layout(location = 0) out vec4 FragColor;
 
+vec3 denoise_accumulation(vec2 uv)
+{
+    vec3 center = texture(uAccum, uv).rgb;
+    float strength = clamp(U[P_DENOISE_STRENGTH], 0.0, 1.0);
+    if (U[P_DENOISE_ENABLED] < 0.5 || strength <= 0.001) return center;
+
+    vec2 texel = 1.0 / vec2(textureSize(uAccum, 0));
+    vec2 offsets[4] = vec2[](
+        vec2(1.0, 0.0), vec2(-1.0, 0.0),
+        vec2(0.0, 1.0), vec2(0.0, -1.0));
+    float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
+    vec3 sum = center;
+    float weightSum = 1.0;
+
+    for (int index = 0; index < 4; index++)
+    {
+        vec3 neighbour = texture(uAccum, clamp(uv + offsets[index] * texel, vec2(0.0), vec2(1.0))).rgb;
+        float neighbourLuma = dot(neighbour, vec3(0.2126, 0.7152, 0.0722));
+        float contrast = abs(neighbourLuma - centerLuma) / (0.08 + max(centerLuma, neighbourLuma));
+        float weight = 0.25 * exp(-contrast * 8.0);
+        sum += neighbour * weight;
+        weightSum += weight;
+    }
+
+    return mix(center, sum / weightSum, strength);
+}
+
 void main()
 {
     ivec2 pixel = screen_pixel();
     // 累积目标与本通道一样是自下而上渲染的, 因此用未翻转的坐标采样,
     // 这样无论分辨率缩放比例如何, 像素都能对齐
     vec2 uv = gl_FragCoord.xy / vec2(U[P_VIEW_W], U[P_VIEW_H]);
-    vec3 hdr = texture(uAccum, uv).rgb;
+    vec3 hdr = denoise_accumulation(uv);
     FragColor = vec4(present(hdr, vec2(pixel)), 1.0);
 }
 """;

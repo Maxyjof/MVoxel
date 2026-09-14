@@ -74,8 +74,10 @@ public sealed class VoxelRenderParameters
     public const int DepthOfField = 84, MisEnabled = 85, ModePath = 86, FovDegrees = 87;
     /// <summary>抖动种子、网格步长、网格开关</summary>
     public const int Pixel = 88, GridStep = 89, GridShown = 90, ReservedR = 91;
+    /// <summary>路径降噪开关与强度</summary>
+    public const int DenoiseEnabled = 92, DenoiseStrength = 93;
     /// <summary>预留槽位</summary>
-    public const int ReservedS = 92, ReservedT = 93, ReservedU = 94, ReservedV = 95;
+    public const int ReservedU = 94, ReservedV = 95;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -108,6 +110,7 @@ public sealed class VoxelRenderParameters
             ("P_EMISSIVE_INTENSITY", EmissiveIntensity), ("P_ABSORPTION", Absorption), ("P_APERTURE", Aperture), ("P_FOCUS_DISTANCE", FocusDistance),
             ("P_DEPTH_OF_FIELD", DepthOfField), ("P_MIS", MisEnabled), ("P_MODE_PATH", ModePath), ("P_FOV_DEGREES", FovDegrees),
             ("P_PIXEL_SEED", Pixel), ("P_GRID_STEP", GridStep), ("P_GRID_SHOWN", GridShown),
+            ("P_DENOISE_ENABLED", DenoiseEnabled), ("P_DENOISE_STRENGTH", DenoiseStrength),
         };
 
         var builder = new StringBuilder();
@@ -272,6 +275,8 @@ public sealed class VoxelRenderParameters
         parameters[FovDegrees] = settings.CameraFovDegrees;
         parameters[GridStep] = frame.GridStep;
         parameters[GridShown] = frame.ShowGrid ? 1F : 0F;
+        parameters[DenoiseEnabled] = settings.PathDenoising ? 1F : 0F;
+        parameters[DenoiseStrength] = settings.PathDenoiseStrength;
 
         for (var index = 0; index < parameters.Length; index++)
         {

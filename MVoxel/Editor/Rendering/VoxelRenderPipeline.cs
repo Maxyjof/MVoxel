@@ -7,18 +7,15 @@ using MVoxel.Voxels;
 namespace MVoxel.Editor.Rendering;
 
 /// <summary>
-/// GPU voxel viewport: owns the render programs, the RGBA8/R8UI region workset
-/// (brick-style texture window over the sparse world), the HDR ping-pong
-/// accumulation targets and the LDR display texture consumed by ImGui.
-///
-/// All passes are fullscreen fragment passes into FBO color attachments —
-/// verified on this driver stack where compute image writes were silently
-/// dropped. SSBO parameter blocks and 3D texture samplers work identically in
-/// fragment stages, so the ray-tracing core is unchanged.
-///
-/// The window is created with OpenGL 4.5; when the driver cannot provide it,
-/// <see cref="IsAvailable"/> stays false and the editor falls back to the
-/// legacy CPU polygon preview.
+/// GPU 体素视口渲染管线，管理 RGBA8 与 R8UI 区域工作集
+/// 工作集是覆盖稀疏世界的区块式 3D 纹理窗口，同时管理 HDR 双缓冲累积目标和 ImGui 使用的 LDR 显示纹理
+/// 
+/// 所有通道都使用全屏片元写入 FBO 颜色附件
+/// 这是针对当前驱动栈的验证结果，因为 compute imageStore 在该驱动上会静默丢失
+/// SSBO 参数块和 3D 纹理采样器在片元阶段可以稳定工作，因此不改变光追核心
+/// 
+/// 窗口优先请求 OpenGL 4.5
+/// 驱动不支持时 <see cref="IsAvailable"/> 为 false，编辑器回退到 CPU 预览
 /// </summary>
 internal sealed class VoxelRenderPipeline : IDisposable
 {
@@ -53,6 +50,12 @@ internal sealed class VoxelRenderPipeline : IDisposable
     private int _emissiveLightCount;
     private float[] _lightData = Array.Empty<float>();
     private int _maxSteps;
+    private int _sceneColorSampler = -1;
+    private int _sceneFlagSampler = -1;
+    private int _traceColorSampler = -1;
+    private int _traceFlagSampler = -1;
+    private int _tracePreviousAccumSampler = -1;
+    private int _postAccumSampler = -1;
 
     internal VoxelRenderPipeline()
     {
@@ -71,6 +74,7 @@ internal sealed class VoxelRenderPipeline : IDisposable
         _sceneProgram = CompileProgram(VoxelGpuShaders.SceneFragment, "scene");
         _traceProgram = CompileProgram(VoxelGpuShaders.TraceFragment, "trace");
         _postProgram = CompileProgram(VoxelGpuShaders.PostFragment, "post");
+        CacheSamplerLocations();
         IsAvailable = _sceneProgram != 0 && _traceProgram != 0 && _postProgram != 0;
     }
 
@@ -141,7 +145,7 @@ internal sealed class VoxelRenderPipeline : IDisposable
         GL.DeleteShader(shader);
     }
 
-    /// <summary>Diagnosis mode only: attribute GL errors to a pipeline stage.</summary>
+    /// <summary>诊断模式下检查指定渲染阶段的 OpenGL 错误</summary>
     private static void CheckStage(string stage)
     {
         if (!UiDiagnostics.Enabled) return;
@@ -193,9 +197,8 @@ internal sealed class VoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// One progressive step: 1..spp new samples blend into the previous
-    /// accumulation (ping-pong), then the present pass maps HDR into the LDR
-    /// display texture.
+    /// 执行一次渐进式累积，将每帧新增样本与上一轮结果混合到双缓冲目标
+    /// 随后通过呈现通道把 HDR 累积结果映射到 LDR 显示纹理
     /// </summary>
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int displayWidthPixels, int displayHeightPixels)
@@ -226,13 +229,12 @@ internal sealed class VoxelRenderPipeline : IDisposable
             GL.ActiveTexture(TextureUnit.Texture0 + AuxSamplerUnit);
             GL.BindTexture(TextureTarget.Texture2D, _accumTextures[read]);
             GL.ActiveTexture(TextureUnit.Texture0);
-            var prevLocation = GL.GetUniformLocation(_traceProgram, "uPrevAccum");
-            if (prevLocation >= 0) GL.Uniform1(prevLocation, AuxSamplerUnit);
+            if (_tracePreviousAccumSampler >= 0) GL.Uniform1(_tracePreviousAccumSampler, AuxSamplerUnit);
             GL.BindVertexArray(_quadVao);
             GL.DrawArrays(PrimitiveType.Triangles, 0, 3);
             GL.BindVertexArray(0);
             GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-            _accumWrite = read; // next frame reads back what we just wrote
+            _accumWrite = read; // 下一帧读取本帧刚写入的结果
             AccumulatedSamples += Math.Clamp(settings.PathSamplesPerFrame, 1, 8);
             CheckStage("trace pass");
         }
@@ -242,7 +244,7 @@ internal sealed class VoxelRenderPipeline : IDisposable
         return true;
     }
 
-    /// <summary>Present-only: re-map the existing HDR accumulation with current post parameters.</summary>
+    /// <summary>只执行呈现通道，使用当前后期参数重新映射已有 HDR 累积结果</summary>
     internal bool Present(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int displayWidthPixels, int displayHeightPixels)
     {
@@ -259,12 +261,11 @@ internal sealed class VoxelRenderPipeline : IDisposable
         GL.Viewport(0, 0, displayWidthPixels, displayHeightPixels);
         GL.UseProgram(_postProgram);
         GL.ActiveTexture(TextureUnit.Texture0 + AuxSamplerUnit);
-        // The trace pass swaps _accumWrite after rendering; the freshest
-        // accumulation therefore lives in the buffer indexed by 1 - _accumWrite.
+        // 路径通道渲染后会交换 _accumWrite
+        // 最新累积结果位于索引 1 - _accumWrite 的缓冲
         GL.BindTexture(TextureTarget.Texture2D, _accumTextures[1 - _accumWrite]);
         GL.ActiveTexture(TextureUnit.Texture0);
-        var accumLocation = GL.GetUniformLocation(_postProgram, "uAccum");
-        if (accumLocation >= 0) GL.Uniform1(accumLocation, AuxSamplerUnit);
+        if (_postAccumSampler >= 0) GL.Uniform1(_postAccumSampler, AuxSamplerUnit);
         GL.BindVertexArray(_quadVao);
         GL.DrawArrays(PrimitiveType.Triangles, 0, 3);
         GL.BindVertexArray(0);
@@ -275,8 +276,8 @@ internal sealed class VoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// Refreshes the GPU workset when the world changed. Returns false when the
-    /// scene exceeds the region cap so the editor can surface a status hint.
+    /// 世界内容变化时刷新 GPU 工作集
+    /// 场景超过区域上限时返回 false，让编辑器显示范围提示
     /// </summary>
     internal bool SyncWorld(VoxelWorld world)
     {
@@ -288,7 +289,7 @@ internal sealed class VoxelRenderPipeline : IDisposable
             min = max = VoxelCoord64.Zero;
         }
 
-        // A margin keeps AO/shadow neighbourhood probes inside the window.
+        // 预留边界，保证 AO 与阴影邻域查询仍在工作集窗口内
         const int margin = 2;
         var extentX = (int)Math.Clamp(max.X - min.X + 2L * margin + 1, 8, MaximumRegionExtent);
         var extentY = (int)Math.Clamp(max.Y - min.Y + 2L * margin + 1, 8, MaximumRegionExtent);
@@ -366,12 +367,28 @@ internal sealed class VoxelRenderPipeline : IDisposable
         }
 
         GL.BindTexture(TextureTarget.Texture3D, _colorsTexture);
-        GL.TexImage3D(TextureTarget.Texture3D, 0, PixelInternalFormat.Rgba, sizeX, sizeY, sizeZ, 0,
-            PixelFormat.Rgba, PixelType.UnsignedByte, colors);
+        if (needsReallocation)
+        {
+            GL.TexImage3D(TextureTarget.Texture3D, 0, PixelInternalFormat.Rgba, sizeX, sizeY, sizeZ, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, colors);
+        }
+        else
+        {
+            GL.TexSubImage3D(TextureTarget.Texture3D, 0, 0, 0, 0, sizeX, sizeY, sizeZ,
+                PixelFormat.Rgba, PixelType.UnsignedByte, colors);
+        }
         ConfigureVolumeSampler();
         GL.BindTexture(TextureTarget.Texture3D, _flagsTexture);
-        GL.TexImage3D(TextureTarget.Texture3D, 0, PixelInternalFormat.R8ui, sizeX, sizeY, sizeZ, 0,
-            PixelFormat.RedInteger, PixelType.UnsignedByte, flags);
+        if (needsReallocation)
+        {
+            GL.TexImage3D(TextureTarget.Texture3D, 0, PixelInternalFormat.R8ui, sizeX, sizeY, sizeZ, 0,
+                PixelFormat.RedInteger, PixelType.UnsignedByte, flags);
+        }
+        else
+        {
+            GL.TexSubImage3D(TextureTarget.Texture3D, 0, 0, 0, 0, sizeX, sizeY, sizeZ,
+                PixelFormat.RedInteger, PixelType.UnsignedByte, flags);
+        }
         ConfigureVolumeSampler();
         GL.BindTexture(TextureTarget.Texture3D, 0);
 
@@ -409,10 +426,8 @@ internal sealed class VoxelRenderPipeline : IDisposable
 
     private static void WritePng(string path, int width, int height, byte[] rgbaTopDown)
     {
-        // The display texture's row 0 is the top of the frame (ImGui samples
-        // v=0 at the quad's top edge), so rows copy without a vertical flip.
-        // System.Drawing here is purely a PNG encoder for exported frames —
-        // it is not a UI framework and no WinForms types are involved.
+        // 显示纹理第 0 行对应画面顶部，ImGui 在四边形顶边使用 v=0 采样，因此复制行时不翻转
+        // System.Drawing 这里只负责 PNG 编码，不参与界面绘制，也不引入 WinForms
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         using var bitmap = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -526,10 +541,31 @@ internal sealed class VoxelRenderPipeline : IDisposable
         GL.ActiveTexture(TextureUnit.Texture0 + VoxelFlagUnit);
         GL.BindTexture(TextureTarget.Texture3D, _flagsTexture);
         GL.ActiveTexture(TextureUnit.Texture0);
-        var colors = GL.GetUniformLocation(program, "uColors");
-        var flags = GL.GetUniformLocation(program, "uFlags");
+        var colors = program == _sceneProgram ? _sceneColorSampler : _traceColorSampler;
+        var flags = program == _sceneProgram ? _sceneFlagSampler : _traceFlagSampler;
         if (colors >= 0) GL.Uniform1(colors, VoxelColorUnit);
         if (flags >= 0) GL.Uniform1(flags, VoxelFlagUnit);
+    }
+
+    private void CacheSamplerLocations()
+    {
+        if (_sceneProgram != 0)
+        {
+            _sceneColorSampler = GL.GetUniformLocation(_sceneProgram, "uColors");
+            _sceneFlagSampler = GL.GetUniformLocation(_sceneProgram, "uFlags");
+        }
+
+        if (_traceProgram != 0)
+        {
+            _traceColorSampler = GL.GetUniformLocation(_traceProgram, "uColors");
+            _traceFlagSampler = GL.GetUniformLocation(_traceProgram, "uFlags");
+            _tracePreviousAccumSampler = GL.GetUniformLocation(_traceProgram, "uPrevAccum");
+        }
+
+        if (_postProgram != 0)
+        {
+            _postAccumSampler = GL.GetUniformLocation(_postProgram, "uAccum");
+        }
     }
 
     private void UploadParameters(float[] parameters)
@@ -595,7 +631,7 @@ internal sealed class VoxelRenderPipeline : IDisposable
     /// 某些 Windows 驱动栈通过 ANSI 路径接收 OpenTK 的 GLSL 字符串，
     /// 中文注释在进入驱动时会被截断，表现为文件末尾 EOF 语法错误。
     /// 注释不参与 shader 语义，因此只把送入驱动的副本规整为 ASCII；
-    /// DumpOnFailure 仍保存完整原文，方便定位真实的 shader 内容。
+    /// DumpOnFailure 仍保存完整原文，方便定位真实的 shader 内容
     /// </summary>
     private static string DriverSafeShaderSource(string source)
     {

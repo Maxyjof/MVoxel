@@ -294,6 +294,16 @@ public sealed class RenderSettings
     public bool DepthOfField;
 
     /// <summary>
+    /// 是否启用渲染视图的快速降噪
+    /// </summary>
+    public bool PathDenoising = true;
+
+    /// <summary>
+    /// 快速降噪强度，越高越平滑但细节越柔和
+    /// </summary>
+    public float PathDenoiseStrength = 0.22F;
+
+    /// <summary>
     /// 薄透镜光圈半径
     /// </summary>
     public float ApertureRadius = 0.08F;
@@ -366,6 +376,7 @@ public sealed class RenderSettings
         PathSpecularF0 = Math.Clamp(PathSpecularF0, 0F, 0.6F);
         EmissiveIntensity = Math.Clamp(EmissiveIntensity, 0F, 64F);
         TransmissiveAbsorption = Math.Clamp(TransmissiveAbsorption, 0F, 8F);
+        PathDenoiseStrength = Math.Clamp(PathDenoiseStrength, 0F, 1F);
         ApertureRadius = Math.Clamp(ApertureRadius, 0F, 1F);
         FocusDistance = Math.Clamp(FocusDistance, 1F, 512F);
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
@@ -467,6 +478,7 @@ public sealed class RenderSettings
         PathSpecularF0 = Safe(PathSpecularF0, 0.04F);
         EmissiveIntensity = Safe(EmissiveIntensity, 12F);
         TransmissiveAbsorption = Safe(TransmissiveAbsorption, 1F);
+        PathDenoiseStrength = Safe(PathDenoiseStrength, 0.22F);
         ApertureRadius = Safe(ApertureRadius, 0.08F);
         FocusDistance = Safe(FocusDistance, 18F);
         CameraFovDegrees = Safe(CameraFovDegrees, 50F);

@@ -35,6 +35,7 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsTogglePalette;
     private bool _settingsToggleGround;
     private bool _settingsTogglePath;
+    private bool _settingsTogglePathDenoise;
     private bool _settingsToggleDof;
     private bool _settingsToggleMis;
     private bool _settingsToggleEmissive;
@@ -76,6 +77,7 @@ internal sealed partial class ImGuiEditorWindow
         _settingsTogglePalette = settings.PaletteShading;
         _settingsToggleGround = settings.ShowGround;
         _settingsTogglePath = settings.PathTracingEnabled;
+        _settingsTogglePathDenoise = settings.PathDenoising;
         _settingsToggleDof = settings.DepthOfField;
         _settingsToggleMis = settings.DirectLightingMIS;
         _settingsToggleEmissive = settings.EmissiveVoxels;
@@ -781,6 +783,10 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("路径权重低于此值（约 1/255，低于输出 LSB）时提前终止并做无偏存活判定。");
         SliderFloat("辐射度截断（消防萤火虫）", ref settings.RadianceClamp, 1F, 200F, "%.1f");
+        Toggle("快速降噪（渲染视图）", ref _settingsTogglePathDenoise, value => settings.PathDenoising = value);
+        SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("在呈现通道对累积结果做保边缘邻域滤波，不增加路径追踪样本，导出画面也会使用该设置。");
         if (ImGui.CollapsingHeader("材质（全局）"))
         {
             SliderFloat("粗糙度（GGX）", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
