@@ -1,6 +1,7 @@
 using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
+using MVoxel.Rendering;
 using Vector2 = System.Numerics.Vector2;
 
 namespace MVoxel.Editor;
@@ -9,6 +10,7 @@ internal sealed partial class ImGuiEditorWindow
 {
     private EditorSettingsDocument _editorSettings = EditorSettingsDocument.CreateDefault();
     private ProjectSettingsDocument _projectSettings = ProjectSettingsDocument.CreateDefault();
+    private bool _useHardwareRayTracing;
     private bool _showSettingsWindow;
     private int _settingsScope;
     private int _editorSettingsCategory;
@@ -54,6 +56,7 @@ internal sealed partial class ImGuiEditorWindow
         _showGrid = _projectSettings.ShowGrid;
         _showVoxelOutlines = _projectSettings.ShowVoxelOutlines;
         _renderSettings = _projectSettings.RenderSettings;
+        _useHardwareRayTracing = _projectSettings.RenderSettings.UseHardwareRayTracing;
         SyncSettingsToggles();
     }
 
@@ -64,6 +67,7 @@ internal sealed partial class ImGuiEditorWindow
         _projectSettings.ShowGrid = _showGrid;
         _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
         _projectSettings.RenderSettings = _renderSettings;
+        _projectSettings.RenderSettings.UseHardwareRayTracing = _useHardwareRayTracing;
         _projectSettings.Normalize();
     }
 
@@ -190,6 +194,8 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("基本"))
             {
                 ImGui.Checkbox("启用 GPU 诊断输出", ref _editorSettings.EnableGpuDiagnostics);
+                ImGui.Checkbox("新项目优先使用硬件 RT", ref _editorSettings.UseHardwareRayTracing);
+                ImGui.TextDisabled("硬件 RT 默认关闭，仅在新建项目时作为项目渲染设置的初始值");
                 ImGui.TextWrapped("欢迎窗口是独立的强制入口；必须新建或打开项目后才可操作编辑器主窗口。");
                 ImGui.EndTabItem();
             }
@@ -511,13 +517,13 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("渲染画面"))
             {
-                DrawProjectRenderBackendControls("渲染窗口");
+                DrawProjectRenderBackendControls(_projectSettings.RenderSettings, "渲染窗口");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("渲染导出画面"))
             {
-                DrawProjectRenderBackendControls("导出画面");
+                DrawProjectRenderBackendControls(_projectSettings.ExportRenderSettings, "导出画面");
                 ImGui.TextDisabled("导出使用完整体素数据，不使用场景 LOD。");
                 ImGui.EndTabItem();
             }
@@ -526,13 +532,28 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private void DrawProjectRenderBackendControls(string context)
+    private void DrawProjectRenderBackendControls(RenderSettings settings, string context)
     {
         ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU。");
-        ImGui.Checkbox("开启光线追踪", ref _settingsTogglePath);
+        var pathTracing = settings.PathTracingEnabled;
+        if (ImGui.Checkbox($"{context}开启光线追踪", ref pathTracing))
+        {
+            settings.PathTracingEnabled = pathTracing;
+            if (ReferenceEquals(settings, _projectSettings.RenderSettings)) _settingsTogglePath = pathTracing;
+        }
+        var hardwareRayTracing = settings.UseHardwareRayTracing;
+        if (ImGui.Checkbox($"{context}使用硬件 RT（默认关闭）", ref hardwareRayTracing))
+        {
+            settings.UseHardwareRayTracing = hardwareRayTracing;
+            if (ReferenceEquals(settings, _projectSettings.RenderSettings))
+            {
+                _useHardwareRayTracing = hardwareRayTracing;
+                _renderSettings.UseHardwareRayTracing = hardwareRayTracing;
+            }
+        }
         ImGui.TextDisabled("场景窗口固定为纯体素预览，以下选项仅作用于渲染窗口和导出画面");
-        ImGui.SliderInt("路径样本/帧", ref _renderSettings.PathSamplesPerFrame, 1, 8);
-        ImGui.SliderInt("最大弹射次数", ref _renderSettings.MaxBounces, 1, 12);
+        ImGui.SliderInt($"{context}路径样本/帧", ref settings.PathSamplesPerFrame, 1, 8);
+        ImGui.SliderInt($"{context}最大弹射次数", ref settings.MaxBounces, 1, 12);
     }
 
     private void DrawProjectAssetSettings()

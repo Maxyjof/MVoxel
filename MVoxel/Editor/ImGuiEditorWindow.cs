@@ -1513,6 +1513,10 @@ DockId=0x6A3C3007,0
                         var project = ProjectLayout.Create(absolutePath, name);
                         ProjectTemplateCatalog.Populate(project, templateId,
                             (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                        var projectSettings = SettingsStore.LoadProject(project);
+                        projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
+                        projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
+                        SettingsStore.SaveProject(project, projectSettings);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },

@@ -43,6 +43,7 @@ public sealed class EditorSettingsDocument
     public float UiScale = 1F;
     public string Theme = EditorPalette.DefaultThemeName;
     public bool EnableGpuDiagnostics;
+    public bool UseHardwareRayTracing;
     public int UndoRepeatDelayMs = 350;
     public int UndoRepeatIntervalMs = 70;
 
@@ -120,7 +121,9 @@ public sealed class ProjectSettingsDocument
     public string DefaultRenderPreset = "默认";
     public bool AutoSave = true;
     public int AutoSaveSeconds = 120;
+    public RenderSettings SceneRenderSettings = new();
     public RenderSettings RenderSettings = new();
+    public RenderSettings ExportRenderSettings = new();
 
     public static ProjectSettingsDocument CreateDefault() => new();
 
@@ -149,8 +152,14 @@ public sealed class ProjectSettingsDocument
         VoxelUnit = string.IsNullOrWhiteSpace(VoxelUnit) ? "1 格 = 1 体素单位" : VoxelUnit.Trim();
         DefaultRenderPreset = string.IsNullOrWhiteSpace(DefaultRenderPreset) ? "默认" : DefaultRenderPreset.Trim();
         RenderSettings ??= new RenderSettings();
+        SceneRenderSettings ??= new RenderSettings();
+        ExportRenderSettings ??= new RenderSettings();
+        SceneRenderSettings.SanitizeNaN();
+        SceneRenderSettings.ClampAll();
         RenderSettings.SanitizeNaN();
         RenderSettings.ClampAll();
+        ExportRenderSettings.SanitizeNaN();
+        ExportRenderSettings.ClampAll();
     }
 }
 

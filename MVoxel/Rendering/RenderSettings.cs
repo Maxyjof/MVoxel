@@ -224,6 +224,11 @@ public sealed class RenderSettings
     public bool PathTracingEnabled = true;
 
     /// <summary>
+    /// 是否使用 Vulkan 硬件光追管线
+    /// </summary>
+    public bool UseHardwareRayTracing;
+
+    /// <summary>
     /// 每帧新增样本数
     /// </summary>
     public int PathSamplesPerFrame = 1;
