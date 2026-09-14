@@ -614,6 +614,10 @@ DockId=0x6A3C3007,0
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
+        else if (!gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+        {
+            RequestWelcomeWindow();
+        }
 
         DrawSceneWorldAxes(drawList, origin, size, camera);
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);

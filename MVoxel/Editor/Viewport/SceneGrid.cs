@@ -13,6 +13,7 @@ namespace MVoxel.Editor;
 /// </summary>
 internal static class SceneGrid
 {
+    private const float SparseGridStartDistance = 192F;
     private const int TargetHalfLineCount = 160;
     private const int MaximumHalfLineCount = 192;
 
@@ -24,10 +25,13 @@ internal static class SceneGrid
     /// <returns>世界单位步长</returns>
     internal static float Spacing(float cameraDistance, Vector2 size)
     {
-        // 这是注视点处的基准间距，网格计划会在可见线数超限时提升它
-        // 采用可见范围和幂次间距计算网格，保证近处与远景都有连续覆盖
-        var desired = Math.Max(1F, cameraDistance * 12F / Math.Max(1F, SceneProjection.FocalLength(size)));
-        return NextPowerOfTwo(desired);
+        // 近处固定使用单体素网格，只有进入远景区间后才提升步长
+        // 步长只由观察距离决定，避免窗口尺寸和视锥采样造成来回跳变
+        _ = size;
+        var distance = Math.Max(1F, cameraDistance);
+        return distance <= SparseGridStartDistance
+            ? 1F
+            : NextPowerOfTwo(distance / SparseGridStartDistance);
     }
 
     /// <summary>
