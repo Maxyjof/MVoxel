@@ -34,8 +34,10 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     private readonly DeviceMemory _vertexMemory;
     private readonly VkBuffer _indexBuffer;
     private readonly DeviceMemory _indexMemory;
+    private readonly Dictionary<nint, TextureResource> _textures = new();
     private readonly ulong _vertexCapacity;
     private readonly ulong _indexCapacity;
+    private long _nextTextureId = 1;
     private bool _disposed;
 
     /// <summary>
@@ -71,6 +73,30 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     }
 
     /// <summary>
+    /// 注册一张供 ImGui 使用的 Vulkan RGBA 纹理
+    /// </summary>
+    /// <param name="pixels">连续排列的 RGBA8 像素</param>
+    /// <param name="width">纹理宽度</param>
+    /// <param name="height">纹理高度</param>
+    /// <returns>可传给 ImGui.Image 的纹理句柄</returns>
+    internal nint RegisterTexture(byte[] pixels, int width, int height)
+    {
+        ArgumentNullException.ThrowIfNull(pixels);
+        if (width <= 0 || height <= 0 || pixels.Length != checked(width * height * 4))
+        {
+            throw new ArgumentException("Vulkan 纹理像素尺寸不匹配", nameof(pixels));
+        }
+
+        var (image, memory) = CreateTextureImage(pixels, (uint)width, (uint)height);
+        var view = CreateImageView(image, Format.R8G8B8A8Unorm);
+        var textureSet = AllocateDescriptorSet(_textureDescriptorSetLayout);
+        UpdateTextureDescriptor(textureSet, view);
+        var id = (nint)Interlocked.Increment(ref _nextTextureId);
+        _textures.Add(id, new TextureResource(image, memory, view, textureSet));
+        return id;
+    }
+
+    /// <summary>
     /// 把当前 ImGui 绘制数据记录到 Vulkan 命令缓冲
     /// </summary>
     internal void Record(CommandBuffer commandBuffer, VulkanImGuiController controller)
@@ -96,9 +122,6 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         ulong vertexOffset = 0;
         _api.CmdBindVertexBuffers(commandBuffer, 0, 1, in _vertexBuffer, in vertexOffset);
         _api.CmdBindIndexBuffer(commandBuffer, _indexBuffer, 0, IndexType.Uint16);
-        DescriptorSet* descriptorSets = stackalloc DescriptorSet[2] { _textureDescriptorSet, _samplerDescriptorSet };
-        _api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Graphics, _pipelineLayout, 0, 2, descriptorSets, 0, null);
-
         float displayWidth = Math.Max(drawData.DisplaySize.X, 1F);
         float displayHeight = Math.Max(drawData.DisplaySize.Y, 1F);
         Vector2 scale = new(2F / displayWidth, 2F / displayHeight);
@@ -111,6 +134,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
 
         int vertexBase = 0;
         int indexBase = 0;
+        DescriptorSet* descriptorSets = stackalloc DescriptorSet[2];
         for (int listIndex = 0; listIndex < drawData.CmdListsCount; listIndex++)
         {
             ImDrawListPtr drawList = drawData.CmdLists[listIndex];
@@ -130,6 +154,15 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
                     new Offset2D(clipLeft, clipTop),
                     new Extent2D((uint)(clipRight - clipLeft), (uint)(clipBottom - clipTop)));
                 _api.CmdSetScissor(commandBuffer, 0, 1, in scissor);
+                var textureSet = _textureDescriptorSet;
+                if (drawCommand.TextureId != IntPtr.Zero && _textures.TryGetValue(drawCommand.TextureId, out var texture))
+                {
+                    textureSet = texture.TextureSet;
+                }
+
+                descriptorSets[0] = textureSet;
+                descriptorSets[1] = _samplerDescriptorSet;
+                _api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Graphics, _pipelineLayout, 0, 2, descriptorSets, 0, null);
                 _api.CmdDrawIndexed(
                     commandBuffer,
                     drawCommand.ElemCount,
@@ -158,6 +191,13 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         _api.DeviceWaitIdle(_device);
         _api.DestroyPipeline(_device, _pipeline, null);
         _api.DestroyPipelineLayout(_device, _pipelineLayout, null);
+        foreach (var texture in _textures.Values)
+        {
+            _api.DestroyImageView(_device, texture.View, null);
+            _api.DestroyImage(_device, texture.Image, null);
+            _api.FreeMemory(_device, texture.Memory, null);
+        }
+
         _api.DestroyDescriptorPool(_device, _descriptorPool, null);
         _api.DestroyDescriptorSetLayout(_device, _samplerDescriptorSetLayout, null);
         _api.DestroyDescriptorSetLayout(_device, _textureDescriptorSetLayout, null);
@@ -218,12 +258,20 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     /// </summary>
     private (Image Image, DeviceMemory Memory) CreateFontImage(VulkanImGuiController controller)
     {
+        return CreateTextureImage(controller.FontPixels, (uint)controller.FontWidth, (uint)controller.FontHeight);
+    }
+
+    /// <summary>
+    /// 创建并上传一张设备本地 Vulkan 纹理
+    /// </summary>
+    private (Image Image, DeviceMemory Memory) CreateTextureImage(byte[] pixels, uint width, uint height)
+    {
         ImageCreateInfo createInfo = new()
         {
             SType = StructureType.ImageCreateInfo,
             ImageType = ImageType.Type2D,
             Format = Format.R8G8B8A8Unorm,
-            Extent = new Extent3D((uint)controller.FontWidth, (uint)controller.FontHeight, 1),
+            Extent = new Extent3D(width, height, 1),
             MipLevels = 1,
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
@@ -238,20 +286,20 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         DeviceMemory memory = AllocateMemory(requirements, MemoryPropertyFlags.DeviceLocalBit);
         Check(_api.BindImageMemory(_device, image, memory, 0), "绑定 ImGui 字体图像内存");
         (VkBuffer stagingBuffer, DeviceMemory stagingMemory) = CreateBuffer(
-            (ulong)controller.FontPixels.Length,
+            (ulong)pixels.Length,
             BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         void* mapped = null;
-        Check(_api.MapMemory(_device, stagingMemory, 0, (ulong)controller.FontPixels.Length, 0, &mapped),
-            "映射 ImGui 字体暂存缓冲");
-        fixed (byte* source = controller.FontPixels)
+        Check(_api.MapMemory(_device, stagingMemory, 0, (ulong)pixels.Length, 0, &mapped),
+            "映射 Vulkan 纹理暂存缓冲");
+        fixed (byte* source = pixels)
         {
-            System.Buffer.MemoryCopy(source, mapped, controller.FontPixels.Length, controller.FontPixels.Length);
+            System.Buffer.MemoryCopy(source, mapped, pixels.Length, pixels.Length);
         }
 
         _api.UnmapMemory(_device, stagingMemory);
         _context.ExecuteImmediate(commandBuffer => RecordFontImageUpload(
-            commandBuffer, image, stagingBuffer, (uint)controller.FontWidth, (uint)controller.FontHeight));
+            commandBuffer, image, stagingBuffer, width, height));
         _api.DestroyBuffer(_device, stagingBuffer, null);
         _api.FreeMemory(_device, stagingMemory, null);
 
@@ -343,7 +391,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
             SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1)
         };
         ImageView view = default;
-        Check(_api.CreateImageView(_device, &createInfo, null, &view), "创建 ImGui 字体图像视图");
+        Check(_api.CreateImageView(_device, &createInfo, null, &view), "创建 Vulkan 纹理图像视图");
         return view;
     }
 
@@ -398,14 +446,14 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     {
         DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[2]
         {
-            new DescriptorPoolSize(DescriptorType.SampledImage, 1),
+            new DescriptorPoolSize(DescriptorType.SampledImage, 64),
             new DescriptorPoolSize(DescriptorType.Sampler, 1)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
             Flags = DescriptorPoolCreateFlags.FreeDescriptorSetBit,
-            MaxSets = 2,
+            MaxSets = 65,
             PoolSizeCount = 2,
             PPoolSizes = poolSizes
         };
@@ -436,16 +484,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     /// </summary>
     private void UpdateFontDescriptor()
     {
-        DescriptorImageInfo imageInfo = new(default, _fontImageView, ImageLayout.ShaderReadOnlyOptimal);
-        WriteDescriptorSet imageWrite = new()
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _textureDescriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.SampledImage,
-            PImageInfo = &imageInfo
-        };
+        UpdateTextureDescriptor(_textureDescriptorSet, _fontImageView);
         DescriptorImageInfo samplerInfo = new(_fontSampler, default, ImageLayout.Undefined);
         WriteDescriptorSet samplerWrite = new()
         {
@@ -456,9 +495,32 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
             DescriptorType = DescriptorType.Sampler,
             PImageInfo = &samplerInfo
         };
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[2] { imageWrite, samplerWrite };
-        _api.UpdateDescriptorSets(_device, 2, writes, 0, null);
+        _api.UpdateDescriptorSets(_device, 1, in samplerWrite, 0, null);
     }
+
+    /// <summary>
+    /// 写入单张纹理的图像描述符
+    /// </summary>
+    private void UpdateTextureDescriptor(DescriptorSet textureSet, ImageView imageView)
+    {
+        DescriptorImageInfo imageInfo = new(default, imageView, ImageLayout.ShaderReadOnlyOptimal);
+        WriteDescriptorSet imageWrite = new()
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = textureSet,
+            DstBinding = 0,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.SampledImage,
+            PImageInfo = &imageInfo
+        };
+        _api.UpdateDescriptorSets(_device, 1, in imageWrite, 0, null);
+    }
+
+    /// <summary>
+    /// ImGui 纹理对应的 Vulkan 资源
+    /// </summary>
+    private readonly record struct TextureResource(Image Image, DeviceMemory Memory, ImageView View,
+        DescriptorSet TextureSet);
 
     /// <summary>
     /// 创建图形管线布局

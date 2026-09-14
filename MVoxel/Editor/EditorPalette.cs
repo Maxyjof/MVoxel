@@ -3,44 +3,137 @@ using System.Drawing;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// 编辑器界面的统一配色表，全部为 sRGB 字节色，
+/// 编辑器界面的统一配色表，全部为 sRGB 字节色
 /// 交给 ImGui 前统一转成 0 到 1 浮点
 /// </summary>
 internal static class EditorPalette
 {
-    /// <summary>窗口底色</summary>
-    internal static readonly Color Window = Color.FromArgb(255, 18, 23, 30);
+    /// <summary>
+    /// 默认主题名称
+    /// </summary>
+    internal const string DefaultThemeName = "MVoxel 浅白";
 
-    /// <summary>面板底色</summary>
-    internal static readonly Color Panel = Color.FromArgb(255, 34, 40, 50);
+    /// <summary>
+    /// 可用主题名称
+    /// </summary>
+    internal static readonly string[] ThemeNames =
+    {
+        DefaultThemeName,
+        "MVoxel 深色",
+        "石墨灰",
+        "高对比度",
+        "海蓝清新",
+    };
 
-    /// <summary>面板标题与分组条底色</summary>
-    internal static readonly Color PanelHeader = Color.FromArgb(255, 48, 58, 73);
+    /// <summary>
+    /// 窗口底色
+    /// </summary>
+    internal static Color Window { get; private set; }
 
-    /// <summary>输入控件底色</summary>
-    internal static readonly Color Input = Color.FromArgb(255, 22, 28, 37);
+    /// <summary>
+    /// 面板底色
+    /// </summary>
+    internal static Color Panel { get; private set; }
 
-    /// <summary>描边色</summary>
-    internal static readonly Color Border = Color.FromArgb(255, 105, 122, 144);
+    /// <summary>
+    /// 面板标题与分组条底色
+    /// </summary>
+    internal static Color PanelHeader { get; private set; }
 
-    /// <summary>主强调色（选中、焦点）</summary>
-    internal static readonly Color Accent = Color.FromArgb(255, 93, 187, 255);
+    /// <summary>
+    /// 输入控件底色
+    /// </summary>
+    internal static Color Input { get; private set; }
 
-    /// <summary>柔和强调色（悬停底色）</summary>
-    internal static readonly Color AccentSoft = Color.FromArgb(255, 40, 92, 130);
+    /// <summary>
+    /// 描边色
+    /// </summary>
+    internal static Color Border { get; private set; }
 
-    /// <summary>正文色</summary>
-    internal static readonly Color Text = Color.FromArgb(255, 245, 247, 250);
+    /// <summary>
+    /// 主强调色
+    /// </summary>
+    internal static Color Accent { get; private set; }
 
-    /// <summary>次要文字色</summary>
-    internal static readonly Color MutedText = Color.FromArgb(255, 189, 199, 212);
+    /// <summary>
+    /// 柔和强调色
+    /// </summary>
+    internal static Color AccentSoft { get; private set; }
 
-    /// <summary>图标色</summary>
-    internal static readonly Color Icon = Color.FromArgb(255, 220, 235, 247);
+    /// <summary>
+    /// 正文色
+    /// </summary>
+    internal static Color Text { get; private set; }
 
-    /// <summary>成功状态色</summary>
-    internal static readonly Color Success = Color.FromArgb(255, 99, 215, 145);
+    /// <summary>
+    /// 次要文字色
+    /// </summary>
+    internal static Color MutedText { get; private set; }
 
-    /// <summary>错误状态色</summary>
-    internal static readonly Color Error = Color.FromArgb(255, 255, 112, 120);
+    /// <summary>
+    /// 图标色
+    /// </summary>
+    internal static Color Icon { get; private set; }
+
+    /// <summary>
+    /// 成功状态色
+    /// </summary>
+    internal static Color Success { get; private set; }
+
+    /// <summary>
+    /// 错误状态色
+    /// </summary>
+    internal static Color Error { get; private set; }
+
+    static EditorPalette()
+    {
+        ApplyTheme(DefaultThemeName);
+    }
+
+    /// <summary>
+    /// 应用指定的编辑器颜色主题
+    /// </summary>
+    /// <param name="themeName">主题名称</param>
+    internal static void ApplyTheme(string? themeName)
+    {
+        var theme = themeName?.Trim();
+        (Window, Panel, PanelHeader, Input, Border, Accent, AccentSoft, Text, MutedText, Icon, Success, Error) =
+            theme switch
+            {
+                "MVoxel 深色" => (
+                    Color.FromArgb(255, 18, 23, 30), Color.FromArgb(255, 34, 40, 50),
+                    Color.FromArgb(255, 48, 58, 73), Color.FromArgb(255, 22, 28, 37),
+                    Color.FromArgb(255, 105, 122, 144), Color.FromArgb(255, 93, 187, 255),
+                    Color.FromArgb(255, 40, 92, 130), Color.FromArgb(255, 245, 247, 250),
+                    Color.FromArgb(255, 189, 199, 212), Color.FromArgb(255, 220, 235, 247),
+                    Color.FromArgb(255, 99, 215, 145), Color.FromArgb(255, 255, 112, 120)),
+                "石墨灰" => (
+                    Color.FromArgb(255, 39, 42, 47), Color.FromArgb(255, 52, 56, 62),
+                    Color.FromArgb(255, 66, 71, 78), Color.FromArgb(255, 31, 34, 39),
+                    Color.FromArgb(255, 128, 137, 149), Color.FromArgb(255, 233, 174, 80),
+                    Color.FromArgb(255, 112, 76, 36), Color.FromArgb(255, 246, 246, 244),
+                    Color.FromArgb(255, 196, 198, 201), Color.FromArgb(255, 240, 198, 114),
+                    Color.FromArgb(255, 112, 214, 157), Color.FromArgb(255, 255, 122, 122)),
+                "高对比度" => (
+                    Color.Black, Color.FromArgb(255, 18, 18, 18), Color.FromArgb(255, 40, 40, 40),
+                    Color.Black, Color.White, Color.FromArgb(255, 255, 224, 0),
+                    Color.FromArgb(255, 120, 80, 0), Color.White, Color.FromArgb(255, 235, 235, 235),
+                    Color.FromArgb(255, 255, 224, 0), Color.FromArgb(255, 80, 255, 130),
+                    Color.FromArgb(255, 255, 90, 90)),
+                "海蓝清新" => (
+                    Color.FromArgb(255, 235, 247, 250), Color.White, Color.FromArgb(255, 211, 235, 241),
+                    Color.FromArgb(255, 247, 252, 253), Color.FromArgb(255, 115, 168, 180),
+                    Color.FromArgb(255, 28, 133, 164), Color.FromArgb(255, 185, 226, 235),
+                    Color.FromArgb(255, 24, 52, 62), Color.FromArgb(255, 75, 112, 123),
+                    Color.FromArgb(255, 27, 117, 143), Color.FromArgb(255, 25, 150, 105),
+                    Color.FromArgb(255, 198, 65, 72)),
+                _ => (
+                    Color.FromArgb(255, 246, 249, 252), Color.White, Color.FromArgb(255, 226, 234, 242),
+                    Color.FromArgb(255, 255, 255, 255), Color.FromArgb(255, 157, 172, 187),
+                    Color.FromArgb(255, 41, 111, 177), Color.FromArgb(255, 211, 231, 248),
+                    Color.FromArgb(255, 29, 43, 57), Color.FromArgb(255, 91, 108, 124),
+                    Color.FromArgb(255, 45, 98, 145), Color.FromArgb(255, 30, 142, 86),
+                    Color.FromArgb(255, 194, 55, 67)),
+            };
+    }
 }

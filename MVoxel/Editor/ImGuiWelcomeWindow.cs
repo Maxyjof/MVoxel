@@ -36,8 +36,8 @@ internal sealed class ProjectOperationFailedEventArgs : EventArgs
 }
 
 /// <summary>
-/// Separate startup window rendered entirely with ImGui. It deliberately has
-/// its own OpenTK window/context so Welcome is not a Scene tab in the editor.
+/// 使用 ImGui 独立绘制的启动窗口
+/// Welcome 使用独立窗口，因此不会成为编辑器中的场景标签页
 /// </summary>
 internal sealed class ImGuiWelcomeWindow : GameWindow
 {
@@ -47,6 +47,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
     private IntPtr _imguiContext;
+    private nint _logoTextureId;
     private string _pathText = string.Empty;
     private string _errorText = string.Empty;
     private int _pathMode;
@@ -69,9 +70,8 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     }
 
     /// <summary>
-    /// Manually advances the secondary GLFW window. Unlike GameWindow.Run(),
-    /// this owner loop must dispose a window after its close request; merely
-    /// observing IsExiting leaves the native title-bar close button visible.
+    /// 手动推进独立 GLFW 窗口
+    /// 所有者循环必须在收到关闭请求后释放窗口，只观察 IsExiting 会留下原生标题栏
     /// </summary>
     internal bool PumpFrame(double deltaSeconds)
     {
@@ -104,6 +104,11 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
+        if (AppBranding.TryLoadLogoPixels(out var logoPixels, out var logoWidth, out var logoHeight))
+        {
+            _logoTextureId = _imguiRenderer.RegisterTexture(logoPixels, logoWidth, logoHeight);
+        }
+
         ConfigureImGui();
         UiDiagnostics.Configure();
     }
@@ -117,10 +122,18 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         }
     }
 
+    /// <summary>
+    /// 标记独立 Welcome 窗口的 Vulkan 交换链需要按新尺寸重建
+    /// </summary>
+    protected override void OnResize(ResizeEventArgs args)
+    {
+        base.OnResize(args);
+        _vulkan?.RequestResize();
+    }
+
     protected override void OnClosing(System.ComponentModel.CancelEventArgs args)
     {
-        // The callback is delivered during ProcessEvents(). Let the editor's
-        // owner loop dispose this independent window on the same main thread.
+        // 回调在 ProcessEvents() 中派发，由编辑器所有者循环在同一主线程释放独立窗口
         RequestClose();
         base.OnClosing(args);
     }
@@ -160,6 +173,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         _editor.ProjectOperationFailed -= OnProjectOperationFailed;
         _controller.Dispose();
         _controller = null;
+        _logoTextureId = IntPtr.Zero;
         _imguiRenderer?.Dispose();
         _imguiRenderer = null;
         _vulkan?.Dispose();
@@ -230,11 +244,20 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.BeginGroup();
         ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 13F);
+        if (_logoTextureId != IntPtr.Zero)
+        {
+            ImGui.Image(_logoTextureId, new Vector2(96F, 96F));
+            ImGui.SameLine(0F, 18F);
+        }
+
+        ImGui.BeginGroup();
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 14F);
         ImGui.PushFont(_fonts.Title);
         ImGui.TextColored(ToColor(EditorPalette.Text), "MVoxel");
         ImGui.PopFont();
         ImGui.TextColored(ToColor(EditorPalette.Accent), "用小方块，创造大世界");
         ImGui.TextDisabled("欢迎使用 MVoxel 体素建模软件");
+        ImGui.EndGroup();
         ImGui.EndGroup();
 
         ImGui.Dummy(new Vector2(0F, 28F));
@@ -264,8 +287,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         {
             foreach (var entry in recent)
             {
-                // ImGui Selectable only supports single-line labels; render the
-                // name+time as the clickable row and the path as a caption.
+                // ImGui Selectable 适合单行标签，因此把名称和时间作为可点击行，把路径作为说明文字
                 ImGui.PushID(entry.Path);
                 var label = $"{entry.Name}  ·  {entry.LastOpenedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
                 if (ImGui.Button(label, new Vector2(-1F, 0F)))

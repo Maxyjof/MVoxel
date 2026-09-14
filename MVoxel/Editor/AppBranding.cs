@@ -48,6 +48,37 @@ internal static class AppBranding
     }
 
     /// <summary>
+    /// 读取品牌图并转换为 Vulkan ImGui 可上传的 RGBA8 像素
+    /// </summary>
+    /// <param name="pixels">连续排列的 RGBA8 像素</param>
+    /// <param name="width">图像宽度</param>
+    /// <param name="height">图像高度</param>
+    /// <returns>是否成功读取品牌图</returns>
+    internal static bool TryLoadLogoPixels(out byte[] pixels, out int width, out int height)
+    {
+        using var source = LoadLogo();
+        if (source is null)
+        {
+            pixels = Array.Empty<byte>();
+            width = 0;
+            height = 0;
+            return false;
+        }
+
+        using var bitmap = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.Clear(Color.Transparent);
+            graphics.DrawImageUnscaled(source, 0, 0);
+        }
+
+        pixels = ToRgba(bitmap);
+        width = bitmap.Width;
+        height = bitmap.Height;
+        return true;
+    }
+
+    /// <summary>
     /// 从候选路径加载原始 logo 位图
     /// </summary>
     /// <returns>logo 位图或 null</returns>

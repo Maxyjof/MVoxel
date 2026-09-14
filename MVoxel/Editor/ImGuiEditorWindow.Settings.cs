@@ -386,15 +386,21 @@ internal sealed partial class ImGuiEditorWindow
                 var theme = _editorSettings.Theme;
                 if (ImGui.BeginCombo("主题", theme))
                 {
-                    foreach (var item in new[] { "MVoxel 深色", "高对比度", "石墨灰" })
+                    foreach (var item in EditorPalette.ThemeNames)
                     {
-                        if (ImGui.Selectable(item, theme == item)) _editorSettings.Theme = item;
+                        if (ImGui.Selectable(item, theme == item))
+                        {
+                            _editorSettings.Theme = item;
+                            EditorPalette.ApplyTheme(item);
+                            ConfigureImGui();
+                            SaveEditorSettings();
+                        }
                     }
 
                     ImGui.EndCombo();
                 }
 
-                ImGui.TextDisabled("主题改动将在下一次启动时完整应用。");
+                ImGui.TextDisabled("主题改动会立即应用并保存。");
                 ImGui.EndTabItem();
             }
 

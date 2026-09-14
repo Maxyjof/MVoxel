@@ -7,6 +7,7 @@ using Silk.NET.Vulkan.Extensions.KHR;
 using Silk.NET.Core;
 using VkImage = Silk.NET.Vulkan.Image;
 using VkSemaphore = Silk.NET.Vulkan.Semaphore;
+using OpenTkVector2i = OpenTK.Mathematics.Vector2i;
 
 namespace MVoxel.Editor.Rendering.Vulkan;
 
@@ -23,6 +24,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private readonly KhrSurface _surfaceApi;
     private readonly KhrWin32Surface _win32SurfaceApi;
     private readonly KhrSwapchain _swapchainApi;
+    private readonly GameWindow _window;
     private readonly Instance _instance;
     private readonly SurfaceKHR _surface;
     private readonly PhysicalDevice _physicalDevice;
@@ -34,12 +36,13 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private readonly VkSemaphore _imageAvailable;
     private readonly VkSemaphore _renderFinished;
     private readonly Fence _inFlight;
-    private readonly RenderPass _renderPass;
+    private RenderPass _renderPass;
     private readonly List<Framebuffer> _framebuffers = [];
     private readonly List<ImageView> _imageViews = [];
     private SwapchainKHR _swapchain;
     private Extent2D _extent;
     private Format _format;
+    private bool _resizePending;
     private bool _disposed;
 
     /// <summary>
@@ -48,6 +51,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal VulkanWindowContext(GameWindow window)
     {
         ArgumentNullException.ThrowIfNull(window);
+        _window = window;
         _api = Vk.GetApi();
 
         _instance = CreateInstance();
@@ -114,6 +118,14 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal Format ColorFormat => _format;
 
     /// <summary>
+    /// 标记窗口尺寸变化，下一帧按需重建交换链资源
+    /// </summary>
+    internal void RequestResize()
+    {
+        _resizePending = true;
+    }
+
+    /// <summary>
     /// 执行一次立即提交并等待完成的初始化命令
     /// </summary>
     internal void ExecuteImmediate(Action<CommandBuffer> recordCommands)
@@ -149,11 +161,17 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal void RenderFrame(Vector4 color, Action<CommandBuffer> recordCommands)
     {
         ArgumentNullException.ThrowIfNull(recordCommands);
+        if (!TryRecreateSwapchain())
+        {
+            return;
+        }
+
         uint imageIndex = 0;
         Result result = _swapchainApi.AcquireNextImage(
             _device, _swapchain, ulong.MaxValue, _imageAvailable, default, ref imageIndex);
         if (result is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr)
         {
+            _resizePending = true;
             return;
         }
 
@@ -218,6 +236,11 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             PImageIndices = &imageIndex
         };
         result = _swapchainApi.QueuePresent(_queue, in presentInfo);
+        if (result == Result.SuboptimalKhr)
+        {
+            _resizePending = true;
+        }
+
         if (result is not (Result.Success or Result.SuboptimalKhr))
         {
             throw new InvalidOperationException($"Vulkan 呈现交换链图像失败：{result}");
@@ -543,6 +566,59 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             Check(_api.CreateFramebuffer(_device, &framebufferInfo, null, &framebuffer), "创建交换链帧缓冲");
             _framebuffers.Add(framebuffer);
         }
+    }
+
+    /// <summary>
+    /// 根据最新帧缓冲尺寸重建交换链相关资源
+    /// </summary>
+    private bool TryRecreateSwapchain()
+    {
+        OpenTkVector2i framebufferSize = _window.FramebufferSize;
+        if (framebufferSize.X <= 0 || framebufferSize.Y <= 0)
+        {
+            return false;
+        }
+
+        if (!_resizePending &&
+            _extent.Width == (uint)framebufferSize.X && _extent.Height == (uint)framebufferSize.Y)
+        {
+            return true;
+        }
+
+        _api.DeviceWaitIdle(_device);
+        DestroySwapchainImages();
+        SwapchainKHR oldSwapchain = _swapchain;
+        _swapchainApi.DestroySwapchain(_device, oldSwapchain, null);
+        Format oldFormat = _format;
+        _swapchain = CreateSwapchain(framebufferSize.X, framebufferSize.Y);
+        if (_format != oldFormat)
+        {
+            _api.DestroyRenderPass(_device, _renderPass, null);
+            _renderPass = CreateRenderPass();
+        }
+
+        CreateSwapchainImages();
+        _resizePending = false;
+        return true;
+    }
+
+    /// <summary>
+    /// 销毁交换链图像视图和帧缓冲
+    /// </summary>
+    private void DestroySwapchainImages()
+    {
+        foreach (Framebuffer framebuffer in _framebuffers)
+        {
+            _api.DestroyFramebuffer(_device, framebuffer, null);
+        }
+
+        _framebuffers.Clear();
+        foreach (ImageView imageView in _imageViews)
+        {
+            _api.DestroyImageView(_device, imageView, null);
+        }
+
+        _imageViews.Clear();
     }
 
     /// <summary>

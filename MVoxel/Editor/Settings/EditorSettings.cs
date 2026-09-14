@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ImGuiNET;
 using MVoxel.Core;
+using MVoxel.Editor;
 using MVoxel.Project;
 using MVoxel.Rendering;
 
@@ -35,12 +36,12 @@ public sealed class ShortcutScheme
 /// </summary>
 public sealed class EditorSettingsDocument
 {
-    public int FormatVersion = 1;
+    public int FormatVersion = 2;
     public string ActiveShortcutScheme = "标准";
     public List<ShortcutScheme> ShortcutSchemes = new();
     public bool McMode;
     public float UiScale = 1F;
-    public string Theme = "MVoxel 深色";
+    public string Theme = EditorPalette.DefaultThemeName;
     public bool ShowWelcomeOnStartup = true;
     public bool EnableGpuDiagnostics;
 
@@ -60,6 +61,12 @@ public sealed class EditorSettingsDocument
 
     public void Normalize()
     {
+        if (FormatVersion < 2 && string.Equals(Theme, "MVoxel 深色", StringComparison.Ordinal))
+        {
+            Theme = EditorPalette.DefaultThemeName;
+        }
+
+        FormatVersion = 2;
         ShortcutSchemes ??= new List<ShortcutScheme>();
         if (ShortcutSchemes.Count == 0) ShortcutSchemes.Add(CreateDefaultScheme());
 
@@ -82,7 +89,7 @@ public sealed class EditorSettingsDocument
         }
 
         UiScale = float.IsFinite(UiScale) ? Math.Clamp(UiScale, 0.75F, 2F) : 1F;
-        Theme = string.IsNullOrWhiteSpace(Theme) ? "MVoxel 深色" : Theme.Trim();
+        Theme = string.IsNullOrWhiteSpace(Theme) ? EditorPalette.DefaultThemeName : Theme.Trim();
     }
 
     private static ShortcutScheme CreateDefaultScheme()

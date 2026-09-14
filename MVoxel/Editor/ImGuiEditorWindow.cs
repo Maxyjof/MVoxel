@@ -122,9 +122,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
+        LoadEditorSettings();
+        EditorPalette.ApplyTheme(_editorSettings.Theme);
         ConfigureImGui();
         UiDiagnostics.Configure();
-        LoadEditorSettings();
         _palette = EditorPalettes.ResolveEditorPalette();
         InitializeVoxelPipeline();
         if (!string.IsNullOrWhiteSpace(_startupProjectPath))
@@ -141,6 +142,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnResize(ResizeEventArgs args)
     {
         base.OnResize(args);
+        _vulkan?.RequestResize();
     }
 
     protected override void OnUpdateFrame(FrameEventArgs args)
