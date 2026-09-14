@@ -37,7 +37,7 @@ internal static unsafe class VulkanShaderCompiler
             // 硬件 RT 扩展需要 SPIR-V 1.4，普通 Compute 保持基础目标版本
             compilerApi.CompileOptionsSetTargetSpirv(options,
                 rayTracing ? SpirvVersion.Shaderc14 : SpirvVersion.Shaderc10);
-            compilerApi.CompileOptionsSetOptimizationLevel(options, OptimizationLevel.Zero);
+            compilerApi.CompileOptionsSetOptimizationLevel(options, OptimizationLevel.Performance);
             fixed (byte* sourcePointer = sourceBytes)
             {
                 CompilationResult* result = compilerApi.CompileIntoSpv(

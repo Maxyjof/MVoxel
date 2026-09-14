@@ -912,9 +912,12 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             vec2 size = vec2(gl_LaunchSizeEXT.xy);
             vec2 uv = (vec2(pixel) + vec2(0.5)) / size * 2.0 - 1.0;
             vec3 origin = vec3(p[0], p[1], p[2]) - vec3(p[16], p[17], p[18]);
-            vec3 direction = normalize(vec3(p[4], p[5], p[6]) + vec3(p[8], p[9], p[10]) * uv.x + vec3(p[12], p[13], p[14]) * uv.y);
+            float focal = max(p[3], 1.0);
+            vec3 direction = normalize(vec3(p[4], p[5], p[6]) +
+                vec3(p[8], p[9], p[10]) * uv.x * size.x / focal -
+                vec3(p[12], p[13], p[14]) * uv.y * size.y / focal);
             payload = vec4(0.025, 0.035, 0.05, 1.0);
-            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, 0.001, direction, 1000000.0, 0);
+            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, p[96], direction, p[97], 0);
             imageStore(outputImage, pixel, payload);
         }
         """;

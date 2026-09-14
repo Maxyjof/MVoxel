@@ -1041,6 +1041,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     break;
                 }
 
+                if (bounce == 0 && (hitDistance < values[96] || hitDistance > values[97]))
+                {
+                    if (!pathMode)
+                    {
+                        radiance += vec3(0.025, 0.035, 0.05);
+                    }
+                    else
+                    {
+                        radiance += throughput * Sky(rayDirection);
+                    }
+                    break;
+                }
+
                 vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
                 if (!pathMode)
                 {

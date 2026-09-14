@@ -12,7 +12,23 @@ namespace MVoxel.Editor;
 /// <param name="Forward">视线单位向量</param>
 /// <param name="Right">右方向单位向量</param>
 /// <param name="Up">上方向单位向量</param>
-internal readonly record struct SceneCamera(Vector3 Position, Vector3 Target, Vector3 Forward, Vector3 Right, Vector3 Up);
+internal readonly record struct SceneCamera(Vector3 Position, Vector3 Target, Vector3 Forward, Vector3 Right, Vector3 Up)
+{
+    /// <summary>
+    /// 近平面距离
+    /// </summary>
+    public float NearClip { get; init; } = SceneProjection.Near;
+
+    /// <summary>
+    /// 远平面距离
+    /// </summary>
+    public float FarClip { get; init; } = float.PositiveInfinity;
+
+    /// <summary>
+    /// 视场角，零值表示使用兼容默认焦距
+    /// </summary>
+    public float FieldOfViewDegrees { get; init; }
+}
 
 /// <summary>
 /// 场景视图的针孔投影与裁剪，网格、坐标轴、GPU 着色器与鼠标拾取共用
@@ -33,6 +49,24 @@ internal static class SceneProjection
     internal static float FocalLength(Vector2 size) => Math.Min(size.X, size.Y) * 0.95F;
 
     /// <summary>
+    /// 根据相机视场角计算焦距
+    /// </summary>
+    /// <param name="size">视口逻辑尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>焦距像素值</returns>
+    internal static float FocalLength(Vector2 size, SceneCamera camera)
+    {
+        if (camera.FieldOfViewDegrees <= 0F)
+        {
+            return FocalLength(size);
+        }
+
+        var fieldOfView = Math.Clamp(camera.FieldOfViewDegrees, 20F, 120F);
+        var focal = size.Y / (2F * MathF.Tan(fieldOfView * MathF.PI / 360F));
+        return float.IsFinite(focal) && focal > 1F ? focal : FocalLength(size);
+    }
+
+    /// <summary>
     /// 先在相机空间裁剪线段再做透视除法。仅因某个端点在相机背后就整条丢弃
     /// 会让脚下的地面网格凭空消失，所以必须保留可见部分
     /// </summary>
@@ -51,17 +85,21 @@ internal static class SceneProjection
         if (size.X <= 0 || size.Y <= 0) return false;
         var p = ToCamera(start, camera);
         var q = ToCamera(end, camera);
-        var xSlope = size.X / (2F * FocalLength(size));
-        var ySlope = size.Y / (2F * FocalLength(size));
+        var near = NearPlane(camera);
+        var far = FarPlane(camera);
+        var focal = FocalLength(size, camera);
+        var xSlope = size.X / (2F * focal);
+        var ySlope = size.Y / (2F * focal);
         var lower = 0F;
         var upper = 1F;
-        if (!ClipPlane(p.Z - Near, q.Z - Near, ref lower, ref upper) ||
+        if (!ClipPlane(p.Z - near, q.Z - near, ref lower, ref upper) ||
+            !ClipPlane(far - p.Z, far - q.Z, ref lower, ref upper) ||
             !ClipPlane(p.Z * xSlope + p.X, q.Z * xSlope + q.X, ref lower, ref upper) ||
             !ClipPlane(p.Z * xSlope - p.X, q.Z * xSlope - q.X, ref lower, ref upper) ||
             !ClipPlane(p.Z * ySlope + p.Y, q.Z * ySlope + q.Y, ref lower, ref upper) ||
             !ClipPlane(p.Z * ySlope - p.Y, q.Z * ySlope - q.Y, ref lower, ref upper)) return false;
-        a = ProjectCamera(p + (q - p) * lower, origin, size);
-        b = ProjectCamera(p + (q - p) * upper, origin, size);
+        a = ProjectCamera(p + (q - p) * lower, origin, size, camera);
+        b = ProjectCamera(p + (q - p) * upper, origin, size, camera);
         return float.IsFinite(a.X) && float.IsFinite(a.Y) && float.IsFinite(b.X) && float.IsFinite(b.Y);
     }
 
@@ -86,11 +124,15 @@ internal static class SceneProjection
         if (size.X <= 0 || size.Y <= 0) return false;
         var p = ToCamera(start, camera);
         var q = ToCamera(end, camera);
-        var xSlope = size.X / (2F * FocalLength(size));
-        var ySlope = size.Y / (2F * FocalLength(size));
+        var near = NearPlane(camera);
+        var far = FarPlane(camera);
+        var focal = FocalLength(size, camera);
+        var xSlope = size.X / (2F * focal);
+        var ySlope = size.Y / (2F * focal);
         var lower = 0F;
         var upper = 1F;
-        if (!ClipPlane(p.Z - Near, q.Z - Near, ref lower, ref upper) ||
+        if (!ClipPlane(p.Z - near, q.Z - near, ref lower, ref upper) ||
+            !ClipPlane(far - p.Z, far - q.Z, ref lower, ref upper) ||
             !ClipPlane(p.Z * xSlope + p.X, q.Z * xSlope + q.X, ref lower, ref upper) ||
             !ClipPlane(p.Z * xSlope - p.X, q.Z * xSlope - q.X, ref lower, ref upper) ||
             !ClipPlane(p.Z * ySlope + p.Y, q.Z * ySlope + q.Y, ref lower, ref upper) ||
@@ -98,8 +140,8 @@ internal static class SceneProjection
 
         clippedStart = start + (end - start) * lower;
         clippedEnd = start + (end - start) * upper;
-        a = ProjectCamera(p + (q - p) * lower, origin, size);
-        b = ProjectCamera(p + (q - p) * upper, origin, size);
+        a = ProjectCamera(p + (q - p) * lower, origin, size, camera);
+        b = ProjectCamera(p + (q - p) * upper, origin, size, camera);
         return float.IsFinite(a.X) && float.IsFinite(a.Y) && float.IsFinite(b.X) && float.IsFinite(b.Y);
     }
 
@@ -119,8 +161,8 @@ internal static class SceneProjection
         var p = ToCamera(world, camera);
         depth = p.Z;
         screen = default;
-        if (depth < Near) return false;
-        screen = ProjectCamera(p, origin, size);
+        if (depth < NearPlane(camera) || depth > FarPlane(camera)) return false;
+        screen = ProjectCamera(p, origin, size, camera);
         return float.IsFinite(screen.X) && float.IsFinite(screen.Y);
     }
 
@@ -135,7 +177,7 @@ internal static class SceneProjection
     /// <returns>单位方向射线</returns>
     internal static Vector3 RayFromScreen(Vector2 screen, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        var focal = FocalLength(size);
+        var focal = FocalLength(size, camera);
         var offset = (screen - origin - size / 2F) / Math.Max(1F, focal);
         var direction = camera.Forward + camera.Right * offset.X - camera.Up * offset.Y;
         return direction.LengthSquared > 0.000001F ? Vector3.Normalize(direction) : camera.Forward;
@@ -147,8 +189,19 @@ internal static class SceneProjection
         return new Vector3(Vector3.Dot(p, camera.Right), Vector3.Dot(p, camera.Up), Vector3.Dot(p, camera.Forward));
     }
 
-    private static Vector2 ProjectCamera(Vector3 p, Vector2 origin, Vector2 size) =>
-        origin + size / 2F + new Vector2(p.X, -p.Y) * (FocalLength(size) / Math.Max(Near, p.Z));
+    private static Vector2 ProjectCamera(Vector3 p, Vector2 origin, Vector2 size, SceneCamera camera) =>
+        origin + size / 2F + new Vector2(p.X, -p.Y) * (FocalLength(size, camera) /
+            Math.Max(NearPlane(camera), p.Z));
+
+    private static float NearPlane(SceneCamera camera) =>
+        float.IsFinite(camera.NearClip) ? Math.Clamp(camera.NearClip, 0.001F, 1_000_000F) : Near;
+
+    private static float FarPlane(SceneCamera camera)
+    {
+        var near = NearPlane(camera);
+        if (!float.IsFinite(camera.FarClip)) return float.PositiveInfinity;
+        return Math.Max(near + 0.001F, Math.Clamp(camera.FarClip, near + 0.001F, 100_000_000F));
+    }
 
     private static bool ClipPlane(float p, float q, ref float lower, ref float upper)
     {

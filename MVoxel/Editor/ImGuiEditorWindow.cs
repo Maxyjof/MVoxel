@@ -55,6 +55,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneCameraDistance = 18F;
     private Vector2 _scenePan;
     private float _sceneFreeMoveHeight;
+    private float _sceneMoveSpeed = 12F;
+    private float _sceneNearClip = 0.05F;
+    private float _sceneFarClip = 100000F;
+    private float _sceneFieldOfView = 50F;
+    private bool _sceneOrbiting;
     private int _editorLodLevels = 4;
     private int _projectLodLevels = 4;
     private readonly float[] _editorLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
@@ -604,16 +609,18 @@ DockId=0x6A3C3007,0
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(EditorPalette.Window));
 
+        DrawSceneCameraButton(origin, size);
         var gizmoCenter = origin + new Vector2(size.X - 78F, 78F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.11F, 42F, 58F);
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius, allowMouseCapture: true);
         var camera = GetSceneCamera();
 
-        var gpuRendered = _project is not null && TryRenderGpuSceneView(drawList, origin, size, camera);
+        var gpuRendered = _project is not null && !_sceneOrbiting &&
+                          TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered)
         {
-            // Vulkan 设备不可用时保留 CPU 预览
-            DrawVoxelPreview(drawList, origin, size, camera, _showVoxelOutlines);
+            // 相机拖动期间使用轻量 CPU 预览，避免同步 Vulkan 提交阻塞输入
+            DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
         if (_showGrid && !gpuRendered)
@@ -658,6 +665,7 @@ DockId=0x6A3C3007,0
         ImGui.TextDisabled(KeyboardState.IsKeyDown(Keys.CapsLock)
             ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏"
             : "左键放置 · 右键破坏 · 中键平移 · Shift+左键环绕 · 滚轮缩放 · 点击右上角 XYZ 定向");
+        DrawSceneCameraPopup();
         ImGui.EndChild();
     }
 
@@ -678,7 +686,60 @@ DockId=0x6A3C3007,0
 
         right = Vector3.Normalize(right);
         var up = Vector3.Normalize(Vector3.Cross(right, forward));
-        return new SceneCamera(position, target, forward, right, up);
+        return new SceneCamera(position, target, forward, right, up)
+        {
+            NearClip = _sceneNearClip,
+            FarClip = _sceneFarClip,
+            FieldOfViewDegrees = _sceneFieldOfView,
+        };
+    }
+
+    /// <summary>
+    /// 绘制场景窗口右上角的相机设置按钮
+    /// </summary>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    private static void DrawSceneCameraButton(Vector2 origin, Vector2 size)
+    {
+        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(8F, size.X - 112F), 8F));
+        if (ImGui.Button("相机##SceneCameraButton", new Vector2(96F, 24F)))
+        {
+            ImGui.OpenPopup("##SceneCameraPopup");
+        }
+    }
+
+    /// <summary>
+    /// 绘制场景相机的即时设置面板
+    /// </summary>
+    private void DrawSceneCameraPopup()
+    {
+        if (!ImGui.BeginPopup("##SceneCameraPopup")) return;
+
+        ImGui.TextUnformatted("场景相机");
+        ImGui.Separator();
+        ImGui.SetNextItemWidth(220F);
+        ImGui.SliderFloat("移动速度##SceneCamera", ref _sceneMoveSpeed, 0.1F, 500F, "%.1f 格/秒");
+        ImGui.SetNextItemWidth(220F);
+        ImGui.SliderFloat("近处裁剪##SceneCamera", ref _sceneNearClip, 0.001F, 100F, "%.3f");
+        ImGui.SetNextItemWidth(220F);
+        ImGui.SliderFloat("远处裁剪##SceneCamera", ref _sceneFarClip, 100F, 10_000_000F, "%.0f");
+        ImGui.SetNextItemWidth(220F);
+        ImGui.SliderFloat("视场角 FOV##SceneCamera", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
+
+        _sceneMoveSpeed = Math.Clamp(_sceneMoveSpeed, 0.1F, 500F);
+        _sceneNearClip = Math.Clamp(_sceneNearClip, 0.001F, 100F);
+        _sceneFarClip = Math.Clamp(_sceneFarClip, Math.Max(100F, _sceneNearClip + 0.001F), 10_000_000F);
+        _sceneFieldOfView = Math.Clamp(_sceneFieldOfView, 20F, 120F);
+
+        if (ImGui.Button("恢复默认##SceneCamera"))
+        {
+            _sceneMoveSpeed = 12F;
+            _sceneNearClip = 0.05F;
+            _sceneFarClip = 100000F;
+            _sceneFieldOfView = 50F;
+        }
+
+        ImGui.EndPopup();
     }
 
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
@@ -686,6 +747,7 @@ DockId=0x6A3C3007,0
     {
         if (_welcomeWindow is not null || _projectOperation.IsRunning)
         {
+            _sceneOrbiting = false;
             EndSceneMouseCapture();
             return false;
         }
@@ -697,6 +759,7 @@ DockId=0x6A3C3007,0
         var gizmoHovered = inViewport && Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
+            _sceneOrbiting = false;
             EndSceneMouseCapture();
             return false;
         }
@@ -714,6 +777,7 @@ DockId=0x6A3C3007,0
 
         if (_sceneMouseCaptured)
         {
+            _sceneOrbiting = true;
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
             _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
             UpdateFreeMove(GetSceneCamera(), io.DeltaTime);
@@ -730,6 +794,7 @@ DockId=0x6A3C3007,0
         }
 
         var orbitLeft = !gizmoHovered && io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        _sceneOrbiting = orbitLeft;
         if (orbitLeft)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
@@ -813,18 +878,18 @@ DockId=0x6A3C3007,0
         if (movement.LengthSquared > 0.0001F)
         {
             movement = Vector3.Normalize(movement);
-            var speed = MathF.Max(4F, _sceneCameraDistance * 0.75F);
+            var speed = MathF.Max(0.1F, _sceneMoveSpeed);
             _scenePan += new Vector2(movement.X, movement.Z) * speed * MathF.Max(deltaTime, 0.001F);
         }
 
         if (KeyboardState.IsKeyDown(Keys.E))
         {
-            _sceneFreeMoveHeight += MathF.Max(4F, _sceneCameraDistance * 0.75F) * MathF.Max(deltaTime, 0.001F);
+            _sceneFreeMoveHeight += MathF.Max(0.1F, _sceneMoveSpeed) * MathF.Max(deltaTime, 0.001F);
         }
 
         if (KeyboardState.IsKeyDown(Keys.Q))
         {
-            _sceneFreeMoveHeight -= MathF.Max(4F, _sceneCameraDistance * 0.75F) * MathF.Max(deltaTime, 0.001F);
+            _sceneFreeMoveHeight -= MathF.Max(0.1F, _sceneMoveSpeed) * MathF.Max(deltaTime, 0.001F);
         }
     }
 
@@ -921,14 +986,15 @@ DockId=0x6A3C3007,0
         var cameraPosition = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
         var direction = new NumVector3(ray.X, ray.Y, ray.Z);
         var pointDistance = Vector3.Distance(camera.Position, worldPoint);
-        if (pointDistance <= SceneProjection.Near)
+        var near = float.IsFinite(camera.NearClip) ? Math.Max(0.001F, camera.NearClip) : SceneProjection.Near;
+        if (pointDistance <= near)
         {
             return true;
         }
 
         // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
         var hit = VoxelDda.RayCast(_world, cameraPosition, direction,
-            MathF.Max(pointDistance - 0.01F, SceneProjection.Near));
+            MathF.Max(pointDistance - 0.01F, near));
         return hit is null;
     }
 
@@ -945,6 +1011,32 @@ DockId=0x6A3C3007,0
         };
 
         foreach (var voxel in samples.OrderByDescending(item => Vector3.Dot(item.Center - camera.Position, camera.Forward)))
+        {
+            DrawVoxelCube(drawList, voxel.Center, 1F, voxel.Color, origin, size, camera, showOutlines);
+        }
+    }
+
+    /// <summary>
+    /// 按深度顺序绘制体素世界的轻量 CPU 预览
+    /// </summary>
+    /// <param name="drawList">场景绘制列表</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="showOutlines">是否绘制体素黑色描边</param>
+    private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        bool showOutlines)
+    {
+        const int maximumPreviewVoxels = 4096;
+        var preview = _world.EnumerateOccupied()
+            .Take(maximumPreviewVoxels)
+            .Select(item => new PreviewVoxel(
+                new Vector3((float)item.Coordinate.X + 0.5F, (float)item.Coordinate.Y + 0.5F,
+                    (float)item.Coordinate.Z + 0.5F),
+                Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B)))
+            .OrderByDescending(item => Vector3.Dot(item.Center - camera.Position, camera.Forward));
+
+        foreach (var voxel in preview)
         {
             DrawVoxelCube(drawList, voxel.Center, 1F, voxel.Color, origin, size, camera, showOutlines);
         }
@@ -967,9 +1059,22 @@ DockId=0x6A3C3007,0
         };
         var points = new Vector2[8];
         var depths = new float[8];
+        var near = float.IsFinite(camera.NearClip) ? Math.Max(0.001F, camera.NearClip) : SceneProjection.Near;
+        var far = float.IsFinite(camera.FarClip) ? Math.Max(near + 0.001F, camera.FarClip) : 100_000_000F;
         for (var index = 0; index < corners.Length; index++)
         {
-            if (!TryProject(corners[index], origin, size, camera, out points[index], out depths[index]))
+            var corner = corners[index];
+            var depth = Vector3.Dot(corner - camera.Position, camera.Forward);
+            if (depth < near)
+            {
+                corner += camera.Forward * (near + 0.001F - depth);
+            }
+            else if (depth > far)
+            {
+                corner -= camera.Forward * (depth - far + 0.001F);
+            }
+
+            if (!TryProject(corner, origin, size, camera, out points[index], out depths[index]))
             {
                 return;
             }

@@ -225,7 +225,7 @@ internal sealed partial class ImGuiEditorWindow
         var height = Math.Max(16, heightOverride);
         return new VoxelRenderParameters.FrameState(
             Convert(camera.Position), Convert(camera.Forward), Convert(camera.Right), Convert(camera.Up),
-            SceneProjection.FocalLength(viewLogical) * deviceScale,
+            SceneProjection.FocalLength(viewLogical, camera) * deviceScale,
             width, height,
             FrameIndex: (int)(Environment.TickCount & 0x3FFFFFFF),
             _pipeline?.RegionMin ?? default,
@@ -237,7 +237,11 @@ internal sealed partial class ImGuiEditorWindow
             AccumulatedSamples: _pipeline?.AccumulatedSamples ?? 0,
             PathMode: pathMode,
             GridStep: gridStep,
-            ShowGrid: showGrid);
+            ShowGrid: showGrid)
+        {
+            NearClip = camera.NearClip,
+            FarClip = float.IsFinite(camera.FarClip) ? camera.FarClip : 100_000_000F,
+        };
     }
 
     /// <summary>
@@ -268,6 +272,23 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 在相机拖动期间呈现上一张已经完成的场景纹理
+    /// </summary>
+    /// <param name="drawList">场景绘制列表</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="pipeline">可用的 Vulkan 体素管线</param>
+    /// <returns>是否成功加入显示纹理</returns>
+    private static bool PresentCachedGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size,
+        VulkanVoxelRenderPipeline pipeline)
+    {
+        if (pipeline.DisplayTextureId == IntPtr.Zero) return false;
+        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+            Vector2.Zero, pipeline.DisplayUvMax);
+        return true;
+    }
+
+    /// <summary>
     /// 只有光照、几何体和相机变化会使累积失效
     /// 后期处理变化直接重新呈现，不重启路径追踪
     /// </summary>
@@ -279,7 +300,9 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_sceneOrbitPitch.ToString("F4")).Append(',')
             .Append(_sceneCameraDistance.ToString("F3")).Append(',')
             .Append(_scenePan.X.ToString("F2")).Append(',').Append(_scenePan.Y.ToString("F2")).Append(',')
-            .Append(_sceneFreeMoveHeight.ToString("F2")).Append('|')
+            .Append(_sceneFreeMoveHeight.ToString("F2")).Append(',')
+            .Append(_sceneNearClip.ToString("F3")).Append(',').Append(_sceneFarClip.ToString("F1")).Append(',')
+            .Append(_sceneFieldOfView.ToString("F1")).Append('|')
             .Append(size.X.ToString("F1")).Append('x').Append(size.Y.ToString("F1")).Append('@').Append(deviceScale.ToString("F2")).Append('|')
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')

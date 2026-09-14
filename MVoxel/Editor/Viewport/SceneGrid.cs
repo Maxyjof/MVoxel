@@ -91,8 +91,8 @@ internal static class SceneGrid
                 var depth = Vector3.Dot(mid - camera.Position, camera.Forward);
                 // 地平线附近一格可能小于一个像素：副线淡出，
             // 保留克制的主线，让远景保持可读
-                var spacingPixels = step * SceneProjection.FocalLength(size) /
-                                    Math.Max(SceneProjection.Near, depth);
+                var spacingPixels = step * SceneProjection.FocalLength(size, camera) /
+                                    Math.Max(camera.NearClip, depth);
                 var densityFade = major
                     ? 0.22F + 0.78F * SmoothStep(0.08F, 0.55F, spacingPixels)
                     : SmoothStep(0.55F, 1.45F, spacingPixels);

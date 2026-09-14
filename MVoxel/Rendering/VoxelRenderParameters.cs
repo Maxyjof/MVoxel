@@ -13,7 +13,7 @@ public sealed class VoxelRenderParameters
     /// <summary>
     /// 参数块总槽数（float 个数），SSBO 按此大小上传
     /// </summary>
-    public const int SlotCount = 96;
+    public const int SlotCount = 98;
 
     // 相机基向量与逐帧标量
     /// <summary>相机位置 X</summary>
@@ -78,6 +78,8 @@ public sealed class VoxelRenderParameters
     public const int DenoiseEnabled = 92, DenoiseStrength = 93;
     /// <summary>当前 GPU 工作集中的占用体素数量与 BVH 节点数量</summary>
     public const int VoxelCount = 94, BvhNodeCount = 95;
+    /// <summary>场景相机近平面与远平面</summary>
+    public const int NearClip = 96, FarClip = 97;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -112,6 +114,7 @@ public sealed class VoxelRenderParameters
             ("P_PIXEL_SEED", Pixel), ("P_GRID_STEP", GridStep), ("P_GRID_SHOWN", GridShown),
             ("P_DENOISE_ENABLED", DenoiseEnabled), ("P_DENOISE_STRENGTH", DenoiseStrength),
             ("P_VOXEL_COUNT", VoxelCount), ("P_BVH_NODE_COUNT", BvhNodeCount),
+            ("P_NEAR_CLIP", NearClip), ("P_FAR_CLIP", FarClip),
         };
 
         var builder = new StringBuilder();
@@ -278,6 +281,12 @@ public sealed class VoxelRenderParameters
         parameters[GridShown] = frame.ShowGrid ? 1F : 0F;
         parameters[DenoiseEnabled] = settings.PathDenoising ? 1F : 0F;
         parameters[DenoiseStrength] = settings.PathDenoiseStrength;
+        var nearClip = float.IsFinite(frame.NearClip) ? Math.Clamp(frame.NearClip, 0.001F, 1_000_000F) : 0.05F;
+        var farClip = float.IsFinite(frame.FarClip)
+            ? Math.Clamp(frame.FarClip, nearClip + 0.001F, 100_000_000F)
+            : 100_000_000F;
+        parameters[NearClip] = nearClip;
+        parameters[FarClip] = farClip;
 
         for (var index = 0; index < parameters.Length; index++)
         {
@@ -326,7 +335,18 @@ public sealed class VoxelRenderParameters
         int AccumulatedSamples,
         bool PathMode,
         float GridStep = 0F,
-        bool ShowGrid = false);
+        bool ShowGrid = false)
+    {
+        /// <summary>
+        /// 相机近平面距离
+        /// </summary>
+        public float NearClip { get; init; } = 0.05F;
+
+        /// <summary>
+        /// 相机远平面距离
+        /// </summary>
+        public float FarClip { get; init; } = 100_000_000F;
+    }
 
     /// <summary>
     /// 整数三分量，用于工作集区域描述
