@@ -6,6 +6,7 @@ using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Rendering;
 using MVoxel.Editor.Settings;
+using MVoxel.Editor.Templates;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
 using OpenTK.Mathematics;
@@ -107,6 +108,11 @@ internal sealed partial class ImGuiEditorWindow
             {
                 _world = VoxFormat.Read(modelPath);
                 SetStatus($"已载入体素模型：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
+            }
+            else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
+            {
+                _world = new VoxelWorld();
+                SetStatus("已载入空项目，可以从零开始建模");
             }
             else
             {

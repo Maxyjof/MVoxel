@@ -2,6 +2,7 @@ using ImGuiNET;
 using MVoxel.Project;
 using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
+using MVoxel.Editor.Templates;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
@@ -18,7 +19,7 @@ internal interface IEditorWelcomeHost
     bool HasStartupProject { get; }
     bool IsProjectOperationRunning { get; }
     BlockingOperationSnapshot? ProjectOperationSnapshot { get; }
-    void StartNewProjectFromWelcome(string path);
+    void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId);
     void OpenProjectFromWelcome(string path);
     void OpenRecentProject(string path);
     void CancelProjectOperation();
@@ -49,6 +50,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private string _pathText = string.Empty;
     private string _errorText = string.Empty;
     private int _pathMode;
+    private ProjectTemplateId _selectedTemplate = ProjectTemplateId.Empty;
     private int _closeRequested;
 
     internal ImGuiWelcomeWindow(IEditorWelcomeHost editor)
@@ -249,7 +251,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         var recent = RecentProjects.Load();
         ImGui.SetCursorPosX(contentLeft);
         var footerHeight = ImGui.GetTextLineHeightWithSpacing() * 2F + 16F;
-        var pathHeight = _pathMode == 0 ? 0F : ImGui.GetTextLineHeightWithSpacing() * 3F + 96F;
+        var pathHeight = _pathMode == 0
+            ? 0F
+            : ImGui.GetTextLineHeightWithSpacing() * (_pathMode == 1 ? 11F : 3F) + 112F;
         var recentHeight = Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight - pathHeight);
         ImGui.BeginChild("##RecentProjects", new Vector2(contentWidth, recentHeight), ImGuiChildFlags.Borders);
         if (recent.Count == 0)
@@ -302,6 +306,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private void BeginPathDialog(int mode)
     {
         _pathMode = mode;
+        if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
         _pathText = string.Empty;
         _errorText = string.Empty;
     }
@@ -316,6 +321,11 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         ImGui.Separator();
         ImGui.TextColored(ToColor(EditorPalette.Accent), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
         ImGui.TextWrapped(_pathMode == 1 ? "输入项目文件夹路径，项目文件会由编辑器创建。" : "输入你之前保存项目的文件夹路径。");
+        if (_pathMode == 1)
+        {
+            DrawTemplatePicker();
+        }
+
         ImGui.SetNextItemWidth(-1F);
         ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
         if (ImGui.Button("确认", new Vector2(100F, 34F)))
@@ -343,7 +353,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         _errorText = string.Empty;
         if (_pathMode == 1)
         {
-            _editor.StartNewProjectFromWelcome(path);
+            _editor.StartNewProjectFromWelcome(path, _selectedTemplate);
         }
         else
         {
@@ -354,6 +364,28 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     }
 
     private void OnProjectOpened(object? sender, EventArgs args) => RequestClose();
+
+    /// <summary>
+    /// 绘制新项目模板选择器和模板说明
+    /// </summary>
+    private void DrawTemplatePicker()
+    {
+        var selected = ProjectTemplateCatalog.Get(_selectedTemplate);
+        if (ImGui.BeginCombo("项目模板", selected.Name))
+        {
+            foreach (var template in ProjectTemplateCatalog.All)
+            {
+                var isSelected = template.Id == _selectedTemplate;
+                if (ImGui.Selectable(template.Name, isSelected)) _selectedTemplate = template.Id;
+                if (isSelected) ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.TextDisabled(selected.Focus);
+        ImGui.TextWrapped(selected.Description);
+    }
 
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;
 

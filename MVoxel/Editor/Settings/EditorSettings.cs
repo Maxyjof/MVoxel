@@ -100,6 +100,7 @@ public sealed class EditorSettingsDocument
 public sealed class ProjectSettingsDocument
 {
     public int FormatVersion = 1;
+    public string TemplateId = "未指定";
     public int LodLevels = 4;
     public float[] LodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     public bool ShowGrid = true;
@@ -115,6 +116,7 @@ public sealed class ProjectSettingsDocument
 
     public void Normalize()
     {
+        TemplateId = string.IsNullOrWhiteSpace(TemplateId) ? "未指定" : TemplateId.Trim();
         LodDistances ??= Array.Empty<float>();
         if (LodDistances.Length != 8)
         {

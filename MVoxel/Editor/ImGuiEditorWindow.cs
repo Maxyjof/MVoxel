@@ -9,6 +9,7 @@ using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
 using MVoxel.Editor.Settings;
+using MVoxel.Editor.Templates;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
@@ -98,7 +99,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     public bool HasProject => _project is not null;
 
-    public void StartNewProjectFromWelcome(string path) => _pendingActions.Enqueue(() => BeginCreateProject(path, fromWelcome: true));
+    public void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId) =>
+        _pendingActions.Enqueue(() => BeginCreateProject(path, templateId, fromWelcome: true));
 
     public void OpenProjectFromWelcome(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: true));
 
@@ -1220,6 +1222,7 @@ DockId=0x6A3C1007,0
     private int _projectPathDialogMode;
     private string _projectPathText = string.Empty;
     private string _projectPathError = string.Empty;
+    private ProjectTemplateId _selectedProjectTemplate = ProjectTemplateId.Empty;
 
     private void DrawProjectAssets()
     {
@@ -1289,6 +1292,7 @@ DockId=0x6A3C1007,0
     private void ShowProjectPathDialog(bool create)
     {
         _projectPathDialogMode = create ? 1 : 2;
+        if (create) _selectedProjectTemplate = ProjectTemplateId.Empty;
         _projectPathText = string.Empty;
         _projectPathError = string.Empty;
     }
@@ -1310,6 +1314,11 @@ DockId=0x6A3C1007,0
             ImGui.TextWrapped(_projectPathDialogMode == 1
                 ? "输入项目文件夹路径，编辑器会为你创建项目和资产文件夹。"
                 : "输入你之前保存项目的文件夹路径。");
+            if (_projectPathDialogMode == 1)
+            {
+                DrawProjectTemplatePicker();
+            }
+
             ImGui.SetNextItemWidth(540F);
             ImGui.InputText("项目路径", ref _projectPathText, 2048);
             if (!string.IsNullOrWhiteSpace(_projectPathError))
@@ -1345,11 +1354,33 @@ DockId=0x6A3C1007,0
             return;
         }
 
-        if (_projectPathDialogMode == 1) BeginCreateProject(path, fromWelcome: false);
+        if (_projectPathDialogMode == 1) BeginCreateProject(path, _selectedProjectTemplate, fromWelcome: false);
         else BeginOpenProject(path, fromWelcome: false);
     }
 
-    private void BeginCreateProject(string path, bool fromWelcome)
+    /// <summary>
+    /// 绘制编辑器内新建项目的模板选择器
+    /// </summary>
+    private void DrawProjectTemplatePicker()
+    {
+        var selected = ProjectTemplateCatalog.Get(_selectedProjectTemplate);
+        if (ImGui.BeginCombo("项目模板", selected.Name))
+        {
+            foreach (var template in ProjectTemplateCatalog.All)
+            {
+                var isSelected = template.Id == _selectedProjectTemplate;
+                if (ImGui.Selectable(template.Name, isSelected)) _selectedProjectTemplate = template.Id;
+                if (isSelected) ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.TextDisabled(selected.Focus);
+        ImGui.TextWrapped(selected.Description);
+    }
+
+    private void BeginCreateProject(string path, ProjectTemplateId templateId, bool fromWelcome)
     {
         try
         {
@@ -1375,7 +1406,9 @@ DockId=0x6A3C1007,0
                         // 完成小规模提交比留下半成品项目更安全
                         report(new BlockingOperationProgress("正在写入项目文件…", .68F, CanCancel: false));
                         var project = ProjectLayout.Create(absolutePath, name);
-                        report(new BlockingOperationProgress("正在完成项目初始化…", .96F, CanCancel: false));
+                        ProjectTemplateCatalog.Populate(project, templateId,
+                            (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                        report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
                     OpenProject,
