@@ -295,7 +295,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 绘制渐进式渲染标签页，GPU 不可用时返回 false
+    /// 绘制 Vulkan Compute 渲染标签页，GPU 不可用时返回 false
     /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {

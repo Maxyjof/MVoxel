@@ -1030,34 +1030,21 @@ DockId=0x6A3C1007,0
     {
         _ = drawList;
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        var samples = _pipeline?.AccumulatedSamples ?? 0;
-        var maximum = _renderSettings.PathMaxAccumulatedSamples;
-        var converged = samples >= maximum;
-        ImGui.TextColored(ToColor(_settingsTogglePath && !converged ? EditorPalette.Accent : EditorPalette.Success),
-            _settingsTogglePath
-                ? (converged ? $"渲染完成 · {samples} spp" : $"渐进渲染中 · {samples} / {maximum} spp")
-                : "路径追踪已暂停");
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "Vulkan Compute 直接预览");
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing()));
-        if (ImGui.SmallButton(_settingsTogglePath ? "暂停" : "继续"))
+        if (ImGui.SmallButton("重新计算"))
         {
-            _settingsTogglePath = !_settingsTogglePath;
-            _renderSettings.PathTracingEnabled = _settingsTogglePath;
-            if (_settingsTogglePath) _pipeline?.ResetAccumulation();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("重新渲染"))
-        {
-            _settingsTogglePath = true;
             _pipeline?.ResetAccumulation();
         }
 
         ImGui.SameLine();
-        if (ImGui.SmallButton("导出 PNG")) ExportRenderPng();
+        ImGui.BeginDisabled();
+        ImGui.SmallButton("导出 PNG（开发中）");
+        ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing() * 2F));
-        ImGui.TextDisabled("渲染页不显示网格与辅助元素；曝光/色调等后期改动不会重置累积");
+        ImGui.TextDisabled("渲染页不显示网格与辅助元素；路径追踪和导出功能正在接入");
     }
 
     private void ExportRenderPng()
