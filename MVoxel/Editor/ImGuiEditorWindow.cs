@@ -42,7 +42,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
     private int _centerTab;
-    private int _inspectorTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
     private bool _applyPreset;
@@ -273,7 +272,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         Directory.CreateDirectory(configDirectory);
         var layoutPath = Path.Combine(configDirectory, "imgui-layout.ini");
         _imguiLayoutPath = layoutPath;
-        if (File.Exists(layoutPath))
+        var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
+        var hasCurrentPanelLayout = savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
+                                     savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
+                                     savedLayout.Contains("[Window][检查器##检查器窗口]", StringComparison.Ordinal) &&
+                                     savedLayout.Contains("[Window][渲染配置##渲染配置窗口]", StringComparison.Ordinal) &&
+                                     !savedLayout.Contains("[Window][场景与渲染##中央面板]", StringComparison.Ordinal);
+        if (hasCurrentPanelLayout)
         {
             ImGui.LoadIniSettingsFromDisk(layoutPath);
         }
@@ -330,6 +335,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawHierarchy();
         DrawCenter();
         DrawInspector();
+        DrawRenderConfig();
         DrawProjectAssets();
         DrawStatusBar();
         DrawProjectPathDialog();
@@ -365,8 +371,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("视图"))
         {
-            if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
-            if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
+            if (ImGui.MenuItem("场景窗口", "F1")) _requestedCenterTab = 0;
+            if (ImGui.MenuItem("渲染窗口", "F2")) _requestedCenterTab = 1;
             ImGui.Separator();
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
@@ -433,10 +439,14 @@ DockSpace ID=0x6A3C1001 Pos=0,24 Size=1440,840 Split=X Selected=0x6A3C1002
     DockNode ID=0x6A3C1007 Parent=0x6A3C1003 SizeRef=1180,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
 DockId=0x6A3C1002,0
-[Window][场景与渲染##中央面板]
+[Window][场景##场景窗口]
 DockId=0x6A3C1005,0
-[Window][检查器##检查器面板]
+[Window][渲染##渲染窗口]
+DockId=0x6A3C1005,1
+[Window][检查器##检查器窗口]
 DockId=0x6A3C1006,0
+[Window][渲染配置##渲染配置窗口]
+DockId=0x6A3C1006,1
 [Window][项目资产##资源浏览器]
 DockId=0x6A3C1007,0
 """;
@@ -496,46 +506,31 @@ DockId=0x6A3C1007,0
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
-        if (!ImGui.Begin("场景与渲染##中央面板", PanelWindowFlags))
+        if (_requestedCenterTab == 0) ImGui.SetNextWindowFocus();
+        if (!ImGui.Begin("场景##场景窗口", PanelWindowFlags))
         {
-            ImGui.End();
-            return;
         }
-
-        if (ImGui.BeginTabBar("##CenterTabs"))
+        else
         {
-            if (BeginPanelTab("场景", _requestedCenterTab == 0))
-            {
-                _centerTab = 0;
-                DrawSceneView();
-                ImGui.EndTabItem();
-            }
-
-            if (BeginPanelTab("渲染", _requestedCenterTab == 1))
-            {
-                _centerTab = 1;
-                DrawRenderView();
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
+            _centerTab = 0;
+            DrawSceneView();
         }
+        ImGui.End();
+
+        SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
+        if (_requestedCenterTab == 1) ImGui.SetNextWindowFocus();
+        if (!ImGui.Begin("渲染##渲染窗口", PanelWindowFlags))
+        {
+            _requestedCenterTab = null;
+        }
+        else
+        {
+            _centerTab = 1;
+            DrawRenderView();
+        }
+        ImGui.End();
 
         _requestedCenterTab = null;
-
-        ImGui.End();
-    }
-
-    private static unsafe bool BeginPanelTab(string label, bool requested)
-    {
-        // 空 p_open 让主标签不可关闭，同时允许工具栏和菜单选择标签
-        var length = System.Text.Encoding.UTF8.GetByteCount(label);
-        Span<byte> utf8 = stackalloc byte[length + 1];
-        System.Text.Encoding.UTF8.GetBytes(label, utf8);
-        utf8[length] = 0;
-        fixed (byte* name = utf8)
-            return ImGuiNative.igBeginTabItem(name, null,
-                requested ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None) != 0;
     }
 
     private void DrawSceneView()
@@ -1060,84 +1055,99 @@ DockId=0x6A3C1007,0
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
-        if (!ImGui.Begin("检查器##检查器面板", PanelWindowFlags))
+        if (_requestedInspectorTab == 0) ImGui.SetNextWindowFocus();
+        if (!ImGui.Begin("检查器##检查器窗口", PanelWindowFlags))
         {
-            ImGui.End();
+        }
+        else
+        {
+            ImGui.TextColored(ToColor(EditorPalette.Text), "检查器");
+            ImGui.TextDisabled("对象属性");
+            DrawInspectorProperties();
+        }
+        ImGui.End();
+    }
+
+    /// <summary>
+    /// 绘制检查器的对象属性内容
+    /// </summary>
+    private void DrawInspectorProperties()
+    {
+        ImGui.Text("项目");
+        ImGui.SameLine(90F);
+        ImGui.TextColored(ToColor(EditorPalette.Text), _project?.Manifest.Name ?? "未打开项目");
+        ImGui.Text("路径");
+        ImGui.SameLine(90F);
+        ImGui.TextWrapped(_project?.RootPath ?? "欢迎使用 MVoxel");
+        ImGui.SeparatorText("选择");
+        if (_selectedVoxel is { } selected)
+        {
+            var voxel = _world.TryGet(selected.Coordinate, out var existing) ? existing : default;
+            ImGui.Text($"坐标  {selected.Coordinate.X}, {selected.Coordinate.Y}, {selected.Coordinate.Z}");
+            ImGui.Text($"颜色  #{voxel.Color.R}, {voxel.Color.G}, {voxel.Color.B} · A{voxel.Color.A}");
+            var flags = voxel.Flags;
+            ImGui.TextDisabled($"材质标志  {(VoxelFlags.Has(flags, VoxelFlags.Emissive) ? "自发光 " : string.Empty)}" +
+                               $"{(VoxelFlags.Has(flags, VoxelFlags.Translucent) ? "半透明" : string.Empty)}" +
+                               (VoxelFlags.Has(flags, VoxelFlags.Emissive | VoxelFlags.Translucent) ? string.Empty : "不透明"));
+            if (ImGui.Button("取为画笔颜色"))
+            {
+                var nearest = 0;
+                var best = int.MaxValue;
+                for (var index = 0; index < _palette.Length; index++)
+                {
+                    var candidate = _palette[index];
+                    var distance = Math.Abs(candidate.R - voxel.Color.R) +
+                                   Math.Abs(candidate.G - voxel.Color.G) +
+                                   Math.Abs(candidate.B - voxel.Color.B) +
+                                   Math.Abs(candidate.A - voxel.Color.A) / 2;
+                    if (distance >= best) continue;
+                    best = distance;
+                    nearest = index;
+                }
+                _paletteIndex = nearest;
+                SetStatus($"画笔颜色已取自选中的体素（色板 #{nearest}）");
+            }
+        }
+        else
+        {
+            ImGui.TextDisabled("未选择对象 · 使用“选择”工具点击体素");
+        }
+
+        ImGui.SeparatorText("体素世界");
+        ImGui.Text($"占用体素  {_world.OccupiedVoxelCount:N0}");
+        ImGui.Text($"驻留区块  {_world.LoadedChunkCount:N0} × 32³");
+        ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
+        ImGui.TextDisabled("坐标  0, 0, 0");
+        ImGui.SeparatorText("材质");
+        ImGui.TextDisabled("颜色、透明度和表面效果");
+    }
+
+    /// <summary>
+    /// 绘制与检查器并列停靠的渲染配置窗口
+    /// </summary>
+    private void DrawRenderConfig()
+    {
+        if (!_showInspector)
+        {
             return;
         }
 
-        ImGui.TextColored(ToColor(EditorPalette.Text), "检查器");
-        ImGui.SameLine();
-        ImGui.TextDisabled(_inspectorTab == 0 ? "对象属性" : "画面设置");
-        if (ImGui.BeginTabBar("##InspectorTabs"))
+        var display = ImGui.GetIO().DisplaySize;
+        var layout = GetLayoutMetrics(display);
+        SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
+        if (_requestedInspectorTab == 1) ImGui.SetNextWindowFocus();
+        if (!ImGui.Begin("渲染配置##渲染配置窗口", PanelWindowFlags))
         {
-            if (BeginPanelTab("属性", _requestedInspectorTab == 0))
-            {
-                _inspectorTab = 0;
-                ImGui.Text("项目");
-                ImGui.SameLine(90F);
-                ImGui.TextColored(ToColor(EditorPalette.Text), _project?.Manifest.Name ?? "未打开项目");
-                ImGui.Text("路径");
-                ImGui.SameLine(90F);
-                ImGui.TextWrapped(_project?.RootPath ?? "欢迎使用 MVoxel");
-                ImGui.SeparatorText("选择");
-                if (_selectedVoxel is { } selected)
-                {
-                    var voxel = _world.TryGet(selected.Coordinate, out var existing) ? existing : default;
-                    ImGui.Text($"坐标  {selected.Coordinate.X}, {selected.Coordinate.Y}, {selected.Coordinate.Z}");
-                    ImGui.Text($"颜色  #{voxel.Color.R}, {voxel.Color.G}, {voxel.Color.B} · A{voxel.Color.A}");
-                    var flags = voxel.Flags;
-                    ImGui.TextDisabled($"材质标志  {(VoxelFlags.Has(flags, VoxelFlags.Emissive) ? "自发光 " : string.Empty)}" +
-                                       $"{(VoxelFlags.Has(flags, VoxelFlags.Translucent) ? "半透明" : string.Empty)}" +
-                                       (VoxelFlags.Has(flags, VoxelFlags.Emissive | VoxelFlags.Translucent) ? string.Empty : "不透明"));
-                    if (ImGui.Button("取为画笔颜色"))
-                    {
-                        var nearest = 0;
-                        var best = int.MaxValue;
-                        for (var index = 0; index < _palette.Length; index++)
-                        {
-                            var candidate = _palette[index];
-                            var distance = Math.Abs(candidate.R - voxel.Color.R) +
-                                           Math.Abs(candidate.G - voxel.Color.G) +
-                                           Math.Abs(candidate.B - voxel.Color.B) +
-                                           Math.Abs(candidate.A - voxel.Color.A) / 2;
-                            if (distance >= best) continue;
-                            best = distance;
-                            nearest = index;
-                        }
-
-                        _paletteIndex = nearest;
-                        SetStatus($"画笔颜色已取自选中的体素（色板 #{nearest}）");
-                    }
-                }
-                else
-                {
-                    ImGui.TextDisabled("未选择对象 · 使用“选择”工具点击体素");
-                }
-
-                ImGui.SeparatorText("体素世界");
-                ImGui.Text($"占用体素  {_world.OccupiedVoxelCount:N0}");
-                ImGui.Text($"驻留区块  {_world.LoadedChunkCount:N0} × 32³");
-                ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
-                ImGui.TextDisabled("坐标  0, 0, 0");
-                ImGui.SeparatorText("材质");
-                ImGui.TextDisabled("颜色、透明度和表面效果");
-                ImGui.EndTabItem();
-            }
-
-            if (BeginPanelTab("画面设置", _requestedInspectorTab == 1))
-            {
-                _inspectorTab = 1;
-                DrawConfigurationPanel();
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
+            _requestedInspectorTab = null;
         }
-
-        _requestedInspectorTab = null;
-
+        else
+        {
+            ImGui.TextColored(ToColor(EditorPalette.Text), "渲染配置");
+            ImGui.TextDisabled("LOD 与画面设置");
+            DrawConfigurationPanel();
+        }
         ImGui.End();
+        _requestedInspectorTab = null;
     }
 
     private void DrawConfigurationPanel()
