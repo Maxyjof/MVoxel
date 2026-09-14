@@ -116,7 +116,6 @@ public sealed class ProjectSettingsDocument
     public float[] LodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     public bool ShowGrid = true;
     public bool ShowVoxelOutlines = true;
-    public bool ShowLighting = true;
     public string VoxelUnit = "1 格 = 1 体素单位";
     public string DefaultRenderPreset = "默认";
     public bool AutoSave = true;

@@ -15,7 +15,7 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// <remarks>
 /// ImGui 与交换链使用 Vulkan
 /// 稀疏体素工作集和设备本地 Storage Buffer 在本边界内同步
-/// Scene View 使用 Vulkan Compute 直接光照预览
+/// Scene View 使用 Vulkan Compute 只进行体素求交和原色显示
 /// 路径追踪和渲染导出继续沿用同一资源边界逐步接入
 /// </remarks>
 internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
@@ -997,6 +997,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 uint hitFlags;
                 if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags))
                 {
+                    if (!pathMode)
+                    {
+                        radiance += vec3(0.025, 0.035, 0.05);
+                        break;
+                    }
+
                     float groundDistance = values[35] > 0.5 && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
                     if (groundDistance > 0.0)

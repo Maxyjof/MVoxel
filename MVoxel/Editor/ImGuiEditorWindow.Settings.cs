@@ -53,7 +53,6 @@ internal sealed partial class ImGuiEditorWindow
         Array.Copy(_projectSettings.LodDistances, _projectLodDistances, _projectLodDistances.Length);
         _showGrid = _projectSettings.ShowGrid;
         _showVoxelOutlines = _projectSettings.ShowVoxelOutlines;
-        _showLighting = _projectSettings.ShowLighting;
         _renderSettings = _projectSettings.RenderSettings;
         SyncSettingsToggles();
     }
@@ -64,7 +63,6 @@ internal sealed partial class ImGuiEditorWindow
         Array.Copy(_projectLodDistances, _projectSettings.LodDistances, _projectLodDistances.Length);
         _projectSettings.ShowGrid = _showGrid;
         _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
-        _projectSettings.ShowLighting = _showLighting;
         _projectSettings.RenderSettings = _renderSettings;
         _projectSettings.Normalize();
     }
@@ -491,7 +489,6 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("显示网格", ref _projectSettings.ShowGrid);
                 ImGui.Checkbox("显示体素棱线", ref _projectSettings.ShowVoxelOutlines);
-                ImGui.Checkbox("场景光照预览", ref _projectSettings.ShowLighting);
                 ImGui.EndTabItem();
             }
 
@@ -506,7 +503,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("场景画面"))
             {
-                ImGui.TextWrapped("场景画面配置：网格、辅助线、场景光照和编辑视图质量。LOD 只在这里生效。");
+                ImGui.TextWrapped("场景画面配置：网格、辅助线、体素轮廓和编辑视图质量。场景窗口只显示体素原色，不使用光照渲染。LOD 只在这里生效。");
                 ImGui.Checkbox("场景网格", ref _projectSettings.ShowGrid);
                 ImGui.Checkbox("体素轮廓", ref _projectSettings.ShowVoxelOutlines);
                 ImGui.EndTabItem();
@@ -533,7 +530,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         ImGui.TextDisabled($"{context}默认使用 GPU，GPU 不可用时使用 CPU。");
         ImGui.Checkbox("开启光线追踪", ref _settingsTogglePath);
-        ImGui.Checkbox("开启 GPU（默认）", ref _showLighting);
+        ImGui.TextDisabled("场景窗口固定为纯体素预览，以下选项仅作用于渲染窗口和导出画面");
         ImGui.SliderInt("路径样本/帧", ref _renderSettings.PathSamplesPerFrame, 1, 8);
         ImGui.SliderInt("最大弹射次数", ref _renderSettings.MaxBounces, 1, 12);
     }

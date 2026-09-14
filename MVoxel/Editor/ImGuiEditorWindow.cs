@@ -61,7 +61,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private readonly float[] _projectLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
-    private bool _showLighting = true;
     private bool _sceneMouseCaptured;
 
     // 体素编辑和 GPU 渲染
@@ -1312,7 +1311,7 @@ DockId=0x6A3C3007,0
         ImGui.SeparatorText("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        ImGui.Checkbox("光照预览（关闭仅看底色）##scene", ref _showLighting);
+        ImGui.TextDisabled("场景窗口固定显示体素原色，不使用光照渲染");
         ImGui.SeparatorText("渲染设置（GPU 计算 · 实时生效）");
         var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
