@@ -53,6 +53,11 @@ public enum ProjectTemplateId
     /// 展示墙体、拱门、立柱和模块化建筑
     /// </summary>
     Architecture,
+
+    /// <summary>
+    /// 展示 1024×1024×14 的超大型稀疏场景和长距离视锥
+    /// </summary>
+    LargeWorld,
 }
 
 /// <summary>
@@ -82,6 +87,7 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.RayTracingStudio, "光追工作室", "发光面、玻璃屏、彩色材质和暗室布光", "路径追踪 · 直接光 · 透明"),
         new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "由高度函数生成的分层山谷、平台和水面", "程序化 · 地形 · 大量体素"),
         new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
+        new(ProjectTemplateId.LargeWorld, "超大型场景 · 1024×1024×14", "1024×1024 的超大地表、分散高柱和远距离视角性能验证", "大世界 · LOD · 性能压力"),
     ];
 
     /// <summary>
@@ -106,10 +112,20 @@ public static class ProjectTemplateCatalog
         settings.TemplateId = id.ToString();
         if (id != ProjectTemplateId.Empty)
         {
-            var world = BuildWorld(id, VoxelPalette.Build());
             var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
-            VoxFormat.Write(modelPath, world);
-            WriteScene(project, Get(id), world.OccupiedVoxelCount);
+            if (id == ProjectTemplateId.LargeWorld)
+            {
+                var largePath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
+                LargeWorldFormat.WriteDemo(largePath);
+                WriteScene(project, Get(id), LargeWorldFormat.DemoVoxelCount,
+                    "Assets/VoxelModels/超大型场景.mvworld");
+            }
+            else
+            {
+                var world = BuildWorld(id, VoxelPalette.Build());
+                VoxFormat.Write(modelPath, world);
+                WriteScene(project, Get(id), world.OccupiedVoxelCount);
+            }
         }
 
         report?.Invoke("正在写入模板配置…", .91F, false);
@@ -134,6 +150,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.RayTracingStudio => BuildRayTracingStudio(),
             ProjectTemplateId.ProceduralTerrain => BuildProceduralTerrain(),
             ProjectTemplateId.Architecture => BuildArchitecture(),
+            ProjectTemplateId.LargeWorld => LargeWorldFormat.BuildDemoWorld(),
             _ => new VoxelWorld(),
         };
     }
@@ -175,6 +192,13 @@ public static class ProjectTemplateCatalog
                 settings.DefaultRenderPreset = "程序化地形";
                 settings.RenderSettings.GroundFade = 180F;
                 break;
+            case ProjectTemplateId.LargeWorld:
+                settings.LodLevels = 8;
+                settings.LodDistances = [96F, 192F, 384F, 768F, 1536F, 3072F, 6144F, 12288F];
+                settings.DefaultRenderPreset = "超大型场景性能验证";
+                settings.RenderSettings.ResolutionScale = .65F;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 64;
+                break;
         }
 
         settings.Normalize();
@@ -187,7 +211,8 @@ public static class ProjectTemplateCatalog
     /// <param name="project">项目句柄</param>
     /// <param name="template">模板定义</param>
     /// <param name="voxelCount">体素数量</param>
-    private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount)
+    private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
+        string modelAssetPath = "Assets/VoxelModels/主场景.vox")
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
@@ -198,7 +223,7 @@ public static class ProjectTemplateCatalog
             SchemaVersion = 1,
             Data = JsonSerializer.SerializeToElement(new
             {
-                model = "Assets/VoxelModels/主场景.vox",
+                model = modelAssetPath,
                 voxelCount,
                 template = template.Id.ToString(),
             }),

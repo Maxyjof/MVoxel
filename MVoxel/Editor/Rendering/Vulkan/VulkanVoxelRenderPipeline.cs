@@ -57,6 +57,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private bool _disposed;
     private bool _usingHardwareRayTracing;
+    private int _worksetMaximumCells;
 
     /// <summary>
     /// 创建体素 Vulkan 资源边界
@@ -149,15 +150,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 同步稀疏体素世界到 Vulkan 工作集
     /// </summary>
     /// <param name="world">体素世界</param>
-    internal void SyncWorld(VoxelWorld world)
+    internal void SyncWorld(VoxelWorld world, int maximumCells = 0)
     {
         ArgumentNullException.ThrowIfNull(world);
-        if (world.ContentVersion == _workset.SourceVersion)
+        if (world.ContentVersion == _workset.SourceVersion && maximumCells == _worksetMaximumCells)
         {
             return;
         }
 
-        var next = VoxelGpuWorkset.Build(world);
+        var next = VoxelGpuWorkset.Build(world, maximumCells);
         if (_context is not null && !next.IsEmpty)
         {
             UploadWorkset(next);
@@ -171,6 +172,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _workset = next;
+        _worksetMaximumCells = maximumCells;
         ResetAccumulation();
     }
 

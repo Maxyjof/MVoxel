@@ -98,10 +98,16 @@ internal sealed partial class ImGuiEditorWindow
         _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
+        var largeWorldPath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
-            if (File.Exists(modelPath))
+            if (File.Exists(largeWorldPath))
+            {
+                _world = LargeWorldFormat.Read(largeWorldPath);
+                SetStatus($"已载入大世界模型：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
+            }
+            else if (File.Exists(modelPath))
             {
                 _world = VoxFormat.Read(modelPath);
                 SetStatus($"已载入体素模型：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
@@ -123,7 +129,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"模型读取失败，已载入示范场景：{exception.Message}");
         }
 
-        _pipeline?.SyncWorld(_world);
+        _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         FrameCameraOnWorld();
@@ -190,12 +196,43 @@ internal sealed partial class ImGuiEditorWindow
             max.Z - min.Z + 1D);
     }
 
+    /// <summary>
+    /// 根据当前场景距离和 LOD 配置计算场景视图的 GPU 体素预算
+    /// </summary>
+    /// <returns>零表示完整工作集，其余数值表示场景视图采样上限</returns>
+    private int GetSceneGpuCellBudget()
+    {
+        var count = _world.OccupiedVoxelCount;
+        if (count <= 250_000)
+        {
+            return 0;
+        }
+
+        var levels = _project is null ? _editorLodLevels : _projectLodLevels;
+        var distances = _project is null ? _editorLodDistances : _projectLodDistances;
+        var level = 0;
+        while (level < Math.Max(0, levels - 1) && _sceneCameraDistance > distances[level])
+        {
+            level++;
+        }
+
+        var divisor = 1 << Math.Min(level, 5);
+        return Math.Clamp((count + divisor - 1) / divisor, 32_768, 250_000);
+    }
+
     private bool SaveWorldToProject(ProjectHandle project)
     {
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
-            if (_world.OccupiedVoxelCount > 0)
+            var largeWorldPath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
+            var modelAssetPath = "Assets/VoxelModels/主场景.vox";
+            if (File.Exists(largeWorldPath))
+            {
+                LargeWorldFormat.Write(largeWorldPath, _world);
+                modelAssetPath = "Assets/VoxelModels/超大型场景.mvworld";
+            }
+            else if (_world.OccupiedVoxelCount > 0)
             {
                 VoxFormat.Write(modelPath, _world);
             }
@@ -216,7 +253,7 @@ internal sealed partial class ImGuiEditorWindow
                     SchemaVersion = 1,
                     Data = JsonSerializer.SerializeToElement(new
                     {
-                        model = "Assets/VoxelModels/主场景.vox",
+                        model = modelAssetPath,
                         voxelCount = _world.OccupiedVoxelCount,
                     }),
                 });
@@ -225,7 +262,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 modelComponent.Data = JsonSerializer.SerializeToElement(new
                 {
-                    model = "Assets/VoxelModels/主场景.vox",
+                    model = modelAssetPath,
                     voxelCount = _world.OccupiedVoxelCount,
                 });
             }
@@ -278,7 +315,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(_world);
+            pipeline.SyncWorld(_world, GetSceneGpuCellBudget());
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));

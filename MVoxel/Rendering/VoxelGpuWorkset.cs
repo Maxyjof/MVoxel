@@ -83,10 +83,11 @@ public sealed class VoxelGpuWorkset
     /// 从稀疏世界创建 GPU 工作集
     /// </summary>
     /// <param name="world">源稀疏世界</param>
+    /// <param name="maximumCells">工作集最大体素数，零表示不采样</param>
     /// <returns>可直接上传到 GPU 的确定性快照</returns>
     /// <exception cref="ArgumentNullException">世界为空时抛出</exception>
     /// <exception cref="InvalidDataException">包围盒尺寸超出 GPU 局部坐标范围时抛出</exception>
-    public static VoxelGpuWorkset Build(VoxelWorld world)
+    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0)
     {
         ArgumentNullException.ThrowIfNull(world);
         if (!world.TryGetBounds(out var minimum, out var maximum))
@@ -100,10 +101,20 @@ public sealed class VoxelGpuWorkset
             CheckedExtent(minimum.X, maximum.X, nameof(minimum)),
             CheckedExtent(minimum.Y, maximum.Y, nameof(minimum)),
             CheckedExtent(minimum.Z, maximum.Z, nameof(minimum)));
-        var cells = new List<VoxelGpuCell>(world.OccupiedVoxelCount);
+        var occupiedCount = world.OccupiedVoxelCount;
+        var sampleStride = maximumCells > 0 && occupiedCount > maximumCells
+            ? (occupiedCount + maximumCells - 1) / maximumCells
+            : 1;
+        var cells = new List<VoxelGpuCell>(Math.Min(occupiedCount, maximumCells > 0 ? maximumCells : occupiedCount));
         var emissiveCount = 0;
+        var sourceIndex = 0;
         foreach (var (coordinate, value) in world.EnumerateOccupied())
         {
+            if (sourceIndex++ % sampleStride != 0)
+            {
+                continue;
+            }
+
             var cell = new VoxelGpuCell(
                 checked((int)(coordinate.X - minimum.X)),
                 checked((int)(coordinate.Y - minimum.Y)),
