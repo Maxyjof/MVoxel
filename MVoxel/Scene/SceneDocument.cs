@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Numerics;
 using MVoxel.Core;
 
 namespace MVoxel.Scene;
@@ -191,6 +193,11 @@ public static class SceneSerializer
         WriteIndented = true,
     };
 
+    static SceneSerializer()
+    {
+        Options.Converters.Add(new QuaternionJsonConverter());
+    }
+
     /// <summary>
     /// 原子保存场景文档
     /// </summary>
@@ -211,5 +218,47 @@ public static class SceneSerializer
     {
         var scene = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options);
         return scene ?? throw new InvalidDataException($"Invalid scene: {path}");
+    }
+
+    /// <summary>
+    /// 以四个分量保存 System.Numerics 四元数，避免默认序列化丢失旋转数据
+    /// </summary>
+    private sealed class QuaternionJsonConverter : JsonConverter<Quaternion>
+    {
+        /// <summary>
+        /// 读取四元数对象，缺少分量时使用单位旋转
+        /// </summary>
+        /// <param name="reader">JSON 读取器</param>
+        /// <param name="typeToConvert">目标类型</param>
+        /// <param name="options">序列化选项</param>
+        /// <returns>读取到的四元数</returns>
+        public override Quaternion Read(ref Utf8JsonReader reader, Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            using var document = JsonDocument.ParseValue(ref reader);
+            var value = document.RootElement;
+            return value.TryGetProperty("x", out var x) && x.TryGetSingle(out var xValue) &&
+                   value.TryGetProperty("y", out var y) && y.TryGetSingle(out var yValue) &&
+                   value.TryGetProperty("z", out var z) && z.TryGetSingle(out var zValue) &&
+                   value.TryGetProperty("w", out var w) && w.TryGetSingle(out var wValue)
+                ? Quaternion.Normalize(new Quaternion(xValue, yValue, zValue, wValue))
+                : Quaternion.Identity;
+        }
+
+        /// <summary>
+        /// 将四元数的四个分量写入 JSON
+        /// </summary>
+        /// <param name="writer">JSON 写入器</param>
+        /// <param name="value">待写入的四元数</param>
+        /// <param name="options">序列化选项</param>
+        public override void Write(Utf8JsonWriter writer, Quaternion value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("x", value.X);
+            writer.WriteNumber("y", value.Y);
+            writer.WriteNumber("z", value.Z);
+            writer.WriteNumber("w", value.W);
+            writer.WriteEndObject();
+        }
     }
 }

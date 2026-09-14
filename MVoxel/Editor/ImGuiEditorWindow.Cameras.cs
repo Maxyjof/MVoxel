@@ -219,8 +219,8 @@ internal sealed partial class ImGuiEditorWindow
         right = Vector3.Normalize(right);
         up = Vector3.Normalize(Vector3.Cross(right, forward));
         var upNumber = new NumVector3(up.X, up.Y, up.Z);
-        var zNumber = -new NumVector3(forward.X, forward.Y, forward.Z);
-        var rotationMatrix = Matrix4x4.CreateWorld(NumVector3.Zero, zNumber, upNumber);
+        var forwardNumber = new NumVector3(forward.X, forward.Y, forward.Z);
+        var rotationMatrix = Matrix4x4.CreateWorld(NumVector3.Zero, forwardNumber, upNumber);
         var rotation = System.Numerics.Quaternion.CreateFromRotationMatrix(rotationMatrix);
         cameraObject.Transform.SetFree(new FreeTransform(
             new Double3(position.X, position.Y, position.Z), rotation));

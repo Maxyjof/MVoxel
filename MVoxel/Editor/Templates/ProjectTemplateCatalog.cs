@@ -221,7 +221,7 @@ public static class ProjectTemplateCatalog
         up = Vector3.Normalize(up);
         var right = Vector3.Normalize(Vector3.Cross(forward, up));
         up = Vector3.Normalize(Vector3.Cross(right, forward));
-        return Quaternion.CreateFromRotationMatrix(Matrix4x4.CreateWorld(Vector3.Zero, -forward, up));
+        return Quaternion.CreateFromRotationMatrix(Matrix4x4.CreateWorld(Vector3.Zero, forward, up));
     }
 
     /// <summary>
