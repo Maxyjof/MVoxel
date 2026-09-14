@@ -40,8 +40,12 @@ internal sealed class VoxelRenderPipeline : IDisposable
     private int _accumWrite;
     private int _displayWidth;
     private int _displayHeight;
+    private int _displayAllocatedWidth;
+    private int _displayAllocatedHeight;
     private int _accumWidth;
     private int _accumHeight;
+    private int _accumAllocatedWidth;
+    private int _accumAllocatedHeight;
     private ulong _frameCounter;
 
     private int _uploadedVersion = -1;
@@ -80,6 +84,12 @@ internal sealed class VoxelRenderPipeline : IDisposable
 
     internal bool IsAvailable { get; private set; }
     internal IntPtr DisplayTextureId => (IntPtr)_displayTexture;
+    /// <summary>
+    /// 当前显示区域在可复用显示纹理中的最大采样坐标
+    /// </summary>
+    internal Vector2 DisplayUvMax => new(
+        _displayAllocatedWidth <= 0 ? 1F : _displayWidth / (float)_displayAllocatedWidth,
+        _displayAllocatedHeight <= 0 ? 1F : _displayHeight / (float)_displayAllocatedHeight);
     internal int AccumulatedSamples { get; private set; }
     internal string? ShaderLog => _lastShaderLog;
     internal VoxelRenderParameters.Vector3I RegionMin => new(_regionMinX, _regionMinY, _regionMinZ);
@@ -484,14 +494,23 @@ internal sealed class VoxelRenderPipeline : IDisposable
 
     private void EnsureDisplay(int width, int height)
     {
-        if (_displayTexture != 0 && _displayWidth == width && _displayHeight == height) return;
+        if (_displayTexture != 0 && width <= _displayAllocatedWidth && height <= _displayAllocatedHeight)
+        {
+            _displayWidth = width;
+            _displayHeight = height;
+            return;
+        }
+
         if (_displayTexture != 0) GL.DeleteTexture(_displayTexture);
         if (_displayFbo != 0) GL.DeleteFramebuffer(_displayFbo);
         _displayTexture = GL.GenTexture();
         _displayWidth = width;
         _displayHeight = height;
+        _displayAllocatedWidth = GrowRenderDimension(width, _displayAllocatedWidth);
+        _displayAllocatedHeight = GrowRenderDimension(height, _displayAllocatedHeight);
         GL.BindTexture(TextureTarget.Texture2D, _displayTexture);
-        GL.TexStorage2D(TextureTarget2d.Texture2D, 1, SizedInternalFormat.Rgba8, width, height);
+        GL.TexStorage2D(TextureTarget2d.Texture2D, 1, SizedInternalFormat.Rgba8,
+            _displayAllocatedWidth, _displayAllocatedHeight);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
@@ -506,32 +525,56 @@ internal sealed class VoxelRenderPipeline : IDisposable
 
     private void EnsureAccum(int width, int height)
     {
-        if (_accumTextures[0] != 0 && _accumWidth == width && _accumHeight == height) return;
-        for (var index = 0; index < 2; index++)
+        var dimensionsChanged = _accumWidth != width || _accumHeight != height;
+        var needsAllocation = _accumTextures[0] == 0 || width > _accumAllocatedWidth || height > _accumAllocatedHeight;
+        if (needsAllocation)
         {
-            if (_accumTextures[index] != 0) GL.DeleteTexture(_accumTextures[index]);
-            if (_accumFbos[index] != 0) GL.DeleteFramebuffer(_accumFbos[index]);
-            _accumTextures[index] = GL.GenTexture();
-            GL.BindTexture(TextureTarget.Texture2D, _accumTextures[index]);
-            GL.TexStorage2D(TextureTarget2d.Texture2D, 1, SizedInternalFormat.Rgba16f, width, height);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-            GL.BindTexture(TextureTarget.Texture2D, 0);
-            _accumFbos[index] = GL.GenFramebuffer();
-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, _accumFbos[index]);
-            GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
-                TextureTarget.Texture2D, _accumTextures[index], 0);
-            GL.ClearColor(0F, 0F, 0F, 1F);
-            GL.Clear(ClearBufferMask.ColorBufferBit);
-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            for (var index = 0; index < 2; index++)
+            {
+                if (_accumTextures[index] != 0) GL.DeleteTexture(_accumTextures[index]);
+                if (_accumFbos[index] != 0) GL.DeleteFramebuffer(_accumFbos[index]);
+                _accumTextures[index] = GL.GenTexture();
+                GL.BindTexture(TextureTarget.Texture2D, _accumTextures[index]);
+                GL.TexStorage2D(TextureTarget2d.Texture2D, 1, SizedInternalFormat.Rgba16f,
+                    GrowRenderDimension(width, _accumAllocatedWidth), GrowRenderDimension(height, _accumAllocatedHeight));
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+                GL.BindTexture(TextureTarget.Texture2D, 0);
+                _accumFbos[index] = GL.GenFramebuffer();
+                GL.BindFramebuffer(FramebufferTarget.Framebuffer, _accumFbos[index]);
+                GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                    TextureTarget.Texture2D, _accumTextures[index], 0);
+                GL.ClearColor(0F, 0F, 0F, 1F);
+                GL.Clear(ClearBufferMask.ColorBufferBit);
+                GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            }
+
+            _accumAllocatedWidth = GrowRenderDimension(width, _accumAllocatedWidth);
+            _accumAllocatedHeight = GrowRenderDimension(height, _accumAllocatedHeight);
         }
 
         _accumWidth = width;
         _accumHeight = height;
-        _accumWrite = 0;
-        AccumulatedSamples = 0;
+        if (dimensionsChanged || needsAllocation)
+        {
+            _accumWrite = 0;
+            AccumulatedSamples = 0;
+        }
+    }
+
+    /// <summary>
+    /// 为连续拖拽调整大小预留增长空间，避免每个像素变化都重新分配 GPU 纹理
+    /// </summary>
+    /// <param name="requested">本次请求的尺寸</param>
+    /// <param name="allocated">当前已经分配的尺寸</param>
+    /// <returns>本次适合分配的尺寸</returns>
+    private static int GrowRenderDimension(int requested, int allocated)
+    {
+        if (allocated >= requested) return allocated;
+        var grown = requested + Math.Max(64, requested / 4);
+        return (grown + 63) / 64 * 64;
     }
 
     private void BindVoxelSamplers(int program)

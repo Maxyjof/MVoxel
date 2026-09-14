@@ -241,7 +241,8 @@ internal sealed partial class ImGuiEditorWindow
             showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
         var lighting = _showLighting ? _renderSettings : FlatLightingClone();
         if (!pipeline.RenderSceneView(lighting, frame, width, height)) return false;
-        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size);
+        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+            Vector2.Zero, pipeline.DisplayUvMax);
         return true;
     }
 
@@ -310,7 +311,8 @@ internal sealed partial class ImGuiEditorWindow
             pipeline.Present(_renderSettings, frame, width, height);
         }
 
-        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size);
+        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+            Vector2.Zero, pipeline.DisplayUvMax);
         return true;
     }
 

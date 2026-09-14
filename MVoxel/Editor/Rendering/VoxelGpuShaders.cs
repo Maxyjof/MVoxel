@@ -821,7 +821,9 @@ void main()
     if (brightest > U[P_RADIANCE_CLAMP]) radianceSum *= U[P_RADIANCE_CLAMP] / brightest;
 
     float previous = max(U[P_ACCUMULATED], 0.0);
-    vec3 old = previous > 0.0 ? texture(uPrevAccum, (gl_FragCoord.xy) / vec2(U[P_VIEW_W], U[P_VIEW_H])).rgb : vec3(0.0);
+    vec3 old = previous > 0.0
+        ? texture(uPrevAccum, gl_FragCoord.xy / vec2(textureSize(uPrevAccum, 0))).rgb
+        : vec3(0.0);
     float newCount = previous + float(samplesThisFrame);
     FragColor = vec4((old * previous + radianceSum) / max(newCount, 1.0), 1.0);
 }
@@ -867,7 +869,7 @@ void main()
     ivec2 pixel = screen_pixel();
     // 累积目标与本通道一样是自下而上渲染的, 因此用未翻转的坐标采样,
     // 这样无论分辨率缩放比例如何, 像素都能对齐
-    vec2 uv = gl_FragCoord.xy / vec2(U[P_VIEW_W], U[P_VIEW_H]);
+    vec2 uv = gl_FragCoord.xy / vec2(textureSize(uAccum, 0));
     vec3 hdr = denoise_accumulation(uv);
     FragColor = vec4(present(hdr, vec2(pixel)), 1.0);
 }
