@@ -4,21 +4,37 @@ using System.Text.Json.Serialization;
 
 namespace MVoxel.Rendering;
 
+/// <summary>
+/// 色调曲线，作用于线性色到显示色的最后一步
+/// </summary>
 public enum ToneCurve
 {
+    /// <summary>
+    /// 直接截断到 0 到 1
+    /// </summary>
     Linear = 0,
+
+    /// <summary>
+    /// Reinhard 压缩，亮部平滑滚降
+    /// </summary>
     Reinhard = 1,
+
+    /// <summary>
+    /// ACES 近似（Narkowicz），照片感最强
+    /// </summary>
     AcesNarkowicz = 2,
+
+    /// <summary>
+    /// Filmic（HV 分段近似），中间调更保守
+    /// </summary>
     Filmic = 3,
 }
 
 /// <summary>
-/// Every tunable of both viewports in one persisted structure. The GPU
-/// pipeline uploads it as a flat float block, the ImGui panel binds to the
-/// public fields directly (ref SliderFloat), and defaults stay MagicaVoxel-ish
-/// while the path tracer exposes the physical controls. ClampAll() runs on
-/// load and on every parameter upload, so a corrupt settings file can never
-/// push the shaders out of range.
+/// 两个视口全部可调参数的单一来源，公开字段直接供 ImGui 以 ref 绑定，
+/// 渲染管线把它上传为扁平 float 块，默认值保持 MagicaVoxel 观感，
+/// 路径追踪部分暴露物理控制。加载与每次上传前都会 ClampAll 与净化 NaN，
+/// 损坏的配置文件永远不可能把着色器推出合法范围
 /// </summary>
 public sealed class RenderSettings
 {
@@ -29,69 +45,272 @@ public sealed class RenderSettings
         Converters = { new JsonStringEnumConverter() },
     };
 
-    // ---------- Scene view (MagicaVoxel-style ray cast) ----------
-    public bool ShowGround = true;
-    public Vector3 GroundColor = new(0.42F, 0.46F, 0.52F);
-    public float GroundFade = 90F;          // distance where ground melts into sky
+    // ---------- 场景视图（MagicaVoxel 风格 raycast） ----------
 
+    /// <summary>
+    /// 是否显示无限地面平面
+    /// </summary>
+    public bool ShowGround = true;
+
+    /// <summary>
+    /// 地面颜色（线性空间存储，面板按 sRGB 编辑）
+    /// </summary>
+    public Vector3 GroundColor = new(0.42F, 0.46F, 0.52F);
+
+    /// <summary>
+    /// 地面淡入天空的距离，格数
+    /// </summary>
+    public float GroundFade = 90F;
+
+    /// <summary>
+    /// 太阳平行光开关
+    /// </summary>
     public bool SunEnabled = true;
-    public float SunAzimuthDegrees = 135F;  // MagicaVoxel “light angle”
+
+    /// <summary>
+    /// 太阳方位角（度），对应 MagicaVoxel 的 light angle
+    /// </summary>
+    public float SunAzimuthDegrees = 135F;
+
+    /// <summary>
+    /// 太阳仰角（度）
+    /// </summary>
     public float SunElevationDegrees = 55F;
+
+    /// <summary>
+    /// 太阳强度
+    /// </summary>
     public float SunIntensity = 1.05F;
+
+    /// <summary>
+    /// 太阳光颜色（线性）
+    /// </summary>
     public Vector3 SunColor = new(1.00F, 0.98F, 0.92F);
-    public float ShadowSoftness = 0.06F;    // sun cone angle, 0 = hard shadow
+
+    /// <summary>
+    /// 阴影柔和度，模拟太阳圆盘的半影锥角度，0 为硬阴影
+    /// </summary>
+    public float ShadowSoftness = 0.06F;
+
+    /// <summary>
+    /// 软阴影的抖动采样数
+    /// </summary>
     public int ShadowSamples = 3;
 
+    /// <summary>
+    /// 角点环境光遮蔽开关（MagicaVoxel 顶点 AO）
+    /// </summary>
     public bool AmbientOcclusionEnabled = true;
-    public float AoStrength = 0.85F;        // MV corner-AO amount
-    public float AoPower = 1.2F;            // contrast of the AO curve
 
+    /// <summary>
+    /// AO 强度，0 关闭效果 1 全量
+    /// </summary>
+    public float AoStrength = 0.85F;
+
+    /// <summary>
+    /// AO 曲线对比度
+    /// </summary>
+    public float AoPower = 1.2F;
+
+    /// <summary>
+    /// 天顶颜色（sRGB 数值，着色时转线性）
+    /// </summary>
     public Vector3 SkyTop = new(0.24F, 0.45F, 0.78F);
+
+    /// <summary>
+    /// 地平线颜色（sRGB 数值）
+    /// </summary>
     public Vector3 SkyHorizon = new(0.62F, 0.72F, 0.85F);
-    public float SkyAmbient = 0.42F;        // hemisphere fill strength
-    public float AmbientTint = 0.15F;       // flat warm fill like MV “环境光”
 
-    // MagicaVoxel palette shading family.
+    /// <summary>
+    /// 天空半球环境光强度
+    /// </summary>
+    public float SkyAmbient = 0.42F;
+
+    /// <summary>
+    /// 暖色平面补光，对应 MagicaVoxel 的环境光观感
+    /// </summary>
+    public float AmbientTint = 0.15F;
+
+    // ---------- MagicaVoxel 调色着色族 ----------
+
+    /// <summary>
+    /// 是否启用调色着色（色相、饱和、对比、明度）
+    /// </summary>
     public bool PaletteShading = true;
-    public float Saturation = 1.0F;         // MV “color saturation”
+
+    /// <summary>
+    /// 饱和度倍率
+    /// </summary>
+    public float Saturation = 1.0F;
+
+    /// <summary>
+    /// 色相偏移（度）
+    /// </summary>
     public float HueShiftDegrees;
+
+    /// <summary>
+    /// 颜色对比度倍率
+    /// </summary>
     public float ColorContrast = 1.0F;
+
+    /// <summary>
+    /// 颜色明度倍率
+    /// </summary>
     public float Brightness = 1.0F;
-    public bool HueCycle;                   // MV hue-ring animation
-    public float HueCycleSpeed = 20F;       // degrees per second
 
+    /// <summary>
+    /// 色相环动画开关（MagicaVoxel 的 hue cycle）
+    /// </summary>
+    public bool HueCycle;
+
+    /// <summary>
+    /// 色相环速度，度每秒
+    /// </summary>
+    public float HueCycleSpeed = 20F;
+
+    /// <summary>
+    /// 雾颜色（sRGB 数值）
+    /// </summary>
     public Vector3 FogColor = new(0.62F, 0.72F, 0.85F);
-    public float FogDensity;                // exponential distance fog
-    public float NearFade;                  // soft fade-in distance (0 = off)
 
-    // ---------- Shared post ----------
+    /// <summary>
+    /// 指数距离雾浓度，0 关闭
+    /// </summary>
+    public float FogDensity;
+
+    /// <summary>
+    /// 近处淡入距离，0 关闭，用于模型贴脸时的柔化
+    /// </summary>
+    public float NearFade;
+
+    // ---------- 共享后期 ----------
+
+    /// <summary>
+    /// 色调曲线
+    /// </summary>
     public ToneCurve Tone = ToneCurve.AcesNarkowicz;
-    public float Exposure;                  // EV offset
+
+    /// <summary>
+    /// 曝光偏移（EV）
+    /// </summary>
+    public float Exposure;
+
+    /// <summary>
+    /// 输出 Gamma
+    /// </summary>
     public float Gamma = 2.2F;
-    public float WhiteBalance = 6500F;      // kelvin
+
+    /// <summary>
+    /// 白平衡色温（开尔文），6500 为中性
+    /// </summary>
+    public float WhiteBalance = 6500F;
+
+    /// <summary>
+    /// 暗角强度
+    /// </summary>
     public float Vignette;
+
+    /// <summary>
+    /// 输出抖动开关，消除平滑渐变的色带
+    /// </summary>
     public bool Dither = true;
 
-    // ---------- Render view (progressive path tracer) ----------
-    public bool PathTracingEnabled = true;
-    public int PathSamplesPerFrame = 1;
-    public int PathMaxAccumulatedSamples = 1024;
-    public float ResolutionScale = 1.0F;    // internal resolution multiplier
-    public int MaxBounces = 6;
-    public float RussianRouletteThreshold = 0.004F; // ≈ 1/255, below LSB
-    public float RadianceClamp = 40F;       // fireflies guard
-    public float PathRoughness = 0.22F;     // GGX roughness for plastics/metals
-    public float PathMetalness;             // 0 dielectric, 1 metal
-    public float PathSpecularF0 = 0.04F;    // Schlick base reflectance
-    public bool DirectLightingMIS = true;   // sun/sky/emissive next-event sampling
-    public bool EmissiveVoxels = true;
-    public float EmissiveIntensity = 12F;
-    public float TransmissiveAbsorption = 1.0F; // Beer-Lambert density for alpha<1 voxels
-    public bool DepthOfField;
-    public float ApertureRadius = 0.08F;
-    public float FocusDistance = 18F;
-    public float CameraFovDegrees = 50F;    // render view only; scene view focal matches the grid
+    // ---------- 渲染视图（渐进式路径追踪） ----------
 
+    /// <summary>
+    /// 路径追踪总开关，关闭后渲染页只呈现最后一次累积结果
+    /// </summary>
+    public bool PathTracingEnabled = true;
+
+    /// <summary>
+    /// 每帧新增样本数
+    /// </summary>
+    public int PathSamplesPerFrame = 1;
+
+    /// <summary>
+    /// 累积样本上限，达到后自动停止
+    /// </summary>
+    public int PathMaxAccumulatedSamples = 1024;
+
+    /// <summary>
+    /// 内部分辨率倍率，低倍率用于交互预览
+    /// </summary>
+    public float ResolutionScale = 1.0F;
+
+    /// <summary>
+    /// 最大弹射次数
+    /// </summary>
+    public int MaxBounces = 6;
+
+    /// <summary>
+    /// 俄罗斯轮盘终止阈值，约 1/255（低于输出最低位）
+    /// </summary>
+    public float RussianRouletteThreshold = 0.004F;
+
+    /// <summary>
+    /// 单样本辐射度截断，抑制萤火虫
+    /// </summary>
+    public float RadianceClamp = 40F;
+
+    /// <summary>
+    /// 全局 GGX 粗糙度
+    /// </summary>
+    public float PathRoughness = 0.22F;
+
+    /// <summary>
+    /// 全局金属度，逐弹射按此概率在电介质与金属之间选择
+    /// </summary>
+    public float PathMetalness;
+
+    /// <summary>
+    /// 电介质基础反射率 F0（Schlick）
+    /// </summary>
+    public float PathSpecularF0 = 0.04F;
+
+    /// <summary>
+    /// 直接光 MIS 开关（太阳、天空与自发光体素的下一帧估计）
+    /// </summary>
+    public bool DirectLightingMIS = true;
+
+    /// <summary>
+    /// 自发光体素是否参与照明
+    /// </summary>
+    public bool EmissiveVoxels = true;
+
+    /// <summary>
+    /// 自发光强度
+    /// </summary>
+    public float EmissiveIntensity = 12F;
+
+    /// <summary>
+    /// 半透明体素的 Beer 吸收浓度
+    /// </summary>
+    public float TransmissiveAbsorption = 1.0F;
+
+    /// <summary>
+    /// 景深开关
+    /// </summary>
+    public bool DepthOfField;
+
+    /// <summary>
+    /// 薄透镜光圈半径
+    /// </summary>
+    public float ApertureRadius = 0.08F;
+
+    /// <summary>
+    /// 对焦距离，格数
+    /// </summary>
+    public float FocusDistance = 18F;
+
+    /// <summary>
+    /// 渲染视图相机视场角（度），场景视图焦距与网格保持一致不受影响
+    /// </summary>
+    public float CameraFovDegrees = 50F;
+
+    /// <summary>
+    /// 由方位角与仰角推导的单位太阳方向
+    /// </summary>
     public Vector3 SunDirection
     {
         get
@@ -105,6 +324,9 @@ public sealed class RenderSettings
         }
     }
 
+    /// <summary>
+    /// 把所有参数夹回安全范围，NaN 与无穷由 SanitizeNaN 先行处理
+    /// </summary>
     public void ClampAll()
     {
         GroundColor = ClampChannel(GroundColor);
@@ -149,9 +371,20 @@ public sealed class RenderSettings
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
     }
 
+    /// <summary>
+    /// 夹住颜色通道到 0 到 4（允许 HDR 强度但杜绝失控值）
+    /// </summary>
+    /// <param name="value">待夹取向量</param>
+    /// <returns>夹取后的向量</returns>
     private static Vector3 ClampChannel(Vector3 value) => new(
         Math.Clamp(value.X, 0F, 4F), Math.Clamp(value.Y, 0F, 4F), Math.Clamp(value.Z, 0F, 4F));
 
+    /// <summary>
+    /// 把角度类数值环绕进 [0, period)
+    /// </summary>
+    /// <param name="value">原始值</param>
+    /// <param name="period">周期</param>
+    /// <returns>环绕后的值</returns>
     private static float Wrap(float value, float period)
     {
         if (!float.IsFinite(value)) return 0F;
@@ -159,10 +392,23 @@ public sealed class RenderSettings
         return value < 0 ? value + period : value;
     }
 
+    /// <summary>
+    /// 原子保存配置到指定路径
+    /// </summary>
+    /// <param name="path">目标文件</param>
     public void SaveTo(string path) => MVoxel.Core.AtomicFile.WriteText(path, ToJson());
 
+    /// <summary>
+    /// 序列化为 JSON 文本，面板用它对比"参数是否变化"
+    /// </summary>
+    /// <returns>JSON 文本</returns>
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
 
+    /// <summary>
+    /// 从文件加载配置，损坏文件静默回退默认值，绝不阻塞编辑器启动
+    /// </summary>
+    /// <param name="path">配置文件路径</param>
+    /// <returns>可用的配置实例</returns>
     public static RenderSettings LoadFrom(string path)
     {
         try
@@ -171,11 +417,15 @@ public sealed class RenderSettings
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
-            // A damaged settings file must never block the editor; fall back to defaults.
             return new RenderSettings();
         }
     }
 
+    /// <summary>
+    /// 从 JSON 文本还原配置并净化
+    /// </summary>
+    /// <param name="json">JSON 文本</param>
+    /// <returns>夹取到安全范围后的配置</returns>
     public static RenderSettings FromJson(string json)
     {
         var loaded = JsonSerializer.Deserialize<RenderSettings>(json, JsonOptions) ?? new RenderSettings();
@@ -184,15 +434,18 @@ public sealed class RenderSettings
         return loaded;
     }
 
+    /// <summary>
+    /// 把 NaN 与无穷替换为各自默认值，先于 ClampAll 执行
+    /// </summary>
     private void SanitizeNaN()
     {
         SunAzimuthDegrees = Safe(SunAzimuthDegrees, 135F);
         SunElevationDegrees = Safe(SunElevationDegrees, 55F);
-        SunIntensity = Safe(SunIntensity, 1.35F);
+        SunIntensity = Safe(SunIntensity, 1.05F);
         ShadowSoftness = Safe(ShadowSoftness, 0.06F);
         AoStrength = Safe(AoStrength, 0.85F);
         AoPower = Safe(AoPower, 1.2F);
-        SkyAmbient = Safe(SkyAmbient, 0.52F);
+        SkyAmbient = Safe(SkyAmbient, 0.42F);
         AmbientTint = Safe(AmbientTint, 0.15F);
         Saturation = Safe(Saturation, 1F);
         HueShiftDegrees = Safe(HueShiftDegrees, 0F);

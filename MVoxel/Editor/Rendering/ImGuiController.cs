@@ -1,6 +1,7 @@
 // Derived from Bytesized.OpenTK.DearImGui (MIT), commit f3490eaf248687b25b61b7aaadefe21aa558e25b.
 // See LICENSE.Bytesized.txt. MVoxel fixes: client/framebuffer sizing, per-window
 // context ownership and Unicode routing, and large draw-list vertex offsets.
+// 上方英文段落是上游 MIT 法律署名, 按要求保留原文不动, 本文件其余注释均为中文
 ﻿using ImGuiNET;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
@@ -17,32 +18,29 @@ using Vector2 = System.Numerics.Vector2;
 namespace MVoxel.Editor.Rendering
 {
     /// <summary>
-    /// Provides a production-ready controller for integrating ImGui.NET with OpenTK.
-    /// Handles ImGui context creation, input mapping, font management, and OpenGL rendering.
-    /// Supports mouse, keyboard, and gamepad input, as well as custom font loading and device resource management.
+    /// 为 ImGui.NET 与 OpenTK 的集成提供生产可用的控制器
+    /// 负责 ImGui 上下文创建、输入映射、字体管理与 OpenGL 渲染
+    /// 支持鼠标、键盘与手柄输入, 以及自定义字体加载和设备资源管理
     /// </summary>
     internal sealed class ImGuiController : IDisposable
     {
         /// <summary>
-        /// Controls how (or if) this controller is allowed to modify the window cursor.
+        /// 控制本控制器是否允许以及以何种方式修改窗口光标
         /// </summary>
         public enum CursorManagementMode
         {
             /// <summary>
-            /// Never changes <see cref="GameWindow.CursorState"/> or <see cref="GameWindow.Cursor"/>.
-            /// The application fully owns cursor behavior.
+            /// 永不修改 <see cref="GameWindow.CursorState"/> 或 <see cref="GameWindow.Cursor"/>, 光标行为完全由应用掌管
             /// </summary>
             Disabled = 0,
 
             /// <summary>
-            /// Only changes cursor while ImGui is actively capturing the mouse.
-            /// Restores the application cursor state once ImGui stops capturing.
+            /// 仅在 ImGui 正在捕获鼠标时修改光标, ImGui 停止捕获后恢复应用原有的光标状态
             /// </summary>
             WhenImGuiCapturesMouse = 1,
 
             /// <summary>
-            /// Always applies ImGui cursor changes (even if ImGui is not capturing).
-            /// This is rarely desirable for games.
+            /// 始终应用 ImGui 的光标变化(即使 ImGui 并未捕获鼠标), 对游戏而言很少是期望行为
             /// </summary>
             Always = 2
         }
@@ -79,7 +77,7 @@ namespace MVoxel.Editor.Rendering
         private readonly Action<TextInputEventArgs> _textInputHandler;
 
         /// <summary>
-        /// Static constructor to populate the efficient key list once.
+        /// 静态构造函数, 只填充一次高效的按键列表
         /// </summary>
         static ImGuiController()
         {
@@ -95,30 +93,29 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Gets a value indicating whether ImGui wants to capture mouse input.
+        /// 获取一个值, 指示 ImGui 是否希望捕获鼠标输入
         /// </summary>
         public bool WantCaptureMouse => ImGui.GetIO().WantCaptureMouse;
 
         /// <summary>
-        /// Gets a value indicating whether ImGui wants to capture keyboard input.
+        /// 获取一个值, 指示 ImGui 是否希望捕获键盘输入
         /// </summary>
         public bool WantCaptureKeyboard => ImGui.GetIO().WantCaptureKeyboard;
 
         /// <summary>
-        /// Gets or sets the scale factor for mouse wheel scrolling.
-        /// Adjust this value if scrolling is too fast or too slow.
+        /// 获取或设置鼠标滚轮滚动的缩放系数, 滚动过快或过慢时调整此值
         /// </summary>
         public float MouseScrollScale { get; set; } = 1.0f;
 
         /// <summary>
-        /// Gets or sets how this controller manages the window cursor.
+        /// 获取或设置本控制器管理窗口光标的方式
         /// </summary>
         public CursorManagementMode CursorMode { get; set; } = CursorManagementMode.Disabled;
 
         /// <summary>
-        /// Back-compat switch. Use <see cref="CursorMode"/> for new code.
-        /// If set to true, cursor management becomes <see cref="CursorManagementMode.Always"/>.
-        /// If set to false, cursor management becomes <see cref="CursorManagementMode.WhenImGuiCapturesMouse"/>.
+        /// 向后兼容开关, 新代码请使用 <see cref="CursorMode"/>
+        /// 设为 true 时光标管理变为 <see cref="CursorManagementMode.Always"/>
+        /// 设为 false 时光标管理变为 <see cref="CursorManagementMode.WhenImGuiCapturesMouse"/>
         /// </summary>
         public bool ForceCursorState
         {
@@ -127,18 +124,17 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Gets or sets whether the controller should automatically save and restore OpenGL state 
-        /// (viewport, scissor, polygon mode, blend mode) during rendering.
-        /// <para>Defaults to true. Set to false for a performance boost if you handle state management yourself.</para>
+        /// 获取或设置控制器是否在渲染期间自动保存并恢复 OpenGL 状态
+        /// (视口、裁剪区、多边形模式、混合模式)
+        /// <para>默认为 true, 若自行管理状态, 设为 false 可获得性能提升</para>
         /// </summary>
         public bool AutoSaveRestoreState { get; set; } = true;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="ImGuiController"/> class.
-        /// Sets up ImGui context, input events, and device resources.
+        /// 初始化 <see cref="ImGuiController"/> 的新实例, 设置 ImGui 上下文、输入事件与设备资源
         /// </summary>
-        /// <param name="wnd">The OpenTK GameWindow to bind ImGui to.</param>
-        /// <exception cref="ArgumentNullException">Thrown if <paramref name="wnd"/> is null.</exception>
+        /// <param name="wnd">要绑定 ImGui 的 OpenTK GameWindow</param>
+        /// <exception cref="ArgumentNullException">当 <paramref name="wnd"/> 为 null 时抛出</exception>
         public ImGuiController(GameWindow wnd)
         {
             _wnd = wnd ?? throw new ArgumentNullException(nameof(wnd));
@@ -149,8 +145,8 @@ namespace MVoxel.Editor.Rendering
 
             _textInputHandler = e =>
             {
-                // GLFW pumps all windows together. Route Unicode to its owner,
-                // regardless of which window/context is currently rendering.
+                // GLFW 会统一轮询所有窗口, 因此把 Unicode 输入路由回它自己的窗口,
+                // 不论当前正在渲染的是哪个窗口或上下文
                 var previous = ImGui.GetCurrentContext();
                 ImGui.SetCurrentContext(_context);
                 PressChar((uint)e.Unicode);
@@ -192,7 +188,7 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Releases all OpenGL device resources and destroys the ImGui context.
+        /// 释放全部 OpenGL 设备资源并销毁 ImGui 上下文
         /// </summary>
         public void DestroyDeviceObjects()
         {
@@ -200,7 +196,7 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Creates and initializes all required OpenGL resources for ImGui rendering.
+        /// 创建并初始化 ImGui 渲染所需的全部 OpenGL 资源
         /// </summary>
         public void CreateDeviceResources()
         {
@@ -208,8 +204,8 @@ namespace MVoxel.Editor.Rendering
             _vertexBuffer = GL.GenBuffer();
             _indexBuffer = GL.GenBuffer();
 
-            // Objects must be bound into existence before ObjectLabel (GL 4.3+);
-            // Gen* only reserves the name.
+            // 必须先绑定对象使其正式存在, 才能调用 ObjectLabel (GL 4.3+),
+            // Gen* 只是预留了名字
             GL.BindVertexArray(_vertexArray);
             LabelObject(ObjectLabelIdentifier.VertexArray, _vertexArray, "ImGui VAO");
             GL.BindBuffer(BufferTarget.ArrayBuffer, _vertexBuffer);
@@ -260,7 +256,7 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Recreates the font texture used by ImGui and uploads it to the GPU.
+        /// 重建 ImGui 使用的字体纹理并上传到 GPU
         /// </summary>
         public void RecreateFontDeviceTexture()
         {
@@ -285,11 +281,11 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Sets a debug label for an OpenGL object, useful for graphics debuggers.
+        /// 为 OpenGL 对象设置调试标签, 便于图形调试器识别
         /// </summary>
-        /// <param name="objLabelIdent">The OpenGL object label identifier.</param>
-        /// <param name="glObject">The OpenGL object handle.</param>
-        /// <param name="name">The label name.</param>
+        /// <param name="objLabelIdent">OpenGL 对象标签标识</param>
+        /// <param name="glObject">OpenGL 对象句柄</param>
+        /// <param name="name">标签名称</param>
         private void LabelObject(ObjectLabelIdentifier objLabelIdent, int glObject, string name)
         {
             int major = GL.GetInteger(GetPName.MajorVersion);
@@ -302,10 +298,10 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Loads a custom font from file and updates the ImGui font atlas.
+        /// 从文件加载自定义字体并更新 ImGui 字体图集
         /// </summary>
-        /// <param name="path">Path to the .ttf or .otf font file.</param>
-        /// <param name="size">Font size in pixels.</param>
+        /// <param name="path">.ttf 或 .otf 字体文件路径</param>
+        /// <param name="size">以像素为单位的字号</param>
         public void LoadCustomFont(string path, float size)
         {
             ImGuiIOPtr io = ImGui.GetIO();
@@ -315,11 +311,11 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Attempts to load a font embedded in the assembly as a resource.
+        /// 尝试加载程序集内嵌资源中的字体
         /// </summary>
-        /// <param name="resourceName">The filename of the resource (e.g. "MyFont.ttf")</param>
-        /// <param name="sizePixels">The font size.</param>
-        /// <returns>True if loaded successfully, false otherwise.</returns>
+        /// <param name="resourceName">资源文件名, 例如 "MyFont.ttf"</param>
+        /// <param name="sizePixels">以像素为单位的字号</param>
+        /// <returns>加载成功返回 true, 否则返回 false</returns>
         public bool LoadEmbeddedFont(string resourceName, float sizePixels)
         {
             if (string.IsNullOrWhiteSpace(resourceName))
@@ -384,19 +380,19 @@ namespace MVoxel.Editor.Rendering
 
 
         /// <summary>
-        /// Returns an ImGui-compatible pointer for an OpenTK texture handle.
+        /// 把 OpenTK 纹理句柄转换为 ImGui 可用的指针
         /// </summary>
-        /// <param name="glTextureId">The OpenGL texture ID.</param>
-        /// <returns>An IntPtr for use with ImGui.Image.</returns>
+        /// <param name="glTextureId">OpenGL 纹理 ID</param>
+        /// <returns>供 ImGui.Image 使用的 IntPtr</returns>
         public IntPtr GetTextureHandle(int glTextureId)
         {
             return (IntPtr)glTextureId;
         }
 
         /// <summary>
-        /// Updates ImGui state for the current frame, including input and timing.
+        /// 更新 ImGui 当前帧的状态, 包括输入与时间数据
         /// </summary>
-        /// <param name="dt">Delta time in seconds since the last frame.</param>
+        /// <param name="dt">距上一帧的时间增量, 以秒为单位</param>
         public void Update(float dt)
         {
             ImGui.SetCurrentContext(_context);
@@ -413,9 +409,9 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Sets per-frame ImGui data such as display size, framebuffer scale, and delta time.
+        /// 设置每帧 ImGui 数据, 如显示尺寸、帧缓冲缩放系数与时间增量
         /// </summary>
-        /// <param name="dt">Delta time in seconds.</param>
+        /// <param name="dt">时间增量, 以秒为单位</param>
         private void SetPerFrameImGuiData(float dt)
         {
             ImGuiIOPtr io = ImGui.GetIO();
@@ -423,8 +419,8 @@ namespace MVoxel.Editor.Rendering
             _windowWidth = _wnd.ClientSize.X;
             _windowHeight = _wnd.ClientSize.Y;
 
-            // Never include the native title bar/borders in ImGui coordinates.
-            // Mouse coordinates and DisplaySize are both client-local pixels.
+            // ImGui 坐标绝不包含原生标题栏与边框,
+            // 鼠标坐标与 DisplaySize 都是客户区局部像素
             _windowWidth = _wnd.FramebufferSize.X;
             _windowHeight = _wnd.FramebufferSize.Y;
             int logicalWidth = _wnd.ClientSize.X;
@@ -446,10 +442,9 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Updates ImGui input state from the current GameWindow input.
-        /// Handles mouse, keyboard, clipboard, and cursor state.
+        /// 从当前 GameWindow 的输入更新 ImGui 输入状态, 处理鼠标、键盘、剪贴板与光标状态
         /// </summary>
-        /// <param name="wnd">The GameWindow providing input state.</param>
+        /// <param name="wnd">提供输入状态的 GameWindow</param>
         private void UpdateImGuiInput(GameWindow wnd)
         {
             ImGuiIOPtr io = ImGui.GetIO();
@@ -498,6 +493,11 @@ namespace MVoxel.Editor.Rendering
             UpdateCursor(wnd, io);
         }
 
+        /// <summary>
+        /// 按 CursorMode 策略应用或恢复窗口光标
+        /// </summary>
+        /// <param name="wnd">要设置光标的窗口</param>
+        /// <param name="io">当前 ImGui IO 指针</param>
         private void UpdateCursor(GameWindow wnd, ImGuiIOPtr io)
         {
             if (io.ConfigFlags.HasFlag(ImGuiConfigFlags.NoMouseCursorChange))
@@ -546,12 +546,19 @@ namespace MVoxel.Editor.Rendering
             wnd.Cursor = ToOpenTkCursor(imguiCursor);
         }
 
+        /// <summary>
+        /// 放弃光标覆盖记录, 但不恢复覆盖前的光标状态
+        /// </summary>
         private void ReleaseCursorOverrideWithoutRestoring()
         {
             _cursorOverridden = false;
             _cursorBeforeOverride = null;
         }
 
+        /// <summary>
+        /// 若此前覆盖过光标, 则把窗口光标恢复为覆盖前的状态
+        /// </summary>
+        /// <param name="wnd">要恢复光标的窗口</param>
         private void RestoreCursorIfOverridden(GameWindow wnd)
         {
             if (!_cursorOverridden)
@@ -570,6 +577,11 @@ namespace MVoxel.Editor.Rendering
             _cursorBeforeOverride = null;
         }
 
+        /// <summary>
+        /// 把 ImGui 光标类型映射为 OpenTK 鼠标光标
+        /// </summary>
+        /// <param name="imguiCursor">ImGui 光标类型</param>
+        /// <returns>对应的 OpenTK MouseCursor</returns>
         private static MouseCursor ToOpenTkCursor(ImGuiMouseCursor imguiCursor)
         {
             return imguiCursor switch
@@ -584,6 +596,9 @@ namespace MVoxel.Editor.Rendering
             };
         }
 
+        /// <summary>
+        /// 把 0 号手柄的按键与轴状态映射为 ImGui 手柄输入
+        /// </summary>
         private void UpdateImGuiGamepad()
         {
             ImGuiIOPtr io = ImGui.GetIO();
@@ -608,10 +623,10 @@ namespace MVoxel.Editor.Rendering
             MapButton(7, ImGuiKey.GamepadStart);     // Start
             MapButton(8, ImGuiKey.GamepadL3);        // L3
             MapButton(9, ImGuiKey.GamepadR3);        // R3
-            MapButton(10, ImGuiKey.GamepadDpadUp);   // Up
-            MapButton(11, ImGuiKey.GamepadDpadRight);// Right
-            MapButton(12, ImGuiKey.GamepadDpadDown); // Down
-            MapButton(13, ImGuiKey.GamepadDpadLeft); // Left
+            MapButton(10, ImGuiKey.GamepadDpadUp);   // 上
+            MapButton(11, ImGuiKey.GamepadDpadRight);// 右
+            MapButton(12, ImGuiKey.GamepadDpadDown); // 下
+            MapButton(13, ImGuiKey.GamepadDpadLeft); // 左
 
             float leftTrigger = state.GetAxis(4);
             float rightTrigger = state.GetAxis(5);
@@ -626,10 +641,10 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Translates OpenTK keyboard keys to ImGuiKey values.
+        /// 把 OpenTK 键盘按键翻译为 ImGuiKey
         /// </summary>
-        /// <param name="key">The OpenTK key.</param>
-        /// <returns>The corresponding ImGuiKey, or ImGuiKey.None if not mapped.</returns>
+        /// <param name="key">OpenTK 按键</param>
+        /// <returns>对应的 ImGuiKey, 未映射时返回 ImGuiKey.None</returns>
         private static ImGuiKey TranslateKey(Keys key)
         {
             if (key >= Keys.D0 && key <= Keys.D9) return ImGuiKey._0 + (key - Keys.D0);
@@ -696,16 +711,16 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Adds a Unicode character input to ImGui.
+        /// 向 ImGui 添加一个 Unicode 字符输入
         /// </summary>
-        /// <param name="keyChar">The Unicode character code.</param>
+        /// <param name="keyChar">Unicode 字符编码</param>
         public void PressChar(uint keyChar)
         {
             ImGui.GetIO().AddInputCharacter(keyChar);
         }
 
         /// <summary>
-        /// Renders the current ImGui frame to the OpenGL context.
+        /// 把当前 ImGui 帧渲染到 OpenGL 上下文
         /// </summary>
         public void Render()
         {
@@ -719,10 +734,9 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Renders ImGui draw data using OpenGL.
-        /// Handles buffer resizing, state management, and draw command execution.
+        /// 使用 OpenGL 渲染 ImGui 绘制数据, 处理缓冲扩容、状态管理与绘制命令执行
         /// </summary>
-        /// <param name="draw_data">The ImGui draw data to render.</param>
+        /// <param name="draw_data">要渲染的 ImGui 绘制数据</param>
         private void RenderImDrawData(ImDrawDataPtr draw_data)
         {
             unsafe
@@ -860,12 +874,12 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Compiles and links a new OpenGL shader program from vertex and fragment source code.
+        /// 从顶点与片元着色器源码编译并链接一个新的 OpenGL 着色器程序
         /// </summary>
-        /// <param name="name">The program name (for logging).</param>
-        /// <param name="vertexSource">Vertex shader source code.</param>
-        /// <param name="fragmentSource">Fragment shader source code.</param>
-        /// <returns>The OpenGL program handle.</returns>
+        /// <param name="name">程序名称, 用于日志</param>
+        /// <param name="vertexSource">顶点着色器源码</param>
+        /// <param name="fragmentSource">片元着色器源码</param>
+        /// <returns>OpenGL 程序句柄</returns>
         private int CreateProgram(string name, string vertexSource, string fragmentSource)
         {
             int program = GL.CreateProgram();
@@ -889,12 +903,12 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Compiles an OpenGL shader from source code.
+        /// 从源码编译一个 OpenGL 着色器
         /// </summary>
-        /// <param name="name">The shader name (for logging).</param>
-        /// <param name="type">The shader type.</param>
-        /// <param name="source">The shader source code.</param>
-        /// <returns>The OpenGL shader handle.</returns>
+        /// <param name="name">着色器名称, 用于日志</param>
+        /// <param name="type">着色器类型</param>
+        /// <param name="source">着色器源码</param>
+        /// <returns>OpenGL 着色器句柄</returns>
         private int CompileShader(string name, ShaderType type, string source)
         {
             int shader = GL.CreateShader(type);
@@ -912,9 +926,9 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Checks for OpenGL errors and logs them to the console in DEBUG builds.
+        /// 检查 OpenGL 错误, 并在 DEBUG 构建下把错误输出到控制台
         /// </summary>
-        /// <param name="title">A title to prefix error messages.</param>
+        /// <param name="title">错误信息的前缀标题</param>
         [Conditional("DEBUG")]
         public static void CheckGLError(string title)
         {
@@ -926,7 +940,7 @@ namespace MVoxel.Editor.Rendering
         }
 
         /// <summary>
-        /// Disposes all OpenGL resources and detaches ImGui from the window.
+        /// 释放全部 OpenGL 资源并把 ImGui 从窗口上解绑
         /// </summary>
         public void Dispose()
         {

@@ -101,6 +101,8 @@ internal sealed partial class ImGuiEditorWindow
     {
         _voxelHistory.Clear();
         _selectedVoxel = null;
+        _palette = EditorPalettes.ResolveProjectPalette(project);
+        _paletteIsProjectLevel = true;
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
@@ -157,7 +159,7 @@ internal sealed partial class ImGuiEditorWindow
                 VoxFormat.Write(modelPath, _world);
             }
 
-            var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvscene");
+            var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
             var document = new Scene.SceneDocument { Name = "主场景" };
             var graph = new Scene.SceneGraph(document);
             var modelObject = graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
@@ -642,10 +644,48 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         SliderInt("半径（1=单格）", ref _brushRadius, 1, 8);
-        Toggle("自发光笔刷（提灯）", ref _settingsToggleEmissive,
-            value => { _brushEmissive = value; settings.EmissiveVoxels = true; });
+        if (ImGui.Checkbox("自发光笔刷（提灯）", ref _brushEmissive))
+        {
+            SetStatus(_brushEmissive ? "新绘制的体素将带自发光标记" : "新绘制的体素为普通颜色");
+        }
+
         ImGui.SeparatorText("色板（256 · MagicaVoxel 风格渐变）");
         DrawPaletteSelector();
+
+        ImGui.SeparatorText("调色板管理");
+        ImGui.TextDisabled(_paletteIsProjectLevel
+            ? $"当前为项目级调色板：Assets/Palettes/{EditorPalettes.ProjectPaletteName}"
+            : "当前为编辑器级调色板（未打开项目）");
+        if (ImGui.Button("保存调色板到项目"))
+        {
+            if (_project is null)
+            {
+                SetStatus("未打开项目，无法写入项目级调色板");
+            }
+            else
+            {
+                SetStatus(EditorPalettes.SaveProjectPalette(_project, _palette)
+                    ? "项目级调色板已保存"
+                    : "项目级调色板保存失败");
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("写回编辑器默认"))
+        {
+            SetStatus(EditorPalettes.SaveEditorPalette(_palette)
+                ? "当前色板已写回编辑器级，成为新项目默认"
+                : "编辑器级调色板写入失败");
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("重新载入"))
+        {
+            _palette = _paletteIsProjectLevel && _project is not null
+                ? EditorPalettes.ResolveProjectPalette(_project)
+                : EditorPalettes.ResolveEditorPalette();
+            SetStatus("调色板已按当前层级重新载入");
+        }
     }
 
     private void DrawPostSection(RenderSettings settings)

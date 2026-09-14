@@ -6,6 +6,10 @@ using OpenTkWindowIcon = OpenTK.Windowing.Common.Input.WindowIcon;
 
 namespace MVoxel.Editor;
 
+/// <summary>
+/// 窗口图标与品牌图的加载工具。System.Drawing 在这里只是 PNG 解码器，
+/// 不涉及任何 WinForms 类型
+/// </summary>
 internal static class AppBranding
 {
     private static readonly string[] LogoCandidates =
@@ -14,6 +18,10 @@ internal static class AppBranding
         Path.Combine(AppContext.BaseDirectory, "Brand", "MVoxelLogo.png"),
     };
 
+    /// <summary>
+    /// 生成 GLFW 窗口图标（32 与 16 两档），logo 缺失时返回 null 让系统用默认图标
+    /// </summary>
+    /// <returns>多尺寸窗口图标或 null</returns>
     internal static OpenTkWindowIcon? LoadWindowIcon()
     {
         var images = new List<OpenTkImage>();
@@ -39,6 +47,10 @@ internal static class AppBranding
         return images.Count == 0 ? null : new OpenTkWindowIcon(images.ToArray());
     }
 
+    /// <summary>
+    /// 从候选路径加载原始 logo 位图
+    /// </summary>
+    /// <returns>logo 位图或 null</returns>
     private static Bitmap? LoadLogo()
     {
         foreach (var path in LogoCandidates)
@@ -52,6 +64,11 @@ internal static class AppBranding
         return null;
     }
 
+    /// <summary>
+    /// 把 BGRA 位图内存转成 GLFW 需要的 RGBA 字节序
+    /// </summary>
+    /// <param name="bitmap">32bppArgb 位图</param>
+    /// <returns>RGBA 字节数组</returns>
     private static byte[] ToRgba(Bitmap bitmap)
     {
         var rectangle = new Rectangle(0, 0, bitmap.Width, bitmap.Height);

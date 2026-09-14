@@ -3,30 +3,29 @@ using MVoxel.Rendering;
 namespace MVoxel.Editor.Rendering;
 
 /// <summary>
-/// GLSL 4.50 sources for the voxel viewport. One shared ray-tracing core is
-/// driven through ordinary fullscreen fragment passes (robust across drivers
-/// and contexts, verified against compute image writes which were silently
-/// dropped on this NVIDIA/OpenGL stack):
+/// 体素视口的 GLSL 4.50 源码, 所有通道共用同一个光线追踪内核, 通过普通的
+/// 全屏片元通道驱动(跨驱动与上下文更稳健; 本 NVIDIA/OpenGL 栈上 compute
+/// image 写入会被静默丢弃, 已实测验证):
 ///
-/// • Scene pass: one fragment = one primary ray (MagicaVoxel-style direct
-///   light, corner AO, soft sun shadows, fog, ground fade).
-/// • Trace pass: one fragment = N new path-trace samples blended into the
-///   previous accumulation texture (ping-pong RGBA32F render targets).
-/// • Present pass: tonemap the HDR accumulation into the LDR display texture.
+/// 场景通道: 一个片元对应一条主射线(MagicaVoxel 风格的直接光、角点 AO、
+/// 柔和太阳阴影、雾与地面渐隐)
+/// 追踪通道: 一个片元对应 N 个新的路径追踪采样, 混合进上一帧累积纹理
+/// (ping-pong 的 RGBA32F 渲染目标)
+/// 呈现通道: 对 HDR 累积结果做色调映射, 输出到 LDR 显示纹理
 ///
-/// Technique lineage: corner AO + palette shading + cell outlines from
-/// MagicaVoxel; Whitted transport, weight-threshold termination, Schlick
-/// Fresnel, Beer-Lambert absorption and jittered soft shadows ported from the
-/// reference Ray-tracing-by-AI project and upgraded with cosine-weighted
-/// sampling, importance-sampled GGX, next-event MIS (sun/sky/emissive),
-/// radiance clamping and progressive accumulation it lacked.
+/// 技术谱系: 角点 AO、调色板着色与单元描边来自 MagicaVoxel; Whitted 传输、
+/// 权重阈值终止、Schlick 菲涅尔、Beer-Lambert 吸收与抖动软阴影移植自参考
+/// 项目 Ray-tracing-by-AI, 并补上了它缺失的余弦加权采样、GGX 重要性采样、
+/// next-event MIS(太阳/天空/自发光)、辐亮度钳制与渐进式累积
 ///
-/// Color management: voxel bytes are sRGB, lighting happens in linear space,
-/// output goes through an explicit tone curve + gamma (docs 05 §5).
+/// 色彩管理: 体素字节为 sRGB, 光照在线性空间计算, 输出经过显式色调曲线
+/// 与 gamma(见文档 05 §5)
 /// </summary>
 internal static class VoxelGpuShaders
 {
-    /// <summary>Fullscreen triangle from gl_VertexID; viewport carries the size.</summary>
+    /// <summary>
+    /// 由 gl_VertexID 直接生成全屏三角形, 尺寸交由视口决定
+    /// </summary>
     internal const string Vertex = """
 #version 450
 void main()
@@ -37,30 +36,30 @@ void main()
 """;
 
     /// <summary>
-    /// Shared core. The <c>#include "defines"</c> slot is replaced with the
-    /// generated parameter table by <see cref="BuildCommon"/>.
+    /// 共享内核, 其中 <c>#include "defines"</c> 槽位会被 <see cref="BuildCommon"/>
+    /// 生成的参数表替换
     /// </summary>
     internal const string Common = """
 #include "defines"
 
 layout(std430, binding = 0) readonly buffer MVParams { float U[]; };
 layout(std430, binding = 1) readonly buffer MVLights { vec4 MVLight[]; };
-// light pairs: [center.xyz, intensity] [color.rgb, pad]
+// 灯光按对存放: [center.xyz, intensity] [color.rgb, pad]
 
-uniform sampler3D uColors; // RGBA8 region workset (sRGB colour + alpha)
-uniform usampler3D uFlags; // R8UI: occupancy|material flags (0 = empty)
+uniform sampler3D uColors; // RGBA8 区域工作集(sRGB 颜色 + alpha)
+uniform usampler3D uFlags; // R8UI: 占用|材质标记(0 表示空格)
 
 const float PI = 3.141592653589793;
 
-// ImGui samples texture row 0 at the quad's top edge, and row 0 is exactly
-// where gl_FragCoord.y == 0; so the fragment row index already *is* the
-// top-down screen pixel used by SceneProjection. No flip needed.
+// ImGui 在四边形顶边采样纹理第 0 行, 而第 0 行恰好对应
+// gl_FragCoord.y == 0 的位置; 因此片元行索引本身就是 SceneProjection
+// 使用的自上而下屏幕像素, 无需翻转
 ivec2 screen_pixel()
 {
     return ivec2(gl_FragCoord.xy);
 }
 
-// ---------- deterministic RNG (PCG hash stream) ----------
+// ===== 确定性 RNG(PCG 哈希流) =====
 uint g_seed;
 void seed_rng(uint s)
 {
@@ -76,7 +75,7 @@ uint hash_u()
 float rnd() { return float(hash_u()) * (1.0 / 4294967296.0); }
 vec2 rnd2_disk() { float a = rnd() * 6.2831853; float r = sqrt(rnd()); return vec2(cos(a), sin(a)) * r; }
 
-// ---------- colour spaces ----------
+// ===== 色彩空间 =====
 vec3 srgb_to_linear(vec3 c)
 {
     vec3 lo = c / 12.92;
@@ -102,7 +101,7 @@ vec3 palette_shade(vec3 linearColor)
     return max(c * U[P_BRIGHTNESS], vec3(0.0));
 }
 
-// ---------- region sampling ----------
+// ===== 区域采样 =====
 ivec3 region_min() { return ivec3(int(U[P_REGION_MIN_X]), int(U[P_REGION_MIN_Y]), int(U[P_REGION_MIN_Z])); }
 ivec3 region_size() { return ivec3(int(U[P_REGION_SIZE_X]), int(U[P_REGION_SIZE_Y]), int(U[P_REGION_SIZE_Z])); }
 
@@ -136,8 +135,8 @@ vec3 sky_ambient(vec3 normal)
 vec3 sun_color() { return vec3(U[P_SUN_R], U[P_SUN_G], U[P_SUN_B]) * U[P_SUN_INTENSITY]; }
 vec3 sun_direction() { return vec3(U[P_SUN_X], U[P_SUN_Y], U[P_SUN_Z]); }
 
-// ---------- Amanatides & Woo voxel traversal ----------
-// The managed VoxelDda mirrors this exact traversal so picking and pixels agree.
+// ===== Amanatides 与 Woo 体素遍历 =====
+// 托管侧的 VoxelDda 与本遍历逐步一致, 保证拾取结果与像素吻合
 struct VHit
 {
     bool hit;
@@ -178,7 +177,7 @@ VHit voxel_ray(vec3 origin, vec3 direction, float maxDistance, ivec3 skipCell)
         tMax[axis] = absDir[axis] < 1e-7 ? 1e30 : abs((boundary - oo[axis]) / dd[axis]);
     }
 
-    // Entry face when the ray already starts inside a voxel: the dominant axis.
+    // 射线起点已在体素内部时的入射面: 取主导轴
     vec3 entryNormal;
     if (absDir[0] >= absDir[1] && absDir[0] >= absDir[2]) entryNormal = vec3(-stepSign.x, 0.0, 0.0);
     else if (absDir[1] >= absDir[2]) entryNormal = vec3(0.0, -stepSign.y, 0.0);
@@ -240,7 +239,7 @@ bool shadow_ray(vec3 origin, vec3 direction, float maxDistance)
     return !voxel_ray(origin, direction, maxDistance).hit;
 }
 
-// ---------- ground plane (y = 0) ----------
+// ===== 地面平面(y = 0) =====
 bool ground_hit(vec3 origin, vec3 direction, out float t)
 {
     t = 0.0;
@@ -259,14 +258,14 @@ vec3 ground_radiance(vec3 point, vec3 rayDirection)
     if (U[P_SUN_INTENSITY] > 0.0 && sun.y > 0.0)
     {
         VHit blocker = voxel_ray(point + vec3(0.0, 0.02, 0.0), sun, 512.0);
-        lit = blocker.hit ? 0.12 : 1.0; // small bounce fill keeps shadows readable
+        lit = blocker.hit ? 0.12 : 1.0; // 少量弹射补光, 保证阴影区域仍然可读
     }
     vec3 litColor = groundBase * (sky_ambient(vec3(0.0, 1.0, 0.0)) * 0.55 + sun_color() * max(sun.y, 0.0) * lit * 0.7);
     float fade = clamp(1.0 - distance(point, vec3(U[P_CAM_X], 0.0, U[P_CAM_Z])) / U[P_GROUND_FADE], 0.0, 1.0);
     vec3 result = mix(sky_color(rayDirection), litColor, fade);
 
-    // Depth-correct editor grid: minor + major (every 8 cells) world lines,
-    // 1-ish-pixel wide via screen-space derivatives, faded with distance.
+    // 深度正确的编辑器网格: 次级线与主线(每 8 格一条)的世界空间直线,
+    // 借助屏幕空间导数保持约 1 像素宽, 并随距离渐隐
     if (U[P_GRID_SHOWN] > 0.5 && U[P_GRID_STEP] > 0.001)
     {
         float stepSize = U[P_GRID_STEP];
@@ -284,7 +283,7 @@ vec3 ground_radiance(vec3 point, vec3 rayDirection)
     return result;
 }
 
-// ---------- MagicaVoxel-style corner AO ----------
+// ===== MagicaVoxel 风格角点 AO =====
 float corner_term(ivec3 base, ivec3 su, ivec3 sv)
 {
     bool s1 = solid_at(base + su);
@@ -314,9 +313,9 @@ float corner_ao(ivec3 cell, vec3 normal, vec3 point)
     return clamp(pow(max(shaded, 0.0), U[P_AO_POWER]), 0.0, 1.0);
 }
 
-// ---------- camera ----------
-// Scene view matches SceneProjection.Project exactly (same focal convention);
-// the render view uses its own FOV. Screen Y grows downward like ImGui.
+// ===== 相机 =====
+// 场景视图与 SceneProjection.Project 完全一致(同一焦距约定),
+// 渲染视图则使用自己的 FOV; 屏幕 Y 轴与 ImGui 相同, 向下增长
 vec3 camera_ray_direction(vec2 pixel, out vec3 rayOrigin)
 {
     rayOrigin = vec3(U[P_CAM_X], U[P_CAM_Y], U[P_CAM_Z]);
@@ -336,7 +335,7 @@ vec3 camera_ray_direction(vec2 pixel, out vec3 rayOrigin)
     return normalize(forward + right * (offset.x / focal) - up * (offset.y / focal));
 }
 
-// ---------- BSDF pieces ----------
+// ===== BSDF 组件 =====
 vec3 fresnel_schlick(float cosine, vec3 f0)
 {
     return f0 + (vec3(1.0) - f0) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0);
@@ -414,7 +413,7 @@ float bsdf_pdf(int kind, float roughness, vec3 n, vec3 v, vec3 l)
     return nl / PI;
 }
 
-// ---------- tone curve / present ----------
+// ===== 色调曲线与呈现 =====
 vec3 tonemap(vec3 color)
 {
     color *= pow(2.0, U[P_EXPOSURE]);
@@ -458,7 +457,9 @@ vec3 present(vec3 linearColor, vec2 pixel)
 uint frame_salt() { return uint(max(U[P_FRAME], 0.0)) * 0xC2B2AE35U; }
 """;
 
-    /// <summary>Scene-view ray cast: MV-style direct light, AO, soft sun shadows, fog, ground.</summary>
+    /// <summary>
+    /// 场景视图射线投射: MagicaVoxel 风格的直接光、AO、柔和太阳阴影、雾与地面
+    /// </summary>
     internal const string SceneFragment = """
 #version 450
 layout(location = 0) out vec4 FragColor;
@@ -541,8 +542,8 @@ void main()
 
     if (hit.hit && (!hasGround || hit.t <= groundT))
     {
-        // Up to two translucent layers blend over whatever is behind them,
-        // approximating MagicaVoxel's transparency row without full recursion.
+        // 最多两层半透明叠加在其后方内容之上, 不做完整递归,
+        // 以此近似 MagicaVoxel 的透明层效果
         vec3 accumulated = vec3(0.0);
         float transmittance = 1.0;
         vec3 cursor = rayOrigin;
@@ -582,9 +583,8 @@ void main()
 """;
 
     /// <summary>
-    /// Progressive path tracer: GGX, cosine sampling, MIS sun/sky/emissive,
-    /// Russian roulette, radiance clamp. Reads the previous accumulation and
-    /// writes the running average (ping-pong render targets).
+    /// 渐进式路径追踪: GGX、余弦采样、太阳/天空/自发光的 MIS、俄罗斯轮盘
+    /// 终止与辐亮度钳制; 读取上一帧累积纹理并写出运行平均(ping-pong 渲染目标)
     /// </summary>
     internal const string TraceFragment = """
 #version 450
@@ -593,7 +593,7 @@ layout(location = 0) out vec4 FragColor;
 
 uint light_count() { return max(1U, uint(max(U[P_LIGHT_COUNT], 1.0))); }
 
-// Next-event estimation for one randomly chosen emissive voxel face.
+// 对随机选中的一个自发光体素面做 next-event 估计
 vec3 emissive_nee(vec3 point, vec3 normal, vec3 viewDir, int kind, float roughness, vec3 f0, vec3 base)
 {
     uint count = light_count();
@@ -603,11 +603,11 @@ vec3 emissive_nee(vec3 point, vec3 normal, vec3 viewDir, int kind, float roughne
     vec3 center = head.xyz;
     vec3 toPoint = point - center;
     float m = max(abs(toPoint.x), max(abs(toPoint.y), abs(toPoint.z)));
-    if (m < 0.9) return vec3(0.0); // shading point basically inside the light
+    if (m < 0.9) return vec3(0.0); // 着色点基本位于灯光体素内部
     vec3 faceNormal = abs(toPoint.x) >= m - 1e-5 ? vec3(sign(toPoint.x), 0, 0)
         : (abs(toPoint.y) >= m - 1e-5 ? vec3(0, sign(toPoint.y), 0) : vec3(0, 0, sign(toPoint.z)));
     if (solid_at(ivec3(floor(center)) - region_min() + ivec3(faceNormal)))
-        faceNormal = -faceNormal; // emit through an exposed face
+        faceNormal = -faceNormal; // 让光从暴露面发射
     vec3 t1 = abs(faceNormal.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     t1 = normalize(t1 - faceNormal * dot(t1, faceNormal));
     vec3 t2 = cross(faceNormal, t1);
@@ -621,7 +621,7 @@ vec3 emissive_nee(vec3 point, vec3 normal, vec3 viewDir, int kind, float roughne
     if (cosPoint <= 0.0 || cosLight <= 0.0) return vec3(0.0);
     if (!shadow_ray(point + normal * 0.02, direction, sqrt(distanceSquared) - 0.06)) return vec3(0.0);
 
-    float pdfLightArea = 1.0 / float(count); // unit face area
+    float pdfLightArea = 1.0 / float(count); // 面为单位面积
     float pdfLightSolid = pdfLightArea * distanceSquared / cosLight;
     float pdfBsdf = bsdf_pdf(kind, roughness, normal, viewDir, direction);
     float weight = pdfLightSolid / (pdfLightSolid + max(pdfBsdf, 1e-9));
@@ -630,9 +630,8 @@ vec3 emissive_nee(vec3 point, vec3 normal, vec3 viewDir, int kind, float roughne
     return bsdf_eval(kind, roughness, f0, base, normal, viewDir, direction) * emission * weight * geometry;
 }
 
-// Sun next-event estimate. A directional light is a Dirac delta that BSDF
-// sampling can never hit, so the unbiased light-sampling estimator keeps
-// full weight (MIS down-weighting is only correct for area lights).
+// 太阳的 next-event 估计: 方向光是一个 Dirac delta, BSDF 采样永远命中不了,
+// 因此无偏的灯光采样估计器保持全部权重(MIS 降权只对面积光成立)
 vec3 sun_nee(vec3 point, vec3 normal, vec3 viewDir, int kind, float roughness, vec3 f0, vec3 base)
 {
     if (U[P_SUN_INTENSITY] <= 0.0 || kind != 0) return vec3(0.0);
@@ -659,7 +658,7 @@ void main()
 
         if (U[P_APERTURE] > 0.0)
         {
-            // Thin-lens depth of field around the focus plane.
+            // 围绕焦平面的薄透镜景深
             vec3 forward = vec3(U[P_FWD_X], U[P_FWD_Y], U[P_FWD_Z]);
             float focusT = U[P_FOCUS_DISTANCE] / max(dot(direction, forward), 1e-5);
             vec3 focusPoint = origin + direction * focusT;
@@ -697,7 +696,7 @@ void main()
             vec3 base = palette_shade(srgb_to_linear(hit.color.rgb));
 
             if (emissive) radianceSum += throughput * base * U[P_EMISSIVE_INTENSITY];
-            if (emissive && !translucent) break; // opaque emitters stop transport
+            if (emissive && !translucent) break; // 不透明发光体终止传输
 
             int kind = rnd() < U[P_METALNESS] ? 1 : 0;
             vec3 f0 = kind == 1 ? base : vec3(U[P_SPECULAR_F0]);
@@ -706,7 +705,7 @@ void main()
 
             if (translucent)
             {
-                // Dielectric glass: IOR 1.5, Schlick split, Beer-Lambert absorption.
+                // 电介质玻璃: IOR 1.5, Schlick 分光, Beer-Lambert 吸收
                 vec3 incident = direction;
                 float cosI = dot(incident, normal);
                 vec3 outwardNormal;
@@ -724,7 +723,7 @@ void main()
                 {
                     throughput *= exp(-(vec3(1.0) - base) * U[P_ABSORPTION] * 1.7);
                     scatter = refracted;
-                    skipCell = hit.region; // exit the glass cell we just entered
+                    skipCell = hit.region; // 退出刚进入的玻璃单元
                 }
                 origin = point + scatter * 0.02;
                 direction = normalize(scatter);
@@ -750,7 +749,7 @@ void main()
             else
             {
                 scatter = sample_cosine(normal);
-                // Environment along the BSDF ray with MIS against uniform sky sampling.
+                // 沿 BSDF 射线取环境光, 与均匀天空采样做 MIS
                 float pdfSky = 1.0 / (2.0 * PI);
                 float pdfBsdf = max(dot(normal, scatter), 0.0) / PI;
                 float weight = pdfBsdf / (pdfBsdf + pdfSky);
@@ -766,7 +765,7 @@ void main()
                 }
                 else
                 {
-                    environment = vec3(0.0); // indirect hits resolved by continued transport
+                    environment = vec3(0.0); // 间接命中由继续传输来求解
                 }
                 radianceSum += throughput * base * environment * weight;
                 throughput *= base;
@@ -777,7 +776,7 @@ void main()
 
             if (bounce >= 2)
             {
-                // Russian roulette once transport weight drops below ~1/255.
+                // 传输权重跌破约 1/255 后启用俄罗斯轮盘
                 float p = min(max(max(throughput.r, throughput.g), throughput.b), 0.95);
                 if (p < U[P_ROULETTE_THRESHOLD]) break;
                 if (rnd() > p) break;
@@ -796,7 +795,9 @@ void main()
 }
 """;
 
-    /// <summary>Present pass: maps the HDR accumulation into the LDR display target.</summary>
+    /// <summary>
+    /// 呈现通道: 把 HDR 累积映射到 LDR 显示目标
+    /// </summary>
     internal const string PostFragment = """
 #version 450
 layout(binding = 7) uniform sampler2D uAccum;
@@ -805,18 +806,26 @@ layout(location = 0) out vec4 FragColor;
 void main()
 {
     ivec2 pixel = screen_pixel();
-    // The accumulation target was rendered bottom-up like this pass; sample it
-    // with unflipped coordinates so pixels line up regardless of resolution scale.
+    // 累积目标与本通道一样是自下而上渲染的, 因此用未翻转的坐标采样,
+    // 这样无论分辨率缩放比例如何, 像素都能对齐
     vec2 uv = gl_FragCoord.xy / vec2(U[P_VIEW_W], U[P_VIEW_H]);
     vec3 hdr = texture(uAccum, uv).rgb;
     FragColor = vec4(present(hdr, vec2(pixel)), 1.0);
 }
 """;
 
-    /// <summary>Expand the shared core with the generated parameter table.</summary>
+    /// <summary>
+    /// 用生成的参数表展开共享内核源码
+    /// </summary>
+    /// <returns>替换过 defines 槽位的共享内核 GLSL</returns>
     internal static string BuildCommon() =>
         Common.Replace("#include \"defines\"", VoxelRenderParameters.Defines().TrimEnd('\n'));
 
+    /// <summary>
+    /// 组装完整片元着色器: 版本声明加共享内核加通道源码
+    /// </summary>
+    /// <param name="fragment">待拼接的通道片元源码</param>
+    /// <returns>可直接编译的完整 GLSL 源码</returns>
     internal static string Compose(string fragment) =>
         "#version 450\n" + BuildCommon() + "\n" + fragment.Replace("#version 450\n", string.Empty);
 }

@@ -3,20 +3,24 @@ using MVoxel.Core;
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// Builds the deterministic starter scene shown when a fresh project has no
-/// saved model yet. The layout borrows the classic MagicaVoxel demo vocabulary:
-/// a small house with roof and windows, a tree, a lantern post with an
-/// emissive lamp and a stone path — enough variety to exercise palette
-/// shading, AO, translucency, emission and shadows without any user input.
+/// 新项目还没有保存过模型时生成的确定性示范场景，借用 MagicaVoxel 经典演示的语汇：
+/// 带屋顶和玻璃窗的小屋、两棵树、一盏自发光提灯和石板草地，
+/// 无需任何用户输入就能同时检验调色着色、角点 AO、半透明、自发光和阴影
+/// 所有物体贴地摆放（首层格子 y=0，地面平面在 y=0）
 /// </summary>
 public static class VoxelDemoScene
 {
+    /// <summary>
+    /// 构建示范场景
+    /// </summary>
+    /// <param name="palette">当前生效的调色板，保留参数以便未来让场景跟随项目色板</param>
+    /// <returns>包含全部物体的新世界</returns>
     public static VoxelWorld Build(Rgba32[] palette)
     {
         ArgumentNullException.ThrowIfNull(palette);
         var world = new VoxelWorld();
 
-        // Hand-picked MagicaVoxel-ish starter palette for the demo build.
+        // 手挑的 MagicaVoxel 风格起步配色
         var wall = new Rgba32(226, 214, 190);
         var wallDark = new Rgba32(186, 170, 146);
         var roof = new Rgba32(196, 82, 62);
@@ -36,11 +40,19 @@ public static class VoxelDemoScene
         return world;
     }
 
+    /// <summary>
+    /// 建造小屋：9×7 占地，墙体 y=0 到 5，门口在 +Z 面，屋顶为四层棱台
+    /// </summary>
+    /// <param name="world">目标世界</param>
+    /// <param name="wall">主墙面颜色</param>
+    /// <param name="wallDark">墙基颜色</param>
+    /// <param name="roof">屋顶颜色</param>
+    /// <param name="wood">地板与木门颜色</param>
+    /// <param name="glass">半透明玻璃颜色</param>
+    /// <param name="lamp">门口自发光灯颜色</param>
     private static void BuildHouse(VoxelWorld world, Rgba32 wall, Rgba32 wallDark, Rgba32 roof,
         Rgba32 wood, Rgba32 glass, Rgba32 lamp)
     {
-        // 9×7 footprint, walls from y=0 to y=5, doorway on +Z side. The ground
-        // plane sits at y=0, so the first occupied cell layer is y=0.
         for (var y = 0; y <= 5; y++)
         for (var z = 0; z <= 6; z++)
         for (var x = 0; x <= 8; x++)
@@ -57,7 +69,7 @@ public static class VoxelDemoScene
             world.Set(new VoxelCoord64(x, y, z), value);
         }
 
-        // Floor + roof pyramid.
+        // 地板与四层屋顶棱台
         for (var z = 0; z <= 6; z++)
         for (var x = 0; x <= 8; x++)
         {
@@ -77,10 +89,20 @@ public static class VoxelDemoScene
             }
         }
 
-        // A lamp block glows in the doorway.
+        // 门口上方一块自发光灯
         world.Set(new VoxelCoord64(4, 4, 6), new VoxelValue(lamp, Flags: VoxelFlags.Emissive));
     }
 
+    /// <summary>
+    /// 建树：五格树干加扁球形树冠，树冠每隔三格混入亮色叶
+    /// </summary>
+    /// <param name="world">目标世界</param>
+    /// <param name="baseX">树根 X</param>
+    /// <param name="baseY">树根 Y（地面为 0）</param>
+    /// <param name="baseZ">树根 Z</param>
+    /// <param name="wood">树干颜色</param>
+    /// <param name="leaf">主叶色</param>
+    /// <param name="leafLight">亮叶色</param>
     private static void BuildTree(VoxelWorld world, long baseX, long baseY, long baseZ,
         Rgba32 wood, Rgba32 leaf, Rgba32 leafLight)
     {
@@ -100,9 +122,14 @@ public static class VoxelDemoScene
         }
     }
 
+    /// <summary>
+    /// 门前石板与草地拼花，贴着地面第一层
+    /// </summary>
+    /// <param name="world">目标世界</param>
+    /// <param name="stone">石板颜色</param>
+    /// <param name="grassy">草地颜色</param>
     private static void BuildPath(VoxelWorld world, Rgba32 stone, Rgba32 grassy)
     {
-        // A short stone apron in front of the door (house sits at z 0..6, door at z=6).
         for (var z = 7; z <= 11; z++)
         for (var x = 1; x <= 7; x++)
         {
@@ -111,6 +138,12 @@ public static class VoxelDemoScene
         }
     }
 
+    /// <summary>
+    /// 提灯：木杆、自发光灯头与顶盖
+    /// </summary>
+    /// <param name="world">目标世界</param>
+    /// <param name="wood">木杆颜色</param>
+    /// <param name="lamp">灯头颜色</param>
     private static void BuildLantern(VoxelWorld world, Rgba32 wood, Rgba32 lamp)
     {
         for (var y = 0; y <= 6; y++)

@@ -3,15 +3,47 @@ using Vector2 = System.Numerics.Vector2;
 
 namespace MVoxel.Editor;
 
+/// <summary>
+/// 场景视图的观察相机（编辑器会话状态，不写入场景数据）：
+/// 位置、目标与一组正交基
+/// </summary>
+/// <param name="Position">相机世界位置</param>
+/// <param name="Target">注视点</param>
+/// <param name="Forward">视线单位向量</param>
+/// <param name="Right">右方向单位向量</param>
+/// <param name="Up">上方向单位向量</param>
 internal readonly record struct SceneCamera(Vector3 Position, Vector3 Target, Vector3 Forward, Vector3 Right, Vector3 Up);
 
+/// <summary>
+/// 场景视图的针孔投影与裁剪，网格、坐标轴、GPU 着色器与鼠标拾取共用
+/// 同一套约定：屏幕坐标自上而下，焦距以像素计
+/// </summary>
 internal static class SceneProjection
 {
+    /// <summary>
+    /// 近平面距离，同时充当数值下限防止除零
+    /// </summary>
     internal const float Near = 0.05F;
+
+    /// <summary>
+    /// 视口对应的焦距（像素），随窗口尺寸自适应，保证不同大小下视野一致
+    /// </summary>
+    /// <param name="size">视口逻辑尺寸</param>
+    /// <returns>焦距像素值</returns>
     internal static float FocalLength(Vector2 size) => Math.Min(size.X, size.Y) * 0.95F;
 
-    // Clip in camera space BEFORE perspective division. Rejecting a segment
-    // just because one endpoint is behind the camera removes visible ground.
+    /// <summary>
+    /// 先在相机空间裁剪线段再做透视除法。仅因某个端点在相机背后就整条丢弃
+    /// 会让脚下的地面网格凭空消失，所以必须保留可见部分
+    /// </summary>
+    /// <param name="start">世界起点</param>
+    /// <param name="end">世界终点</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="a">裁剪后端点 A 的屏幕坐标</param>
+    /// <param name="b">裁剪后端点 B 的屏幕坐标</param>
+    /// <returns>线段是否有可见部分</returns>
     internal static bool ClipLine(Vector3 start, Vector3 end, Vector2 origin, Vector2 size,
         SceneCamera camera, out Vector2 a, out Vector2 b)
     {
@@ -33,6 +65,16 @@ internal static class SceneProjection
         return float.IsFinite(a.X) && float.IsFinite(a.Y) && float.IsFinite(b.X) && float.IsFinite(b.Y);
     }
 
+    /// <summary>
+    /// 投影一个世界点到屏幕
+    /// </summary>
+    /// <param name="world">世界坐标</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="screen">投影后的屏幕坐标</param>
+    /// <param name="depth">相机空间深度</param>
+    /// <returns>点是否在近平面前方且投影有限</returns>
     internal static bool Project(Vector3 world, Vector2 origin, Vector2 size, SceneCamera camera,
         out Vector2 screen, out float depth)
     {
@@ -45,11 +87,14 @@ internal static class SceneProjection
     }
 
     /// <summary>
-    /// Returns a normalized world-space ray through a point in the scene view.
-    /// It uses the exact inverse of <see cref="Project"/>, so ground-grid
-    /// coverage can be derived from the actual view frustum instead of a
-    /// guessed fixed square around the camera target.
+    /// 由屏幕点反算世界空间单位射线，是 Project 的精确逆运算。
+    /// 地面网格覆盖范围因此来自真实视锥而不是围绕注视点的猜测方块
     /// </summary>
+    /// <param name="screen">屏幕坐标</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>单位方向射线</returns>
     internal static Vector3 RayFromScreen(Vector2 screen, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var focal = FocalLength(size);

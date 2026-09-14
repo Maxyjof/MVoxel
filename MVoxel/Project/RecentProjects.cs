@@ -3,16 +3,36 @@ using MVoxel.Core;
 
 namespace MVoxel.Project;
 
+/// <summary>
+/// 最近项目列表中的一条记录
+/// </summary>
 public sealed class RecentProjectEntry
 {
+    /// <summary>
+    /// 记录时的项目名
+    /// </summary>
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 项目文件夹绝对路径（已去除尾部分隔符）
+    /// </summary>
     public string Path { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 最后一次打开的时间（UTC）
+    /// </summary>
     public DateTimeOffset LastOpenedUtc { get; set; }
 }
 
-/// <summary>Stores the small, user-level list shown on the welcome page.</summary>
+/// <summary>
+/// 用户级"最近打开"列表的存取：显示上限固定、路径规范化去重、
+/// 指向已删除项目的记录在展示前就被过滤掉
+/// </summary>
 public static class RecentProjects
 {
+    /// <summary>
+    /// 列表最多显示的条目数
+    /// </summary>
     public const int MaxEntries = 5;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -20,6 +40,9 @@ public static class RecentProjects
         WriteIndented = true,
     };
 
+    /// <summary>
+    /// 默认存储位置：%AppData%/MVoxel/recent-projects.json
+    /// </summary>
     public static string DefaultStoragePath
     {
         get
@@ -29,6 +52,11 @@ public static class RecentProjects
         }
     }
 
+    /// <summary>
+    /// 读取并净化最近项目列表：去重、过滤失效路径、按时间倒序截断
+    /// </summary>
+    /// <param name="storagePath">可选的自定义存储路径（测试用）</param>
+    /// <returns>可直接展示的条目序列</returns>
     public static IReadOnlyList<RecentProjectEntry> Load(string? storagePath = null)
     {
         var path = storagePath ?? DefaultStoragePath;
@@ -67,6 +95,12 @@ public static class RecentProjects
         }
     }
 
+    /// <summary>
+    /// 记录一次项目打开：同路径旧条目被替换，列表重新按时间截断后原子落盘
+    /// </summary>
+    /// <param name="project">刚打开的项目</param>
+    /// <param name="storagePath">可选的自定义存储路径（测试用）</param>
+    /// <param name="openedAtUtc">可选的打开时间（测试用）</param>
     public static void Record(ProjectHandle project, string? storagePath = null, DateTimeOffset? openedAtUtc = null)
     {
         ArgumentNullException.ThrowIfNull(project);
@@ -92,6 +126,11 @@ public static class RecentProjects
         AtomicFile.WriteText(path, json);
     }
 
+    /// <summary>
+    /// 路径是否仍指向一个含清单的有效项目
+    /// </summary>
+    /// <param name="entry">待检查条目</param>
+    /// <returns>项目是否仍然存在</returns>
     private static bool IsExistingProject(RecentProjectEntry? entry)
     {
         if (entry is null || string.IsNullOrWhiteSpace(entry.Path))
@@ -115,6 +154,11 @@ public static class RecentProjects
         }
     }
 
+    /// <summary>
+    /// 规范化路径：转绝对路径并去掉尾部分隔符（根路径除外）
+    /// </summary>
+    /// <param name="path">原始路径</param>
+    /// <returns>规范化后的路径</returns>
     private static string NormalizePath(string path)
     {
         var fullPath = System.IO.Path.GetFullPath(path);

@@ -4,54 +4,83 @@ using System.Text;
 namespace MVoxel.Rendering;
 
 /// <summary>
-/// Packs <see cref="RenderSettings"/> plus per-frame camera/region state into a
-/// flat float block that both the C# side and the GLSL shaders index by the
-/// same named slots. The GLSL sources embed <see cref="Defines()"/> so the two
-/// halves can never drift apart.
+/// 把 <see cref="RenderSettings"/> 与逐帧相机/区域状态打包成一个扁平 float 块，
+/// C# 侧与 GLSL 着色器按同一组命名槽位访问；着色器源码内嵌 <see cref="Defines"/>
+/// 生成的常量表，两侧永远不可能漂移
 /// </summary>
 public sealed class VoxelRenderParameters
 {
+    /// <summary>
+    /// 参数块总槽数（float 个数），SSBO 按此大小上传
+    /// </summary>
     public const int SlotCount = 96;
 
-    // Camera basis + per-frame scalars.
+    // 相机基向量与逐帧标量
+    /// <summary>相机位置 X</summary>
     public const int CamX = 0, CamY = 1, CamZ = 2, Focal = 3;
+    /// <summary>视线方向与帧序号</summary>
     public const int ForwardX = 4, ForwardY = 5, ForwardZ = 6, Frame = 7;
+    /// <summary>右方向与视口宽（设备像素）</summary>
     public const int RightX = 8, RightY = 9, RightZ = 10, ViewWidth = 11;
+    /// <summary>上方向与视口高（设备像素）</summary>
     public const int UpX = 12, UpY = 13, UpZ = 14, ViewHeight = 15;
 
-    // Voxel region.
+    // 体素工作集区域
+    /// <summary>工作集最小角与世界坐标原点偏移、步进预算</summary>
     public const int RegionMinX = 16, RegionMinY = 17, RegionMinZ = 18, MaxSteps = 19;
+    /// <summary>工作集尺寸与发光灯数量</summary>
     public const int RegionSizeX = 20, RegionSizeY = 21, RegionSizeZ = 22, LightCount = 23;
 
-    // Sun and shadow.
+    // 太阳与阴影
+    /// <summary>太阳方向与强度</summary>
     public const int SunX = 24, SunY = 25, SunZ = 26, SunIntensity = 27;
+    /// <summary>太阳颜色与半影锥</summary>
     public const int SunColorR = 28, SunColorG = 29, SunColorB = 30, ShadowSoftness = 31;
+    /// <summary>阴影采样数、开关、地面淡出与地面显示</summary>
     public const int ShadowSamples = 32, SunEnabled = 33, GroundFade = 34, GroundShown = 35;
+    /// <summary>地面颜色与近处淡入</summary>
     public const int GroundR = 36, GroundG = 37, GroundB = 38, NearFade = 39;
 
-    // Sky and fill.
+    // 天空与补光
+    /// <summary>天顶色与天空环境光</summary>
     public const int SkyTopR = 40, SkyTopG = 41, SkyTopB = 42, SkyAmbient = 43;
+    /// <summary>地平线色与暖色补光</summary>
     public const int SkyHorizonR = 44, SkyHorizonG = 45, SkyHorizonB = 46, AmbientTint = 47;
+    /// <summary>雾色与雾浓度</summary>
     public const int FogR = 48, FogG = 49, FogB = 50, FogDensity = 51;
 
-    // Palette shading.
+    // 调色着色
+    /// <summary>饱和、色相、对比、明度</summary>
     public const int Saturation = 52, HueShift = 53, Contrast = 54, Brightness = 55;
+    /// <summary>调色开关、棱线开关、色相相位、AO 开关</summary>
     public const int PaletteShading = 56, Outlines = 57, HuePhase = 58, AoEnabled = 59;
+    /// <summary>AO 强度与曲线</summary>
     public const int AoStrength = 60, AoPower = 61, Reserved1 = 62, Reserved2 = 63;
 
-    // Post.
+    // 后期
+    /// <summary>色调曲线、曝光、Gamma、暗角</summary>
     public const int ToneMode = 64, Exposure = 65, Gamma = 66, Vignette = 67;
+    /// <summary>白平衡系数与抖动开关</summary>
     public const int WhiteBalanceR = 68, WhiteBalanceG = 69, WhiteBalanceB = 70, Dither = 71;
 
-    // Path tracer.
+    // 路径追踪
+    /// <summary>弹射上限、粗糙度、金属度、F0</summary>
     public const int MaxBounces = 72, Roughness = 73, Metalness = 74, SpecularF0 = 75;
+    /// <summary>轮盘阈值、截断、每帧样本、已累积样本</summary>
     public const int RouletteThreshold = 76, RadianceClamp = 77, SamplesPerFrame = 78, Accumulated = 79;
+    /// <summary>自发光强度、吸收、光圈、对焦距离</summary>
     public const int EmissiveIntensity = 80, Absorption = 81, Aperture = 82, FocusDistance = 83;
+    /// <summary>景深开关、MIS 开关、路径模式、视场角</summary>
     public const int DepthOfField = 84, MisEnabled = 85, ModePath = 86, FovDegrees = 87;
+    /// <summary>抖动种子、网格步长、网格开关</summary>
     public const int Pixel = 88, GridStep = 89, GridShown = 90, ReservedR = 91;
+    /// <summary>预留槽位</summary>
     public const int ReservedS = 92, ReservedT = 93, ReservedU = 94, ReservedV = 95;
 
-    /// <summary>Emit the GLSL #define table so shader sources and C# slots cannot drift.</summary>
+    /// <summary>
+    /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
+    /// </summary>
+    /// <returns>多行 #define 文本</returns>
     public static string Defines()
     {
         var names = new (string, int)[]
@@ -91,9 +120,11 @@ public sealed class VoxelRenderParameters
     }
 
     /// <summary>
-    /// White balance from kelvin (Tanner Helland approximation, normalised around 6500 K).
-    /// Exposed for tests and for the settings panel preview.
+    /// 色温到白平衡乘子（Tanner Helland 近似，6500K 归一为中性）
+    /// 供测试与面板预览共用
     /// </summary>
+    /// <param name="kelvin">色温，1500 到 12000</param>
+    /// <returns>线性 RGB 乘子</returns>
     public static Vector3 WhiteBalanceMultiplier(float kelvin)
     {
         var temp = Math.Clamp(kelvin, 1500F, 12000F) / 100F;
@@ -113,7 +144,7 @@ public sealed class VoxelRenderParameters
             : temp <= 19F ? 0F
             : 138.5177312231F * (float)Math.Log(temp - 10F) - 305.0447927307F;
 
-        // Normalise so 6500 K is exactly neutral and the mean stays near 1.
+        // 以 6500K 为中性基准归一，均值保持在 1 附近
         var raw = new Vector3(r, g, b) / new Vector3(255F, 255F, 255F);
         var reference = new Vector3(1F, 1F, 1F);
         var neutral = RawAt(6500F);
@@ -131,7 +162,13 @@ public sealed class VoxelRenderParameters
         }
     }
 
-    /// <summary>Fill the shared float block consumed by all three shader stages.</summary>
+    /// <summary>
+    /// 填充三个渲染入口共享的 float 参数块，任何非有限值都会被清零
+    /// </summary>
+    /// <param name="settings">当前渲染设置</param>
+    /// <param name="frame">本帧相机与区域状态</param>
+    /// <param name="pixelSeedSalt">抖动种子盐值</param>
+    /// <returns>长度为 <see cref="SlotCount"/> 的 float 数组</returns>
     public static float[] Build(RenderSettings settings, in FrameState frame, float pixelSeedSalt)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -244,6 +281,27 @@ public sealed class VoxelRenderParameters
         return parameters;
     }
 
+    /// <summary>
+    /// 单帧的相机、区域与模式状态，与可持久化的 RenderSettings 分离
+    /// </summary>
+    /// <param name="CameraPosition">相机世界位置</param>
+    /// <param name="CameraForward">视线单位向量</param>
+    /// <param name="CameraRight">右方向单位向量</param>
+    /// <param name="CameraUp">上方向单位向量</param>
+    /// <param name="FocalPixels">以设备像素计的焦距，与网格投影一致</param>
+    /// <param name="ViewWidthPixels">视口宽（设备像素）</param>
+    /// <param name="ViewHeightPixels">视口高（设备像素）</param>
+    /// <param name="FrameIndex">帧序号，驱动噪声与色相动画</param>
+    /// <param name="RegionMin">工作集最小格坐标</param>
+    /// <param name="RegionSize">工作集尺寸（格）</param>
+    /// <param name="MaxSteps">DDA 步进预算</param>
+    /// <param name="EmissiveLightCount">自发光灯数量</param>
+    /// <param name="HuePhaseDegrees">色相环当前相位</param>
+    /// <param name="ShowOutlines">是否绘制体素棱线</param>
+    /// <param name="AccumulatedSamples">路径追踪已累积样本数</param>
+    /// <param name="PathMode">true 为渲染视图相机模型</param>
+    /// <param name="GridStep">编辑器网格世界步长</param>
+    /// <param name="ShowGrid">是否绘制网格</param>
     public readonly record struct FrameState(
         Vector3 CameraPosition,
         Vector3 CameraForward,
@@ -264,5 +322,11 @@ public sealed class VoxelRenderParameters
         float GridStep = 0F,
         bool ShowGrid = false);
 
+    /// <summary>
+    /// 整数三分量，用于工作集区域描述
+    /// </summary>
+    /// <param name="X">X 分量</param>
+    /// <param name="Y">Y 分量</param>
+    /// <param name="Z">Z 分量</param>
     public readonly record struct Vector3I(int X, int Y, int Z);
 }

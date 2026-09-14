@@ -7,9 +7,9 @@ using Vector4 = System.Numerics.Vector4;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// A deliberately small, data-driven two-column asset browser. It mirrors the
-/// useful part of Unity's Project window: folders on the left, type-aware
-/// visual assets on the right, with a global search and type filter.
+/// 刻意保持小巧的数据驱动两栏资源浏览器，对齐 Unity Project 窗口的有用部分：
+/// 左侧目录树、右侧按类型呈现的资产卡片，配全局搜索与类型筛选。
+/// 目录遍历拒绝符号链接与 Assets 根之外的路径
 /// </summary>
 internal sealed class ProjectAssetBrowser
 {
@@ -21,12 +21,20 @@ internal sealed class ProjectAssetBrowser
     private float _treeWidth = 216F;
     private float _tileSize = 76F;
 
+    /// <summary>
+    /// 清空选择状态（切换项目或手动刷新时调用）
+    /// </summary>
     internal void Reset()
     {
         _selectedFolder = string.Empty;
         _selectedAsset = string.Empty;
     }
 
+    /// <summary>
+    /// 绘制整个浏览器。project 为 null 时展示新项目的标准目录结构
+    /// </summary>
+    /// <param name="project">当前项目或 null</param>
+    /// <param name="reportStatus">向状态栏汇报的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
@@ -249,27 +257,57 @@ internal sealed class ProjectAssetBrowser
     private static uint ToPackedColor(Color color) => ImGui.ColorConvertFloat4ToU32(ToColor(color));
 }
 
+/// <summary>
+/// 资产类型，决定图标、筛选与中文标签
+/// </summary>
 internal enum ProjectAssetKind
 {
+    /// <summary>文件夹</summary>
     Folder,
+    /// <summary>场景 .mvox</summary>
     Scene,
+    /// <summary>体素模型 .vox</summary>
     VoxelModel,
+    /// <summary>预制件 .prefab</summary>
     Prefab,
+    /// <summary>材质 .material</summary>
     Material,
+    /// <summary>调色板 .palette</summary>
     Palette,
+    /// <summary>贴图</summary>
     Texture,
+    /// <summary>环境</summary>
     Environment,
+    /// <summary>渲染预设</summary>
     RenderPreset,
+    /// <summary>生成脚本</summary>
     Generator,
+    /// <summary>代码脚本</summary>
     Script,
+    /// <summary>文档</summary>
     Document,
+    /// <summary>其他</summary>
     Unknown,
 }
 
+/// <summary>
+/// 浏览器中的一个资产条目
+/// </summary>
+/// <param name="RelativePath">相对 Assets 的路径（正斜杠）</param>
+/// <param name="DisplayName">去扩展名的显示名</param>
+/// <param name="Kind">资产类型</param>
+/// <param name="IsFolder">是否为目录</param>
 internal sealed record ProjectAssetEntry(string RelativePath, string DisplayName, ProjectAssetKind Kind, bool IsFolder);
 
+/// <summary>
+/// 资产目录扫描的唯一入口：所有枚举、搜索与分类都经过这里，
+/// 越界路径与重解析点（符号链接）在进入结果集之前就被排除
+/// </summary>
 internal static class ProjectAssetCatalog
 {
+    /// <summary>
+    /// 筛选下拉框列出的全部类型
+    /// </summary>
     internal static readonly ProjectAssetKind[] FilterKinds =
     {
         ProjectAssetKind.Folder,
@@ -287,6 +325,12 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Unknown,
     };
 
+    /// <summary>
+    /// 目录是否仍然存在（未打开项目时按固定结构判断）
+    /// </summary>
+    /// <param name="project">当前项目或 null</param>
+    /// <param name="relativePath">相对 Assets 的路径</param>
+    /// <returns>是否存在</returns>
     internal static bool FolderExists(ProjectHandle? project, string relativePath)
     {
         if (project is null) return relativePath.Length == 0 || ProjectLayout.AssetDirectories.Contains(relativePath, StringComparer.OrdinalIgnoreCase);
@@ -294,6 +338,12 @@ internal static class ProjectAssetCatalog
         return path is not null && Directory.Exists(path);
     }
 
+    /// <summary>
+    /// 列出子目录
+    /// </summary>
+    /// <param name="project">当前项目或 null</param>
+    /// <param name="relativePath">相对 Assets 的路径</param>
+    /// <returns>子目录条目序列</returns>
     internal static IReadOnlyList<ProjectAssetEntry> Folders(ProjectHandle? project, string relativePath)
     {
         if (project is null)
@@ -317,6 +367,12 @@ internal static class ProjectAssetCatalog
         catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
     }
 
+    /// <summary>
+    /// 列出某目录的直接子项
+    /// </summary>
+    /// <param name="project">当前项目或 null</param>
+    /// <param name="relativePath">相对 Assets 的路径</param>
+    /// <returns>子项条目序列</returns>
     internal static IReadOnlyList<ProjectAssetEntry> Children(ProjectHandle? project, string relativePath)
     {
         if (project is null) return Folders(null, relativePath);
@@ -335,6 +391,13 @@ internal static class ProjectAssetCatalog
         catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
     }
 
+    /// <summary>
+    /// 按名称搜索资产，scopeFolder 为 null 时递归整个 Assets
+    /// </summary>
+    /// <param name="project">当前项目或 null</param>
+    /// <param name="query">搜索词</param>
+    /// <param name="scopeFolder">限定范围的目录相对路径，null 为全局</param>
+    /// <returns>匹配的条目序列</returns>
     internal static IReadOnlyList<ProjectAssetEntry> Search(ProjectHandle? project, string query, string? scopeFolder)
     {
         var normalized = query.Trim();
@@ -361,6 +424,11 @@ internal static class ProjectAssetCatalog
         catch (UnauthorizedAccessException) { return Array.Empty<ProjectAssetEntry>(); }
     }
 
+    /// <summary>
+    /// 把相对路径转成中文面包屑显示文本
+    /// </summary>
+    /// <param name="relativePath">相对 Assets 的路径</param>
+    /// <returns>显示文本</returns>
     internal static string DisplayPath(string relativePath)
     {
         if (string.IsNullOrWhiteSpace(relativePath)) return "资源";
@@ -368,6 +436,11 @@ internal static class ProjectAssetCatalog
             .Select(DisplayFolderName));
     }
 
+    /// <summary>
+    /// 资产类型的中文标签
+    /// </summary>
+    /// <param name="kind">类型</param>
+    /// <returns>标签文本</returns>
     internal static string KindLabel(ProjectAssetKind kind) => kind switch
     {
         ProjectAssetKind.Folder => "文件夹",
@@ -385,16 +458,22 @@ internal static class ProjectAssetCatalog
         _ => "其他文件",
     };
 
+    /// <summary>
+    /// 按扩展名分类资产（扩展名规范见 Docs/Maintainers/11-coding-conventions.md）
+    /// </summary>
+    /// <param name="path">文件路径</param>
+    /// <param name="isFolder">是否为目录</param>
+    /// <returns>资产类型</returns>
     internal static ProjectAssetKind Classify(string path, bool isFolder)
     {
         if (isFolder) return ProjectAssetKind.Folder;
         return Path.GetExtension(path).ToLowerInvariant() switch
         {
-            ".mvscene" => ProjectAssetKind.Scene,
+            ".mvox" => ProjectAssetKind.Scene,
             ".mvmodel" or ".vox" => ProjectAssetKind.VoxelModel,
-            ".mvprefab" => ProjectAssetKind.Prefab,
-            ".mvmaterial" or ".mat" => ProjectAssetKind.Material,
-            ".mvpalette" => ProjectAssetKind.Palette,
+            ".prefab" => ProjectAssetKind.Prefab,
+            ".material" => ProjectAssetKind.Material,
+            ".palette" or ".pal" => ProjectAssetKind.Palette,
             ".png" or ".jpg" or ".jpeg" or ".tga" or ".bmp" or ".exr" => ProjectAssetKind.Texture,
             ".mvenvironment" or ".hdr" => ProjectAssetKind.Environment,
             ".mvrenderpreset" or ".mvrender" => ProjectAssetKind.RenderPreset,
@@ -459,8 +538,19 @@ internal static class ProjectAssetCatalog
     };
 }
 
+/// <summary>
+/// 用 ImGui 绘制列表按类型程序化绘制资产图标，不引入任何图标字体或位图资产
+/// </summary>
 internal static class AssetIconPainter
 {
+    /// <summary>
+    /// 在指定矩形内绘制某个类型的资产图标
+    /// </summary>
+    /// <param name="draw">目标绘制列表</param>
+    /// <param name="kind">资产类型</param>
+    /// <param name="min">图标左上角</param>
+    /// <param name="size">图标边长</param>
+    /// <param name="selected">是否处于选中态</param>
     internal static void Draw(ImDrawListPtr draw, ProjectAssetKind kind, Vector2 min, float size, bool selected)
     {
         var main = IconColor(kind, selected);

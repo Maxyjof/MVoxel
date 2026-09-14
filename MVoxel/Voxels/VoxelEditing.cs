@@ -3,19 +3,36 @@ using MVoxel.Core;
 
 namespace MVoxel.Voxels;
 
+/// <summary>
+/// 笔刷形状
+/// </summary>
 public enum VoxelBrushShape
 {
+    /// <summary>
+    /// 立方体笔刷
+    /// </summary>
     Cube,
+
+    /// <summary>
+    /// 球形笔刷，切掉立方角
+    /// </summary>
     Sphere,
 }
 
 /// <summary>
-/// Pure brush geometry: given the DDA hit (cell + entry normal) it produces the
-/// voxel writes a single stroke should apply. Draw places the brush on the hit
-/// face, erase removes around the hit cell itself.
+/// 纯笔刷几何计算：给定 DDA 命中（格子与进入面）产出一笔应当写入的格子集合
+/// 绘制把笔刷放在命中面的外侧，擦除以命中格自身为中心
 /// </summary>
 public static class VoxelBrush
 {
+    /// <summary>
+    /// 依据命中结果计算描边格子集合
+    /// </summary>
+    /// <param name="hit">DDA 命中</param>
+    /// <param name="erase">true 表示擦除（以命中格为中心），false 表示绘制（贴到命中面外侧）</param>
+    /// <param name="shape">笔刷形状</param>
+    /// <param name="radius">半径，1 表示单格</param>
+    /// <returns>要写入的格子列表</returns>
     public static IReadOnlyList<VoxelCoord64> CellsForStroke(
         VoxelDda.Hit hit, bool erase, VoxelBrushShape shape, int radius)
     {
@@ -26,16 +43,30 @@ public static class VoxelBrush
         return CellsAround(center, shape, radius);
     }
 
+    /// <summary>
+    /// 拾取落空但命中地面时，让笔刷贴着地面平面落笔
+    /// </summary>
+    /// <param name="groundPoint">地面命中点</param>
+    /// <param name="shape">笔刷形状</param>
+    /// <param name="radius">半径</param>
+    /// <returns>要写入的格子列表</returns>
     public static IReadOnlyList<VoxelCoord64> CellsForGround(Vector3 groundPoint, VoxelBrushShape shape, int radius)
     {
         radius = Math.Clamp(radius, 1, 8);
         var cell = new VoxelCoord64(
             (long)MathF.Floor(groundPoint.X),
-            (long)MathF.Floor(groundPoint.Y), // plane hit at y=0 lands in cell [0,1)
+            (long)MathF.Floor(groundPoint.Y), // 平面命中在 y=0，落在 [0,1) 这一层格子里
             (long)MathF.Floor(groundPoint.Z));
         return CellsAround(cell, shape, radius);
     }
 
+    /// <summary>
+    /// 以某格为中心生成形状覆盖的格子集合
+    /// </summary>
+    /// <param name="center">中心格</param>
+    /// <param name="shape">笔刷形状</param>
+    /// <param name="radius">半径</param>
+    /// <returns>覆盖的格子列表</returns>
     public static IReadOnlyList<VoxelCoord64> CellsAround(VoxelCoord64 center, VoxelBrushShape shape, int radius)
     {
         var cells = new List<VoxelCoord64>();
@@ -58,14 +89,21 @@ public static class VoxelBrush
 }
 
 /// <summary>
-/// One undoable stroke. Records previous values so Undo restores exactly, and
-/// keeps the world reference for Redo re-application.
+/// 一次可撤销的描边：逐格记录旧值，Undo 精确恢复，
+/// 同时持有世界引用供 Redo 重新施加
 /// </summary>
 public sealed class VoxelStrokeCommand : IEditorCommand
 {
     private readonly VoxelWorld _world;
     private readonly (VoxelCoord64 Coordinate, VoxelValue Before, VoxelValue After)[] _edits;
 
+    /// <summary>
+    /// 捕获描边前后的逐格差异，目标值与当前值相同的格子自动跳过
+    /// </summary>
+    /// <param name="name">命令显示名</param>
+    /// <param name="world">目标世界</param>
+    /// <param name="cells">描边覆盖的格子</param>
+    /// <param name="after">写入的体素值，空值表示删除</param>
     public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<VoxelCoord64> cells, VoxelValue after)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -82,14 +120,27 @@ public sealed class VoxelStrokeCommand : IEditorCommand
         _edits = edits.ToArray();
     }
 
+    /// <summary>
+    /// 命令显示名
+    /// </summary>
     public string Name { get; }
+
+    /// <summary>
+    /// 实际发生变化的格子数，为 0 时命令可以安全丢弃
+    /// </summary>
     public int ChangedCellCount => _edits.Length;
 
+    /// <summary>
+    /// 执行（或重做）描边
+    /// </summary>
     public void Execute()
     {
         foreach (var (coordinate, _, after) in _edits) _world.Set(coordinate, after);
     }
 
+    /// <summary>
+    /// 撤销描边，逐格恢复到执行前的值
+    /// </summary>
     public void Undo()
     {
         foreach (var (coordinate, before, _) in _edits) _world.Set(coordinate, before);

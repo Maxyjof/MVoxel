@@ -5,21 +5,39 @@ using Vector4 = System.Numerics.Vector4;
 
 namespace MVoxel.Editor;
 
+/// <summary>
+/// 回退模式（无 GPU 管线）下的 CPU 地面网格绘制：按真实视锥与地面交点计算
+/// 覆盖范围，远距离自动采用 2 的幂步长，近处、地平线与超大平移位置都
+/// 受有界线数预算保护。GPU 管线启用后网格改在着色器内绘制以获得深度正确性，
+/// 这里仅作为无计算能力时的后备
+/// </summary>
 internal static class SceneGrid
 {
     private const int TargetHalfLineCount = 160;
     private const int MaximumHalfLineCount = 192;
 
+    /// <summary>
+    /// 计算注视点处的基准网格步长（2 的幂）
+    /// </summary>
+    /// <param name="cameraDistance">观察距离</param>
+    /// <param name="size">视口尺寸</param>
+    /// <returns>世界单位步长</returns>
     internal static float Spacing(float cameraDistance, Vector2 size)
     {
-        // This is the baseline spacing at the view target. Plan() then raises
-        // it only when the visible ground-plane footprint would require too
-        // many lines. The old distance^2 fade plus a small fixed patch made
-        // the grid disappear both close to the camera and at the horizon.
+        // 这是注视点处的基准间距，Plan 只在可见地面覆盖需要的线数超限时才提升它。
+        // 旧版按距离平方淡出加固定小补丁的做法会让网格在贴近相机和地平线两端都消失
         var desired = Math.Max(1F, cameraDistance * 12F / Math.Max(1F, SceneProjection.FocalLength(size)));
         return NextPowerOfTwo(desired);
     }
 
+    /// <summary>
+    /// 规划本帧网格：步长、覆盖半径与线数预算
+    /// </summary>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="cameraDistance">观察距离</param>
+    /// <returns>可直接绘制的网格计划</returns>
     internal static SceneGridPlan Plan(Vector2 origin, Vector2 size, SceneCamera camera, float cameraDistance)
     {
         var visibleExtent = EstimateVisibleGroundExtent(origin, size, camera, cameraDistance);
@@ -30,14 +48,21 @@ internal static class SceneGrid
         return new SceneGridPlan(step, halfLineCount * step, halfLineCount);
     }
 
+    /// <summary>
+    /// 绘制地面网格，含主副线分层与密度淡出
+    /// </summary>
+    /// <param name="draw">目标 ImGui 绘制列表</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="distance">观察距离</param>
     internal static void Draw(ImDrawListPtr draw, Vector2 origin, Vector2 size, SceneCamera camera, float distance)
     {
         if (size.X <= 0 || size.Y <= 0) return;
         var plan = Plan(origin, size, camera, distance);
         var step = plan.Step;
         var extent = plan.Extent;
-        // Snap the visible patch to WORLD grid multiples; panning never moves
-        // grid coordinates, and it remains visible far away from the origin.
+        // 补丁对齐到世界网格倍数：平移不移动格坐标，远离原点时网格依然连续
         var centerX = MathF.Floor(camera.Target.X / step) * step;
         var centerZ = MathF.Floor(camera.Target.Z / step) * step;
         draw.PushClipRect(origin, origin + size, true);
@@ -52,8 +77,7 @@ internal static class SceneGrid
 
         void DrawGroundLine(Vector3 start, Vector3 direction, bool major)
         {
-            // Segment only for smooth horizon fading. Grid coverage itself is
-            // based on ground/frustum intersections, not segment falloff.
+            // 分段只为平滑淡出，覆盖范围来自视锥与地面交点而不是分段衰减
             var segments = Math.Clamp((int)MathF.Ceiling(2F * extent / (step * 40F)), 4, 10);
             for (var index = 0; index < segments; index++)
             {
@@ -61,9 +85,8 @@ internal static class SceneGrid
                 var b = start + direction * (2 * extent * (index + 1) / segments);
                 var mid = (a + b) / 2F;
                 var depth = Vector3.Dot(mid - camera.Position, camera.Forward);
-                // At the horizon a cell can become sub-pixel. Fade minor
-                // lines there, but keep a restrained major grid so the far
-                // field remains readable instead of vanishing altogether.
+                // 地平线附近一格可能小于一个像素：副线淡出，
+                // 但保留克制的主线，让远景可读而不是整片消失
                 var spacingPixels = step * SceneProjection.FocalLength(size) /
                                     Math.Max(SceneProjection.Near, depth);
                 var densityFade = major
@@ -85,9 +108,8 @@ internal static class SceneGrid
 
     private static float EstimateVisibleGroundExtent(Vector2 origin, Vector2 size, SceneCamera camera, float cameraDistance)
     {
-        // Sample the screen including the top edge. The top intersection is
-        // often the distant horizon; cap only its mathematical asymptote,
-        // never an arbitrary near-camera square.
+        // 采样包含顶边在内的屏幕点：最远的交点往往来自上边缘，
+        // 只封顶数学渐近线，绝不封顶成一个任意的近处方块
         var maximum = Math.Max(32F, cameraDistance * 4F);
         var maximumRayDistance = Math.Max(512F, cameraDistance * 96F);
         foreach (var x in new[] { 0.02F, 0.5F, 0.98F })
@@ -117,4 +139,10 @@ internal static class SceneGrid
     }
 }
 
+/// <summary>
+/// 一帧的网格绘制计划
+/// </summary>
+/// <param name="Step">世界步长</param>
+/// <param name="Extent">从注视点算起的覆盖半径</param>
+/// <param name="HalfLineCount">单侧线数（含预算上限）</param>
 internal readonly record struct SceneGridPlan(float Step, float Extent, int HalfLineCount);

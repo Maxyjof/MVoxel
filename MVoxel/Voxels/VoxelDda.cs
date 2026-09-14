@@ -4,19 +4,26 @@ using MVoxel.Core;
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// CPU DDA (Amanatides &amp; Woo) over the sparse world. The editor uses it for
-/// mouse picking; the GPU pipeline implements the same traversal in GLSL. Keeping
-/// a managed reference version means picking, tests and shaders share semantics.
+/// 稀疏世界上的 CPU 版 DDA（Amanatides 与 Woo 体素遍历）
+/// 编辑器用它做鼠标拾取，GPU 管线在 GLSL 里实现同一套遍历，
+/// 保留托管参考版意味着拾取、测试与着色器永远共享同一语义
 /// </summary>
 public static class VoxelDda
 {
-    /// <param name="Coordinate">Occupied cell that was hit.</param>
-    /// <param name="Normal">Unit face normal of the entry face (one axis, ±1).</param>
-    /// <param name="Distance">Travelled distance in ray-direction units.</param>
-    /// <param name="Point">World-space hit point.</param>
+    /// <param name="Coordinate">命中的占用格</param>
+    /// <param name="Normal">进入面单位法线（单轴 ±1）</param>
+    /// <param name="Distance">沿射线行进的距离</param>
+    /// <param name="Point">世界空间命中点</param>
     public readonly record struct Hit(VoxelCoord64 Coordinate, VoxelCoord64 Normal, float Distance, Vector3 Point);
 
-    /// <summary>First occupied voxel along the ray, or null when nothing is hit.</summary>
+    /// <summary>
+    /// 沿射线查找第一个占用体素
+    /// </summary>
+    /// <param name="world">要遍历的世界</param>
+    /// <param name="origin">射线起点</param>
+    /// <param name="direction">射线方向，无需预先归一化</param>
+    /// <param name="maximumDistance">最大行进距离，防止在空旷区域无限步进</param>
+    /// <returns>命中结果，未命中返回 null</returns>
     public static Hit? RayCast(VoxelWorld world, Vector3 origin, Vector3 direction, float maximumDistance = 512F)
     {
         if (Vector3.Dot(direction, direction) < 1e-12F || maximumDistance <= 0F) return null;
@@ -34,7 +41,7 @@ public static class VoxelDda
 
         var travelled = 0F;
         var normal = InitialNormal(step);
-        // The budget guards against pathological rays crossing huge empty regions.
+        // 步数预算防止射线穿越超大空旷区域
         var stepsLeft = (int)Math.Clamp(maximumDistance * 4F, 256F, 250_000F);
         while (stepsLeft-- > 0)
         {
@@ -72,9 +79,13 @@ public static class VoxelDda
     }
 
     /// <summary>
-    /// Intersects a ray with the infinite ground plane (y = 0). Used when a pick
-    /// misses all voxels so the first brush stroke can land on empty canvas.
+    /// 射线与无限地面（y = 0）求交，拾取落空时让第一笔能落在空画布上
     /// </summary>
+    /// <param name="origin">射线起点</param>
+    /// <param name="direction">射线方向</param>
+    /// <param name="maximumDistance">最大行进距离</param>
+    /// <param name="point">命中点</param>
+    /// <returns>是否在有效距离内命中地面</returns>
     public static bool TryGroundHit(Vector3 origin, Vector3 direction, float maximumDistance, out Vector3 point)
     {
         point = default;
@@ -85,9 +96,21 @@ public static class VoxelDda
         return true;
     }
 
+    /// <summary>
+    /// 单轴跨越一格所需的参数增量，轴分量为 0 时返回无穷
+    /// </summary>
+    /// <param name="step">归一化方向的分量</param>
+    /// <returns>参数增量或无穷</returns>
     private static float ReciprocalDelta(float step) =>
         Math.Abs(step) < 1e-7F ? float.PositiveInfinity : Math.Abs(1F / step);
 
+    /// <summary>
+    /// 起点到所在格沿步进方向边界的参数距离
+    /// </summary>
+    /// <param name="axisOrigin">起点在该轴的分量</param>
+    /// <param name="cellIndex">该轴的格索引</param>
+    /// <param name="step">该轴的步进符号与大小</param>
+    /// <returns>到边界的参数距离</returns>
     private static float BoundaryDistance(float axisOrigin, long cellIndex, float step)
     {
         if (Math.Abs(step) < 1e-7F) return float.PositiveInfinity;
@@ -96,9 +119,11 @@ public static class VoxelDda
     }
 
     /// <summary>
-    /// When the ray starts inside a voxel there was no entry face; fall back to
-    /// the face most directly facing the camera along the dominant axis.
+    /// 射线起点已在体素内部时没有进入面，取主轴方向作为近似法线，
+    /// GPU 版使用同一规则保证像素与拾取一致
     /// </summary>
+    /// <param name="step">归一化方向</param>
+    /// <returns>近似进入面法线</returns>
     private static VoxelCoord64 InitialNormal(Vector3 step)
     {
         var (x, y, z) = (Math.Abs(step.X), Math.Abs(step.Y), Math.Abs(step.Z));

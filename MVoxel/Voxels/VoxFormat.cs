@@ -3,19 +3,33 @@ using MVoxel.Core;
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// Reads and writes the MagicaVoxel “.vox” binary model (single SIZE/XYZRGBA
-/// model). The format is untrusted input: every count is bounded before any
-/// allocation happens, so a corrupt file cannot make the editor explode.
-///
-/// MagicaVoxel is Z-up; MVoxel is Y-up. The mapping is
-/// world.X = vox.X, world.Y = vox.Z (up), world.Z = vox.Y (depth).
+/// MagicaVoxel .vox 二进制模型（单 SIZE/XYZA 模型）的读写
+/// 外部文件一律不可信：所有计数在分配内存前先做上限校验，
+/// 截断、超大或越界的文件只会得到异常，绝不会拖垮编辑器
+/// 坐标映射：world.X = vox.X，world.Y = vox.Z（vox 为 Z 轴向上）
 /// </summary>
 public static class VoxFormat
 {
-    public const uint Magic = 0x0058_4F56; // "VOX "
+    /// <summary>
+    /// 文件魔数，ASCII "VOX " 的小端 32 位
+    /// </summary>
+    public const uint Magic = 0x0058_4F56;
+
+    /// <summary>
+    /// 单文件允许的最大体素数，先校验后分配
+    /// </summary>
     public const int MaximumVoxels = 4_000_000;
+
+    /// <summary>
+    /// 单轴允许的最大格数
+    /// </summary>
     public const int MaximumAxisExtent = 1024;
 
+    /// <summary>
+    /// 把体素世界导出为 .vox 文件，世界按包围盒重锚到原点
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <param name="world">要导出的世界，必须非空</param>
     public static void Write(string path, VoxelWorld world)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -25,8 +39,8 @@ public static class VoxFormat
         }
 
         var sizeX = (int)(maximum.X - minimum.X) + 1;
-        var sizeY = (int)(maximum.Z - minimum.Z) + 1; // vox depth = world Z
-        var sizeZ = (int)(maximum.Y - minimum.Y) + 1; // vox up     = world Y
+        var sizeY = (int)(maximum.Z - minimum.Z) + 1; // vox 深度对应 world Z
+        var sizeZ = (int)(maximum.Y - minimum.Y) + 1; // vox 高度对应 world Y
         if (sizeX > MaximumAxisExtent || sizeY > MaximumAxisExtent || sizeZ > MaximumAxisExtent)
         {
             throw new InvalidOperationException("Voxel model exceeds the single-file .vox extent limit.");
@@ -36,7 +50,7 @@ public static class VoxFormat
         using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
         writer.Write(Magic);
         writer.Write(150);
-        // Chunk layout on disk: id(4) + contentSize(4) + childrenSize(4) + content.
+        // 磁盘上的块布局：id(4) + contentSize(4) + childrenSize(4) + 内容
         WriteAscii(writer, "MAIN");
         writer.Write(0);
         writer.Write(0);
@@ -66,12 +80,23 @@ public static class VoxFormat
         AtomicFile.WriteBytes(path, stream.ToArray());
     }
 
+    /// <summary>
+    /// 从磁盘读取 .vox 文件
+    /// </summary>
+    /// <param name="path">文件路径</param>
+    /// <returns>包含全部体素的新世界</returns>
     public static VoxelWorld Read(string path)
     {
         var bytes = File.ReadAllBytes(path);
         return Read(bytes, VoxelCoord64.Zero);
     }
 
+    /// <summary>
+    /// 从字节解析 .vox 文件，非法结构一律抛 InvalidDataException
+    /// </summary>
+    /// <param name="bytes">完整文件字节</param>
+    /// <param name="origin">导入摆放的世界原点</param>
+    /// <returns>包含全部体素的新世界</returns>
     public static VoxelWorld Read(byte[] bytes, VoxelCoord64 origin = default)
     {
         using var stream = new MemoryStream(bytes);
@@ -81,7 +106,7 @@ public static class VoxFormat
             throw new InvalidDataException("Not a VoxEdit/MagicaVoxel .vox file.");
         }
 
-        reader.ReadUInt32(); // engine version — accept any
+        reader.ReadUInt32(); // 引擎版本号，任何版本都接受
         var world = new VoxelWorld();
         var size = (X: 0, Y: 0, Z: 0);
         var cursor = 8L;
@@ -144,13 +169,13 @@ public static class VoxFormat
                         }
                         else
                         {
+                            // 老格式只有调色板索引，用近似色表展开
                             var colorIndex = reader.ReadByte();
                             (r, g, b) = LegacyColor(colorIndex);
                             a = colorIndex == 0 ? (byte)0 : (byte)255;
                         }
 
-                        // The palette index 0 (or a fully transparent entry)
-                        // means “air” and is intentionally not stored.
+                        // 索引 0（或全透明）表示空气，故意不写入世界
                         if (a == 0) continue;
                         world.Set(origin + new VoxelCoord64(x, z, y),
                             new VoxelValue(new Rgba32(r, g, b, a), Flags: a < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
@@ -166,15 +191,22 @@ public static class VoxFormat
         return world;
     }
 
+    /// <summary>
+    /// 写入四字节 ASCII 块标识
+    /// </summary>
+    /// <param name="writer">目标写入器</param>
+    /// <param name="value">恰好四个字符的标识</param>
     private static void WriteAscii(BinaryWriter writer, string value)
     {
         foreach (var character in value) writer.Write(character);
     }
 
     /// <summary>
-    /// The historical 256-color .vox palette index table. Only used when
-    /// importing very old files; MVoxel itself always writes XYZRGBA.
+    /// 历史 256 色 .vox 调色板的近似展开，仅在导入老文件时使用，
+    /// MVoxel 自身永远写出 XYZA 全色
     /// </summary>
+    /// <param name="index">老调色板索引</param>
+    /// <returns>近似 RGB 颜色</returns>
     private static (byte, byte, byte) LegacyColor(int index) => index switch
     {
         0 => (0, 0, 0),

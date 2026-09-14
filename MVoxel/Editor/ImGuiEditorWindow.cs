@@ -58,7 +58,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     // ---------- voxel editing + GPU rendering ----------
     private VoxelWorld _world = new();
-    private readonly Rgba32[] _palette = VoxelPalette.Build();
+    private Rgba32[] _palette = VoxelPalette.Build();
+    private bool _paletteIsProjectLevel;
     private readonly CommandHistory _voxelHistory = new();
     private VoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
@@ -136,6 +137,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ConfigureImGui();
         UiDiagnostics.Configure();
         _logoTexture = ImGuiTexture.LoadLogo();
+        _palette = EditorPalettes.ResolveEditorPalette();
         InitializeVoxelPipeline();
         if (!string.IsNullOrWhiteSpace(_startupProjectPath))
         {
@@ -1404,6 +1406,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _world = new VoxelWorld();
         _voxelHistory.Clear();
         _selectedVoxel = null;
+        _palette = EditorPalettes.ResolveEditorPalette();
+        _paletteIsProjectLevel = false;
         _statusText = "已关闭项目";
         RequestWelcomeWindow();
     }

@@ -6,9 +6,9 @@ using Vector4 = System.Numerics.Vector4;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// Thread-safe state for a user-visible editor operation.  Work happens off
-/// the render thread; completion callbacks are deliberately pumped by the UI
-/// thread so project state and ImGui never cross thread boundaries.
+/// 用户可见的编辑器阻塞操作的状态机。工作在线程池执行，
+/// 完成回调刻意由 UI 线程 Pump 消费，保证项目状态与 ImGui
+/// 永远不跨线程访问
 /// </summary>
 internal sealed class BlockingOperationRunner : IDisposable
 {
@@ -21,6 +21,9 @@ internal sealed class BlockingOperationRunner : IDisposable
     private Action? _onCancelled;
     private int _generation;
 
+    /// <summary>
+    /// 是否有一个操作正在执行
+    /// </summary>
     internal bool IsRunning
     {
         get
@@ -29,6 +32,9 @@ internal sealed class BlockingOperationRunner : IDisposable
         }
     }
 
+    /// <summary>
+    /// 当前操作的只读快照，空闲时为 null
+    /// </summary>
     internal BlockingOperationSnapshot? Snapshot
     {
         get
@@ -37,6 +43,19 @@ internal sealed class BlockingOperationRunner : IDisposable
         }
     }
 
+    /// <summary>
+    /// 启动一个后台操作。已有操作运行时返回 false。
+    /// 不把取消令牌交给 Task.Run：调度与实际执行之间被取消也必须产生
+    /// 正常结果，让 UI 能确定性地消费并清理
+    /// </summary>
+    /// <param name="title">弹窗标题</param>
+    /// <param name="initialDetail">初始进度描述</param>
+    /// <param name="work">后台工作，可上报进度并响应取消</param>
+    /// <param name="succeeded">成功回调（UI 线程执行）</param>
+    /// <param name="failed">失败回调（UI 线程执行）</param>
+    /// <param name="cancelled">取消回调（UI 线程执行）</param>
+    /// <typeparam name="T">工作结果类型</typeparam>
+    /// <returns>是否成功启动</returns>
     internal bool TryStart<T>(string title, string initialDetail,
         Func<CancellationToken, Action<BlockingOperationProgress>, T> work,
         Action<T> succeeded, Action<Exception> failed, Action? cancelled = null)
@@ -59,9 +78,6 @@ internal sealed class BlockingOperationRunner : IDisposable
             _onSucceeded = value => succeeded((T)value!);
             _onFailed = failed;
             _onCancelled = cancelled;
-            // Do not give Task.Run the cancellation token: a cancellation
-            // between scheduling and invocation must still produce a normal
-            // result that the UI can consume and clear deterministically.
             _task = Task.Run(() => Execute(work, cancellation.Token,
                 progress => Report(generation, title, progress)), CancellationToken.None);
         }
@@ -69,6 +85,10 @@ internal sealed class BlockingOperationRunner : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// 请求取消当前操作，仅在阶段允许取消时生效，且只生效一次
+    /// </summary>
+    /// <returns>是否接受了取消请求</returns>
     internal bool RequestCancel()
     {
         CancellationTokenSource? cancellation;
@@ -88,7 +108,9 @@ internal sealed class BlockingOperationRunner : IDisposable
         return true;
     }
 
-    /// <summary>Runs callbacks for a completed task on the editor UI thread.</summary>
+    /// <summary>
+    /// 由 UI 线程每帧调用，任务完成时执行对应回调并清理状态
+    /// </summary>
     internal void Pump()
     {
         Task<OperationResult>? task;
@@ -128,6 +150,9 @@ internal sealed class BlockingOperationRunner : IDisposable
         succeeded?.Invoke(result.Value);
     }
 
+    /// <summary>
+    /// 放弃当前操作的所有回调并请求取消后台工作
+    /// </summary>
     public void Dispose()
     {
         CancellationTokenSource? cancellation;
@@ -185,8 +210,22 @@ internal sealed class BlockingOperationRunner : IDisposable
     private readonly record struct OperationResult(object? Value, Exception? Error, bool Cancelled);
 }
 
+/// <summary>
+/// 后台工作上报的一步进度
+/// </summary>
+/// <param name="Detail">界面显示描述</param>
+/// <param name="Fraction">完成比例 0 到 1</param>
+/// <param name="CanCancel">该阶段是否还允许取消</param>
 internal readonly record struct BlockingOperationProgress(string Detail, float Fraction, bool CanCancel);
 
+/// <summary>
+/// UI 线程每帧读取的操作快照
+/// </summary>
+/// <param name="Title">弹窗标题</param>
+/// <param name="Detail">当前描述</param>
+/// <param name="Fraction">完成比例</param>
+/// <param name="CanCancel">此刻是否可取消</param>
+/// <param name="CancelRequested">取消是否已被请求</param>
 internal readonly record struct BlockingOperationSnapshot(
     string Title,
     string Detail,
@@ -194,15 +233,28 @@ internal readonly record struct BlockingOperationSnapshot(
     bool CanCancel,
     bool CancelRequested);
 
-/// <summary>Shared application-modal ImGui presentation for cancellable work.</summary>
+/// <summary>
+/// 应用级模态弹窗的共享 ImGui 呈现：阻塞操作的进度卡与
+/// 纯提示的输入拦截卡使用同一套背景与布局
+/// </summary>
 internal static class BlockingOperationDialog
 {
+    /// <summary>
+    /// 绘制可取消操作的进度弹窗
+    /// </summary>
+    /// <param name="snapshot">操作快照</param>
+    /// <param name="requestCancel">点击取消时触发的动作</param>
     internal static void Draw(BlockingOperationSnapshot snapshot, Action requestCancel)
     {
         DrawBackdrop("##MVoxelOperationBackdrop", snapshot.Title, snapshot.Detail, snapshot.Fraction, snapshot.CanCancel,
             snapshot.CancelRequested, requestCancel, isInformational: false);
     }
 
+    /// <summary>
+    /// 绘制纯提示的输入拦截弹窗（例如欢迎窗口未关闭时）
+    /// </summary>
+    /// <param name="title">标题</param>
+    /// <param name="detail">说明</param>
     internal static void DrawInteractionBlocker(string title, string detail)
     {
         DrawBackdrop("##MVoxelWelcomeBlocker", title, detail, 0F, canCancel: false, cancelRequested: false,

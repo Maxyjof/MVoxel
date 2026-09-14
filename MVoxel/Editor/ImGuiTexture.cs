@@ -5,6 +5,10 @@ using DrawingPixelFormat = System.Drawing.Imaging.PixelFormat;
 
 namespace MVoxel.Editor;
 
+/// <summary>
+/// 供 ImGui 直接采样的一张 GL 纹理包装。System.Drawing 在这里只充当
+/// PNG 解码器（GDI+ 图像编解码），不是 UI 框架，也不涉及任何 WinForms 类型
+/// </summary>
 internal sealed class ImGuiTexture : IDisposable
 {
     private readonly int _handle;
@@ -16,10 +20,25 @@ internal sealed class ImGuiTexture : IDisposable
         Height = height;
     }
 
+    /// <summary>
+    /// 纹理宽度（像素）
+    /// </summary>
     internal int Width { get; }
+
+    /// <summary>
+    /// 纹理高度（像素）
+    /// </summary>
     internal int Height { get; }
+
+    /// <summary>
+    /// 交给 ImGui.Image 或 AddImage 的纹理句柄
+    /// </summary>
     internal IntPtr ImGuiHandle => (IntPtr)_handle;
 
+    /// <summary>
+    /// 从输出目录加载品牌 logo，找不到文件时返回 null 而不是抛异常
+    /// </summary>
+    /// <returns>已上传 GPU 的 logo 纹理，或 null</returns>
     internal static ImGuiTexture? LoadLogo()
     {
         var candidates = new[]
@@ -33,6 +52,7 @@ internal sealed class ImGuiTexture : IDisposable
             return null;
         }
 
+        // 先绘制到 32bppArgb 中转位图，保证统一按 BGRA 上传
         using var source = new Bitmap(path);
         using var bitmap = new Bitmap(source.Width, source.Height, DrawingPixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
@@ -63,6 +83,9 @@ internal sealed class ImGuiTexture : IDisposable
         }
     }
 
+    /// <summary>
+    /// 删除底层 GL 纹理
+    /// </summary>
     public void Dispose()
     {
         if (_handle != 0)
