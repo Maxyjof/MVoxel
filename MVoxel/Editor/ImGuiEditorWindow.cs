@@ -10,6 +10,7 @@ using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
 using MVoxel.Editor.Settings;
 using MVoxel.Editor.Templates;
+using MVoxel.Scene;
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
@@ -45,6 +46,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _centerTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
+    private SceneDocument? _sceneDocument;
+    private StableId? _renderCameraId;
     private bool _applyPreset;
     private bool _editPanelLayout;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
@@ -1229,6 +1232,8 @@ DockId=0x6A3C3007,0
 
     private void DrawRenderView()
     {
+        DrawRenderCameraSelector();
+        ImGui.Separator();
         if (!ImGui.BeginChild("##RenderViewport", Vector2.Zero, ImGuiChildFlags.Borders))
         {
             ImGui.EndChild();
@@ -1237,10 +1242,10 @@ DockId=0x6A3C3007,0
 
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
-        HandleSceneNavigation(origin, size, new Vector2(-100000F, -100000F), 0F, allowMouseCapture: false);
+        HandleRenderCameraNavigation(origin, size);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
-        var camera = GetSceneCamera();
+        var camera = GetRenderViewCamera();
         var gpuRendered = _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
         {
@@ -1768,6 +1773,8 @@ DockId=0x6A3C3007,0
     {
         SaveProjectSettings();
         _project = null;
+        _sceneDocument = null;
+        _renderCameraId = null;
         _assetBrowser.Reset();
         _world = new VoxelWorld();
         _voxelHistory.Clear();

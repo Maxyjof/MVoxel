@@ -1,0 +1,126 @@
+using System.Text.Json;
+
+namespace MVoxel.Scene;
+
+/// <summary>
+/// MVoxel 内置场景组件的类型标识与数据读写入口
+/// </summary>
+public static class SceneComponentTypes
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// 相机组件的稳定类型标识
+    /// </summary>
+    public const string Camera = "mvoxel.camera";
+
+    /// <summary>
+    /// 判断组件记录是否为内置相机组件
+    /// </summary>
+    /// <param name="component">待判断的组件记录</param>
+    /// <returns>是否为相机组件</returns>
+    public static bool IsCamera(ComponentRecord component) =>
+        string.Equals(component.TypeId, Camera, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 读取相机组件的摄影参数
+    /// </summary>
+    /// <param name="component">相机组件记录</param>
+    /// <returns>经过范围约束的相机参数</returns>
+    public static CameraComponentData ReadCamera(ComponentRecord component)
+    {
+        if (!IsCamera(component) || component.Data.ValueKind != JsonValueKind.Object)
+        {
+            return CameraComponentData.Default;
+        }
+
+        var data = component.Data;
+        return new CameraComponentData(
+            ReadFloat(data, "fieldOfViewDegrees", CameraComponentData.Default.FieldOfViewDegrees),
+            ReadFloat(data, "nearClip", CameraComponentData.Default.NearClip),
+            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip)).Normalize();
+    }
+
+    /// <summary>
+    /// 创建一个带默认摄影参数的相机组件记录
+    /// </summary>
+    /// <returns>相机组件记录</returns>
+    public static ComponentRecord CreateCamera() => new()
+    {
+        TypeId = Camera,
+        SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(CameraComponentData.Default, JsonOptions),
+    };
+
+    /// <summary>
+    /// 创建带指定摄影参数的相机组件记录
+    /// </summary>
+    /// <param name="data">摄影参数</param>
+    /// <returns>相机组件记录</returns>
+    public static ComponentRecord CreateCamera(CameraComponentData data) => new()
+    {
+        TypeId = Camera,
+        SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
+    };
+
+    /// <summary>
+    /// 写回已有相机组件的摄影参数并保留未知字段
+    /// </summary>
+    /// <param name="component">相机组件记录</param>
+    /// <param name="data">新的摄影参数</param>
+    public static void WriteCamera(ComponentRecord component, CameraComponentData data)
+    {
+        if (!IsCamera(component))
+        {
+            throw new ArgumentException("组件记录不是相机组件", nameof(component));
+        }
+
+        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+    }
+
+    /// <summary>
+    /// 从组件数据中读取有限单精度字段
+    /// </summary>
+    /// <param name="data">组件 JSON 数据</param>
+    /// <param name="name">字段名称</param>
+    /// <param name="fallback">字段缺失时的默认值</param>
+    /// <returns>读取到的有限数值</returns>
+    private static float ReadFloat(JsonElement data, string name, float fallback)
+    {
+        return data.TryGetProperty(name, out var property) && property.TryGetSingle(out var value) &&
+               float.IsFinite(value)
+            ? value
+            : fallback;
+    }
+}
+
+/// <summary>
+/// 相机组件保存的连续摄影参数
+/// </summary>
+/// <param name="FieldOfViewDegrees">垂直视场角</param>
+/// <param name="NearClip">近平面距离</param>
+/// <param name="FarClip">远平面距离</param>
+public readonly record struct CameraComponentData(
+    float FieldOfViewDegrees,
+    float NearClip,
+    float FarClip)
+{
+    /// <summary>
+    /// 默认相机摄影参数
+    /// </summary>
+    public static CameraComponentData Default => new(50F, 0.05F, 100000F);
+
+    /// <summary>
+    /// 将摄影参数限制到渲染管线支持的范围
+    /// </summary>
+    /// <returns>规范化后的摄影参数</returns>
+    public CameraComponentData Normalize()
+    {
+        var near = Math.Clamp(float.IsFinite(NearClip) ? NearClip : Default.NearClip, 0.001F, 1_000_000F);
+        var far = Math.Clamp(float.IsFinite(FarClip) ? FarClip : Default.FarClip, near + 0.001F, 100_000_000F);
+        var fov = Math.Clamp(float.IsFinite(FieldOfViewDegrees) ? FieldOfViewDegrees : Default.FieldOfViewDegrees,
+            20F, 120F);
+        return new CameraComponentData(fov, near, far);
+    }
+}

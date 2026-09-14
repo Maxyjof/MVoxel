@@ -94,6 +94,8 @@ internal sealed partial class ImGuiEditorWindow
     {
         _voxelHistory.Clear();
         _selectedVoxel = null;
+        _sceneDocument = LoadSceneDocument(project);
+        _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
@@ -125,6 +127,30 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         FrameCameraOnWorld();
+    }
+
+    /// <summary>
+    /// 读取项目主场景并保留场景文档供层级和渲染窗口共同使用
+    /// </summary>
+    /// <param name="project">项目句柄</param>
+    /// <returns>主场景文档</returns>
+    private static Scene.SceneDocument LoadSceneDocument(ProjectHandle project)
+    {
+        var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
+        if (!File.Exists(scenePath))
+        {
+            return new Scene.SceneDocument { Name = "主场景" };
+        }
+
+        try
+        {
+            return Scene.SceneSerializer.Load(scenePath);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
+        {
+            MVoxelLog.Error($"主场景读取失败，已使用新的场景文档：{scenePath}", exception);
+            return new Scene.SceneDocument { Name = "主场景" };
+        }
     }
 
     private void FrameCameraOnWorld()
@@ -175,19 +201,35 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
-            var document = new Scene.SceneDocument { Name = "主场景" };
+            var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
             var graph = new Scene.SceneGraph(document);
-            var modelObject = graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
-            modelObject.Components.Add(new Scene.ComponentRecord
+            var modelObject = document.Objects.FirstOrDefault(item =>
+                item.Components.Any(component => string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal)));
+            modelObject ??= graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
+            var modelComponent = modelObject.Components.FirstOrDefault(component =>
+                string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal));
+            if (modelComponent is null)
             {
-                TypeId = "mvoxel.voxelmodel",
-                SchemaVersion = 1,
-                Data = JsonSerializer.SerializeToElement(new
+                modelObject.Components.Add(new Scene.ComponentRecord
+                {
+                    TypeId = "mvoxel.voxelmodel",
+                    SchemaVersion = 1,
+                    Data = JsonSerializer.SerializeToElement(new
+                    {
+                        model = "Assets/VoxelModels/主场景.vox",
+                        voxelCount = _world.OccupiedVoxelCount,
+                    }),
+                });
+            }
+            else
+            {
+                modelComponent.Data = JsonSerializer.SerializeToElement(new
                 {
                     model = "Assets/VoxelModels/主场景.vox",
                     voxelCount = _world.OccupiedVoxelCount,
-                }),
-            });
+                });
+            }
+            _sceneDocument = document;
             Scene.SceneSerializer.Save(scenePath, document);
             return true;
         }
@@ -287,6 +329,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_sceneFreeMoveHeight.ToString("F2")).Append(',')
             .Append(_sceneNearClip.ToString("F3")).Append(',').Append(_sceneFarClip.ToString("F1")).Append(',')
             .Append(_sceneFieldOfView.ToString("F1")).Append('|')
+            .Append(RenderCameraSignature()).Append('|')
             .Append(size.X.ToString("F1")).Append('x').Append(size.Y.ToString("F1")).Append('@').Append(deviceScale.ToString("F2")).Append('|')
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')

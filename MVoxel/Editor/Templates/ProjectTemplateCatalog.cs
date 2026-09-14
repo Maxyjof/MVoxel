@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text.Json;
 using MVoxel.Core;
 using MVoxel.Editor.Settings;
@@ -202,7 +203,25 @@ public static class ProjectTemplateCatalog
                 template = template.Id.ToString(),
             }),
         });
+        var cameraObject = graph.Add("主相机", transform: TransformComponent.FromFree(new FreeTransform(
+            new Double3(0D, 8D, 18D), CreateCameraRotation(new Vector3(0F, -0.2F, -1F), Vector3.UnitY))));
+        cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
+    }
+
+    /// <summary>
+    /// 为模板相机创建朝向指定视线的自由旋转
+    /// </summary>
+    /// <param name="forward">相机视线方向</param>
+    /// <param name="up">相机上方向</param>
+    /// <returns>相机自由旋转</returns>
+    private static Quaternion CreateCameraRotation(Vector3 forward, Vector3 up)
+    {
+        forward = Vector3.Normalize(forward);
+        up = Vector3.Normalize(up);
+        var right = Vector3.Normalize(Vector3.Cross(forward, up));
+        up = Vector3.Normalize(Vector3.Cross(right, forward));
+        return Quaternion.CreateFromRotationMatrix(Matrix4x4.CreateWorld(Vector3.Zero, -forward, up));
     }
 
     /// <summary>
