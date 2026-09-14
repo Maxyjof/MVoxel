@@ -29,6 +29,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private VkBuffer _voxelBuffer;
     private DeviceMemory _voxelMemory;
     private ulong _voxelBufferCapacity;
+    private VkBuffer _bvhBuffer;
+    private DeviceMemory _bvhMemory;
+    private ulong _bvhBufferCapacity;
+    private int _bvhNodeCount;
     private VkBuffer _parameterBuffer;
     private DeviceMemory _parameterMemory;
     private DescriptorSetLayout _computeDescriptorLayout;
@@ -39,10 +43,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private Image _outputImage;
     private DeviceMemory _outputMemory;
     private ImageView _outputView;
+    private Image _accumulationImage;
+    private DeviceMemory _accumulationMemory;
+    private ImageView _accumulationView;
     private nint _displayTextureId;
     private uint _outputWidth;
     private uint _outputHeight;
     private bool _outputIsShaderReadOnly;
+    private bool _accumulationInitialized;
+    private bool _clearAccumulationPending = true;
     private float[]? _lastParameters;
     private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private bool _disposed;
@@ -67,7 +76,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取当前体素 GPU 绘制管线是否已经可以呈现视图
     /// </summary>
-    internal bool IsAvailable => _computePipeline.Handle != 0 && GpuWorksetUploaded;
+    internal bool IsAvailable => _computePipeline.Handle != 0 && GpuWorksetUploaded && _bvhNodeCount > 0;
 
     /// <summary>
     /// 获取显示纹理句柄
@@ -119,7 +128,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal string? ShaderLog => _workset.IsEmpty
         ? "Vulkan 体素工作集为空，等待场景数据"
         : IsAvailable
-            ? "Vulkan Compute 直接光照预览已就绪，路径追踪和硬件光追仍使用独立管线"
+            ? $"Vulkan GPU BVH 路径追踪已就绪，工作集 {_workset.Cells.Count:N0} 个体素，节点 {_bvhNodeCount:N0} 个"
             : $"已同步 {_workset.Cells.Count:N0} 个体素，等待 Vulkan Compute 资源初始化";
 
     /// <summary>
@@ -142,7 +151,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         else if (_context is not null && _api is { } api && next.IsEmpty && _voxelBuffer.Handle != 0)
         {
             api.DeviceWaitIdle(_device);
+            DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
+            _bvhNodeCount = 0;
         }
 
         _workset = next;
@@ -161,6 +172,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         AccumulatedSamples = 0;
         _lastParameters = null;
+        _clearAccumulationPending = true;
     }
 
     /// <summary>
@@ -169,7 +181,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderSceneView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
-        return DispatchCompute(settings, frameState, widthPixels, heightPixels);
+        return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: false);
     }
 
     /// <summary>
@@ -178,7 +190,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
-        return DispatchCompute(settings, frameState, widthPixels, heightPixels);
+        return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: true);
     }
 
     /// <summary>
@@ -236,6 +248,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 api.FreeMemory(_device, _parameterMemory, null);
             }
 
+            DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
         }
     }
@@ -299,7 +312,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="heightPixels">输出高度</param>
     /// <returns>是否成功完成计算绘制</returns>
     private bool DispatchCompute(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
-        int widthPixels, int heightPixels)
+        int widthPixels, int heightPixels, bool pathMode)
     {
         if (!IsAvailable || _context is null || _api is not { } api || widthPixels <= 0 || heightPixels <= 0)
         {
@@ -309,15 +322,25 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
         var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
-        if (ParametersEqualForDisplay(parameters))
+        parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
+        if (!pathMode && ParametersEqualForDisplay(parameters))
         {
             return true;
+        }
+
+        if (pathMode && _clearAccumulationPending)
+        {
+            ClearAccumulation();
         }
 
         UploadParameters(parameters);
         _context.ExecuteImmediate(commandBuffer =>
         {
             TransitionOutputToGeneral(commandBuffer);
+            if (pathMode)
+            {
+                TransitionAccumulationToGeneral(commandBuffer);
+            }
             api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
             DescriptorSet descriptorSet = _computeDescriptorSet;
             api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
@@ -325,8 +348,49 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U, ((uint)heightPixels + 7U) / 8U, 1);
             TransitionOutputToShaderRead(commandBuffer);
         });
+        if (pathMode)
+        {
+            AccumulatedSamples = Math.Min(settings.PathMaxAccumulatedSamples,
+                AccumulatedSamples + Math.Max(1, settings.PathSamplesPerFrame));
+            _accumulationInitialized = true;
+            _clearAccumulationPending = false;
+        }
         _lastParameters = parameters;
         return true;
+    }
+
+    /// <summary>
+    /// 清零渐进路径追踪的 GPU 累积图像
+    /// </summary>
+    private void ClearAccumulation()
+    {
+        if (_context is null || _api is not { } api || _accumulationImage.Handle == 0)
+        {
+            return;
+        }
+
+        _context.ExecuteImmediate(commandBuffer =>
+        {
+            ImageMemoryBarrier barrier = new()
+            {
+                SType = StructureType.ImageMemoryBarrier,
+                OldLayout = _accumulationInitialized ? ImageLayout.General : ImageLayout.Undefined,
+                NewLayout = ImageLayout.General,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = _accumulationImage,
+                SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                SrcAccessMask = _accumulationInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit : 0,
+                DstAccessMask = AccessFlags.TransferWriteBit
+            };
+            api.CmdPipelineBarrier(commandBuffer,
+                _accumulationInitialized ? PipelineStageFlags.ComputeShaderBit : PipelineStageFlags.TopOfPipeBit,
+                PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in barrier);
+            ClearColorValue clear = new(0F, 0F, 0F, 0F);
+            var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
+            api.CmdClearColorImage(commandBuffer, _accumulationImage, ImageLayout.General, in clear, 1, in range);
+        });
+        _accumulationInitialized = true;
     }
 
     /// <summary>
@@ -402,10 +466,23 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         {
             Check(api.BindImageMemory(_device, _outputImage, _outputMemory, 0), "绑定体素 Compute 输出图像");
             _outputView = CreateImageView(_outputImage, Format.R8G8B8A8Unorm);
+            ImageCreateInfo accumulationCreateInfo = createInfo;
+            accumulationCreateInfo.Format = Format.R16G16B16A16Sfloat;
+            accumulationCreateInfo.Usage = ImageUsageFlags.StorageBit;
+            Check(api.CreateImage(_device, &accumulationCreateInfo, null, out _accumulationImage),
+                "创建路径追踪累积图像");
+            MemoryRequirements accumulationRequirements = default;
+            api.GetImageMemoryRequirements(_device, _accumulationImage, &accumulationRequirements);
+            _accumulationMemory = AllocateMemory(accumulationRequirements, MemoryPropertyFlags.DeviceLocalBit);
+            Check(api.BindImageMemory(_device, _accumulationImage, _accumulationMemory, 0),
+                "绑定路径追踪累积图像");
+            _accumulationView = CreateImageView(_accumulationImage, Format.R16G16B16A16Sfloat);
             _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
             _outputHeight = height;
             _outputIsShaderReadOnly = false;
+            _accumulationInitialized = false;
+            _clearAccumulationPending = true;
             UpdateComputeDescriptors();
         }
         catch
@@ -464,6 +541,35 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 把路径追踪累积图像转换为 Compute 可读写布局
+    /// </summary>
+    /// <param name="commandBuffer">当前命令缓冲</param>
+    private void TransitionAccumulationToGeneral(CommandBuffer commandBuffer)
+    {
+        if (_accumulationInitialized)
+        {
+            return;
+        }
+
+        var api = _api!;
+        ImageMemoryBarrier barrier = new()
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = ImageLayout.Undefined,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _accumulationImage,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+            SrcAccessMask = 0,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
+        };
+        api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in barrier);
+        _accumulationInitialized = true;
+    }
+
+    /// <summary>
     /// 更新 Compute 参数 Storage Buffer
     /// </summary>
     /// <param name="parameters">渲染参数块</param>
@@ -492,14 +598,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[3];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[5];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
-        bindings[1] = new(1, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
-        bindings[2] = new(2, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        bindings[3] = new(3, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[4] = new(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 3,
+            BindingCount = 5,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -515,8 +623,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 2),
-            new(DescriptorType.StorageImage, 1)
+            new(DescriptorType.StorageBuffer, 3),
+            new(DescriptorType.StorageImage, 2)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
@@ -572,11 +680,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UpdateComputeDescriptors()
     {
-        if (_voxelBuffer.Handle == 0 || _outputView.Handle == 0) return;
+        if (_voxelBuffer.Handle == 0 || _bvhBuffer.Handle == 0 || _outputView.Handle == 0 ||
+            _accumulationView.Handle == 0) return;
         DescriptorBufferInfo voxelInfo = new(_voxelBuffer, 0, _voxelBufferCapacity);
+        DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
         DescriptorBufferInfo parameterInfo = new(_parameterBuffer, 0, (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[3];
+        DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[5];
         writes[0] = new()
         {
             SType = StructureType.WriteDescriptorSet,
@@ -592,8 +703,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             DstSet = _computeDescriptorSet,
             DstBinding = 1,
             DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &imageInfo
+            DescriptorType = DescriptorType.StorageBuffer,
+            PBufferInfo = &bvhInfo
         };
         writes[2] = new()
         {
@@ -601,10 +712,28 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             DstSet = _computeDescriptorSet,
             DstBinding = 2,
             DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &imageInfo
+        };
+        writes[3] = new()
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = _computeDescriptorSet,
+            DstBinding = 3,
+            DescriptorCount = 1,
             DescriptorType = DescriptorType.StorageBuffer,
             PBufferInfo = &parameterInfo
         };
-        _api!.UpdateDescriptorSets(_device, 3, writes, 0, null);
+        writes[4] = new()
+        {
+            SType = StructureType.WriteDescriptorSet,
+            DstSet = _computeDescriptorSet,
+            DstBinding = 4,
+            DescriptorCount = 1,
+            DescriptorType = DescriptorType.StorageImage,
+            PImageInfo = &accumulationInfo
+        };
+        _api!.UpdateDescriptorSets(_device, 5, writes, 0, null);
     }
 
     /// <summary>
@@ -655,15 +784,22 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="api">Vulkan API</param>
     private void DestroyOutputImage(Vk api)
     {
+        if (_accumulationView.Handle != 0) api.DestroyImageView(_device, _accumulationView, null);
+        if (_accumulationImage.Handle != 0) api.DestroyImage(_device, _accumulationImage, null);
+        if (_accumulationMemory.Handle != 0) api.FreeMemory(_device, _accumulationMemory, null);
         if (_outputView.Handle != 0) api.DestroyImageView(_device, _outputView, null);
         if (_outputImage.Handle != 0) api.DestroyImage(_device, _outputImage, null);
         if (_outputMemory.Handle != 0) api.FreeMemory(_device, _outputMemory, null);
         _outputView = default;
         _outputImage = default;
         _outputMemory = default;
+        _accumulationView = default;
+        _accumulationImage = default;
+        _accumulationMemory = default;
         _outputWidth = 0;
         _outputHeight = 0;
         _outputIsShaderReadOnly = false;
+        _accumulationInitialized = false;
         _lastParameters = null;
     }
 
@@ -679,17 +815,31 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             uvec4 metadata;
         };
 
+        struct BvhNode
+        {
+            ivec4 minimum;
+            ivec4 maximum;
+            ivec4 links;
+        };
+
         layout(set = 0, binding = 0, std430) readonly buffer VoxelBuffer
         {
             VoxelCell cells[];
         };
 
-        layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outputImage;
+        layout(set = 0, binding = 1, std430) readonly buffer BvhBuffer
+        {
+            BvhNode nodes[];
+        };
 
-        layout(set = 0, binding = 2, std430) readonly buffer ParameterBuffer
+        layout(set = 0, binding = 2, rgba8) uniform writeonly image2D outputImage;
+
+        layout(set = 0, binding = 3, std430) readonly buffer ParameterBuffer
         {
             float values[];
         };
+
+        layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
 
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
@@ -707,18 +857,185 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 hitPoint = rayOrigin + rayDirection * distance;
             vec3 distances = min(abs(hitPoint - boxMin), abs(hitPoint - boxMax));
             if (distances.x <= distances.y && distances.x <= distances.z)
-            {
                 normal = vec3(hitPoint.x < (boxMin.x + boxMax.x) * 0.5 ? -1.0 : 1.0, 0.0, 0.0);
-            }
             else if (distances.y <= distances.z)
-            {
                 normal = vec3(0.0, hitPoint.y < (boxMin.y + boxMax.y) * 0.5 ? -1.0 : 1.0, 0.0);
-            }
             else
-            {
                 normal = vec3(0.0, 0.0, hitPoint.z < (boxMin.z + boxMax.z) * 0.5 ? -1.0 : 1.0);
-            }
             return true;
+        }
+
+        bool IntersectBounds(vec3 rayOrigin, vec3 rayDirection, BvhNode node, out float distance)
+        {
+            vec3 normal;
+            return IntersectBox(rayOrigin, rayDirection,
+                vec3(node.minimum.xyz) + vec3(values[16], values[17], values[18]),
+                vec3(node.maximum.xyz) + vec3(values[16], values[17], values[18]), distance, normal);
+        }
+
+        bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags)
+        {
+            int stack[64];
+            int stackSize = 1;
+            stack[0] = 0;
+            closestDistance = 3.402823e+38;
+            hitNormal = vec3(0.0, 1.0, 0.0);
+            hitColor = vec4(0.0);
+            hitFlags = 0u;
+            int voxelCount = int(values[94]);
+            int nodeCount = int(values[95]);
+            vec3 regionOrigin = vec3(values[16], values[17], values[18]);
+            while (stackSize > 0)
+            {
+                int nodeIndex = stack[--stackSize];
+                if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+                BvhNode node = nodes[nodeIndex];
+                float boundsDistance;
+                if (!IntersectBounds(rayOrigin, rayDirection, node, boundsDistance) || boundsDistance > closestDistance)
+                    continue;
+                if (node.links.x < 0)
+                {
+                    int endIndex = min(node.links.z + node.links.w, voxelCount);
+                    for (int index = node.links.z; index < endIndex; index++)
+                    {
+                        VoxelCell cell = cells[index];
+                        vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
+                        vec3 voxelMax = voxelMin + vec3(1.0);
+                        float distance;
+                        vec3 normal;
+                        if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
+                            distance < closestDistance)
+                        {
+                            closestDistance = distance;
+                            hitNormal = normal;
+                            hitColor = cell.color;
+                            hitFlags = cell.metadata.x >> 16;
+                        }
+                    }
+                }
+                else
+                {
+                    if (stackSize + 2 <= 64)
+                    {
+                        stack[stackSize++] = node.links.x;
+                        stack[stackSize++] = node.links.y;
+                    }
+                }
+            }
+            return hitColor.a > 0.0;
+        }
+
+        bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
+        {
+            float distance;
+            vec3 normal;
+            vec4 color;
+            uint flags;
+            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags) && distance < maxDistance;
+        }
+
+        uint Hash(uint value)
+        {
+            value ^= value >> 16;
+            value *= 0x7feb352du;
+            value ^= value >> 15;
+            value *= 0x846ca68bu;
+            return value ^ (value >> 16);
+        }
+
+        float Random(inout uint state)
+        {
+            state = Hash(state + 0x9e3779b9u);
+            return float(state & 0x00ffffffu) / 16777216.0;
+        }
+
+        vec3 CosineHemisphere(vec3 normal, inout uint state)
+        {
+            float radius = sqrt(Random(state));
+            float angle = 6.28318530718 * Random(state);
+            vec3 tangent = normalize(abs(normal.y) < 0.9 ? cross(normal, vec3(0.0, 1.0, 0.0))
+                : cross(normal, vec3(1.0, 0.0, 0.0)));
+            vec3 bitangent = cross(normal, tangent);
+            return normalize(tangent * (cos(angle) * radius) + bitangent * (sin(angle) * radius)
+                + normal * sqrt(max(0.0, 1.0 - radius * radius)));
+        }
+
+        vec3 Sky(vec3 rayDirection)
+        {
+            vec3 skyTop = vec3(values[40], values[41], values[42]);
+            vec3 skyHorizon = vec3(values[44], values[45], values[46]);
+            return mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
+        }
+
+        vec3 Ground(vec3 rayOrigin, vec3 rayDirection, float hitDistance)
+        {
+            vec3 point = rayOrigin + rayDirection * hitDistance;
+            vec3 groundColor = vec3(values[36], values[37], values[38]);
+            if (values[90] > 0.5)
+            {
+                float gridStep = max(values[89], 0.001);
+                vec2 gridPosition = point.xz / gridStep;
+                vec2 distanceToLine = abs(fract(gridPosition) - 0.5) * gridStep;
+                float lineAmount = 1.0 - smoothstep(0.0, 0.045, min(distanceToLine.x, distanceToLine.y));
+                groundColor = mix(groundColor, groundColor * 0.52 + vec3(0.16, 0.20, 0.28), lineAmount);
+            }
+            return groundColor;
+        }
+
+        vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode)
+        {
+            vec3 radiance = vec3(0.0);
+            vec3 throughput = vec3(1.0);
+            int bounceLimit = pathMode ? min(int(values[72]), 16) : 1;
+            for (int bounce = 0; bounce < 16; bounce++)
+            {
+                if (bounce >= bounceLimit) break;
+                float hitDistance;
+                vec3 hitNormal;
+                vec4 hitColor;
+                uint hitFlags;
+                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags))
+                {
+                    float groundDistance = values[35] > 0.5 && abs(rayDirection.y) > 0.00001
+                        ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
+                    if (groundDistance > 0.0)
+                        radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance);
+                    else
+                        radiance += throughput * Sky(rayDirection);
+                    break;
+                }
+
+                vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
+                if (!pathMode)
+                {
+                    radiance += hitColor.rgb;
+                    break;
+                }
+
+                if ((hitFlags & 2u) != 0u)
+                    radiance += throughput * hitColor.rgb * values[80];
+
+                vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
+                vec3 lightDirection = normalize(-sunDirection);
+                float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
+                if (lightAmount > 0.0 && !TraceShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0))
+                    radiance += throughput * hitColor.rgb * lightAmount * values[27];
+
+                float metalness = clamp(values[74], 0.0, 1.0);
+                vec3 diffuseDirection = CosineHemisphere(hitNormal, state);
+                vec3 reflectedDirection = reflect(rayDirection, hitNormal);
+                rayDirection = normalize(mix(diffuseDirection, reflectedDirection, metalness));
+                throughput *= mix(hitColor.rgb, vec3(1.0), metalness);
+                rayOrigin = hitPoint + hitNormal * 0.002;
+                if (bounce >= 2)
+                {
+                    float survival = clamp(max(max(throughput.r, throughput.g), throughput.b), 0.05, 0.98);
+                    if (Random(state) > survival) break;
+                    throughput /= survival;
+                }
+            }
+            return radiance;
         }
 
         void main()
@@ -728,72 +1045,38 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
 
-            vec2 pixelPosition = (vec2(pixel) + 0.5) / vec2(width, height);
-            vec2 screenPosition = pixelPosition * 2.0 - 1.0;
+            bool pathMode = values[86] > 0.5;
+            int samples = pathMode ? max(int(values[78]), 1) : 1;
+            int accumulatedSamples = max(int(values[79]), 0);
+            uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
+                uint(values[7]) * 26699u + uint(values[88]));
+            vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
-            vec3 rayDirection = normalize(
-                vec3(values[4], values[5], values[6]) +
-                vec3(values[8], values[9], values[10]) * screenPosition.x * float(width) / focalPixels +
-                vec3(values[12], values[13], values[14]) * -screenPosition.y * float(height) / focalPixels);
-            vec3 rayOrigin = vec3(values[0], values[1], values[2]);
-
-            vec3 skyTop = vec3(values[40], values[41], values[42]);
-            vec3 skyHorizon = vec3(values[44], values[45], values[46]);
-            float skyBlend = clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0);
-            vec3 color = mix(skyHorizon, skyTop, skyBlend);
-            float closestDistance = 3.402823e+38;
-            vec3 hitNormal = vec3(0.0, 1.0, 0.0);
-            vec4 hitColor = vec4(0.0);
-            int voxelCount = int(values[94]);
-            vec3 regionOrigin = vec3(values[16], values[17], values[18]);
-            for (int index = 0; index < voxelCount; index++)
+            vec3 forward = vec3(values[4], values[5], values[6]);
+            vec3 right = vec3(values[8], values[9], values[10]);
+            vec3 up = vec3(values[12], values[13], values[14]);
+            vec3 sampleColor = vec3(0.0);
+            for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
             {
-                VoxelCell cell = cells[index];
-                vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
-                vec3 voxelMax = voxelMin + vec3(1.0);
-                float distance;
-                vec3 normal;
-                if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
-                    distance < closestDistance)
-                {
-                    closestDistance = distance;
-                    hitNormal = normal;
-                    hitColor = cell.color;
-                }
+                if (sampleIndex >= samples) break;
+                vec2 jitter = pathMode ? vec2(Random(state), Random(state)) - 0.5 : vec2(0.0);
+                vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
+                vec3 direction = normalize(forward + right * screenPosition.x * float(width) / focalPixels
+                    + up * -screenPosition.y * float(height) / focalPixels);
+                sampleColor += TracePath(origin, direction, state, pathMode);
             }
+            sampleColor /= float(samples);
 
-            float groundDistance = 3.402823e+38;
-            if (values[35] > 0.5 && abs(rayDirection.y) > 0.00001)
+            vec3 color = sampleColor;
+            if (pathMode)
             {
-                groundDistance = -rayOrigin.y / rayDirection.y;
-                if (groundDistance > 0.0 && groundDistance < closestDistance)
-                {
-                    vec3 groundPoint = rayOrigin + rayDirection * groundDistance;
-                    vec3 groundColor = vec3(values[36], values[37], values[38]);
-                    if (values[90] > 0.5)
-                    {
-                        float gridStep = max(values[89], 0.001);
-                        vec2 gridPosition = groundPoint.xz / gridStep;
-                        vec2 distanceToLine = abs(fract(gridPosition) - 0.5) * gridStep;
-                        float lineAmount = 1.0 - smoothstep(0.0, 0.045, min(distanceToLine.x, distanceToLine.y));
-                        groundColor = mix(groundColor, groundColor * 0.52 + vec3(0.16, 0.20, 0.28), lineAmount);
-                        float axisWidth = 0.035;
-                        if (abs(groundPoint.x) < axisWidth) groundColor = mix(groundColor, vec3(0.88, 0.28, 0.30), 0.92);
-                        if (abs(groundPoint.z) < axisWidth) groundColor = mix(groundColor, vec3(0.25, 0.55, 0.95), 0.92);
-                    }
-                    float fade = values[34] > 0.0 ? clamp(1.0 - groundDistance / values[34], 0.0, 1.0) : 1.0;
-                    color = mix(color, groundColor, fade);
-                }
+                vec4 previous = imageLoad(accumulationImage, pixel);
+                float totalSamples = float(accumulatedSamples + samples);
+                color = totalSamples > 0.0
+                    ? (previous.rgb * float(accumulatedSamples) + sampleColor * float(samples)) / totalSamples
+                    : sampleColor;
+                imageStore(accumulationImage, pixel, vec4(color, 1.0));
             }
-
-            if (hitColor.a > 0.0)
-            {
-                vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
-                float directLight = values[33] > 0.5 ? max(dot(hitNormal, -sunDirection), 0.0) * values[27] : 0.0;
-                float ambientLight = max(values[43], 0.0);
-                color = hitColor.rgb * (ambientLight + directLight);
-            }
-
             imageStore(outputImage, pixel, vec4(clamp(color, 0.0, 1.0), 1.0));
         }
         """;
@@ -806,10 +1089,20 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal static byte[] PackWorkset(VoxelGpuWorkset workset)
     {
         ArgumentNullException.ThrowIfNull(workset);
-        var bytes = new byte[checked(workset.Cells.Count * PackedCellSize)];
-        for (var index = 0; index < workset.Cells.Count; index++)
+        return PackCells(workset.Cells);
+    }
+
+    /// <summary>
+    /// 按指定顺序编码体素 GPU 数据
+    /// </summary>
+    /// <param name="cells">待编码体素</param>
+    /// <returns>固定布局的体素字节流</returns>
+    private static byte[] PackCells(IReadOnlyList<VoxelGpuCell> cells)
+    {
+        var bytes = new byte[checked(cells.Count * PackedCellSize)];
+        for (var index = 0; index < cells.Count; index++)
         {
-            var cell = workset.Cells[index];
+            var cell = cells[index];
             var offset = index * PackedCellSize;
             var x = cell.X;
             var y = cell.Y;
@@ -827,7 +1120,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             MemoryMarshal.Write(bytes.AsSpan(offset + 24, 4), in blue);
             MemoryMarshal.Write(bytes.AsSpan(offset + 28, 4), in alpha);
             MemoryMarshal.Write(bytes.AsSpan(offset + 32, 2), in materialSlot);
-            bytes[offset + 36] = cell.Value.Flags;
+            var metadata = (uint)materialSlot | ((uint)cell.Value.Flags << 16);
+            MemoryMarshal.Write(bytes.AsSpan(offset + 32, 4), in metadata);
         }
 
         return bytes;
@@ -844,7 +1138,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
-        var bytes = PackWorkset(workset);
+        var bvh = VoxelGpuBvh.Build(workset);
+        var bytes = PackCells(bvh.OrderedCells);
         var required = checked((ulong)Math.Max(bytes.Length, PackedCellSize));
         if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < required)
         {
@@ -855,6 +1150,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
                 MemoryPropertyFlags.DeviceLocalBit);
             _voxelBufferCapacity = NextCapacity(required);
+        }
+
+        var bvhRequired = checked((ulong)Math.Max(bvh.NodeBytes.Length, VoxelGpuBvh.PackedNodeSize));
+        if (_bvhBuffer.Handle == 0 || _bvhBufferCapacity < bvhRequired)
+        {
+            api.DeviceWaitIdle(_device);
+            DestroyBvhBuffer(api);
+            (_bvhBuffer, _bvhMemory) = CreateBuffer(
+                NextCapacity(bvhRequired),
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            _bvhBufferCapacity = NextCapacity(bvhRequired);
         }
 
         var (stagingBuffer, stagingMemory) = CreateBuffer(
@@ -877,13 +1184,47 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 api.UnmapMemory(_device, stagingMemory);
             }
 
-            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, stagingBuffer, bytes.Length));
+            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, stagingBuffer, _voxelBuffer, bytes.Length));
         }
         finally
         {
             api.DestroyBuffer(_device, stagingBuffer, null);
             api.FreeMemory(_device, stagingMemory, null);
         }
+
+        var bvhStagingSize = Math.Max(bvh.NodeBytes.Length, VoxelGpuBvh.PackedNodeSize);
+        var (bvhStagingBuffer, bvhStagingMemory) = CreateBuffer(
+            (ulong)bvhStagingSize,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        try
+        {
+            void* mapped = null;
+            Check(api.MapMemory(_device, bvhStagingMemory, 0, (ulong)bvh.NodeBytes.Length, 0, &mapped),
+                "映射体素 BVH 暂存缓冲");
+            try
+            {
+                fixed (byte* source = bvh.NodeBytes)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, bvh.NodeBytes.Length, bvh.NodeBytes.Length);
+                }
+            }
+            finally
+            {
+                api.UnmapMemory(_device, bvhStagingMemory);
+            }
+
+            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, bvhStagingBuffer,
+                _bvhBuffer, bvh.NodeBytes.Length));
+        }
+        finally
+        {
+            api.DestroyBuffer(_device, bvhStagingBuffer, null);
+            api.FreeMemory(_device, bvhStagingMemory, null);
+        }
+
+        _bvhNodeCount = bvh.NodeCount;
+        UpdateComputeDescriptors();
     }
 
     /// <summary>
@@ -892,11 +1233,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="commandBuffer">当前命令缓冲</param>
     /// <param name="stagingBuffer">主机可见暂存缓冲</param>
     /// <param name="byteCount">复制字节数</param>
-    private void RecordUpload(CommandBuffer commandBuffer, VkBuffer stagingBuffer, int byteCount)
+    private void RecordUpload(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destinationBuffer,
+        int byteCount)
     {
         var api = _api!;
         var copy = new BufferCopy(0, 0, (ulong)byteCount);
-        api.CmdCopyBuffer(commandBuffer, stagingBuffer, _voxelBuffer, 1, in copy);
+        api.CmdCopyBuffer(commandBuffer, stagingBuffer, destinationBuffer, 1, in copy);
         BufferMemoryBarrier barrier = new()
         {
             SType = StructureType.BufferMemoryBarrier,
@@ -904,7 +1246,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             DstAccessMask = AccessFlags.ShaderReadBit,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Buffer = _voxelBuffer,
+            Buffer = destinationBuffer,
             Offset = 0,
             Size = (ulong)byteCount
         };
@@ -1002,6 +1344,25 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _voxelBuffer = default;
         _voxelMemory = default;
         _voxelBufferCapacity = 0;
+    }
+
+    /// <summary>
+    /// 释放当前体素 BVH Storage Buffer
+    /// </summary>
+    /// <param name="api">Vulkan API</param>
+    private void DestroyBvhBuffer(Vk api)
+    {
+        if (_bvhBuffer.Handle == 0)
+        {
+            return;
+        }
+
+        api.DestroyBuffer(_device, _bvhBuffer, null);
+        api.FreeMemory(_device, _bvhMemory, null);
+        _bvhBuffer = default;
+        _bvhMemory = default;
+        _bvhBufferCapacity = 0;
+        _bvhNodeCount = 0;
     }
 
     /// <summary>

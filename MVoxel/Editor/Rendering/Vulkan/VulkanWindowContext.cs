@@ -30,6 +30,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private readonly SurfaceKHR _surface;
     private readonly PhysicalDevice _physicalDevice;
     private readonly Device _device;
+    private readonly VulkanHardwareRayTracingCapabilities _rayTracingCapabilities;
     private readonly Queue _queue;
     private readonly uint _queueFamilyIndex;
     private readonly CommandPool _commandPool;
@@ -62,6 +63,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         _swapchainApi = new KhrSwapchain(_api.Context);
         _surface = CreateSurface(window);
         (_physicalDevice, _queueFamilyIndex) = SelectPhysicalDevice();
+        _rayTracingCapabilities = VulkanHardwareRayTracing.Query(_api, _physicalDevice);
+        MVoxelLog.Info(_rayTracingCapabilities.Diagnostic);
         _device = CreateDevice(_physicalDevice, _queueFamilyIndex);
         _api.GetDeviceQueue(_device, _queueFamilyIndex, 0, out _queue);
         _swapchain = CreateSwapchain(window.FramebufferSize.X, window.FramebufferSize.Y);
@@ -123,6 +126,21 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// 获取设备是否已经丢失
     /// </summary>
     internal bool IsDeviceLost => _deviceLost;
+
+    /// <summary>
+    /// 当前物理设备名称
+    /// </summary>
+    internal string DeviceName => _rayTracingCapabilities.DeviceName;
+
+    /// <summary>
+    /// 当前物理设备是否可以创建 Vulkan 硬件光追管线
+    /// </summary>
+    internal bool SupportsHardwareRayTracing => _rayTracingCapabilities.SupportsHardwarePipeline;
+
+    /// <summary>
+    /// 当前物理设备是否支持 Ray Query
+    /// </summary>
+    internal bool SupportsRayQuery => _rayTracingCapabilities.SupportsRayQuery;
 
     /// <summary>
     /// 标记窗口尺寸变化，下一帧按需重建交换链资源
@@ -416,6 +434,33 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// </summary>
     private Device CreateDevice(PhysicalDevice physicalDevice, uint queueFamilyIndex)
     {
+        if (_rayTracingCapabilities.SupportsHardwarePipeline &&
+            TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: true, out var rayTracingDevice))
+        {
+            MVoxelLog.Info("已启用 Vulkan 硬件光追设备特性，渲染管线按能力选择硬件或 Compute 路径");
+            return rayTracingDevice;
+        }
+
+        if (_rayTracingCapabilities.SupportsHardwarePipeline)
+        {
+            MVoxelLog.Warn("Vulkan 硬件光追设备特性启用失败，回退到 Vulkan Compute 路径");
+        }
+
+        if (!TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: false, out var device))
+        {
+            throw new InvalidOperationException("创建 Vulkan 逻辑设备失败");
+        }
+
+        return device;
+    }
+
+    /// <summary>
+    /// 尝试创建启用或关闭硬件光追特性的逻辑设备
+    /// </summary>
+    private bool TryCreateDevice(PhysicalDevice physicalDevice, uint queueFamilyIndex,
+        bool enableHardwareRayTracing, out Device device)
+    {
+        device = default;
         float queuePriority = 1F;
         DeviceQueueCreateInfo queueInfo = new()
         {
@@ -424,9 +469,62 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             QueueCount = 1,
             PQueuePriorities = &queuePriority
         };
-        nint[] extensionPointers = CreateUtf8Pointers(SwapchainExtensionName);
+        var extensions = new List<string> { SwapchainExtensionName };
+        if (enableHardwareRayTracing)
+        {
+            extensions.Add(KhrAccelerationStructure.ExtensionName);
+            extensions.Add(KhrRayTracingPipeline.ExtensionName);
+            extensions.Add(KhrDeferredHostOperations.ExtensionName);
+            if (_rayTracingCapabilities.SupportsRayQuery)
+            {
+                extensions.Add("VK_KHR_ray_query");
+            }
+            if (_rayTracingCapabilities.SupportsBufferDeviceAddress)
+            {
+                extensions.Add(KhrBufferDeviceAddress.ExtensionName);
+            }
+        }
+
+        nint[] extensionPointers = CreateUtf8Pointers(extensions.ToArray());
         try
         {
+            PhysicalDeviceFeatures2* featuresPointer = stackalloc PhysicalDeviceFeatures2[1];
+            PhysicalDeviceAccelerationStructureFeaturesKHR* accelerationPointer =
+                stackalloc PhysicalDeviceAccelerationStructureFeaturesKHR[1];
+            PhysicalDeviceRayTracingPipelineFeaturesKHR* pipelinePointer =
+                stackalloc PhysicalDeviceRayTracingPipelineFeaturesKHR[1];
+            PhysicalDeviceRayQueryFeaturesKHR* rayQueryPointer = stackalloc PhysicalDeviceRayQueryFeaturesKHR[1];
+            PhysicalDeviceBufferDeviceAddressFeatures* bufferAddressPointer =
+                stackalloc PhysicalDeviceBufferDeviceAddressFeatures[1];
+            *featuresPointer = new() { SType = StructureType.PhysicalDeviceFeatures2 };
+            *accelerationPointer = new()
+            {
+                SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr,
+                AccelerationStructure = enableHardwareRayTracing
+            };
+            *pipelinePointer = new()
+            {
+                SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr,
+                RayTracingPipeline = enableHardwareRayTracing
+            };
+            *rayQueryPointer = new()
+            {
+                SType = StructureType.PhysicalDeviceRayQueryFeaturesKhr,
+                RayQuery = enableHardwareRayTracing && _rayTracingCapabilities.SupportsRayQuery
+            };
+            *bufferAddressPointer = new()
+            {
+                SType = StructureType.PhysicalDeviceBufferDeviceAddressFeatures,
+                BufferDeviceAddress = enableHardwareRayTracing
+            };
+            if (enableHardwareRayTracing)
+            {
+                featuresPointer->PNext = accelerationPointer;
+                accelerationPointer->PNext = pipelinePointer;
+                pipelinePointer->PNext = rayQueryPointer;
+                rayQueryPointer->PNext = bufferAddressPointer;
+            }
+
             fixed (nint* extensionPointer = extensionPointers)
             {
                 DeviceCreateInfo createInfo = new()
@@ -434,12 +532,21 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
                     SType = StructureType.DeviceCreateInfo,
                     QueueCreateInfoCount = 1,
                     PQueueCreateInfos = &queueInfo,
-                    EnabledExtensionCount = 1,
+                    EnabledExtensionCount = (uint)extensionPointers.Length,
                     PpEnabledExtensionNames = (byte**)extensionPointer
                 };
-                Device device = default;
-                Check(_api.CreateDevice(physicalDevice, &createInfo, null, &device), "创建 Vulkan 逻辑设备");
-                return device;
+                createInfo.PNext = enableHardwareRayTracing ? featuresPointer : null;
+                Device createdDevice = default;
+                var result = _api.CreateDevice(physicalDevice, &createInfo, null, &createdDevice);
+                if (result != Result.Success)
+                {
+                    device = default;
+                    MVoxelLog.Warn($"创建 Vulkan 逻辑设备失败：{result}，硬件光追={enableHardwareRayTracing}");
+                    return false;
+                }
+
+                device = createdDevice;
+                return true;
             }
         }
         finally

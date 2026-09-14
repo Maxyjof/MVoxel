@@ -76,8 +76,8 @@ public sealed class VoxelRenderParameters
     public const int Pixel = 88, GridStep = 89, GridShown = 90, ReservedR = 91;
     /// <summary>路径降噪开关与强度</summary>
     public const int DenoiseEnabled = 92, DenoiseStrength = 93;
-    /// <summary>当前 GPU 工作集中的占用体素数量与预留槽位</summary>
-    public const int VoxelCount = 94, ReservedU = VoxelCount, ReservedV = 95;
+    /// <summary>当前 GPU 工作集中的占用体素数量与 BVH 节点数量</summary>
+    public const int VoxelCount = 94, BvhNodeCount = 95;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -111,7 +111,7 @@ public sealed class VoxelRenderParameters
             ("P_DEPTH_OF_FIELD", DepthOfField), ("P_MIS", MisEnabled), ("P_MODE_PATH", ModePath), ("P_FOV_DEGREES", FovDegrees),
             ("P_PIXEL_SEED", Pixel), ("P_GRID_STEP", GridStep), ("P_GRID_SHOWN", GridShown),
             ("P_DENOISE_ENABLED", DenoiseEnabled), ("P_DENOISE_STRENGTH", DenoiseStrength),
-            ("P_VOXEL_COUNT", VoxelCount),
+            ("P_VOXEL_COUNT", VoxelCount), ("P_BVH_NODE_COUNT", BvhNodeCount),
         };
 
         var builder = new StringBuilder();

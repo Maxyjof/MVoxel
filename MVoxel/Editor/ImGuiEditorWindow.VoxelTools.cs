@@ -254,8 +254,8 @@ internal sealed partial class ImGuiEditorWindow
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
                 showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
-            var lighting = _showLighting ? _renderSettings : FlatLightingClone();
-            if (!pipeline.RenderSceneView(lighting, frame, width, height)) return false;
+            // 场景窗口只显示体素原色，完整光照和路径追踪仅由渲染窗口执行
+            if (!pipeline.RenderSceneView(_renderSettings, frame, width, height)) return false;
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                 Vector2.Zero, pipeline.DisplayUvMax);
             return true;
@@ -265,17 +265,6 @@ internal sealed partial class ImGuiEditorWindow
             DisableGpuRendering(exception);
             return false;
         }
-    }
-
-    private RenderSettings FlatLightingClone()
-    {
-        var clone = RenderSettings.FromJson(_renderSettings.ToJson());
-        clone.SunIntensity = 0F;
-        clone.SkyAmbient = 0.9F;
-        clone.AmbientTint = 0.1F;
-        clone.AmbientOcclusionEnabled = false;
-        clone.FogDensity = 0F;
-        return clone;
     }
 
     /// <summary>
