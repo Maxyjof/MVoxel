@@ -224,6 +224,8 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
+        style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.TextSelectedBg] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.Text] = ToColor(EditorPalette.Text);
         style.Colors[(int)ImGuiCol.TextDisabled] = ToColor(EditorPalette.MutedText);
     }

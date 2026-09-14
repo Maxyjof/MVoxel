@@ -322,6 +322,14 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         style.Colors[(int)ImGuiCol.Tab] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TabHovered] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.TabSelected] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.SliderGrab] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.SliderGrabActive] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.TextSelectedBg] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.ScrollbarBg] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.ScrollbarGrab] = ToColor(EditorPalette.Border);
+        style.Colors[(int)ImGuiCol.ScrollbarGrabHovered] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.ScrollbarGrabActive] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.Text] = ToColor(EditorPalette.Text);
         style.Colors[(int)ImGuiCol.TextDisabled] = ToColor(EditorPalette.MutedText);
     }

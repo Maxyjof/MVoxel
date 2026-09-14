@@ -128,12 +128,12 @@ internal static class EditorPalette
                     Color.FromArgb(255, 27, 117, 143), Color.FromArgb(255, 25, 150, 105),
                     Color.FromArgb(255, 198, 65, 72)),
                 _ => (
-                    Color.FromArgb(255, 246, 249, 252), Color.White, Color.FromArgb(255, 226, 234, 242),
-                    Color.FromArgb(255, 255, 255, 255), Color.FromArgb(255, 157, 172, 187),
-                    Color.FromArgb(255, 41, 111, 177), Color.FromArgb(255, 211, 231, 248),
-                    Color.FromArgb(255, 29, 43, 57), Color.FromArgb(255, 91, 108, 124),
-                    Color.FromArgb(255, 45, 98, 145), Color.FromArgb(255, 30, 142, 86),
-                    Color.FromArgb(255, 194, 55, 67)),
+                    Color.FromArgb(255, 232, 237, 243), Color.FromArgb(255, 247, 249, 251),
+                    Color.FromArgb(255, 204, 214, 225), Color.FromArgb(255, 239, 243, 247),
+                    Color.FromArgb(255, 128, 145, 163), Color.FromArgb(255, 43, 103, 155),
+                    Color.FromArgb(255, 198, 218, 236), Color.FromArgb(255, 25, 37, 51),
+                    Color.FromArgb(255, 83, 98, 115), Color.FromArgb(255, 52, 83, 112),
+                    Color.FromArgb(255, 37, 139, 94), Color.FromArgb(255, 194, 64, 76)),
             };
     }
 }
