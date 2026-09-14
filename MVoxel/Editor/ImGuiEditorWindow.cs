@@ -777,10 +777,35 @@ DockId=0x6A3C1007,0
 
     private static void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        var axisLength = 6F;
-        DrawProjectedLine(drawList, Vector3.Zero, Vector3.UnitX * axisLength, origin, size, camera, ToPackedColor(Color.FromArgb(235, 230, 78, 84)), 2F);
-        DrawProjectedLine(drawList, Vector3.Zero, Vector3.UnitY * axisLength, origin, size, camera, ToPackedColor(Color.FromArgb(235, 88, 210, 132)), 2F);
-        DrawProjectedLine(drawList, Vector3.Zero, Vector3.UnitZ * axisLength, origin, size, camera, ToPackedColor(Color.FromArgb(235, 82, 154, 238)), 2F);
+        var axisLength = GetInfiniteAxisLength(camera);
+        DrawBidirectionalAxis(drawList, Vector3.UnitX, axisLength, origin, size, camera,
+            Color.FromArgb(235, 230, 78, 84));
+        DrawBidirectionalAxis(drawList, Vector3.UnitY, axisLength, origin, size, camera,
+            Color.FromArgb(235, 88, 210, 132));
+        DrawBidirectionalAxis(drawList, Vector3.UnitZ, axisLength, origin, size, camera,
+            Color.FromArgb(235, 82, 154, 238));
+    }
+
+    /// <summary>
+    /// 根据相机到世界原点的距离计算足够覆盖当前视锥的坐标轴长度
+    /// </summary>
+    private static float GetInfiniteAxisLength(SceneCamera camera)
+    {
+        var cameraDistance = MathF.Max(camera.Position.Length, camera.Target.Length);
+        if (!float.IsFinite(cameraDistance)) return 1_000_000F;
+        return Math.Clamp(cameraDistance * 4F + 1_024F, 1_024F, 100_000_000F);
+    }
+
+    /// <summary>
+    /// 绘制穿过原点并向正负方向延伸的双向坐标轴
+    /// </summary>
+    private static void DrawBidirectionalAxis(ImDrawListPtr drawList, Vector3 axis, float length,
+        Vector2 origin, Vector2 size, SceneCamera camera, Color color)
+    {
+        var positive = ToPackedColor(color);
+        var negative = ToPackedColor(Color.FromArgb(color.A / 2, color.R, color.G, color.B));
+        DrawProjectedLine(drawList, Vector3.Zero, axis * length, origin, size, camera, positive, 2F);
+        DrawProjectedLine(drawList, Vector3.Zero, -axis * length, origin, size, camera, negative, 2F);
     }
 
     private static void DrawProjectedLine(ImDrawListPtr drawList, Vector3 start, Vector3 end, Vector2 origin, Vector2 size,
