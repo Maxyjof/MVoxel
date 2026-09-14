@@ -14,6 +14,8 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// </remarks>
 internal sealed class VulkanVoxelRenderPipeline : IDisposable
 {
+    private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
+
     /// <summary>
     /// 获取当前体素 GPU 管线是否已完成设备资源初始化
     /// </summary>
@@ -37,12 +39,16 @@ internal sealed class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取体素工作集的最小坐标
     /// </summary>
-    internal VoxelRenderParameters.Vector3I RegionMin => default;
+    internal VoxelRenderParameters.Vector3I RegionMin => _workset.IsEmpty
+        ? default
+        : _workset.ToParameterOrigin();
 
     /// <summary>
     /// 获取体素工作集尺寸
     /// </summary>
-    internal VoxelRenderParameters.Vector3I RegionSize => default;
+    internal VoxelRenderParameters.Vector3I RegionSize => _workset.IsEmpty
+        ? default
+        : _workset.ToParameterSize();
 
     /// <summary>
     /// 获取当前遍历步数预算
@@ -52,12 +58,14 @@ internal sealed class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取发光体素数量
     /// </summary>
-    internal int EmissiveLightCount => 0;
+    internal int EmissiveLightCount => _workset.EmissiveCount;
 
     /// <summary>
     /// 获取最后一次 Vulkan 着色器诊断信息
     /// </summary>
-    internal string? ShaderLog => "Vulkan 体素资源管线尚未初始化";
+    internal string? ShaderLog => _workset.IsEmpty
+        ? "Vulkan 体素工作集为空，等待场景数据"
+        : $"已同步 {_workset.Cells.Count:N0} 个体素，等待 Vulkan GPU 绘制资源初始化";
 
     /// <summary>
     /// 同步稀疏体素世界到 Vulkan 工作集
@@ -65,8 +73,20 @@ internal sealed class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="world">体素世界</param>
     internal void SyncWorld(VoxelWorld world)
     {
-        _ = world;
+        ArgumentNullException.ThrowIfNull(world);
+        if (world.ContentVersion == _workset.SourceVersion)
+        {
+            return;
+        }
+
+        _workset = VoxelGpuWorkset.Build(world);
+        ResetAccumulation();
     }
+
+    /// <summary>
+    /// 获取当前同步完成的体素工作集
+    /// </summary>
+    internal VoxelGpuWorkset Workset => _workset;
 
     /// <summary>
     /// 重置渐进渲染累积

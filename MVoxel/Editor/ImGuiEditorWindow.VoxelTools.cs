@@ -9,6 +9,7 @@ using MVoxel.Editor.Settings;
 using MVoxel.Editor.Templates;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
+using MVoxel.Editor.Rendering.Vulkan;
 using OpenTK.Mathematics;
 using Color = System.Drawing.Color;
 using Vector2 = System.Numerics.Vector2;
@@ -49,8 +50,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void InitializeVoxelPipeline()
     {
-        // Vulkan 体素管线未提供设备资源时保持空引用，场景使用 CPU 预览
-        _pipeline = null;
+        _pipeline?.Dispose();
+        _pipeline = new VulkanVoxelRenderPipeline();
         _pipelineStatus = "Vulkan 体素管线正在初始化";
 
         try
