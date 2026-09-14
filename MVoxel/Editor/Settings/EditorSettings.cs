@@ -42,7 +42,6 @@ public sealed class EditorSettingsDocument
     public bool McMode;
     public float UiScale = 1F;
     public string Theme = EditorPalette.DefaultThemeName;
-    public bool ShowWelcomeOnStartup = true;
     public bool EnableGpuDiagnostics;
 
     public static EditorSettingsDocument CreateDefault()

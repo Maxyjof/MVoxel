@@ -53,6 +53,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private int _pathMode;
     private ProjectTemplateId _selectedTemplate = ProjectTemplateId.Empty;
     private int _closeRequested;
+    private int _closeAllowed;
 
     internal ImGuiWelcomeWindow(IEditorWelcomeHost editor)
         : base(GameWindowSettings.Default, CreateWindowSettings())
@@ -62,7 +63,11 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         _editor.ProjectOperationFailed += OnProjectOperationFailed;
     }
 
-    internal void RequestClose() => Interlocked.Exchange(ref _closeRequested, 1);
+    internal void RequestClose()
+    {
+        Interlocked.Exchange(ref _closeAllowed, 1);
+        Interlocked.Exchange(ref _closeRequested, 1);
+    }
 
     internal void InitializeForManualLoop()
     {
@@ -133,8 +138,13 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs args)
     {
-        // 回调在 ProcessEvents() 中派发，由编辑器所有者循环在同一主线程释放独立窗口
-        RequestClose();
+        if (Volatile.Read(ref _closeAllowed) == 0)
+        {
+            args.Cancel = true;
+            return;
+        }
+
+        // 只有项目创建或打开成功后的内部请求才允许结束 Welcome
         base.OnClosing(args);
     }
 

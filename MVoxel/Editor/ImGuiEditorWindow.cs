@@ -186,7 +186,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
         if (_controller is not null)
         {
-            if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.Close();
+            if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
             DrawEditorFrame();
                 _controller.Render();
             UiDiagnostics.Capture(this, "editor");
@@ -364,7 +364,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen)
         {
-            BlockingOperationDialog.DrawInteractionBlocker("欢迎窗口已打开", "请先在“欢迎使用 MVoxel”窗口中创建、打开项目或关闭欢迎窗口。");
+            BlockingOperationDialog.DrawInteractionBlocker("欢迎窗口已打开", "请先在“欢迎使用 MVoxel”窗口中创建或打开项目。");
         }
         else if (operation is { } snapshot)
         {

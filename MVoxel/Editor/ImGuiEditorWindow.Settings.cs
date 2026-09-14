@@ -191,9 +191,8 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("基本"))
             {
-                ImGui.Checkbox("启动时显示欢迎窗口", ref _editorSettings.ShowWelcomeOnStartup);
                 ImGui.Checkbox("启用 GPU 诊断输出", ref _editorSettings.EnableGpuDiagnostics);
-                ImGui.TextWrapped("欢迎窗口是独立的阻塞弹窗；关闭后才可操作编辑器主窗口。");
+                ImGui.TextWrapped("欢迎窗口是独立的强制入口；必须新建或打开项目后才可操作编辑器主窗口。");
                 ImGui.EndTabItem();
             }
 
