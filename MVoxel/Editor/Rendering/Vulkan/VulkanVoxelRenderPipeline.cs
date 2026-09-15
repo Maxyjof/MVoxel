@@ -1123,8 +1123,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return groundColor;
         }
 
-        vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode)
+        vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
+            out bool primarySurfaceHit)
         {
+            primarySurfaceHit = false;
             vec3 radiance = vec3(0.0);
             vec3 throughput = vec3(1.0);
             int bounceLimit = pathMode ? min(int(values[72]), 16) : 1;
@@ -1140,7 +1142,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
                     if (groundDistance > 0.0 && groundDistance < values[97])
+                    {
+                        if (bounce == 0) primarySurfaceHit = true;
                         radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance, pathMode);
+                    }
                     else
                         radiance += pathMode
                             ? throughput * Sky(rayDirection)
@@ -1162,6 +1167,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
+                if (bounce == 0) primarySurfaceHit = true;
                 if (!pathMode)
                 {
                     vec3 localPoint = clamp(fract(hitPoint), vec3(0.0), vec3(1.0));
@@ -1226,6 +1232,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 right = vec3(values[8], values[9], values[10]);
             vec3 up = vec3(values[12], values[13], values[14]);
             vec3 sampleColor = vec3(0.0);
+            bool primarySurfaceHit = false;
             for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
             {
                 if (sampleIndex >= samples) break;
@@ -1233,7 +1240,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
             vec3 direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
                 + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
-                sampleColor += TracePath(origin, direction, state, pathMode);
+                bool sampleSurfaceHit = false;
+                sampleColor += TracePath(origin, direction, state, pathMode, sampleSurfaceHit);
+                primarySurfaceHit = primarySurfaceHit || sampleSurfaceHit;
             }
             sampleColor /= float(samples);
 
@@ -1247,7 +1256,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     : sampleColor;
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
             }
-            imageStore(outputImage, pixel, vec4(clamp(color, 0.0, 1.0), 1.0));
+            float outputAlpha = pathMode || primarySurfaceHit ? 1.0 : 0.0;
+            imageStore(outputImage, pixel, vec4(clamp(color, 0.0, 1.0), outputAlpha));
         }
         """;
 
