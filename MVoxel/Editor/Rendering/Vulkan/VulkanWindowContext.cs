@@ -207,6 +207,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     {
         ArgumentNullException.ThrowIfNull(recordCommands);
         if (_deviceLost || _disposed) return;
+        MVoxelLog.Heartbeat("Vulkan 帧开始", $"设备={DeviceName}，交换链尺寸={_extent.Width}x{_extent.Height}");
         if (!TryRecreateSwapchain())
         {
             return;
@@ -226,6 +227,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             throw new InvalidOperationException($"Vulkan 获取交换链图像失败：{result}");
         }
 
+        MVoxelLog.Heartbeat("Vulkan 已获取交换链图像", $"图像索引={imageIndex}");
         _api.WaitForFences(_device, 1, in _inFlight, true, ulong.MaxValue);
         _api.ResetFences(_device, 1, in _inFlight);
         _api.ResetCommandBuffer(_commandBuffer, 0);
@@ -250,6 +252,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             PClearValues = &clearValue
         };
         _api.CmdBeginRenderPass(_commandBuffer, in passInfo, SubpassContents.Inline);
+        MVoxelLog.Heartbeat("Vulkan 正在记录帧命令", $"图像索引={imageIndex}");
         recordCommands(_commandBuffer);
         _api.CmdEndRenderPass(_commandBuffer);
         _api.EndCommandBuffer(_commandBuffer);
@@ -271,6 +274,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             PSignalSemaphores = &renderFinished
         };
         Check(_api.QueueSubmit(_queue, 1, in submitInfo, _inFlight), "提交 Vulkan 帧命令");
+        MVoxelLog.Heartbeat("Vulkan 帧命令已提交", $"图像索引={imageIndex}");
 
         PresentInfoKHR presentInfo = new()
         {
@@ -291,6 +295,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         {
             throw new InvalidOperationException($"Vulkan 呈现交换链图像失败：{result}");
         }
+        MVoxelLog.Heartbeat("Vulkan 帧呈现完成");
     }
 
     /// <summary>

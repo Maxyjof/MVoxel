@@ -10,7 +10,10 @@ public static class MVoxelLog
     private static readonly object Gate = new();
     private static StreamWriter? _writer;
     private static bool _initialized;
+    private static bool _shutdownCompleted;
     private static string _runtimeContext = "未设置运行上下文";
+    private static string _lastHeartbeatPhase = string.Empty;
+    private static DateTimeOffset _lastHeartbeatAt;
 
     /// <summary>
     /// 上次异常退出的摘要
@@ -31,6 +34,7 @@ public static class MVoxelLog
         {
             if (_initialized) return;
             _initialized = true;
+            _shutdownCompleted = false;
             try
             {
                 AppPaths.EnsureDirectories();
@@ -42,6 +46,7 @@ public static class MVoxelLog
                     AutoFlush = true,
                 };
                 WriteCore("信息", "日志系统已启动");
+                WriteCore("信息", $"运行会话：{Guid.NewGuid():N}，进程={Environment.ProcessId}，命令行={Environment.CommandLine}");
             }
             catch
             {
@@ -50,6 +55,7 @@ public static class MVoxelLog
 
             AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
             TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         }
     }
 
@@ -84,6 +90,30 @@ public static class MVoxelLog
         lock (Gate)
         {
             _runtimeContext = string.IsNullOrWhiteSpace(context) ? "未设置运行上下文" : context.Replace("\0", string.Empty, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// 写入低频渲染阶段心跳。阶段变化会立即写入，阶段未变化时最多每两秒写入一次，
+    /// 便于定位原生图形层退出，同时避免逐帧刷爆日志。
+    /// </summary>
+    /// <param name="phase">当前阶段</param>
+    /// <param name="details">阶段附加信息</param>
+    public static void Heartbeat(string phase, string? details = null)
+    {
+        lock (Gate)
+        {
+            if (!_initialized || _writer is null) return;
+            var now = DateTimeOffset.Now;
+            var phaseChanged = !string.Equals(_lastHeartbeatPhase, phase, StringComparison.Ordinal);
+            var minimumInterval = phaseChanged ? TimeSpan.FromMilliseconds(250) : TimeSpan.FromSeconds(2);
+            if (now - _lastHeartbeatAt < minimumInterval)
+                return;
+
+            _lastHeartbeatPhase = phase;
+            _lastHeartbeatAt = now;
+            var suffix = string.IsNullOrWhiteSpace(details) ? string.Empty : $"，{details}";
+            WriteCore("阶段", $"{phase}{suffix}");
         }
     }
 
@@ -152,9 +182,11 @@ public static class MVoxelLog
             if (!_initialized) return;
             AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
             TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+            AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
             try
             {
                 WriteCore("信息", "日志系统已关闭");
+                _shutdownCompleted = true;
                 _writer?.Dispose();
                 _writer = null;
                 ArchiveCurrentLog();
@@ -221,6 +253,22 @@ public static class MVoxelLog
     private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs args)
     {
         RecordCrash("未处理的应用异常", args.ExceptionObject as Exception);
+    }
+
+    private static void OnProcessExit(object? sender, EventArgs args)
+    {
+        lock (Gate)
+        {
+            if (!_initialized || _shutdownCompleted || _writer is null) return;
+            try
+            {
+                WriteCore("警告", "进程退出时未经过 MVoxelLog.Shutdown，可能是原生崩溃、强制终止或宿主异常退出");
+                _writer.Flush();
+            }
+            catch
+            {
+            }
+        }
     }
 
     private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs args)

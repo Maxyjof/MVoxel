@@ -17,12 +17,15 @@ internal static class Program
     {
         MVoxelLog.Initialize();
         MVoxelLog.Info($"启动 MVoxel，程序目录：{AppPaths.BaseDirectory}");
+        MVoxelLog.Heartbeat("应用入口", $"进程={Environment.ProcessId}，参数数量={args.Length}");
         try
         {
+            MVoxelLog.Heartbeat("创建编辑器窗口");
             EditorApplication.Run(args);
         }
         catch (Exception exception)
         {
+            MVoxelLog.Heartbeat("应用主循环异常");
             MVoxelLog.RecordCrash("应用主循环异常结束", exception);
             Environment.ExitCode = 1;
         }
