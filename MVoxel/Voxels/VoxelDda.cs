@@ -23,8 +23,10 @@ public static class VoxelDda
     /// <param name="origin">射线起点</param>
     /// <param name="direction">射线方向，无需预先归一化</param>
     /// <param name="maximumDistance">最大行进距离，防止在空旷区域无限步进</param>
+    /// <param name="ignoreOriginCell">是否忽略射线起点所在的占用格</param>
     /// <returns>命中结果，未命中返回 null</returns>
-    public static Hit? RayCast(VoxelWorld world, Vector3 origin, Vector3 direction, float maximumDistance = 512F)
+    public static Hit? RayCast(VoxelWorld world, Vector3 origin, Vector3 direction, float maximumDistance = 512F,
+        bool ignoreOriginCell = false)
     {
         if (Vector3.Dot(direction, direction) < 1e-12F || maximumDistance <= 0F) return null;
         var step = Vector3.Normalize(direction);
@@ -40,15 +42,18 @@ public static class VoxelDda
         var sign = (X: (int)MathF.Sign(step.X), Y: (int)MathF.Sign(step.Y), Z: (int)MathF.Sign(step.Z));
 
         var travelled = 0F;
+        var isOriginCell = true;
         var normal = InitialNormal(step);
         // 步数预算防止射线穿越超大空旷区域
         var stepsLeft = (int)Math.Clamp(maximumDistance * 4F, 256F, 250_000F);
         while (stepsLeft-- > 0)
         {
-            if (world.TryGet(cell, out var value) && !value.IsEmpty)
+            if ((!ignoreOriginCell || !isOriginCell) && world.TryGet(cell, out var value) && !value.IsEmpty)
             {
                 return new Hit(cell, normal, travelled, origin + step * travelled);
             }
+
+            isOriginCell = false;
 
             if (next.X <= next.Y && next.X <= next.Z)
             {

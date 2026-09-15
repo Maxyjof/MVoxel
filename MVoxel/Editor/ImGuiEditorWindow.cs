@@ -1073,7 +1073,9 @@ DockId=0x6A3C3007,0
         }
 
         var screenLength = Vector2.Distance(startPoint, endPoint);
-        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 3F), 96, 512);
+        var worldLength = Vector3.Distance(clippedStart, clippedEnd);
+        var sampleCount = Math.Clamp((int)MathF.Ceiling(Math.Max(screenLength / 2F, worldLength / 2F)), 128, 2048);
+        var previousWorld = clippedStart;
         var previousScreen = startPoint;
         var previousVisible = IsAxisPointVisible(clippedStart, origin, size, camera);
         for (var index = 1; index <= sampleCount; index++)
@@ -1091,10 +1093,59 @@ DockId=0x6A3C3007,0
             {
                 drawList.AddLine(previousScreen, screenPoint, color, thickness);
             }
+            else if (previousVisible != visible)
+            {
+                var boundary = RefineAxisVisibilityTransition(previousWorld, worldPoint, previousVisible,
+                    origin, size, camera);
+                if (SceneProjection.Project(boundary, origin, size, camera, out var boundaryScreen, out _))
+                {
+                    if (previousVisible)
+                    {
+                        drawList.AddLine(previousScreen, boundaryScreen, color, thickness);
+                    }
+                    else if (visible)
+                    {
+                        drawList.AddLine(boundaryScreen, screenPoint, color, thickness);
+                    }
+                }
+            }
 
+            previousWorld = worldPoint;
             previousScreen = screenPoint;
             previousVisible = visible;
         }
+    }
+
+    /// <summary>
+    /// 二分查找轴线与模型遮挡状态的切换位置
+    /// </summary>
+    /// <param name="from">当前采样世界点</param>
+    /// <param name="to">下一个采样世界点</param>
+    /// <param name="fromVisible">当前采样点是否可见</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>遮挡状态切换附近的世界点</returns>
+    private Vector3 RefineAxisVisibilityTransition(Vector3 from, Vector3 to, bool fromVisible,
+        Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        var lower = from;
+        var upper = to;
+        for (var iteration = 0; iteration < 8; iteration++)
+        {
+            var middle = (lower + upper) / 2F;
+            var middleVisible = IsAxisPointVisible(middle, origin, size, camera);
+            if (middleVisible == fromVisible)
+            {
+                lower = middle;
+            }
+            else
+            {
+                upper = middle;
+            }
+        }
+
+        return (lower + upper) / 2F;
     }
 
     /// <summary>
@@ -1115,7 +1166,7 @@ DockId=0x6A3C3007,0
 
         // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
         var hit = VoxelDda.RayCast(_world, cameraPosition, direction,
-            MathF.Max(pointDistance - 0.01F, near));
+            MathF.Max(pointDistance - 0.01F, near), ignoreOriginCell: true);
         return hit is null;
     }
 
