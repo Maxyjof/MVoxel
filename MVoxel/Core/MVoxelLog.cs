@@ -35,7 +35,8 @@ public static class MVoxelLog
             {
                 AppPaths.EnsureDirectories();
                 PreviousCrash = LoadPreviousCrash();
-                CurrentLogPath = Path.Combine(AppPaths.LogDirectory, $"MVoxel-{DateTime.Now:yyyyMMdd}.log");
+                ArchiveUnclosedLog();
+                CurrentLogPath = Path.Combine(AppPaths.LogDirectory, "MVoxel.log");
                 _writer = new StreamWriter(CurrentLogPath, append: true, new UTF8Encoding(false))
                 {
                     AutoFlush = true,
@@ -97,7 +98,7 @@ public static class MVoxelLog
         {
             var now = DateTimeOffset.Now;
             var fileName = $"MVoxel-Crash-{now:yyyyMMdd-HHmmss-fff}.log";
-            var reportPath = Path.Combine(AppPaths.LogDirectory, fileName);
+            var reportPath = Path.Combine(AppPaths.OldLogDirectory, fileName);
             var report = new StringBuilder()
                 .AppendLine("MVoxel 崩溃报告")
                 .AppendLine($"时间：{now:yyyy-MM-dd HH:mm:ss.fff zzz}")
@@ -114,6 +115,7 @@ public static class MVoxelLog
             try
             {
                 Directory.CreateDirectory(AppPaths.LogDirectory);
+                Directory.CreateDirectory(AppPaths.OldLogDirectory);
                 AtomicFile.WriteText(reportPath, report.ToString(), backupExtension: null);
                 var noticePath = Path.Combine(AppPaths.LogDirectory, "last-crash.notice");
                 var notice = $"{now:O}{Environment.NewLine}{reportPath}{Environment.NewLine}{message.Replace(Environment.NewLine, " ", StringComparison.Ordinal)}";
@@ -161,12 +163,72 @@ public static class MVoxelLog
             {
                 WriteCore("信息", "日志系统已关闭");
                 _writer?.Dispose();
+                _writer = null;
+                ArchiveCurrentLog();
             }
             catch
             {
             }
 
             _writer = null;
+        }
+    }
+
+    /// <summary>
+    /// 将本次正常关闭的运行日志移动到归档目录
+    /// </summary>
+    private static void ArchiveCurrentLog()
+    {
+        if (string.IsNullOrWhiteSpace(CurrentLogPath) || !File.Exists(CurrentLogPath)) return;
+        try
+        {
+            Directory.CreateDirectory(AppPaths.OldLogDirectory);
+            var archivePath = Path.Combine(AppPaths.OldLogDirectory, $"MVoxel-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
+            archivePath = GetAvailableArchivePath(archivePath);
+            File.Move(CurrentLogPath, archivePath);
+            CurrentLogPath = null;
+        }
+        catch (Exception exception)
+        {
+            WriteCore("警告", $"归档运行日志失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 将上次异常中断留下的当前日志移动到归档目录
+    /// </summary>
+    private static void ArchiveUnclosedLog()
+    {
+        var currentPath = Path.Combine(AppPaths.LogDirectory, "MVoxel.log");
+        if (!File.Exists(currentPath)) return;
+        try
+        {
+            Directory.CreateDirectory(AppPaths.OldLogDirectory);
+            var archivePath = Path.Combine(AppPaths.OldLogDirectory, $"MVoxel-Unclosed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
+            archivePath = GetAvailableArchivePath(archivePath);
+            File.Move(currentPath, archivePath);
+        }
+        catch (Exception exception)
+        {
+            WriteCore("警告", $"归档上次未关闭日志失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 生成不存在的归档路径，避免同一毫秒内多次关闭覆盖日志
+    /// </summary>
+    /// <param name="path">首选归档路径</param>
+    /// <returns>可用归档路径</returns>
+    private static string GetAvailableArchivePath(string path)
+    {
+        if (!File.Exists(path)) return path;
+        var directory = Path.GetDirectoryName(path)!;
+        var name = Path.GetFileNameWithoutExtension(path);
+        var extension = Path.GetExtension(path);
+        for (var index = 1; ; index++)
+        {
+            var candidate = Path.Combine(directory, $"{name}-{index}{extension}");
+            if (!File.Exists(candidate)) return candidate;
         }
     }
 

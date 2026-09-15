@@ -21,9 +21,14 @@ public static class AppPaths
     public static string ConfigDirectory => Path.Combine(DataDirectory, "Config");
 
     /// <summary>
-    /// 日志目录
+    /// 运行期间使用的当前日志目录
     /// </summary>
-    public static string LogDirectory => Path.Combine(DataDirectory, "Logs");
+    public static string LogDirectory => Path.Combine(DataDirectory, "log");
+
+    /// <summary>
+    /// 已关闭日志和崩溃报告的归档目录
+    /// </summary>
+    public static string OldLogDirectory => Path.Combine(DataDirectory, "old_log");
 
     /// <summary>
     /// 返回指定名称的编辑器配置文件路径
@@ -39,5 +44,6 @@ public static class AppPaths
     {
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(LogDirectory);
+        Directory.CreateDirectory(OldLogDirectory);
     }
 }
