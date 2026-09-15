@@ -307,6 +307,7 @@ public enum TransformMode
 /// </summary>
 public sealed class TransformComponent
 {
+    private static readonly OrthogonalRotation[] VoxelRotations = BuildVoxelRotations();
     /// <summary>
     /// 用显式模式与两套值构造组件
     /// </summary>
@@ -352,6 +353,37 @@ public sealed class TransformComponent
         new(TransformMode.Free, GridTransform.Identity, transform);
 
     /// <summary>
+    /// 将自由变换吸附为体素模型允许的整数位置和 90 度旋转
+    /// </summary>
+    /// <returns>吸附后的格变换</returns>
+    public GridTransform ToGrid()
+    {
+        var position = Mode == TransformMode.Grid
+            ? Grid.Position
+            : new VoxelCoord64(
+                (long)Math.Round(Free.Position.X),
+                (long)Math.Round(Free.Position.Y),
+                (long)Math.Round(Free.Position.Z));
+        if (Mode == TransformMode.Grid) return Grid;
+
+        var rotation = Free.Rotation;
+        if (rotation.LengthSquared() < 0.000001F || !float.IsFinite(rotation.LengthSquared()))
+            return new GridTransform(position, OrthogonalRotation.Identity);
+        rotation = Quaternion.Normalize(rotation);
+        var matrix = Matrix4x4.CreateFromQuaternion(rotation);
+        var best = OrthogonalRotation.Identity;
+        var bestScore = float.NegativeInfinity;
+        foreach (var candidate in VoxelRotations)
+        {
+            var score = matrix.M11 * candidate.M00 + matrix.M12 * candidate.M01 + matrix.M13 * candidate.M02 +
+                        matrix.M21 * candidate.M10 + matrix.M22 * candidate.M11 + matrix.M23 * candidate.M12 +
+                        matrix.M31 * candidate.M20 + matrix.M32 * candidate.M21 + matrix.M33 * candidate.M22;
+            if (score > bestScore) { bestScore = score; best = candidate; }
+        }
+        return new GridTransform(position, best);
+    }
+
+    /// <summary>
     /// 切换为格变换模式
     /// </summary>
     /// <param name="transform">新的格变换值</param>
@@ -359,6 +391,20 @@ public sealed class TransformComponent
     {
         Mode = TransformMode.Grid;
         Grid = transform;
+    }
+
+    private static OrthogonalRotation[] BuildVoxelRotations()
+    {
+        var rotations = new List<OrthogonalRotation> { OrthogonalRotation.Identity };
+        for (var index = 0; index < rotations.Count; index++)
+        {
+            foreach (var axis in new[] { OrthogonalRotation.AroundX90, OrthogonalRotation.AroundY90, OrthogonalRotation.AroundZ90 })
+            {
+                var candidate = rotations[index].Compose(axis);
+                if (!rotations.Contains(candidate)) rotations.Add(candidate);
+            }
+        }
+        return rotations.ToArray();
     }
 
     /// <summary>

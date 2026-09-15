@@ -95,6 +95,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _brushRadius = 1;
     private int _paletteIndex = 40;
     private bool _brushEmissive;
+    private string? _componentWarning;
     private VoxelDda.Hit? _selectedVoxel;
     private StableId? _selectedSceneObjectId;
     private VoxelDda.Hit? _brushPreview;
@@ -1854,6 +1855,8 @@ DockId=0x6A3C3007,0
             : null;
         if (selectedObject is not null)
         {
+            if (!string.IsNullOrWhiteSpace(_componentWarning))
+                ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
             ImGui.Text($"对象  {selectedObject.Name}");
             ImGui.Text($"组件  {selectedObject.Components.Count}");
             var visible = selectedObject.Visible;
@@ -1883,7 +1886,7 @@ DockId=0x6A3C3007,0
                     : $"{definition.DisplayName} · {definition.Category}";
                 if (!ImGui.TreeNodeEx($"{label}##InspectorComponent{componentIndex}", ImGuiTreeNodeFlags.SpanAvailWidth))
                     continue;
-                DrawComponentSummary(component);
+                DrawComponentSummary(selectedObject, component);
                 ImGui.TreePop();
             }
 
@@ -1893,6 +1896,25 @@ DockId=0x6A3C3007,0
                 {
                     if (selectedObject.Components.Any(item => item.TypeId == definition.TypeId)) continue;
                     if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
+                    if (definition.TypeId == SceneComponentTypes.VoxelModel &&
+                        selectedObject.Components.Any(SceneComponentTypes.IsCamera))
+                    {
+                        _componentWarning = "模型组件与相机组件不能同时挂载";
+                        continue;
+                    }
+                    if (definition.TypeId == SceneComponentTypes.Camera &&
+                        selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel))
+                    {
+                        _componentWarning = "相机组件与模型组件不能同时挂载";
+                        continue;
+                    }
+                    _componentWarning = null;
+                    if (definition.TypeId == SceneComponentTypes.VoxelModel)
+                    {
+                        selectedObject.Transform.SetGrid(selectedObject.Transform.ToGrid());
+                        var transform = selectedObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
+                        if (transform is not null) transform.Data = JsonSerializer.SerializeToElement(new { kind = "Grid" });
+                    }
                     selectedObject.Components.Add(definition.TypeId switch
                     {
                         SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
@@ -1959,11 +1981,31 @@ DockId=0x6A3C3007,0
         ImGui.SeparatorText("材质");
     }
 
-    private static void DrawComponentSummary(ComponentRecord component)
+    private void DrawComponentSummary(SceneObject selectedObject, ComponentRecord component)
     {
         if (SceneComponentTypes.IsTransform(component))
         {
-            ImGui.TextDisabled("对象坐标与旋转的基础组件");
+            if (selectedObject.Transform.Mode == TransformMode.Free)
+            {
+                var position = selectedObject.Transform.Free.Position;
+                var rotation = selectedObject.Transform.Free.Rotation;
+                ImGui.Text($"位置  {position.X:0.###}, {position.Y:0.###}, {position.Z:0.###}");
+                ImGui.Text($"旋转  {rotation.X:0.###}, {rotation.Y:0.###}, {rotation.Z:0.###}, {rotation.W:0.###}");
+            }
+            else
+            {
+                var grid = selectedObject.Transform.Grid;
+                ImGui.Text($"整数位置  {grid.Position.X}, {grid.Position.Y}, {grid.Position.Z}");
+                ImGui.TextDisabled("模型旋转单位  90°");
+                if (ImGui.Button("绕 X 轴 90°##TransformRotateX"))
+                    RotateModel(selectedObject, OrthogonalRotation.AroundX90);
+                ImGui.SameLine();
+                if (ImGui.Button("绕 Y 轴 90°##TransformRotateY"))
+                    RotateModel(selectedObject, OrthogonalRotation.AroundY90);
+                ImGui.SameLine();
+                if (ImGui.Button("绕 Z 轴 90°##TransformRotateZ"))
+                    RotateModel(selectedObject, OrthogonalRotation.AroundZ90);
+            }
             return;
         }
 
@@ -1998,6 +2040,17 @@ DockId=0x6A3C3007,0
 
         ImGui.TextDisabled($"类型 ID  {component.TypeId}");
         ImGui.TextDisabled("由插件提供组件数据和编辑命令");
+    }
+
+    private void RotateModel(SceneObject sceneObject, OrthogonalRotation rotation)
+    {
+        if (sceneObject.Transform.Mode != TransformMode.Grid) return;
+        var current = sceneObject.Transform.Grid;
+        sceneObject.Transform.SetGrid(new GridTransform(current.Position, current.Rotation.Compose(rotation)));
+        var transform = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
+        if (transform is not null) transform.Data = JsonSerializer.SerializeToElement(new { kind = "Grid" });
+        _componentWarning = null;
+        _pipeline?.ResetAccumulation();
     }
 
     /// <summary>

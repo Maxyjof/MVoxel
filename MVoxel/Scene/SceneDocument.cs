@@ -65,13 +65,13 @@ public sealed class SceneObject
     /// <summary>
     /// 对象的变换组件，体素模型默认格变换
     /// </summary>
-    public TransformComponent Transform { get; set; } = TransformComponent.FromGrid(GridTransform.Identity);
+    public TransformComponent Transform { get; set; } = TransformComponent.FromFree(FreeTransform.Identity);
 
     /// <summary>
     /// 挂载的组件记录，未知组件按原样保留不丢失
     /// </summary>
     public List<ComponentRecord> Components { get; set; } =
-    [SceneComponentTypes.CreateTransform(TransformComponent.FromGrid(GridTransform.Identity))];
+    [SceneComponentTypes.CreateTransform(TransformComponent.FromFree(FreeTransform.Identity))];
 }
 
 /// <summary>
@@ -136,7 +136,7 @@ public sealed class SceneGraph
         {
             Name = string.IsNullOrWhiteSpace(name) ? "Object" : name,
             ParentId = parentId,
-            Transform = transform ?? TransformComponent.FromGrid(GridTransform.Identity),
+            Transform = transform ?? TransformComponent.FromFree(FreeTransform.Identity),
         };
         sceneObject.Components.RemoveAll(SceneComponentTypes.IsTransform);
         sceneObject.Components.Insert(0, SceneComponentTypes.CreateTransform(sceneObject.Transform));
