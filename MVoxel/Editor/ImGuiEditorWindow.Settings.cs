@@ -674,9 +674,9 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("自动保存"))
             {
-                ImGui.Checkbox("启用自动保存建议", ref _projectSettings.AutoSave);
+                ImGui.Checkbox("启用自动保存", ref _projectSettings.AutoSave);
                 ImGui.SliderInt("间隔（秒）", ref _projectSettings.AutoSaveSeconds, 10, 3600);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("自动保存建议的时间间隔");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按此间隔自动保存");
                 ImGui.EndTabItem();
             }
 

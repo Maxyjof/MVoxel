@@ -3064,6 +3064,7 @@ DockId=0x6A3C3007,0
         if (SaveWorldToProject(_project))
         {
             _sceneDocumentDirty = false;
+            _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
             SetStatus(automatic
                 ? $"项目已自动保存：{_project.Manifest.Name}"
                 : $"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
