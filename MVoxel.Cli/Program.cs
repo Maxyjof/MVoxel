@@ -238,6 +238,7 @@ internal static class Program
         object result = name switch
         {
             "project.create" => CreateProject(arguments),
+            "project.listTemplates" => ListTemplates(),
             "project.info" => ProjectInfo(arguments),
             "project.listPlugins" => ListPlugins(arguments),
             "project.enablePlugin" => SetPlugin(arguments, true),
@@ -277,6 +278,18 @@ internal static class Program
         ProjectTemplateCatalog.Populate(project, templateId);
         return new { project.RootPath, project.Manifest.Name, Template = templateId.ToString() };
     }
+
+    /// <summary>
+    /// 读取可用于创建项目的示例模板
+    /// </summary>
+    /// <returns>模板定义列表</returns>
+    private static object ListTemplates() => ProjectTemplateCatalog.All.Select(template => new
+    {
+        id = template.Id.ToString(),
+        name = template.Name,
+        description = template.Description,
+        focus = template.Focus,
+    }).ToArray();
 
     /// <summary>
     /// 读取项目摘要
@@ -363,6 +376,7 @@ internal static class Program
     private static readonly object[] ToolDefinitions =
     [
         new { name = "project.create", description = "创建 MVoxel 项目并生成可选示例模板", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, name = new { type = "string" }, templateId = new { type = "string", description = "ProjectTemplateId 枚举值，默认 Empty" } }, required = new[] { "path" } } },
+        new { name = "project.listTemplates", description = "读取可用项目模板", inputSchema = new { type = "object", properties = new { } } },
         new { name = "project.info", description = "读取项目摘要", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listPlugins", description = "读取编辑器级插件和项目启用状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.enablePlugin", description = "在项目中启用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
