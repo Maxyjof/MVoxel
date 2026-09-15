@@ -1612,9 +1612,17 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled();
-        ImGui.SmallButton("导出 PNG（开发中）");
+        var canExport = _pipeline?.CanSaveDisplayPng == true;
+        ImGui.BeginDisabled(!canExport);
+        if (ImGui.SmallButton("导出 PNG"))
+        {
+            ExportRenderPng();
+        }
         ImGui.EndDisabled();
+        if (!canExport && ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("当前 Vulkan 显示结果尚未准备好");
+        }
         ImGui.SameLine();
         ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
     }

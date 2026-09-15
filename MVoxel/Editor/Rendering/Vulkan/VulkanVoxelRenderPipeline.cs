@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
+using MVoxel.Core;
 using MVoxel.Rendering;
 using MVoxel.Voxels;
 using Silk.NET.Core.Native;
@@ -93,6 +94,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 获取最近一次渲染是否实际使用硬件 RT
     /// </summary>
     internal bool UsingHardwareRayTracing => _usingHardwareRayTracing;
+
+    /// <summary>
+    /// 获取当前显示结果是否支持 PNG 回读
+    /// </summary>
+    internal bool CanSaveDisplayPng => IsAvailable && !_usingHardwareRayTracing &&
+        _outputImage.Handle != 0 && _outputIsShaderReadOnly;
 
     /// <summary>
     /// 获取硬件 RT 最近一次错误
@@ -245,8 +252,89 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>当前是否保存成功</returns>
     internal bool SaveDisplayPng(string path)
     {
-        _ = path;
-        return false;
+        if (_usingHardwareRayTracing || _context is null || _api is not { } api ||
+            _outputImage.Handle == 0 || !_outputIsShaderReadOnly || _outputWidth == 0 || _outputHeight == 0)
+        {
+            return false;
+        }
+
+        var byteCount = checked((ulong)_outputWidth * _outputHeight * 4);
+        var (stagingBuffer, stagingMemory) = CreateBuffer(
+            byteCount,
+            BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        try
+        {
+            byte[] pixels = new byte[checked((int)byteCount)];
+            _context.ExecuteImmediate(commandBuffer =>
+            {
+                ImageMemoryBarrier toTransfer = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    NewLayout = ImageLayout.TransferSrcOptimal,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _outputImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                    SrcAccessMask = AccessFlags.ShaderReadBit,
+                    DstAccessMask = AccessFlags.TransferReadBit
+                };
+                api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.FragmentShaderBit,
+                    PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in toTransfer);
+
+                BufferImageCopy copy = new()
+                {
+                    BufferOffset = 0,
+                    BufferRowLength = 0,
+                    BufferImageHeight = 0,
+                    ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+                    ImageOffset = default,
+                    ImageExtent = new Extent3D(_outputWidth, _outputHeight, 1)
+                };
+                api.CmdCopyImageToBuffer(commandBuffer, _outputImage, ImageLayout.TransferSrcOptimal,
+                    stagingBuffer, 1, in copy);
+
+                ImageMemoryBarrier backToShader = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.TransferSrcOptimal,
+                    NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _outputImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                    SrcAccessMask = AccessFlags.TransferReadBit,
+                    DstAccessMask = AccessFlags.ShaderReadBit
+                };
+                api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.FragmentShaderBit, 0, 0, null, 0, null, 1, in backToShader);
+            });
+
+            void* mapped = null;
+            Check(api.MapMemory(_device, stagingMemory, 0, byteCount, 0, &mapped), "映射渲染导出暂存缓冲");
+            try
+            {
+                Marshal.Copy((nint)mapped, pixels, 0, pixels.Length);
+            }
+            finally
+            {
+                api.UnmapMemory(_device, stagingMemory);
+            }
+
+            AtomicFile.WriteBytes(path, PngEncoder.EncodeRgba8(pixels, (int)_outputWidth, (int)_outputHeight));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("导出 Vulkan 渲染图像失败", exception);
+            return false;
+        }
+        finally
+        {
+            api.DestroyBuffer(_device, stagingBuffer, null);
+            api.FreeMemory(_device, stagingMemory, null);
+        }
     }
 
     /// <summary>
@@ -486,7 +574,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit,
+            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit,
             SharingMode = SharingMode.Exclusive,
             InitialLayout = ImageLayout.Undefined
         };
