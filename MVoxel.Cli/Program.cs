@@ -181,7 +181,14 @@ internal static class Program
         var response = reader.ReadLine() ?? throw new IOException("编辑器控制端点没有返回结果");
         using var document = JsonDocument.Parse(response);
         if (!document.RootElement.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
-            throw new InvalidOperationException("编辑器控制命令失败");
+        {
+            var message = document.RootElement.TryGetProperty("error", out var error)
+                ? error.GetString()
+                : null;
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(message)
+                ? "编辑器控制命令失败"
+                : $"编辑器控制命令失败：{message}");
+        }
         return document.RootElement.TryGetProperty("result", out var result) ? result.Clone() : new { };
     }
 
