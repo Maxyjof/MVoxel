@@ -402,11 +402,14 @@ internal sealed partial class ImGuiEditorWindow
             var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < _renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                pipeline.RenderPathView(_renderSettings, frame, width, height);
+                if (!pipeline.RenderPathView(_renderSettings, frame, width, height))
+                {
+                    return false;
+                }
             }
-            else
+            else if (!pipeline.Present(_renderSettings, frame, width, height))
             {
-                pipeline.Present(_renderSettings, frame, width, height);
+                return false;
             }
 
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
