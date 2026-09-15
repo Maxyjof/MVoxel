@@ -105,6 +105,98 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     internal nint DisplayTextureId => _displayTextureId;
 
     /// <summary>
+    /// 获取当前硬件 RT 显示结果是否支持 PNG 回读
+    /// </summary>
+    internal bool CanSaveDisplayPng => IsReady && _outputImage.Handle != 0 &&
+        _outputIsShaderReadOnly && _outputWidth > 0 && _outputHeight > 0;
+
+    /// <summary>
+    /// 将当前硬件 RT 显示结果回读并保存为 PNG
+    /// </summary>
+    /// <param name="path">输出文件路径</param>
+    /// <returns>当前是否保存成功</returns>
+    internal bool SaveDisplayPng(string path)
+    {
+        if (!CanSaveDisplayPng)
+        {
+            return false;
+        }
+
+        var byteCount = checked((ulong)_outputWidth * _outputHeight * 4);
+        var stagingBuffer = CreateDeviceBuffer(byteCount, BufferUsageFlags.TransferDstBit,
+            out var stagingMemory, hostVisible: true);
+        try
+        {
+            byte[] pixels = new byte[checked((int)byteCount)];
+            _context.ExecuteImmediate(commandBuffer =>
+            {
+                ImageMemoryBarrier toTransfer = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    NewLayout = ImageLayout.TransferSrcOptimal,
+                    SrcAccessMask = AccessFlags.ShaderReadBit,
+                    DstAccessMask = AccessFlags.TransferReadBit,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _outputImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1)
+                };
+                _api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.FragmentShaderBit,
+                    PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in toTransfer);
+
+                BufferImageCopy copy = new()
+                {
+                    ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+                    ImageExtent = new Extent3D(_outputWidth, _outputHeight, 1)
+                };
+                _api.CmdCopyImageToBuffer(commandBuffer, _outputImage, ImageLayout.TransferSrcOptimal,
+                    stagingBuffer, 1, in copy);
+
+                ImageMemoryBarrier backToShader = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.TransferSrcOptimal,
+                    NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    SrcAccessMask = AccessFlags.TransferReadBit,
+                    DstAccessMask = AccessFlags.ShaderReadBit,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _outputImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1)
+                };
+                _api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.FragmentShaderBit, 0, 0, null, 0, null, 1, in backToShader);
+            });
+
+            void* mapped = null;
+            Check(_api.MapMemory(_device, stagingMemory, 0, byteCount, 0, &mapped), "映射硬件 RT 导出暂存缓冲");
+            try
+            {
+                Marshal.Copy((nint)mapped, pixels, 0, pixels.Length);
+            }
+            finally
+            {
+                _api.UnmapMemory(_device, stagingMemory);
+            }
+
+            AtomicFile.WriteBytes(path, PngEncoder.EncodeRgba8(pixels, (int)_outputWidth, (int)_outputHeight));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _lastError = exception.ToString();
+            MVoxelLog.Error("导出硬件 RT 图像失败", exception);
+            return false;
+        }
+        finally
+        {
+            _api.DestroyBuffer(_device, stagingBuffer, null);
+            _api.FreeMemory(_device, stagingMemory, null);
+        }
+    }
+
+    /// <summary>
     /// 尝试执行一帧硬件光追
     /// </summary>
     /// <param name="workset">当前体素工作集</param>
@@ -558,7 +650,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             ArrayLayers = 1,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
-            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit,
+            Usage = ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit,
             InitialLayout = ImageLayout.Undefined,
         };
         Check(_api.CreateImage(_device, in info, null, out _outputImage), "创建硬件 RT 输出图像");

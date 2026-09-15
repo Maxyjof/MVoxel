@@ -98,8 +98,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取当前显示结果是否支持 PNG 回读
     /// </summary>
-    internal bool CanSaveDisplayPng => IsAvailable && !_usingHardwareRayTracing &&
-        _outputImage.Handle != 0 && _outputIsShaderReadOnly;
+    internal bool CanSaveDisplayPng => _usingHardwareRayTracing
+        ? _hardwareRayTracingPipeline?.CanSaveDisplayPng == true
+        : IsAvailable && _outputImage.Handle != 0 && _outputIsShaderReadOnly;
 
     /// <summary>
     /// 获取硬件 RT 最近一次错误
@@ -252,7 +253,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>当前是否保存成功</returns>
     internal bool SaveDisplayPng(string path)
     {
-        if (_usingHardwareRayTracing || _context is null || _api is not { } api ||
+        if (_usingHardwareRayTracing)
+        {
+            return _hardwareRayTracingPipeline?.SaveDisplayPng(path) == true;
+        }
+
+        if (_context is null || _api is not { } api ||
             _outputImage.Handle == 0 || !_outputIsShaderReadOnly || _outputWidth == 0 || _outputHeight == 0)
         {
             return false;
