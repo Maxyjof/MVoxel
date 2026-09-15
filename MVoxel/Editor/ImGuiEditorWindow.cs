@@ -1997,16 +1997,14 @@ DockId=0x6A3C3007,0
                         new Double3(positionValue.X, positionValue.Y, positionValue.Z), rotation));
                     UpdateTransformMarker(selectedObject);
                 }
-                var rotationValue = new Vector4(rotation.X, rotation.Y, rotation.Z, rotation.W);
-                if (ImGui.InputFloat4("旋转四元数##TransformRotation", ref rotationValue))
+                var euler = selectedObject.Transform.GetEulerDegrees();
+                var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
+                if (ImGui.InputFloat3("旋转 XYZ（度）##TransformRotation", ref eulerValue))
                 {
-                    var quaternion = new NumQuaternion(rotationValue.X, rotationValue.Y, rotationValue.Z, rotationValue.W);
-                    if (quaternion.LengthSquared() > 0.000001F && float.IsFinite(quaternion.LengthSquared()))
-                    {
-                        selectedObject.Transform.SetFree(new FreeTransform(
-                            position, NumQuaternion.Normalize(quaternion)));
-                        UpdateTransformMarker(selectedObject);
-                    }
+                    selectedObject.Transform.SetFreeEuler(
+                        position,
+                        new Double3(eulerValue.X, eulerValue.Y, eulerValue.Z));
+                    UpdateTransformMarker(selectedObject);
                 }
             }
             else

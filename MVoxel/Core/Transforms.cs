@@ -384,6 +384,37 @@ public sealed class TransformComponent
     }
 
     /// <summary>
+    /// 读取自由变换的 XYZ 欧拉角，单位为度
+    /// </summary>
+    public Double3 GetEulerDegrees()
+    {
+        var q = Free.Rotation;
+        if (q.LengthSquared() < 0.000001F || !float.IsFinite(q.LengthSquared()))
+            return Double3.Zero;
+        q = Quaternion.Normalize(q);
+        var matrix = Matrix4x4.CreateFromQuaternion(q);
+        var x = MathF.Atan2(matrix.M32, matrix.M33);
+        var y = MathF.Asin(Math.Clamp(-matrix.M31, -1F, 1F));
+        var z = MathF.Atan2(matrix.M21, matrix.M11);
+        const float degrees = 180F / MathF.PI;
+        return new Double3(-x * degrees, -y * degrees, -z * degrees);
+    }
+
+    /// <summary>
+    /// 使用 XYZ 欧拉角设置自由旋转，输入单位为度
+    /// </summary>
+    public void SetFreeEuler(Double3 position, Double3 eulerDegrees)
+    {
+        const float radians = MathF.PI / 180F;
+        var rotationMatrix =
+            Matrix4x4.CreateRotationZ((float)eulerDegrees.Z * radians) *
+            Matrix4x4.CreateRotationY((float)eulerDegrees.Y * radians) *
+            Matrix4x4.CreateRotationX((float)eulerDegrees.X * radians);
+        var rotation = Quaternion.CreateFromRotationMatrix(rotationMatrix);
+        SetFree(new FreeTransform(position, Quaternion.Normalize(rotation)));
+    }
+
+    /// <summary>
     /// 切换为格变换模式
     /// </summary>
     /// <param name="transform">新的格变换值</param>
