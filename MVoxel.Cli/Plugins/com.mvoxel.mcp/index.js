@@ -4,6 +4,8 @@
  */
 export function activate(host) {
   host.registerAutomation("mvoxel.project", "通过 MCP 管理项目和插件");
+  host.registerCommand("mvoxel.project.status", "读取项目状态");
+  host.registerPanel("mvoxel.mcp", "MVoxel MCP");
 }
 
 export function runAutomation(id, payload) {

@@ -10,6 +10,16 @@ namespace MVoxel.Project;
 public sealed record PluginAutomation(string Id, string Name, string PluginId);
 
 /// <summary>
+/// 插件向编辑器注册的命令
+/// </summary>
+public sealed record PluginCommand(string Id, string Name, string PluginId);
+
+/// <summary>
+/// 插件向编辑器注册的面板
+/// </summary>
+public sealed record PluginPanel(string Id, string Name, string PluginId);
+
+/// <summary>
 /// 通过受限 Node.js 子进程执行 JavaScript 插件入口
 /// </summary>
 public sealed class JavaScriptPluginRuntime : IDisposable
@@ -17,11 +27,23 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     private readonly List<EditorPluginPackage> _active = new();
     private readonly List<PluginAutomation> _automations = new();
     private readonly Dictionary<string, EditorPluginPackage> _automationOwners = new(StringComparer.Ordinal);
+    private readonly List<PluginCommand> _commands = new();
+    private readonly List<PluginPanel> _panels = new();
 
     /// <summary>
     /// 当前已注册的自动化入口
     /// </summary>
     public IReadOnlyList<PluginAutomation> Automations => _automations;
+
+    /// <summary>
+    /// 当前已注册的编辑器命令
+    /// </summary>
+    public IReadOnlyList<PluginCommand> Commands => _commands;
+
+    /// <summary>
+    /// 当前已注册的编辑器面板
+    /// </summary>
+    public IReadOnlyList<PluginPanel> Panels => _panels;
 
     /// <summary>
     /// 激活项目中已启用的 JavaScript 插件
@@ -49,6 +71,9 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                     _automations.Add(automation);
                     _automationOwners[item.Id] = package;
                 }
+                var extensions = ExecuteExtensions(package, timeout);
+                _commands.AddRange(extensions.Commands.Select(item => new PluginCommand(item.Id, item.Name, package.Id)));
+                _panels.AddRange(extensions.Panels.Select(item => new PluginPanel(item.Id, item.Name, package.Id)));
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
             }
@@ -109,7 +134,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const a=[];const h={registerAutomation:(id,name)=>a.push({id,name})};" +
+            "const p=await import(m);const a=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:()=>{},registerPanel:()=>{}};" +
             "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify(a));";
         var startInfo = new ProcessStartInfo
         {
@@ -143,6 +168,35 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             .ToList();
     }
 
+    private static PluginExtensionData ExecuteExtensions(EditorPluginPackage package, TimeSpan timeout)
+    {
+        var entry = PluginManager.ResolveEntryPath(package);
+        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
+            "const p=await import(m);const c=[],u=[];const h={registerAutomation:()=>{},registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name})};" +
+            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({commands:c,panels:u}));";
+        var startInfo = new ProcessStartInfo { FileName = "node", UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        startInfo.ArgumentList.Add("--permission");
+        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
+        startInfo.ArgumentList.Add("--input-type=module");
+        startInfo.ArgumentList.Add("-e");
+        startInfo.ArgumentList.Add(script);
+        startInfo.ArgumentList.Add(entry);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds)) { process.Kill(true); throw new TimeoutException("插件扩展注册超时"); }
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "插件扩展注册失败" : error.Trim());
+        using var document = JsonDocument.Parse(output);
+        return new PluginExtensionData(ReadExtensionItems(document.RootElement, "commands"), ReadExtensionItems(document.RootElement, "panels"));
+    }
+
+    private static IReadOnlyList<PluginExtensionItem> ReadExtensionItems(JsonElement root, string property)
+    {
+        return root.GetProperty(property).EnumerateArray()
+            .Select(item => new PluginExtensionItem(item.GetProperty("id").GetString() ?? string.Empty, item.GetProperty("name").GetString() ?? string.Empty))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name)).ToList();
+    }
+
     /// <summary>
     /// 停用当前运行时中的插件
     /// </summary>
@@ -152,7 +206,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         _active.Clear();
         _automations.Clear();
         _automationOwners.Clear();
+        _commands.Clear();
+        _panels.Clear();
     }
 
     private sealed record PluginAutomationData(string Id, string Name);
+    private sealed record PluginExtensionItem(string Id, string Name);
+    private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels);
 }

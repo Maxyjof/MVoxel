@@ -309,6 +309,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 hasProject = _project is not null,
                 projectName = _project?.Manifest.Name,
                 automations = _pluginRuntime?.Automations ?? [],
+                commands = _pluginRuntime?.Commands ?? [],
+                panels = _pluginRuntime?.Panels ?? [],
             },
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
