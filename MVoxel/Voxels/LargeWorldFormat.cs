@@ -3,7 +3,8 @@ using MVoxel.Core;
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// MVoxel 大世界模型格式，使用 16 位 X/Z 坐标支持超过 MagicaVoxel .vox 的 255 格限制
+/// MVoxel 原生体素资源格式，使用 16 位局部坐标保存 .mvmodel/.mvworld，
+/// 并完整记录颜色、材质槽和体素渲染标志。
 /// </summary>
 public static class LargeWorldFormat
 {

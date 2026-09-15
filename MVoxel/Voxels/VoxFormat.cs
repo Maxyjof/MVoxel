@@ -3,7 +3,8 @@ using MVoxel.Core;
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// MagicaVoxel .vox 二进制模型（单 SIZE/XYZA 模型）的读写
+/// MagicaVoxel .vox 交换模型（单 SIZE/XYZA 模型）的导入导出。
+/// 项目内部资源使用 .mvmodel，不通过本类保存。
 /// 外部文件一律不可信：所有计数在分配内存前先做上限校验，
 /// 截断、超大或越界的文件只会得到异常，绝不会拖垮编辑器
 /// 坐标映射：world.X = vox.X，world.Y = vox.Z（vox 为 Z 轴向上）
@@ -26,7 +27,7 @@ public static class VoxFormat
     public const int MaximumAxisExtent = 1024;
 
     /// <summary>
-    /// 把体素世界导出为 .vox 文件，世界按包围盒重锚到原点
+    /// 把体素世界导出为外部 .vox 文件，世界按包围盒重锚到原点。
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="world">要导出的世界，必须非空</param>
@@ -81,7 +82,7 @@ public static class VoxFormat
     }
 
     /// <summary>
-    /// 从磁盘读取 .vox 文件
+    /// 从磁盘读取外部 .vox 文件
     /// </summary>
     /// <param name="path">文件路径</param>
     /// <returns>包含全部体素的新世界</returns>
