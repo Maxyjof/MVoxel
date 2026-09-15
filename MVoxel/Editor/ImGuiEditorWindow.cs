@@ -45,6 +45,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private ProjectHandle? _project;
     private bool _showHierarchy = true;
     private string _hierarchySearch = string.Empty;
+    private readonly HashSet<string> _expandedInspectorComponents = new(StringComparer.Ordinal);
+    private StableId? _inspectorExpansionObjectId;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
     private int _centerTab;
@@ -1944,11 +1946,13 @@ DockId=0x6A3C3007,0
         ImGui.Dummy(new Vector2(0F, 6F));
 
         var removeComponentIndex = -1;
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(7F, 6F));
+        if (_inspectorExpansionObjectId != selectedObject.Id)
+        {
+            _inspectorExpansionObjectId = selectedObject.Id;
+            _expandedInspectorComponents.Clear();
+            foreach (var component in selectedObject.Components) _expandedInspectorComponents.Add(component.TypeId);
+        }
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 5F));
-        ImGui.PushStyleColor(ImGuiCol.Header, ToColor(EditorPalette.PanelHeader));
-        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(EditorPalette.AccentSoft));
-        ImGui.PushStyleColor(ImGuiCol.HeaderActive, ToColor(EditorPalette.AccentSoft));
         for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
         {
             var component = selectedObject.Components[componentIndex];
@@ -1957,16 +1961,33 @@ DockId=0x6A3C3007,0
                 ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
                 : definition.DisplayName;
             ImGui.PushID($"InspectorComponent{componentIndex}");
-            var expanded = ImGui.TreeNodeEx(label,
-                ImGuiTreeNodeFlags.SpanAvailWidth | ImGuiTreeNodeFlags.Framed |
-                ImGuiTreeNodeFlags.FramePadding |
-                ImGuiTreeNodeFlags.DefaultOpen);
-            var headerHovered = ImGui.IsItemHovered();
-            var headerMin = ImGui.GetItemRectMin();
-            var headerMax = ImGui.GetItemRectMax();
-            var contentCursor = ImGui.GetCursorScreenPos();
+            var headerMin = ImGui.GetCursorScreenPos();
+            var headerWidth = Math.Max(120F, ImGui.GetContentRegionAvail().X - 64F);
+            var headerHeight = ImGui.GetFrameHeight() + 6F;
+            var headerClicked = ImGui.InvisibleButton("##InspectorComponentHeader", new Vector2(headerWidth, headerHeight));
+            var headerMax = headerMin + new Vector2(headerWidth, headerHeight);
+            var expanded = _expandedInspectorComponents.Contains(component.TypeId);
+            if (headerClicked)
+            {
+                if (expanded) _expandedInspectorComponents.Remove(component.TypeId);
+                else _expandedInspectorComponents.Add(component.TypeId);
+                expanded = !expanded;
+            }
+            var draw = ImGui.GetWindowDrawList();
+            var headerColor = ImGui.IsItemHovered() ? EditorPalette.AccentSoft : EditorPalette.PanelHeader;
+            draw.AddRectFilled(headerMin, headerMax, ToPackedColor(headerColor), 3F);
+            draw.AddRect(headerMin, headerMax, ToPackedColor(EditorPalette.Border), 3F, ImDrawFlags.None, 1F);
+            var triangleCenter = new Vector2(headerMin.X + 12F, headerMin.Y + headerHeight / 2F);
+            if (expanded)
+                draw.AddTriangleFilled(triangleCenter + new Vector2(-4F, -2F), triangleCenter + new Vector2(4F, -2F),
+                    triangleCenter + new Vector2(0F, 4F), ToPackedColor(EditorPalette.Text));
+            else
+                draw.AddTriangleFilled(triangleCenter + new Vector2(-2F, -4F), triangleCenter + new Vector2(-2F, 4F),
+                    triangleCenter + new Vector2(4F, 0F), ToPackedColor(EditorPalette.Text));
+            draw.AddText(headerMin + new Vector2(25F, 5F), ToPackedColor(EditorPalette.Text), label);
+
             var resetComponent = false;
-            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - 62F, headerMin.Y + 3F));
+            ImGui.SetCursorScreenPos(new Vector2(headerMax.X + 6F, headerMin.Y + 3F));
             var isTransformComponent = SceneComponentTypes.IsTransform(component);
             ImGui.BeginDisabled(isTransformComponent);
             var enabled = component.Enabled;
@@ -1990,24 +2011,17 @@ DockId=0x6A3C3007,0
                 if (isTransformComponent) ImGui.TextDisabled("坐标组件不能移除");
                 ImGui.EndPopup();
             }
-            ImGui.SetCursorScreenPos(contentCursor);
-            if (headerHovered)
-                ImGui.SetTooltip(definition is null
-                    ? $"插件组件\n来源：{component.OwnerPluginId ?? "未知插件"}"
-                    : $"组件分类：{definition.Category}");
+            ImGui.SetCursorScreenPos(new Vector2(headerMin.X, headerMax.Y));
             if (resetComponent) ResetInspectorComponent(selectedObject, component);
             if (expanded)
             {
                 ImGui.Indent(8F);
                 DrawComponentSummary(selectedObject, component);
                 ImGui.Unindent(8F);
-                ImGui.TreePop();
             }
             ImGui.Dummy(new Vector2(0F, 2F));
             ImGui.PopID();
         }
-        ImGui.PopStyleColor(3);
-        ImGui.PopStyleVar();
         ImGui.PopStyleVar();
 
         if (removeComponentIndex >= 0)
@@ -2112,10 +2126,11 @@ DockId=0x6A3C3007,0
         SetStatus($"已恢复“{sceneObject.Name}”的{SceneComponentTypes.GetDisplayName(component)}组件默认值");
     }
 
-    private static void BeginInspectorField(string label)
+    private static void BeginInspectorField(string label, string? tooltip = null)
     {
         var start = ImGui.GetCursorPosX();
         ImGui.TextDisabled(label);
+        if (tooltip is not null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
         ImGui.SameLine();
         ImGui.SetCursorPosX(Math.Max(start + 82F, ImGui.GetCursorPosX()));
         ImGui.SetNextItemWidth(-1F);
@@ -2130,7 +2145,7 @@ DockId=0x6A3C3007,0
                 var position = selectedObject.Transform.Free.Position;
                 var rotation = selectedObject.Transform.Free.Rotation;
                 var positionValue = new NumVector3((float)position.X, (float)position.Y, (float)position.Z);
-                BeginInspectorField("位置");
+                BeginInspectorField("位置", "对象在场景中的位置。");
                 if (ImGui.InputFloat3("##TransformPosition", ref positionValue))
                 {
                     selectedObject.Transform.SetFree(new FreeTransform(
@@ -2140,7 +2155,7 @@ DockId=0x6A3C3007,0
                 }
                 var euler = selectedObject.Transform.GetEulerDegrees();
                 var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
-                BeginInspectorField("旋转");
+                BeginInspectorField("旋转", "对象的 XYZ 旋转角度。");
                 if (ImGui.InputFloat3("##TransformRotation", ref eulerValue))
                 {
                     selectedObject.Transform.SetFreeEuler(
@@ -2153,9 +2168,9 @@ DockId=0x6A3C3007,0
             else
             {
                 var grid = selectedObject.Transform.Grid;
-                BeginInspectorField("位置");
+                BeginInspectorField("位置", "体素对象的整数网格坐标。");
                 ImGui.Text($"X {grid.Position.X}   Y {grid.Position.Y}   Z {grid.Position.Z}");
-                BeginInspectorField("旋转");
+                BeginInspectorField("旋转", "模型按 90 度为单位旋转。");
                 ImGui.TextDisabled("以 90° 为单位");
                 var thirdWidth = Math.Max(46F, (ImGui.GetContentRegionAvail().X - 12F) / 3F);
                 if (ImGui.Button("X +90°##TransformRotateX", new Vector2(thirdWidth, 0F)))
@@ -2175,13 +2190,13 @@ DockId=0x6A3C3007,0
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var model = data.Model;
             var part = data.Part;
-            BeginInspectorField("模型");
+            BeginInspectorField("模型", "体素模型资源路径。");
             var changed = ImGui.InputText("##InspectorVoxelModel", ref model, 260);
-            BeginInspectorField("部件");
+            BeginInspectorField("部件", "模型中的部件名称；留空表示使用默认部件。");
             changed |= ImGui.InputText("##InspectorVoxelPart", ref part, 128);
-            BeginInspectorField("体素数量");
+            BeginInspectorField("体素数量", "当前模型包含的体素数量。");
             ImGui.TextDisabled($"{data.VoxelCount:N0}");
-            BeginInspectorField("模板");
+            BeginInspectorField("模板", "生成当前模型的示例模板名称。");
             ImGui.TextDisabled(data.Template switch { "" => "未指定", _ => data.Template });
             if (changed)
             {
@@ -2198,11 +2213,11 @@ DockId=0x6A3C3007,0
             var fieldOfView = data.FieldOfViewDegrees;
             var nearClip = data.NearClip;
             var farClip = data.FarClip;
-            BeginInspectorField("视场角");
+            BeginInspectorField("视场角", "相机的视野角度。");
             var changed = ImGui.DragFloat("##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");
-            BeginInspectorField("近裁剪");
+            BeginInspectorField("近裁剪", "相机近平面距离；过近可能导致几何体被裁掉。");
             changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
-            BeginInspectorField("远裁剪");
+            BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
             if (changed)
             {
@@ -2218,11 +2233,11 @@ DockId=0x6A3C3007,0
             var intensity = data.Intensity;
             var color = new NumVector3(data.ColorR, data.ColorG, data.ColorB);
             var castShadows = data.CastShadows;
-            BeginInspectorField("强度");
+            BeginInspectorField("强度", "光照强度。");
             var changed = ImGui.DragFloat("##InspectorLightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f");
-            BeginInspectorField("颜色");
+            BeginInspectorField("颜色", "光照颜色。");
             changed |= ImGui.ColorEdit3("##InspectorLightColor", ref color, ImGuiColorEditFlags.Float);
-            BeginInspectorField("阴影");
+            BeginInspectorField("阴影", "是否让该光源投射阴影。");
             changed |= ImGui.Checkbox("投射阴影##InspectorLightShadows", ref castShadows);
             if (changed)
             {
