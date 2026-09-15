@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.IO.Pipes;
 using System.Text;
 using MVoxel.Core;
+using MVoxel.Editor.Templates;
 using MVoxel.Project;
 
 namespace MVoxel.Cli;
@@ -53,8 +54,10 @@ internal static class Program
         Console.WriteLine("      启动 MCP stdio 服务");
         Console.WriteLine("  --project-info <项目目录>");
         Console.WriteLine("      输出项目摘要");
-        Console.WriteLine("  --create-project <项目目录> [项目名称]");
-        Console.WriteLine("      创建空项目");
+        Console.WriteLine("  --create-project <项目目录> [项目名称] [模板 ID]");
+        Console.WriteLine("      创建项目并生成指定示例模板");
+        Console.WriteLine("  --list-templates");
+        Console.WriteLine("      列出可用项目模板");
         Console.WriteLine("  --list-plugins <项目目录>");
         Console.WriteLine("      输出已安装插件和项目启用状态");
         Console.WriteLine("  --enable-plugin <项目目录> <插件 ID>");
@@ -94,13 +97,22 @@ internal static class Program
                 Console.WriteLine($"引擎版本：{project.Manifest.EngineVersion}");
                 return 0;
             }
-            case "--create-project" when args.Length is 2 or 3:
+            case "--create-project" when args.Length is 2 or 3 or 4:
             {
                 var project = ProjectLayout.Create(args[1], args.Length == 3 ? args[2] : null);
+                var templateId = ProjectTemplateId.Empty;
+                if (args.Length == 4 && !Enum.TryParse(args[3], true, out templateId))
+                    throw new ArgumentException($"未知项目模板：{args[3]}");
+                ProjectTemplateCatalog.Populate(project, templateId);
                 Console.WriteLine($"已创建项目：{project.Manifest.Name}");
+                Console.WriteLine($"模板：{ProjectTemplateCatalog.Get(templateId).Name}");
                 Console.WriteLine($"路径：{project.RootPath}");
                 return 0;
             }
+            case "--list-templates" when args.Length == 1:
+                foreach (var template in ProjectTemplateCatalog.All)
+                    Console.WriteLine($"{template.Id}\t{template.Name}\t{template.Focus}");
+                return 0;
             case "--list-plugins" when args.Length == 2:
             {
                 var project = ProjectLayout.Open(args[1]);
