@@ -334,6 +334,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 hasProject = _project is not null,
                 projectName = _project?.Manifest.Name,
                 sceneName = _sceneDocument?.Name,
+                sceneObjectCount = _sceneDocument?.Objects.Count ?? 0,
+                sceneComponentCount = _sceneDocument?.Objects.Sum(item => item.Components.Count) ?? 0,
                 sceneValid = _sceneDocument is not null && _sceneValidationErrors.Count == 0,
                 sceneValidationErrorCount = _sceneValidationErrors.Count,
                 sceneDirty = _sceneDocumentDirty,
