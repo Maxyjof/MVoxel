@@ -98,9 +98,10 @@ public static class PluginManager
                 try
                 {
                     var package = JsonSerializer.Deserialize<EditorPluginPackage>(File.ReadAllText(packagePath), JsonOptions);
-                    if (package is not null && !packages.ContainsKey(package.Id))
+                    if (package is not null)
                     {
                         Validate(package);
+                        if (packages.ContainsKey(package.Id)) continue;
                         packages.Add(package.Id, new EditorPluginPackage
                         {
                             Id = package.Id,
