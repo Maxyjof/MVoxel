@@ -339,6 +339,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 sceneDirty = _sceneDocumentDirty,
                 autoSaveEnabled = _project is not null && _projectSettings.AutoSave,
                 autoSaveSeconds = _project is null ? 0 : _projectSettings.AutoSaveSeconds,
+                renderingDegraded = _gpuRenderingDisabled,
+                renderingStatus = _pipelineStatus,
                 automations = _pluginRuntime?.Automations ?? [],
                 commands = _pluginRuntime?.Commands ?? [],
                 panels = _pluginRuntime?.Panels ?? [],
