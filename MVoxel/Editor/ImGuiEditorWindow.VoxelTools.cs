@@ -103,8 +103,9 @@ internal sealed partial class ImGuiEditorWindow
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
         var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
+        var hasModelReference = HasModelReference(_sceneDocument);
         var largeWorldPath = referencedLargeWorldPath ??
-            (referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
+            (!hasModelReference && referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
                 ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                 : null);
@@ -165,6 +166,12 @@ internal sealed partial class ImGuiEditorWindow
             ? candidate
             : null;
     }
+
+    private static bool HasModelReference(Scene.SceneDocument? document) => document?.Objects
+        .SelectMany(item => item.Components)
+        .Where(SceneComponentTypes.IsVoxelModel)
+        .Select(SceneComponentTypes.ReadVoxelModel)
+        .Any(data => !string.IsNullOrWhiteSpace(data.Model)) == true;
 
     /// <summary>
     /// 读取项目主场景并保留场景文档供层级和渲染窗口共同使用
@@ -259,8 +266,9 @@ internal sealed partial class ImGuiEditorWindow
             var modelDirectory = Path.Combine(project.AssetsPath, "VoxelModels");
             var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
             var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
+            var hasModelReference = HasModelReference(_sceneDocument);
             var largeWorldPath = referencedLargeWorldPath ??
-                (referencedNativePath is null && Directory.Exists(modelDirectory)
+                (!hasModelReference && referencedNativePath is null && Directory.Exists(modelDirectory)
                     ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
                         .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                     : null);
