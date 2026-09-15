@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json;
 using MVoxel.Core;
 using Jint;
 using MoonSharp.Interpreter;
+using MoonSharp.Interpreter.Debugging;
 
 namespace MVoxel.Project;
 
@@ -177,7 +179,7 @@ public sealed class PluginScriptRuntime : IDisposable
     private static PluginExtensionData ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
     {
         if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
-            return ExecuteLuaActivate(package);
+            return ExecuteLuaActivate(package, timeout);
         var entry = PluginManager.ResolveEntryPath(package);
         var automations = new List<PluginExtensionItem>();
         var commands = new List<PluginExtensionItem>();
@@ -242,7 +244,7 @@ public sealed class PluginScriptRuntime : IDisposable
         public void RegisterComponent(string id, string name, string category = "插件") => _components.Add(new(id, name, category));
     }
 
-    private static PluginExtensionData ExecuteLuaActivate(EditorPluginPackage package)
+    private static PluginExtensionData ExecuteLuaActivate(EditorPluginPackage package, TimeSpan timeout)
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = new Script(CoreModules.Preset_SoftSandbox);
@@ -251,6 +253,7 @@ public sealed class PluginScriptRuntime : IDisposable
         var panels = new List<PluginExtensionItem>();
         var components = new List<PluginExtensionComponent>();
         var host = CreateLuaHost(script, automations, commands, panels, components);
+        script.AttachDebugger(new LuaTimeoutDebugger(timeout));
         script.DoString(File.ReadAllText(entry), null, entry);
         var activate = script.Globals.Get("activate");
         if (activate.Type == DataType.Function) script.Call(activate, host);
@@ -262,6 +265,7 @@ public sealed class PluginScriptRuntime : IDisposable
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = new Script(CoreModules.Preset_SoftSandbox);
+        script.AttachDebugger(new LuaTimeoutDebugger(timeout));
         script.DoString(File.ReadAllText(entry), null, entry);
         var function = script.Globals.Get(functionName);
         if (function.Type != DataType.Function)
@@ -357,6 +361,33 @@ public sealed class PluginScriptRuntime : IDisposable
             return DynValue.Nil;
         }));
         return host;
+    }
+
+    private sealed class LuaTimeoutDebugger : IDebugger
+    {
+        private readonly long _deadline;
+
+        public LuaTimeoutDebugger(TimeSpan timeout)
+        {
+            if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+            _deadline = Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+        }
+
+        public DebuggerCaps GetDebuggerCaps() => DebuggerCaps.CanDebugSourceCode;
+        public void SetDebugService(DebugService debugService) { }
+        public void SetSourceCode(SourceCode sourceCode) { }
+        public void SetByteCode(string[] byteCode) { }
+        public bool IsPauseRequested() => Stopwatch.GetTimestamp() >= _deadline;
+        public bool SignalRuntimeException(ScriptRuntimeException ex) => false;
+        public DebuggerAction GetAction(int ip, SourceRef sourceRef)
+        {
+            if (IsPauseRequested()) throw new TimeoutException("Lua 脚本执行超时");
+            return new DebuggerAction();
+        }
+        public void SignalExecutionEnded() { }
+        public void Update(WatchType watchType, IEnumerable<WatchItem> items) { }
+        public List<DynamicExpression> GetWatchItems() => [];
+        public void RefreshBreakpoints(IEnumerable<SourceRef> refs) { }
     }
 
     /// <summary>
