@@ -244,6 +244,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         style.WindowPadding = Vector2.Zero;
         style.ItemSpacing = new Vector2(10F, 8F);
         style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
+        style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Window);
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.PanelHeader);
@@ -415,16 +416,18 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         ImGui.SetNextWindowSize(new Vector2(dialogWidth, dialogHeight), ImGuiCond.Appearing);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 24F));
         if (ImGui.BeginPopupModal("##WelcomeProjectPathDialog", flags))
         {
             var draw = ImGui.GetWindowDrawList();
             var window = ImGui.GetWindowPos();
             var windowSize = ImGui.GetWindowSize();
+            draw.AddRectFilled(window, window + windowSize, ToPackedColor(EditorPalette.Window), 8F);
+            draw.AddRect(window, window + windowSize, ToPackedColor(EditorPalette.Border), 8F,
+                ImDrawFlags.None, 1F);
             draw.AddRectFilled(window, window + new Vector2(5F, windowSize.Y),
-                ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Accent)), 8F);
-            ImGui.PushFont(_fonts.Title);
+                ToPackedColor(EditorPalette.Accent), 8F, ImDrawFlags.RoundCornersLeft);
             ImGui.TextColored(ToColor(EditorPalette.Text), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
-            ImGui.PopFont();
             ImGui.Dummy(new Vector2(0F, 6F));
             ImGui.TextWrapped(_pathMode == 1
                 ? "选择一个示例模板并输入项目文件夹路径，编辑器会自动生成项目文件和示例资源。"
@@ -459,6 +462,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             }
             ImGui.EndPopup();
         }
+        ImGui.PopStyleVar();
     }
 
     private void SubmitPath()
