@@ -217,6 +217,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
+        _usingHardwareRayTracing = false;
         if (_context?.IsDeviceLost == true) return false;
         if (settings.UseHardwareRayTracing && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
@@ -231,7 +232,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
         }
 
-        _usingHardwareRayTracing = false;
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: true);
     }
 
