@@ -2126,12 +2126,16 @@ DockId=0x6A3C3007,0
                 {
                     (selectedObject.Components[componentIndex - 1], selectedObject.Components[componentIndex]) =
                         (selectedObject.Components[componentIndex], selectedObject.Components[componentIndex - 1]);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
                     SetStatus($"已上移{SceneComponentTypes.GetDisplayName(component)}组件");
                 }
                 if (ImGui.MenuItem("下移组件", null, false, canMoveDown))
                 {
                     (selectedObject.Components[componentIndex + 1], selectedObject.Components[componentIndex]) =
                         (selectedObject.Components[componentIndex], selectedObject.Components[componentIndex + 1]);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
                     SetStatus($"已下移{SceneComponentTypes.GetDisplayName(component)}组件");
                 }
                 ImGui.Separator();
