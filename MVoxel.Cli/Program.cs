@@ -121,9 +121,9 @@ internal static class Program
             case "--validate-project" when args.Length == 2:
             {
                 var arguments = JsonSerializer.SerializeToElement(new { projectPath = args[1] });
-                var result = ValidateProject(arguments);
+                var result = (ProjectValidationResult)ValidateProject(arguments);
                 Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
-                return 0;
+                return result.Valid ? 0 : 1;
             }
             case "--create-project" when args.Length is 2 or 3 or 4:
             {
@@ -417,15 +417,13 @@ internal static class Program
             }
         }
 
-        return new
-        {
-            projectPath = project.RootPath,
-            projectName = project.Manifest.Name,
-            sceneCount = scenePaths.Length,
+        return new ProjectValidationResult(
+            project.RootPath,
+            project.Manifest.Name,
+            scenePaths.Length,
             missingDirectories,
-            valid = errors.Count == 0,
-            errors,
-        };
+            errors.Count == 0,
+            errors);
     }
 
     /// <summary>
@@ -522,6 +520,14 @@ internal static class Program
         new { name = "editor.installPlugin", description = "让运行中的编辑器安装 JavaScript 插件并重载", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
         new { name = "editor.setPluginEnabled", description = "修改当前项目插件启停状态并重载", inputSchema = new { type = "object", properties = new { pluginId = new { type = "string" }, enabled = new { type = "boolean" } }, required = new[] { "pluginId", "enabled" } } },
     ];
+
+    private sealed record ProjectValidationResult(
+        string ProjectPath,
+        string ProjectName,
+        int SceneCount,
+        IReadOnlyList<string> MissingDirectories,
+        bool Valid,
+        IReadOnlyList<string> Errors);
 
     /// <summary>
     /// 表示 MCP 请求可以直接返回的协议错误
