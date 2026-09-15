@@ -2044,6 +2044,14 @@ DockId=0x6A3C3007,0
                     UpdateTransformMarker(selectedObject);
                     MarkSceneDocumentDirty();
                 }
+                if (ImGui.SmallButton("重置##TransformResetFree"))
+                {
+                    selectedObject.Transform.SetFree(FreeTransform.Identity);
+                    UpdateTransformMarker(selectedObject);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
+                    SetStatus($"已重置“{selectedObject.Name}”的坐标组件");
+                }
             }
             else
             {
@@ -2058,6 +2066,14 @@ DockId=0x6A3C3007,0
                 ImGui.SameLine();
                 if (ImGui.Button("绕 Z 轴 90°##TransformRotateZ"))
                     RotateModel(selectedObject, OrthogonalRotation.AroundZ90);
+                if (ImGui.SmallButton("重置##TransformResetGrid"))
+                {
+                    selectedObject.Transform.SetGrid(GridTransform.Identity);
+                    UpdateTransformMarker(selectedObject);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
+                    SetStatus($"已重置“{selectedObject.Name}”的坐标组件");
+                }
             }
             return;
         }
