@@ -21,7 +21,7 @@ internal sealed partial class ImGuiEditorWindow
     private IReadOnlyList<SceneObject> GetRenderCameraObjects()
     {
         return _sceneDocument?.Objects
-                   .Where(item => item.Components.Any(SceneComponentTypes.IsCamera))
+                   .Where(item => item.Visible && item.Components.Any(SceneComponentTypes.IsCamera))
                    .ToArray()
                ?? Array.Empty<SceneObject>();
     }
@@ -163,6 +163,12 @@ internal sealed partial class ImGuiEditorWindow
         {
             HandleSceneNavigation(origin, size, new Vector2(-100000F, -100000F), 0F,
                 allowMouseCapture: true, ViewportCaptureTarget.Render);
+            return;
+        }
+
+        if (cameraObject.Locked)
+        {
+            EndSceneMouseCapture(ViewportCaptureTarget.Render);
             return;
         }
 

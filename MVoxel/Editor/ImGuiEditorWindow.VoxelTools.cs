@@ -94,6 +94,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         _voxelHistory.Clear();
         _selectedVoxel = null;
+        _selectedSceneObjectId = null;
         _sceneDocument = LoadSceneDocument(project);
         _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
@@ -454,8 +455,9 @@ internal sealed partial class ImGuiEditorWindow
     private void HandleVoxelToolInput(Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var io = ImGui.GetIO();
-        if (_welcomeWindow is not null || _projectOperation.IsRunning || !IsFocused)
+        if (_welcomeWindow is not null || _projectOperation.IsRunning || !IsFocused || IsVoxelWorldLocked())
         {
+            _brushPreview = null;
             return;
         }
 

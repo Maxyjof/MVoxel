@@ -96,6 +96,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _paletteIndex = 40;
     private bool _brushEmissive;
     private VoxelDda.Hit? _selectedVoxel;
+    private StableId? _selectedSceneObjectId;
     private VoxelDda.Hit? _brushPreview;
     private float _elapsedSeconds;
     private float _undoHeldSeconds;
@@ -570,21 +571,20 @@ DockId=0x6A3C3007,0
         }
         else
         {
+            var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
             if (ImGui.TreeNodeEx(_project.Manifest.Name, ImGuiTreeNodeFlags.DefaultOpen))
             {
-                ImGui.TreeNodeEx("主场景", ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-                if (ImGui.TreeNodeEx("体素世界", ImGuiTreeNodeFlags.DefaultOpen))
+                if (objects.Count == 0)
                 {
-                    ImGui.TreeNodeEx("体素区块", ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-                    ImGui.TreeNodeEx("材质", ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-                    ImGui.TreePop();
+                    ImGui.TextDisabled("场景中还没有对象");
                 }
-
-                if (ImGui.TreeNodeEx("环境", ImGuiTreeNodeFlags.DefaultOpen))
+                else
                 {
-                    ImGui.TreeNodeEx("柔和环境光", ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-                    ImGui.TreeNodeEx("太阳光", ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-                    ImGui.TreePop();
+                    var roots = objects.Where(item => item.ParentId is null).ToArray();
+                    foreach (var sceneObject in roots)
+                    {
+                        DrawSceneObjectNode(sceneObject, objects);
+                    }
                 }
 
                 ImGui.TreePop();
@@ -592,6 +592,142 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.End();
+    }
+
+    /// <summary>
+    /// 绘制层级中的对象节点及其子对象
+    /// </summary>
+    /// <param name="sceneObject">当前对象</param>
+    /// <param name="objects">场景对象列表</param>
+    private void DrawSceneObjectNode(SceneObject sceneObject, IReadOnlyList<SceneObject> objects)
+    {
+        var children = objects.Where(item => item.ParentId == sceneObject.Id).ToArray();
+        var nodeFlags = children.Length == 0
+            ? ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen
+            : ImGuiTreeNodeFlags.None;
+        if (_selectedSceneObjectId == sceneObject.Id)
+        {
+            nodeFlags |= ImGuiTreeNodeFlags.Selected;
+        }
+
+        var nodeId = $"{sceneObject.Name}##SceneObject_{sceneObject.Id}";
+        var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
+        var rowMin = ImGui.GetItemRectMin();
+        var rowMax = ImGui.GetItemRectMax();
+        var rowHovered = ImGui.IsItemHovered();
+        var rowClicked = rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left);
+
+        var iconWidth = 22F;
+        var iconGap = 2F;
+        var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
+        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + (rowMax.Y - rowMin.Y - 20F) * 0.5F));
+        if (DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
+                sceneObject.Visible, DrawVisibilityIcon))
+        {
+            sceneObject.Visible = !sceneObject.Visible;
+            _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
+        }
+
+        ImGui.SameLine(0F, iconGap);
+        if (DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
+                !sceneObject.Locked, DrawSelectableIcon))
+        {
+            sceneObject.Locked = !sceneObject.Locked;
+            if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
+            {
+                _selectedSceneObjectId = null;
+            }
+        }
+
+        if (rowClicked && !sceneObject.Locked)
+        {
+            _selectedSceneObjectId = sceneObject.Id;
+        }
+
+        if (children.Length > 0 && expanded)
+        {
+            foreach (var child in children)
+            {
+                DrawSceneObjectNode(child, objects);
+            }
+
+            ImGui.TreePop();
+        }
+    }
+
+    /// <summary>
+    /// 绘制层级对象的状态图标按钮
+    /// </summary>
+    /// <param name="id">按钮 ID</param>
+    /// <param name="enabledTip">启用状态提示</param>
+    /// <param name="disabledTip">禁用状态提示</param>
+    /// <param name="active">当前是否启用</param>
+    /// <param name="drawIcon">图标绘制回调</param>
+    /// <returns>按钮是否被点击</returns>
+    private static bool DrawHierarchyIconButton(string id, string enabledTip, string disabledTip, bool active,
+        Action<ImDrawListPtr, Vector2, Vector2, uint, bool> drawIcon)
+    {
+        var clicked = ImGui.InvisibleButton(id, new Vector2(20F, 20F));
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var drawList = ImGui.GetWindowDrawList();
+        if (ImGui.IsItemHovered())
+        {
+            drawList.AddRectFilled(min, max, ToPackedColor(EditorPalette.PanelHeader), 3F);
+            ImGui.SetTooltip(active ? enabledTip : disabledTip);
+        }
+
+        drawIcon(drawList, min, max, ToPackedColor(active ? EditorPalette.Text : EditorPalette.MutedText), active);
+        return clicked;
+    }
+
+    /// <summary>
+    /// 绘制显示状态眼睛图标
+    /// </summary>
+    /// <param name="drawList">目标绘制列表</param>
+    /// <param name="min">图标左上角</param>
+    /// <param name="max">图标右下角</param>
+    /// <param name="color">图标颜色</param>
+    /// <param name="active">当前是否显示</param>
+    private static void DrawVisibilityIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
+    {
+        var center = (min + max) * 0.5F;
+        var halfWidth = Math.Max(4F, (max.X - min.X) * 0.32F);
+        var halfHeight = Math.Max(3F, (max.Y - min.Y) * 0.22F);
+        drawList.AddBezierCubic(center + new Vector2(-halfWidth, 0F),
+            center + new Vector2(-halfWidth * 0.35F, -halfHeight),
+            center + new Vector2(halfWidth * 0.35F, -halfHeight),
+            center + new Vector2(halfWidth, 0F), color, 1.4F);
+        drawList.AddBezierCubic(center + new Vector2(halfWidth, 0F),
+            center + new Vector2(halfWidth * 0.35F, halfHeight),
+            center + new Vector2(-halfWidth * 0.35F, halfHeight),
+            center + new Vector2(-halfWidth, 0F), color, 1.4F);
+        drawList.AddCircleFilled(center, 2.2F, color, 12);
+        if (!active)
+        {
+            drawList.AddLine(min + new Vector2(3F, 3F), max - new Vector2(3F, 3F), color, 1.8F);
+        }
+    }
+
+    /// <summary>
+    /// 绘制对象可选中状态图标
+    /// </summary>
+    /// <param name="drawList">目标绘制列表</param>
+    /// <param name="min">图标左上角</param>
+    /// <param name="max">图标右下角</param>
+    /// <param name="color">图标颜色</param>
+    /// <param name="active">当前是否允许选中</param>
+    private static void DrawSelectableIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
+    {
+        var center = (min + max) * 0.5F;
+        drawList.AddCircle(center, 5.3F, color, 16, 1.3F);
+        drawList.AddLine(center - new Vector2(8F, 0F), center + new Vector2(8F, 0F), color, 1.2F);
+        drawList.AddLine(center - new Vector2(0F, 8F), center + new Vector2(0F, 8F), color, 1.2F);
+        if (!active)
+        {
+            drawList.AddLine(min + new Vector2(3F, 3F), max - new Vector2(3F, 3F), color, 1.8F);
+        }
     }
 
     private void DrawCenter()
@@ -651,9 +787,10 @@ DockId=0x6A3C3007,0
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
 
         // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
-        var gpuRendered = _project is not null &&
+        var showVoxelWorld = IsVoxelWorldVisible();
+        var gpuRendered = showVoxelWorld && _project is not null &&
                           TryRenderGpuSceneView(drawList, origin, size, camera);
-        if (_project is not null && !gpuRendered)
+        if (showVoxelWorld && _project is not null && !gpuRendered)
         {
             // GPU 不可用时仍保持网格在体素之前绘制，避免网格盖住模型
             if (_showGrid)
@@ -664,7 +801,7 @@ DockId=0x6A3C3007,0
             DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
-        if (_project is not null)
+        if (_project is not null && showVoxelWorld)
         {
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
@@ -1066,7 +1203,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (_world.OccupiedVoxelCount == 0)
+        if (_world.OccupiedVoxelCount == 0 || !IsVoxelWorldVisible())
         {
             drawList.AddLine(startPoint, endPoint, color, thickness);
             return;
@@ -1169,6 +1306,28 @@ DockId=0x6A3C3007,0
             MathF.Max(pointDistance - 0.01F, near), ignoreOriginCell: true);
         return hit is null;
     }
+
+    /// <summary>
+    /// 获取当前场景中的体素模型对象
+    /// </summary>
+    /// <returns>体素模型对象或空值</returns>
+    private SceneObject? GetVoxelWorldObject()
+    {
+        return _sceneDocument?.Objects.FirstOrDefault(item =>
+            item.Components.Any(component => string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// 判断体素模型对象是否允许显示
+    /// </summary>
+    /// <returns>允许显示时返回 true</returns>
+    private bool IsVoxelWorldVisible() => GetVoxelWorldObject()?.Visible ?? true;
+
+    /// <summary>
+    /// 判断体素模型对象是否允许选中和编辑
+    /// </summary>
+    /// <returns>锁定时返回 true</returns>
+    private bool IsVoxelWorldLocked() => GetVoxelWorldObject()?.Locked ?? false;
 
     private static void DrawVoxelPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
@@ -1398,13 +1557,19 @@ DockId=0x6A3C3007,0
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
         var camera = GetRenderViewCamera();
-        var gpuRendered = _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
+        var showVoxelWorld = IsVoxelWorldVisible();
+        var gpuRendered = showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
         {
-            DrawVoxelPreview(drawList, origin, size, camera, showOutlines: false);
+            if (showVoxelWorld)
+            {
+                DrawVoxelPreview(drawList, origin, size, camera, showOutlines: false);
+            }
             ImGui.SetCursorScreenPos(origin + new Vector2(
                 Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
-            ImGui.TextDisabled(_pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中");
+            ImGui.TextDisabled(showVoxelWorld
+                ? _pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中"
+                : "体素世界已隐藏");
         }
         else
         {
@@ -1938,6 +2103,7 @@ DockId=0x6A3C3007,0
         _world = new VoxelWorld();
         _voxelHistory.Clear();
         _selectedVoxel = null;
+        _selectedSceneObjectId = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
         ApplyEditorSettingsToUi();
