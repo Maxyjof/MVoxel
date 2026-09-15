@@ -162,7 +162,7 @@ internal sealed partial class ImGuiEditorWindow
         if (GetActiveRenderCameraObject() is not { } cameraObject)
         {
             HandleSceneNavigation(origin, size, new Vector2(-100000F, -100000F), 0F,
-                allowMouseCapture: false);
+                allowMouseCapture: true, ViewportCaptureTarget.Render);
             return;
         }
 
@@ -172,10 +172,29 @@ internal sealed partial class ImGuiEditorWindow
                          mouse.Y >= origin.Y && mouse.Y <= origin.Y + size.Y;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
+            EndSceneMouseCapture(ViewportCaptureTarget.Render);
             return;
         }
 
         var camera = ToSceneCamera(cameraObject);
+        var capsLockMode = IsCapsLockEnabled();
+        if (capsLockMode)
+        {
+            BeginSceneMouseCapture(ViewportCaptureTarget.Render);
+            if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Render)
+            {
+                var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);
+                var movement = GetFreeMoveDelta(camera, io.DeltaTime);
+                WriteCameraTransform(cameraObject, camera.Position + movement,
+                    orientation.Forward, orientation.Up);
+                return;
+            }
+        }
+        else
+        {
+            EndSceneMouseCapture(ViewportCaptureTarget.Render);
+        }
+
         if (Math.Abs(io.MouseWheel) > float.Epsilon)
         {
             var dolly = MathF.Max(0.1F, Vector3.Distance(camera.Position, camera.Target) * 0.2F) * io.MouseWheel;
@@ -183,25 +202,18 @@ internal sealed partial class ImGuiEditorWindow
             camera = ToSceneCamera(cameraObject);
         }
 
-        var orbiting = io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        var orbiting = IsShiftPressed() && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
         if (orbiting)
         {
-            var yaw = MathF.Atan2(-camera.Forward.X, -camera.Forward.Z) +
-                      ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
-            var pitch = Math.Clamp(MathF.Asin(Math.Clamp(-camera.Forward.Y, -1F, 1F)) +
-                                   ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y), -1.55F, 1.55F);
-            var direction = new Vector3(
-                -MathF.Cos(pitch) * MathF.Sin(yaw),
-                -MathF.Sin(pitch),
-                -MathF.Cos(pitch) * MathF.Cos(yaw));
-            WriteCameraTransform(cameraObject, camera.Position, direction, Vector3.UnitY);
+            var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);
+            WriteCameraTransform(cameraObject, camera.Position, orientation.Forward, orientation.Up);
             camera = ToSceneCamera(cameraObject);
         }
 
         if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
         {
             var panScale = MathF.Max(0.1F, Vector3.Distance(camera.Position, camera.Target) * 0.01F);
-            var pan = camera.Right * (-io.MouseDelta.X * panScale) + camera.Up * (io.MouseDelta.Y * panScale);
+            var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
     }

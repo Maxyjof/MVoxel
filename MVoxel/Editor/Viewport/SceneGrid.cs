@@ -47,7 +47,10 @@ internal static class SceneGrid
         var visibleExtent = EstimateVisibleGroundExtent(origin, size, camera, cameraDistance);
         var baselineStep = Spacing(cameraDistance, size);
         var coverageStep = NextPowerOfTwo(Math.Max(1F, visibleExtent / TargetHalfLineCount));
-        var step = Math.Max(baselineStep, coverageStep);
+        // 近景优先保持单体素网格，只有远景才允许覆盖范围参与降采样
+        var step = cameraDistance > SparseGridStartDistance
+            ? Math.Max(baselineStep, coverageStep)
+            : baselineStep;
         var halfLineCount = Math.Clamp((int)MathF.Ceiling(visibleExtent / step) + 3, 16, MaximumHalfLineCount);
         return new SceneGridPlan(step, halfLineCount * step, halfLineCount);
     }

@@ -71,6 +71,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
     private bool _sceneMouseCaptured;
+    private ViewportCaptureTarget _capturedViewport;
+
+    /// <summary>
+    /// 记录当前捕获鼠标的视口
+    /// </summary>
+    private enum ViewportCaptureTarget
+    {
+        None,
+        Scene,
+        Render,
+    }
 
     // 体素编辑和 GPU 渲染
     private VoxelWorld _world = new();
@@ -632,7 +643,8 @@ DockId=0x6A3C3007,0
         DrawSceneCameraButton(origin, size);
         var gizmoCenter = origin + new Vector2(size.X - 78F, 78F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.11F, 42F, 58F);
-        var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius, allowMouseCapture: true);
+        var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
+            allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
         MVoxelLog.SetRuntimeContext(
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
@@ -664,7 +676,7 @@ DockId=0x6A3C3007,0
 
         DrawSceneWorldAxes(drawList, origin, size, camera);
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
-        if (_sceneMouseCaptured)
+        if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Scene)
         {
             DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
@@ -781,11 +793,11 @@ DockId=0x6A3C3007,0
     }
 
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
-        bool allowMouseCapture)
+        bool allowMouseCapture, ViewportCaptureTarget captureTarget = ViewportCaptureTarget.Scene)
     {
         if (_welcomeWindow is not null || _projectOperation.IsRunning)
         {
-            EndSceneMouseCapture();
+            EndSceneMouseCapture(captureTarget);
             return false;
         }
 
@@ -796,25 +808,26 @@ DockId=0x6A3C3007,0
         var gizmoHovered = inViewport && Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
-            EndSceneMouseCapture();
+            EndSceneMouseCapture(captureTarget);
             return false;
         }
 
         var capsLockMode = IsCapsLockEnabled();
         if (allowMouseCapture && capsLockMode)
         {
-            BeginSceneMouseCapture();
+            BeginSceneMouseCapture(captureTarget);
             gizmoHovered = false;
         }
-        else
+        else if (_capturedViewport == captureTarget)
         {
-            EndSceneMouseCapture();
+            EndSceneMouseCapture(captureTarget);
         }
 
-        if (_sceneMouseCaptured)
+        if (_sceneMouseCaptured && _capturedViewport == captureTarget)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
-            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
+            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch + ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y),
+                -1.35F, 1.35F);
             UpdateFreeMove(GetSceneCamera(), io.DeltaTime);
             return false;
         }
@@ -828,7 +841,7 @@ DockId=0x6A3C3007,0
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
         }
 
-        var orbitLeft = !gizmoHovered && io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        var orbitLeft = !gizmoHovered && IsShiftPressed() && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
         if (orbitLeft)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
@@ -840,8 +853,9 @@ DockId=0x6A3C3007,0
         {
             var camera = GetSceneCamera();
             var panScale = _sceneCameraDistance / Math.Max(160F, Math.Min(size.X, size.Y));
-            var pan = camera.Right * (-io.MouseDelta.X * panScale) + Vector3.UnitZ * (io.MouseDelta.Y * panScale);
+            var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
             _scenePan += new Vector2(pan.X, pan.Z);
+            _sceneFreeMoveHeight += pan.Y;
         }
 
         if (gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
@@ -868,29 +882,49 @@ DockId=0x6A3C3007,0
         return gizmoHovered;
     }
 
-    private void BeginSceneMouseCapture()
+    private void BeginSceneMouseCapture(ViewportCaptureTarget target)
     {
-        if (_sceneMouseCaptured)
+        if (_sceneMouseCaptured && _capturedViewport == target)
         {
             return;
         }
 
+        if (_sceneMouseCaptured)
+        {
+            EndSceneMouseCapture();
+        }
+
         CursorState = OpenTkCursorState.Grabbed;
         _sceneMouseCaptured = true;
+        _capturedViewport = target;
     }
 
-    private void EndSceneMouseCapture()
+    private void EndSceneMouseCapture(ViewportCaptureTarget? target = null)
     {
-        if (!_sceneMouseCaptured)
+        if (!_sceneMouseCaptured || target is not null && _capturedViewport != target)
         {
             return;
         }
 
         CursorState = OpenTkCursorState.Normal;
         _sceneMouseCaptured = false;
+        _capturedViewport = ViewportCaptureTarget.None;
     }
 
     private void UpdateFreeMove(SceneCamera camera, float deltaTime)
+    {
+        var movement = GetFreeMoveDelta(camera, deltaTime);
+        _scenePan += new Vector2(movement.X, movement.Z);
+        _sceneFreeMoveHeight += movement.Y;
+    }
+
+    /// <summary>
+    /// 根据当前相机和按键状态计算自由视角位移
+    /// </summary>
+    /// <param name="camera">当前相机</param>
+    /// <param name="deltaTime">帧间隔秒数</param>
+    /// <returns>世界空间位移</returns>
+    private Vector3 GetFreeMoveDelta(SceneCamera camera, float deltaTime)
     {
         var forward = new Vector3(camera.Forward.X, 0F, camera.Forward.Z);
         if (forward.LengthSquared > 0.0001F)
@@ -905,27 +939,33 @@ DockId=0x6A3C3007,0
         }
 
         var movement = Vector3.Zero;
-        if (KeyboardState.IsKeyDown(Keys.W)) movement += forward;
-        if (KeyboardState.IsKeyDown(Keys.S)) movement -= forward;
-        if (KeyboardState.IsKeyDown(Keys.D)) movement += right;
-        if (KeyboardState.IsKeyDown(Keys.A)) movement -= right;
+        if (IsVirtualKeyDown(0x57, Keys.W)) movement += forward;
+        if (IsVirtualKeyDown(0x53, Keys.S)) movement -= forward;
+        if (IsVirtualKeyDown(0x44, Keys.D)) movement += right;
+        if (IsVirtualKeyDown(0x41, Keys.A)) movement -= right;
         if (movement.LengthSquared > 0.0001F)
         {
             movement = Vector3.Normalize(movement);
             var speed = MathF.Max(0.1F, _sceneMoveSpeed) * (IsShiftPressed() ? 4F : 1F);
-            _scenePan += new Vector2(movement.X, movement.Z) * speed * MathF.Max(deltaTime, 0.001F);
+            movement *= speed * MathF.Max(deltaTime, 0.001F);
+        }
+        else
+        {
+            movement = Vector3.Zero;
         }
 
         var verticalSpeed = MathF.Max(0.1F, _sceneMoveSpeed) * (IsShiftPressed() ? 4F : 1F);
-        if (KeyboardState.IsKeyDown(Keys.E))
+        if (IsVirtualKeyDown(0x45, Keys.E))
         {
-            _sceneFreeMoveHeight += verticalSpeed * MathF.Max(deltaTime, 0.001F);
+            movement.Y += verticalSpeed * MathF.Max(deltaTime, 0.001F);
         }
 
-        if (KeyboardState.IsKeyDown(Keys.Q))
+        if (IsVirtualKeyDown(0x51, Keys.Q))
         {
-            _sceneFreeMoveHeight -= verticalSpeed * MathF.Max(deltaTime, 0.001F);
+            movement.Y -= verticalSpeed * MathF.Max(deltaTime, 0.001F);
         }
+
+        return movement;
     }
 
     /// <summary>
@@ -938,7 +978,25 @@ DockId=0x6A3C3007,0
     /// 判断 Shift 是否正在按下
     /// </summary>
     /// <returns>Shift 是否正在按下</returns>
-    private bool IsShiftPressed() => KeyboardState.IsKeyDown(Keys.LeftShift) || KeyboardState.IsKeyDown(Keys.RightShift);
+    private bool IsShiftPressed() =>
+        KeyboardState.IsKeyDown(Keys.LeftShift) || KeyboardState.IsKeyDown(Keys.RightShift) ||
+        IsAsyncKeyDown(0x10);
+
+    /// <summary>
+    /// 判断指定按键是否正在按下
+    /// </summary>
+    /// <param name="virtualKey">Windows 虚拟键码</param>
+    /// <param name="fallbackKey">OpenTK 按键值</param>
+    /// <returns>按键是否正在按下</returns>
+    private bool IsVirtualKeyDown(int virtualKey, Keys fallbackKey) =>
+        KeyboardState.IsKeyDown(fallbackKey) || IsAsyncKeyDown(virtualKey);
+
+    /// <summary>
+    /// 读取 Windows 当前按键状态
+    /// </summary>
+    /// <param name="virtualKey">Windows 虚拟键码</param>
+    /// <returns>按键是否正在按下</returns>
+    private static bool IsAsyncKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
     /// <summary>
     /// 读取 Windows 键盘切换键状态
@@ -947,6 +1005,14 @@ DockId=0x6A3C3007,0
     /// <returns>键的当前状态</returns>
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int virtualKey);
+
+    /// <summary>
+    /// 读取 Windows 当前异步按键状态
+    /// </summary>
+    /// <param name="virtualKey">Windows 虚拟键码</param>
+    /// <returns>按键状态位</returns>
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 
     private static void DrawSceneCrosshair(ImDrawListPtr drawList, Vector2 center)
     {
@@ -1292,6 +1358,11 @@ DockId=0x6A3C3007,0
         else
         {
             DrawRenderViewOverlay(origin, size, drawList);
+        }
+
+        if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Render)
+        {
+            DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
 
         ImGui.EndChild();
