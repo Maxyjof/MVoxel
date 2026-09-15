@@ -1534,10 +1534,12 @@ DockId=0x6A3C3007,0
     /// <returns>允许显示时返回 true</returns>
     private bool IsVoxelWorldVisible()
     {
-        var modelObject = GetVoxelWorldObject();
-        return modelObject is not null && modelObject.Visible &&
-               modelObject.Components.Any(component =>
-                   SceneComponentTypes.IsVoxelModel(component) && component.Enabled);
+        var modelObjects = _sceneDocument?.Objects
+            .Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel))
+            .ToArray();
+        return modelObjects is { Length: > 0 } && modelObjects.Any(modelObject =>
+            modelObject.Visible && modelObject.Components.Any(component =>
+                SceneComponentTypes.IsVoxelModel(component) && component.Enabled));
     }
 
     /// <summary>
