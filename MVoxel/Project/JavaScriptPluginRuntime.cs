@@ -1,6 +1,7 @@
-using System.Diagnostics;
 using System.Text.Json;
 using MVoxel.Core;
+using Jint;
+using MoonSharp.Interpreter;
 
 namespace MVoxel.Project;
 
@@ -22,7 +23,7 @@ public sealed record PluginPanel(string Id, string Name, string PluginId);
 public sealed record PluginComponent(string Id, string Name, string Category, string PluginId);
 
 /// <summary>
-/// 通过受限 Node.js 子进程执行 JavaScript 插件入口
+/// 通过随程序发布的受限 JavaScript 或 Lua 解释器执行插件入口
 /// </summary>
 public sealed class JavaScriptPluginRuntime : IDisposable
 {
@@ -51,7 +52,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     public IReadOnlyList<PluginComponent> Components => _components;
 
     /// <summary>
-    /// 激活项目中已启用的 JavaScript 插件
+    /// 激活项目中已启用的 JavaScript 或 Lua 插件
     /// </summary>
     /// <param name="project">目标项目</param>
     /// <param name="timeout">单个插件启动时间上限</param>
@@ -124,11 +125,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                     }
                 }
                 _active.Add(package);
-                MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
+                MVoxelLog.Info($"{GetLanguageName(package)} 插件已激活：{package.Id}");
             }
             catch (Exception exception)
             {
-                MVoxelLog.Warn($"JavaScript 插件激活失败：{package.Id}，原因：{exception.Message}");
+                MVoxelLog.Warn($"{GetLanguageName(package)} 插件激活失败：{package.Id}，原因：{exception.Message}");
             }
         }
         return _active;
@@ -145,38 +146,9 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     {
         if (!_automationOwners.TryGetValue(automationId, out var package))
             throw new InvalidOperationException($"未找到已启用的自动化入口：{automationId}");
-        var entry = PluginManager.ResolveEntryPath(package);
-        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const id=process.argv[2];const a=JSON.parse(process.argv[3]);" +
-            "const h={registerAutomation:()=>{}};let r=null;if(typeof p.runAutomation==='function')r=await p.runAutomation(id,a,h);" +
-            "process.stdout.write(JSON.stringify(r??null));";
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "node",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("--permission");
-        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
-        startInfo.ArgumentList.Add("--input-type=module");
-        startInfo.ArgumentList.Add("-e");
-        startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add(entry);
-        startInfo.ArgumentList.Add(automationId);
-        startInfo.ArgumentList.Add(arguments.GetRawText());
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
-        {
-            process.Kill(true);
-            throw new TimeoutException("自动化执行超时");
-        }
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "自动化执行失败" : error.Trim());
-        using var document = JsonDocument.Parse(output);
-        return document.RootElement.Clone();
+        if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+            return InvokeLua(package, "runAutomation", automationId, arguments, timeout);
+        return InvokeJavaScript(package, "runAutomation", automationId, arguments, timeout);
     }
 
     /// <summary>
@@ -190,69 +162,177 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     {
         if (!_commandOwners.TryGetValue(commandId, out var package))
             throw new InvalidOperationException($"未找到已启用的编辑器命令：{commandId}");
-        var entry = PluginManager.ResolveEntryPath(package);
-        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const id=process.argv[2];const a=JSON.parse(process.argv[3]);" +
-            "let r=null;if(typeof p.runCommand==='function')r=await p.runCommand(id,a);process.stdout.write(JSON.stringify(r??null));";
-        var startInfo = new ProcessStartInfo { FileName = "node", UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-        startInfo.ArgumentList.Add("--permission");
-        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
-        startInfo.ArgumentList.Add("--input-type=module");
-        startInfo.ArgumentList.Add("-e");
-        startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add(entry);
-        startInfo.ArgumentList.Add(commandId);
-        startInfo.ArgumentList.Add(arguments.GetRawText());
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds)) { process.Kill(true); throw new TimeoutException("编辑器命令执行超时"); }
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "编辑器命令执行失败" : error.Trim());
-        using var document = JsonDocument.Parse(output);
-        return document.RootElement.Clone();
+        if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+            return InvokeLua(package, "runCommand", commandId, arguments, timeout);
+        return InvokeJavaScript(package, "runCommand", commandId, arguments, timeout);
     }
 
     /// <summary>
-    /// 在隔离进程中执行插件激活入口并收集扩展注册
+    /// 在随程序发布的受限解释器中执行插件激活入口并收集扩展注册
     /// </summary>
     /// <param name="package">插件包</param>
     /// <param name="timeout">执行时间上限</param>
     /// <returns>插件注册的扩展项</returns>
     private static PluginExtensionData ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
     {
+        if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+            return ExecuteLuaActivate(package);
         var entry = PluginManager.ResolveEntryPath(package);
-        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const a=[],c=[],u=[],s=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name}),registerComponent:(id,name,category='插件')=>s.push({id,name,category})};" +
-            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({automations:a,commands:c,panels:u,components:s}));";
-        var startInfo = new ProcessStartInfo
+        var automations = new List<PluginExtensionItem>();
+        var commands = new List<PluginExtensionItem>();
+        var panels = new List<PluginExtensionItem>();
+        var components = new List<PluginExtensionComponent>();
+        var engine = CreateJavaScriptEngine(timeout);
+        engine.SetValue("host", new ScriptHost(automations, commands, panels, components));
+        engine.Execute(ToJavaScriptSource(File.ReadAllText(entry)));
+        var activate = engine.GetValue("activate");
+        if (!activate.IsUndefined() && !activate.IsNull()) engine.Invoke("activate", engine.GetValue("host"));
+        return new PluginExtensionData(automations, commands, panels, components);
+    }
+
+    private static JsonElement InvokeJavaScript(EditorPluginPackage package, string functionName,
+        string id, JsonElement arguments, TimeSpan timeout)
+    {
+        var entry = PluginManager.ResolveEntryPath(package);
+        var engine = CreateJavaScriptEngine(timeout);
+        engine.SetValue("__mvoxelArguments", arguments.GetRawText());
+        engine.Execute(ToJavaScriptSource(File.ReadAllText(entry)));
+        var function = engine.GetValue(functionName);
+        if (function.IsUndefined() || function.IsNull())
+            throw new InvalidOperationException($"JavaScript 插件没有导出 {functionName} 函数");
+        engine.Execute("const __mvoxelPayload = JSON.parse(__mvoxelArguments);");
+        var result = engine.Invoke(functionName, id, engine.GetValue("__mvoxelPayload"));
+        var value = result.IsNull() || result.IsUndefined() ? null : result.ToObject();
+        return JsonSerializer.SerializeToElement(value);
+    }
+
+    private static Engine CreateJavaScriptEngine(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        return new Engine(options => options.TimeoutInterval(timeout).LimitRecursion(128));
+    }
+
+    private static string ToJavaScriptSource(string source) =>
+        source.Replace("export async function ", "async function ", StringComparison.Ordinal)
+             .Replace("export function ", "function ", StringComparison.Ordinal);
+
+    private static string GetLanguageName(EditorPluginPackage package) =>
+        package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) ? "Lua" : "JavaScript";
+
+    private sealed class ScriptHost
+    {
+        private readonly List<PluginExtensionItem> _automations;
+        private readonly List<PluginExtensionItem> _commands;
+        private readonly List<PluginExtensionItem> _panels;
+        private readonly List<PluginExtensionComponent> _components;
+
+        public ScriptHost(List<PluginExtensionItem> automations, List<PluginExtensionItem> commands,
+            List<PluginExtensionItem> panels, List<PluginExtensionComponent> components)
         {
-            FileName = "node",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("--permission");
-        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
-        startInfo.ArgumentList.Add("--input-type=module");
-        startInfo.ArgumentList.Add("-e");
-        startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add(entry);
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
-        {
-            process.Kill(true);
-            throw new TimeoutException("插件启动超时");
+            _automations = automations;
+            _commands = commands;
+            _panels = panels;
+            _components = components;
         }
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "JavaScript 插件返回失败" : error.Trim());
-        using var document = JsonDocument.Parse(output);
-        return new PluginExtensionData(
-            ReadExtensionItems(document.RootElement, "automations"),
-            ReadExtensionItems(document.RootElement, "commands"),
-            ReadExtensionItems(document.RootElement, "panels"),
-            ReadComponentItems(document.RootElement));
+
+        public void RegisterAutomation(string id, string name) => _automations.Add(new(id, name));
+        public void RegisterCommand(string id, string name) => _commands.Add(new(id, name));
+        public void RegisterPanel(string id, string name) => _panels.Add(new(id, name));
+        public void RegisterComponent(string id, string name, string category = "插件") => _components.Add(new(id, name, category));
+    }
+
+    private static PluginExtensionData ExecuteLuaActivate(EditorPluginPackage package)
+    {
+        var entry = PluginManager.ResolveEntryPath(package);
+        var script = new Script(CoreModules.Preset_SoftSandbox);
+        var automations = new List<PluginExtensionItem>();
+        var commands = new List<PluginExtensionItem>();
+        var panels = new List<PluginExtensionItem>();
+        var components = new List<PluginExtensionComponent>();
+        var host = CreateLuaHost(script, automations, commands, panels, components);
+        script.DoString(File.ReadAllText(entry), null, entry);
+        var activate = script.Globals.Get("activate");
+        if (activate.Type == DataType.Function) script.Call(activate, host);
+        return new PluginExtensionData(automations, commands, panels, components);
+    }
+
+    private static JsonElement InvokeLua(EditorPluginPackage package, string functionName,
+        string id, JsonElement arguments, TimeSpan timeout)
+    {
+        var entry = PluginManager.ResolveEntryPath(package);
+        var script = new Script(CoreModules.Preset_SoftSandbox);
+        script.DoString(File.ReadAllText(entry), null, entry);
+        var function = script.Globals.Get(functionName);
+        if (function.Type != DataType.Function)
+            throw new InvalidOperationException($"Lua 插件没有导出 {functionName} 函数");
+        var result = script.Call(function, DynValue.NewString(id), JsonToLua(script, arguments));
+        return JsonSerializer.SerializeToElement(LuaToObject(result));
+    }
+
+    private static DynValue JsonToLua(Script script, JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Object => DynValue.NewTable(CreateLuaTable(script, value.EnumerateObject().Select(item => (item.Name, item.Value)))),
+            JsonValueKind.Array => DynValue.NewTable(CreateLuaTable(script, value.EnumerateArray().Select((item, index) => ((index + 1).ToString(), item)))),
+            JsonValueKind.String => DynValue.NewString(value.GetString() ?? string.Empty),
+            JsonValueKind.Number => value.TryGetInt64(out var integer) ? DynValue.NewNumber(integer) : DynValue.NewNumber(value.GetDouble()),
+            JsonValueKind.True => DynValue.NewBoolean(true),
+            JsonValueKind.False => DynValue.NewBoolean(false),
+            _ => DynValue.Nil,
+        };
+    }
+
+    private static Table CreateLuaTable(Script script, IEnumerable<(string Key, JsonElement Value)> values)
+    {
+        var table = new Table(script);
+        foreach (var (key, value) in values) table.Set(key, JsonToLua(script, value));
+        return table;
+    }
+
+    private static object? LuaToObject(DynValue value)
+    {
+        return value.Type switch
+        {
+            DataType.Nil or DataType.Void => null,
+            DataType.Boolean => value.Boolean,
+            DataType.Number => value.Number,
+            DataType.String => value.String,
+            DataType.Table => value.Table.Pairs.ToDictionary(
+                pair => pair.Key.String ?? pair.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                pair => LuaToObject(pair.Value), StringComparer.Ordinal),
+            _ => value.ToObject(),
+        };
+    }
+
+    private static Table CreateLuaHost(Script script, List<PluginExtensionItem> automations,
+        List<PluginExtensionItem> commands, List<PluginExtensionItem> panels,
+        List<PluginExtensionComponent> components)
+    {
+        var host = new Table(script);
+        host.Set("registerAutomation", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count >= 2) automations.Add(new PluginExtensionItem(args[0].String ?? string.Empty, args[1].String ?? string.Empty));
+            return DynValue.Nil;
+        }));
+        host.Set("registerCommand", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count >= 2) commands.Add(new PluginExtensionItem(args[0].String ?? string.Empty, args[1].String ?? string.Empty));
+            return DynValue.Nil;
+        }));
+        host.Set("registerPanel", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count >= 2) panels.Add(new PluginExtensionItem(args[0].String ?? string.Empty, args[1].String ?? string.Empty));
+            return DynValue.Nil;
+        }));
+        host.Set("registerComponent", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count >= 2)
+                components.Add(new PluginExtensionComponent(args[0].String ?? string.Empty,
+                    args[1].String ?? string.Empty, args.Count >= 3 ? args[2].String ?? "插件" : "插件"));
+            return DynValue.Nil;
+        }));
+        return host;
     }
 
     /// <summary>
@@ -288,7 +368,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     /// </summary>
     public void Dispose()
     {
-        foreach (var package in _active) MVoxelLog.Info($"JavaScript 插件已停用：{package.Id}");
+        foreach (var package in _active) MVoxelLog.Info($"{GetLanguageName(package)} 插件已停用：{package.Id}");
         _active.Clear();
         _automations.Clear();
         _automationOwners.Clear();

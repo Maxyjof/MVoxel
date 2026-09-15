@@ -1,0 +1,8 @@
+{
+  "id": "com.mvoxel.lua-sample",
+  "name": "Lua 双端协议示例",
+  "version": "1.0.0",
+  "main": "index.lua",
+  "engine": "mvoxel",
+  "permissions": ["automation.register", "editor.command", "editor.panel", "scene.component"]
+}

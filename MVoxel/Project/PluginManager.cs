@@ -25,7 +25,7 @@ public sealed class EditorPluginPackage
     public string Version { get; init; } = "1.0.0";
 
     /// <summary>
-    /// JavaScript 入口文件名
+    /// JavaScript 或 Lua 入口文件名
     /// </summary>
     [JsonPropertyName("main")]
     public string Entry { get; init; } = "index.js";
@@ -73,6 +73,11 @@ public static class PluginManager
     public const string MvoxMcpPluginId = "com.mvoxel.mcp";
 
     /// <summary>
+    /// 内置 Lua 双端协议示例插件稳定 ID
+    /// </summary>
+    public const string LuaSamplePluginId = "com.mvoxel.lua-sample";
+
+    /// <summary>
     /// 获取程序随附的内置插件
     /// </summary>
     /// <returns>内置插件清单</returns>
@@ -89,6 +94,16 @@ public static class PluginManager
                 Source = "builtin",
                 RootDirectory = Path.Combine(AppContext.BaseDirectory, "Plugins", MvoxMcpPluginId),
                 Permissions = ["project.read", "project.write", "plugin.manage", "automation.register", "editor.command", "editor.panel", "scene.component"],
+            },
+            [LuaSamplePluginId] = new EditorPluginPackage
+            {
+                Id = LuaSamplePluginId,
+                Name = "Lua 双端协议示例",
+                Version = "1.0.0",
+                Entry = "index.lua",
+                Source = "builtin",
+                RootDirectory = Path.Combine(AppContext.BaseDirectory, "Plugins", LuaSamplePluginId),
+                Permissions = ["automation.register", "editor.command", "editor.panel", "scene.component"],
             },
         };
         if (Directory.Exists(AppPaths.PluginDirectory))
@@ -125,7 +140,7 @@ public static class PluginManager
     }
 
     /// <summary>
-    /// 获取插件 JavaScript 入口的绝对路径
+    /// 获取插件脚本入口的绝对路径
     /// </summary>
     /// <param name="packageInfo">插件清单</param>
     /// <returns>入口文件绝对路径</returns>
@@ -135,12 +150,12 @@ public static class PluginManager
         var root = Path.GetFullPath(packageInfo.RootDirectory);
         var entry = Path.GetFullPath(Path.Combine(root, packageInfo.Entry));
         if (!entry.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(entry))
-            throw new FileNotFoundException("插件 JavaScript 入口不存在", entry);
+            throw new FileNotFoundException("插件脚本入口不存在", entry);
         return entry;
     }
 
     /// <summary>
-    /// 将 JavaScript 插件目录安装到编辑器级插件目录
+    /// 将脚本插件目录安装到编辑器级插件目录
     /// </summary>
     /// <param name="sourceDirectory">包含 package.json 的插件目录</param>
     /// <returns>安装后的插件清单</returns>
@@ -287,7 +302,7 @@ public static class PluginManager
     }
 
     /// <summary>
-    /// 验证插件 JavaScript 入口名称
+    /// 验证插件脚本入口名称
     /// </summary>
     /// <param name="packageInfo">插件清单</param>
     public static void Validate(EditorPluginPackage packageInfo)
@@ -295,7 +310,8 @@ public static class PluginManager
         ArgumentNullException.ThrowIfNull(packageInfo);
         if (!IsValidPluginId(packageInfo.Id) || !Version.TryParse(packageInfo.Version, out _) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
             packageInfo.Permissions is null || packageInfo.Dependencies is null ||
-            !packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+            !(packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+              packageInfo.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)) ||
             Path.IsPathRooted(packageInfo.Entry) || packageInfo.Entry.Contains("..", StringComparison.Ordinal))
         {
             throw new InvalidDataException("插件 ID 或入口文件不符合安全要求");
