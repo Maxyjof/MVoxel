@@ -335,23 +335,6 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 在相机拖动期间呈现上一张已经完成的场景纹理
-    /// </summary>
-    /// <param name="drawList">场景绘制列表</param>
-    /// <param name="origin">视口左上角屏幕坐标</param>
-    /// <param name="size">视口尺寸</param>
-    /// <param name="pipeline">可用的 Vulkan 体素管线</param>
-    /// <returns>是否成功加入显示纹理</returns>
-    private static bool PresentCachedGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size,
-        VulkanVoxelRenderPipeline pipeline)
-    {
-        if (pipeline.DisplayTextureId == IntPtr.Zero) return false;
-        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-            Vector2.Zero, pipeline.DisplayUvMax);
-        return true;
-    }
-
-    /// <summary>
     /// 只有光照、几何体和相机变化会使累积失效
     /// 后期处理变化直接重新呈现，不重启路径追踪
     /// </summary>

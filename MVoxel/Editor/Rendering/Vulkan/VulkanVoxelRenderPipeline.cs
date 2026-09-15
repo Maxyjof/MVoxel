@@ -999,10 +999,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
         }
 
-        vec3 Ground(vec3 rayOrigin, vec3 rayDirection, float hitDistance)
+        vec3 LinearToDisplay(vec3 value)
+        {
+            vec3 low = value * 12.92;
+            vec3 high = 1.055 * pow(max(value, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+            return mix(low, high, step(vec3(0.0031308), value));
+        }
+
+        vec3 Ground(vec3 rayOrigin, vec3 rayDirection, float hitDistance, bool pathMode)
         {
             vec3 point = rayOrigin + rayDirection * hitDistance;
-            vec3 groundColor = vec3(values[36], values[37], values[38]);
+            vec3 groundColor = pathMode
+                ? vec3(values[36], values[37], values[38])
+                : LinearToDisplay(vec3(values[98], values[99], values[100]));
             if (values[90] > 0.5)
             {
                 float gridStep = max(values[89], 0.001);
@@ -1029,14 +1038,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 uint hitFlags;
                 if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags))
                 {
-                    float groundDistance = values[35] > 0.5 && abs(rayDirection.y) > 0.00001
+                    float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
                     if (groundDistance > 0.0 && groundDistance < values[97])
-                        radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance);
+                        radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance, pathMode);
                     else
                         radiance += pathMode
                             ? throughput * Sky(rayDirection)
-                            : vec3(values[98], values[99], values[100]);
+                            : LinearToDisplay(vec3(values[98], values[99], values[100]));
                     break;
                 }
 
@@ -1044,7 +1053,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     if (!pathMode)
                     {
-                        radiance += vec3(values[98], values[99], values[100]);
+                        radiance += LinearToDisplay(vec3(values[98], values[99], values[100]));
                     }
                     else
                     {

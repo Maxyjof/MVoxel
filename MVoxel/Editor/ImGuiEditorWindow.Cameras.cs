@@ -172,7 +172,6 @@ internal sealed partial class ImGuiEditorWindow
                          mouse.Y >= origin.Y && mouse.Y <= origin.Y + size.Y;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
-            _sceneOrbiting = false;
             return;
         }
 
@@ -185,7 +184,6 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var orbiting = io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
-        _sceneOrbiting = orbiting;
         if (orbiting)
         {
             var yaw = MathF.Atan2(-camera.Forward.X, -camera.Forward.Z) +

@@ -64,7 +64,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneNearClip = 0.05F;
     private float _sceneFarClip = 100000F;
     private float _sceneFieldOfView = 50F;
-    private bool _sceneOrbiting;
     private int _editorLodLevels = 4;
     private int _projectLodLevels = 4;
     private readonly float[] _editorLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
@@ -626,18 +625,18 @@ DockId=0x6A3C3007,0
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius, allowMouseCapture: true);
         var camera = GetSceneCamera();
 
-        var gpuRendered = _project is not null && !_sceneOrbiting &&
+        // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
+        var gpuRendered = _project is not null &&
                           TryRenderGpuSceneView(drawList, origin, size, camera);
         if (_project is not null && !gpuRendered)
         {
-            // 相机拖动期间使用轻量 CPU 预览，避免同步 Vulkan 提交阻塞输入
-            DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
-        }
+            // GPU 不可用时仍保持网格在体素之前绘制，避免网格盖住模型
+            if (_showGrid)
+            {
+                SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+            }
 
-        if (_showGrid && !gpuRendered)
-        {
-            // CPU 网格，GPU 通道自行绘制带深度关系的网格
-            SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+            DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
         if (_project is not null)
@@ -773,7 +772,6 @@ DockId=0x6A3C3007,0
     {
         if (_welcomeWindow is not null || _projectOperation.IsRunning)
         {
-            _sceneOrbiting = false;
             EndSceneMouseCapture();
             return false;
         }
@@ -785,7 +783,6 @@ DockId=0x6A3C3007,0
         var gizmoHovered = inViewport && Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
-            _sceneOrbiting = false;
             EndSceneMouseCapture();
             return false;
         }
@@ -803,7 +800,6 @@ DockId=0x6A3C3007,0
 
         if (_sceneMouseCaptured)
         {
-            _sceneOrbiting = true;
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
             _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch - io.MouseDelta.Y * 0.008F, -1.35F, 1.35F);
             UpdateFreeMove(GetSceneCamera(), io.DeltaTime);
@@ -820,7 +816,6 @@ DockId=0x6A3C3007,0
         }
 
         var orbitLeft = !gizmoHovered && io.KeyShift && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
-        _sceneOrbiting = orbitLeft;
         if (orbitLeft)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
