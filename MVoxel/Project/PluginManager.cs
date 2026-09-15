@@ -152,20 +152,37 @@ public static class PluginManager
             ?? throw new InvalidDataException("插件清单为空");
         Validate(package);
         var destination = Path.Combine(AppPaths.PluginDirectory, package.Id);
-        if (string.Equals(Path.GetFullPath(destination), source, StringComparison.OrdinalIgnoreCase))
+        var destinationFull = Path.GetFullPath(destination);
+        if (string.Equals(destinationFull, source, StringComparison.OrdinalIgnoreCase))
             return CreateInstalledPackage(package, source);
-        if (Directory.Exists(destination)) Directory.Delete(destination, true);
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        if (source.StartsWith(destinationFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+            destinationFull.StartsWith(source + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("插件安装源不能位于目标插件目录或其子目录内");
+
+        var staging = destinationFull + ".staging-" + Guid.NewGuid().ToString("N");
+        try
         {
-            var relative = Path.GetRelativePath(source, file);
-            var target = Path.GetFullPath(Path.Combine(destination, relative));
-            if (!target.StartsWith(destination + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("插件文件路径超出插件目录");
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, true);
+            Directory.CreateDirectory(staging);
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(source, file);
+                var target = Path.GetFullPath(Path.Combine(staging, relative));
+                if (!target.StartsWith(staging + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("插件文件路径超出插件目录");
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target, true);
+            }
+
+            var stagedPackage = CreateInstalledPackage(package, staging);
+            ResolveEntryPath(stagedPackage);
+            if (Directory.Exists(destinationFull)) Directory.Delete(destinationFull, true);
+            Directory.Move(staging, destinationFull);
+            return CreateInstalledPackage(package, destinationFull);
         }
-        return CreateInstalledPackage(package, destination);
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+        }
     }
 
     /// <summary>
