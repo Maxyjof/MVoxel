@@ -1607,9 +1607,11 @@ DockId=0x6A3C3007,0
         _ = drawList;
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
         var pipeline = _pipeline;
-        var backendName = pipeline?.UsingHardwareRayTracing == true
-            ? "Vulkan 硬件 RT"
-            : "Vulkan Compute 路径追踪";
+        var backendName = _renderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
+            ? "CPU 渲染预览"
+            : pipeline?.UsingHardwareRayTracing == true
+                ? "Vulkan 硬件 RT"
+                : "Vulkan Compute 路径追踪";
         ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
         if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
         {
