@@ -203,6 +203,15 @@ internal sealed class ProjectAssetBrowser
                     ImGui.SetClipboardText(entry.RelativePath);
                     reportStatus($"已复制相对路径：{entry.RelativePath}");
                 }
+                if (ImGui.MenuItem("复制绝对路径"))
+                {
+                    var absolutePath = ResolveAssetPath(project, entry.RelativePath);
+                    if (absolutePath is not null)
+                    {
+                        ImGui.SetClipboardText(absolutePath);
+                        reportStatus($"已复制绝对路径：{absolutePath}");
+                    }
+                }
                 ImGui.EndPopup();
             }
 
