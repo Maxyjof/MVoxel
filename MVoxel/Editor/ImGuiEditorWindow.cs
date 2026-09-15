@@ -1854,8 +1854,9 @@ DockId=0x6A3C3007,0
         }
         else
         {
-            ImGui.TextColored(ToColor(EditorPalette.Text), "检查器");
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8F, 8F));
             DrawInspectorProperties();
+            ImGui.PopStyleVar();
         }
         ImGui.End();
     }
@@ -1881,42 +1882,49 @@ DockId=0x6A3C3007,0
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "警告：模型组件与相机组件不能同时挂载");
         else if (!string.IsNullOrWhiteSpace(_componentWarning))
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
-        var objectName = selectedObject.Name;
-        if (ImGui.InputText("名称##InspectorObjectName", ref objectName, 128) &&
-            !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
+        ImGui.PushStyleColor(ImGuiCol.Border, ToColor(EditorPalette.Border));
+        if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, 78F), ImGuiChildFlags.Borders))
         {
-            selectedObject.Name = objectName.Trim();
-            MarkSceneDocumentDirty();
-        }
-        if (_sceneDocumentDirty)
-            ImGui.SameLine();
-        if (_sceneDocumentDirty)
-            ImGui.TextDisabled("未保存");
-        ImGui.SameLine();
-        var visible = selectedObject.Visible;
-        if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
-        {
-            selectedObject.Visible = visible;
-            MarkSceneDocumentDirty();
-            _pipeline?.ResetAccumulation();
-            _accumulationSignature = string.Empty;
-        }
-
-        ImGui.SameLine();
-        var locked = selectedObject.Locked;
-        if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
-        {
-            selectedObject.Locked = locked;
-            MarkSceneDocumentDirty();
-            if (locked)
+            ImGui.TextColored(ToColor(EditorPalette.MutedText), "场景对象");
+            var objectName = selectedObject.Name;
+            ImGui.SetNextItemWidth(Math.Max(96F, ImGui.GetContentRegionAvail().X - 4F));
+            if (ImGui.InputText("##InspectorObjectName", ref objectName, 128) &&
+                !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
             {
-                _selectedSceneObjectId = null;
+                selectedObject.Name = objectName.Trim();
+                MarkSceneDocumentDirty();
+            }
+            var visible = selectedObject.Visible;
+            if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
+            {
+                selectedObject.Visible = visible;
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+                _accumulationSignature = string.Empty;
+            }
+            ImGui.SameLine();
+            var locked = selectedObject.Locked;
+            if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
+            {
+                selectedObject.Locked = locked;
+                MarkSceneDocumentDirty();
+                if (locked) _selectedSceneObjectId = null;
+            }
+            if (_sceneDocumentDirty)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(ToColor(EditorPalette.Accent), "未保存");
             }
         }
+        ImGui.EndChild();
+        ImGui.PopStyleColor(2);
+        ImGui.Dummy(new Vector2(0F, 6F));
 
         ImGui.SeparatorText("组件");
         var removeComponentIndex = -1;
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6F, 5F));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 6F));
         ImGui.PushStyleColor(ImGuiCol.Header, ToColor(EditorPalette.PanelHeader));
         ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(EditorPalette.AccentSoft));
         ImGui.PushStyleColor(ImGuiCol.HeaderActive, ToColor(EditorPalette.AccentSoft));
@@ -1954,9 +1962,11 @@ DockId=0x6A3C3007,0
                 DrawComponentSummary(selectedObject, component);
                 ImGui.TreePop();
             }
+            ImGui.Separator();
             ImGui.PopID();
         }
         ImGui.PopStyleColor(3);
+        ImGui.PopStyleVar();
         ImGui.PopStyleVar();
 
         if (removeComponentIndex >= 0)
@@ -1968,7 +1978,8 @@ DockId=0x6A3C3007,0
             SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
         }
 
-        if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
+        ImGui.SetNextItemWidth(Math.Max(120F, ImGui.GetContentRegionAvail().X - 78F));
+        if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "添加组件"))
             {
                 foreach (var definition in SceneComponentTypes.BuiltInDefinitions)
                 {
