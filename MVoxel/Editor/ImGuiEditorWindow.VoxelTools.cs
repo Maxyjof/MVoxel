@@ -51,11 +51,9 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.Dispose();
         _gpuRenderingDisabled = false;
         _pipelineStatus = "显卡体素管线正在初始化";
-        MVoxelLog.Heartbeat("初始化体素渲染管线", $"设备={_vulkan?.DeviceName ?? "未知"}");
         try
         {
             _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
-            MVoxelLog.Heartbeat("体素渲染管线初始化完成");
         }
         catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
         {
@@ -95,7 +93,6 @@ internal sealed partial class ImGuiEditorWindow
 
     private void LoadWorldForProject(ProjectHandle project)
     {
-        MVoxelLog.Heartbeat("开始载入项目场景", $"项目={project.Manifest.Name}");
         _voxelHistory.Clear();
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
@@ -118,13 +115,11 @@ internal sealed partial class ImGuiEditorWindow
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
                 _world = LargeWorldFormat.Read(largeWorldPath);
-                MVoxelLog.Heartbeat("大世界模型载入完成", $"体素={_world.OccupiedVoxelCount}，文件={Path.GetFileName(largeWorldPath)}");
                 SetStatus($"已载入大世界模型：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
             }
             else if (File.Exists(modelPath))
             {
                 _world = LargeWorldFormat.Read(modelPath);
-                MVoxelLog.Heartbeat("体素模型载入完成", $"体素={_world.OccupiedVoxelCount}，文件={Path.GetFileName(modelPath)}");
                 SetStatus($"已载入体素模型：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
             }
             else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
@@ -144,12 +139,10 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"模型读取失败，已载入示范场景：{exception.Message}");
         }
 
-        MVoxelLog.Heartbeat("同步项目场景到 GPU", $"体素={_world.OccupiedVoxelCount}，预算={GetSceneGpuCellBudget()}");
         _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         FrameCameraOnWorld();
-        MVoxelLog.Heartbeat("项目场景准备完成", $"体素={_world.OccupiedVoxelCount}");
     }
 
     /// <summary>
@@ -379,7 +372,6 @@ internal sealed partial class ImGuiEditorWindow
         if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            MVoxelLog.Heartbeat("场景视图同步 GPU 世界", $"体素={_world.OccupiedVoxelCount}，视口={size.X:0}x{size.Y:0}");
             pipeline.SyncWorld(_world, GetSceneGpuCellBudget());
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
@@ -387,16 +379,13 @@ internal sealed partial class ImGuiEditorWindow
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
                 showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
             // 场景只显示体素原色，完整光照和路径追踪仅由渲染窗口执行
-            MVoxelLog.Heartbeat("场景视图提交 GPU 绘制", $"目标={width}x{height}");
             if (!pipeline.RenderSceneView(CurrentSceneRenderSettings, frame, width, height)) return false;
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                 Vector2.Zero, pipeline.DisplayUvMax);
-            MVoxelLog.Heartbeat("场景视图 GPU 绘制完成");
             return true;
         }
         catch (Exception exception)
         {
-            MVoxelLog.Heartbeat("场景视图 GPU 绘制异常");
             MVoxelLog.SetRuntimeContext(
                 $"Vulkan 场景绘制失败，设备={_vulkan?.DeviceName ?? "未知"}，视口={size.X:0}x{size.Y:0}，" +
                 $"体素={_world.OccupiedVoxelCount}，管线={pipeline.ShaderLog ?? "无诊断信息"}");

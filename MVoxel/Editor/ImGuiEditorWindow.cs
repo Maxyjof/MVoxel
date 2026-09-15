@@ -262,7 +262,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         try
         {
-            MVoxelLog.Heartbeat("编辑器帧开始", $"项目={_project?.Manifest.Name ?? "未打开项目"}，体素={_world.OccupiedVoxelCount}");
             base.OnRenderFrame(args);
             ImGui.SetCurrentContext(_imguiContext);
             _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
@@ -271,13 +270,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (_controller is not null)
             {
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
-                MVoxelLog.Heartbeat("绘制编辑器界面", $"中心标签={_centerTab}，视口={_lastRenderViewportSize.X:0}x{_lastRenderViewportSize.Y:0}");
                 DrawEditorFrame();
                 _controller.Render();
                 UiDiagnostics.Capture(this, "editor");
             }
 
-            MVoxelLog.Heartbeat("提交编辑器 Vulkan 帧", $"设备={_vulkan?.DeviceName ?? "未知"}");
             _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
             {
                 if (_imguiRenderer is not null && _controller is not null)
@@ -288,11 +285,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
             ImGui.SetCurrentContext(_imguiContext);
             UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
-            MVoxelLog.Heartbeat("编辑器帧完成");
         }
         catch (Exception exception)
         {
-            MVoxelLog.Heartbeat("编辑器帧托管异常");
             MVoxelLog.SetRuntimeContext($"编辑器帧渲染，项目={_project?.Manifest.Name ?? "未打开项目"}，体素={_world.OccupiedVoxelCount}");
             MVoxelLog.RecordCrash("编辑器帧渲染异常", exception);
             _gpuRenderingDisabled = true;
@@ -1238,7 +1233,7 @@ DockId=0x6A3C3007,0
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
         bool allowMouseCapture, ViewportCaptureTarget captureTarget = ViewportCaptureTarget.Scene)
     {
-        if (_welcomeWindow is not null || _projectOperation.IsRunning)
+        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning)
         {
             EndSceneMouseCapture(captureTarget);
             return false;
