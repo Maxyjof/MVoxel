@@ -225,6 +225,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (_hardwareRayTracingPipeline.TryRender(_workset, settings, frameState, widthPixels, heightPixels))
             {
                 _usingHardwareRayTracing = true;
+                // 当前硬件 RT 输出是单帧结果，保持到相机、场景或渲染设置变化后再重算
+                AccumulatedSamples = Math.Max(1, settings.PathMaxAccumulatedSamples);
                 return true;
             }
         }
