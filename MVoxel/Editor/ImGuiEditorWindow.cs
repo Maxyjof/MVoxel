@@ -315,6 +315,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             },
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
+            "editor.invokeCommand" => InvokeCommand(request),
             "editor.reloadPlugins" => QueueReloadPlugins(),
             "editor.installPlugin" => InstallPlugin(request),
             "editor.setPluginEnabled" => SetPluginEnabled(request),
@@ -350,6 +351,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var payload = arguments.TryGetProperty("payload", out var item) ? item : emptyPayload.RootElement;
         if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("自动化入口 ID 不能为空");
         return _pluginRuntime.Invoke(id, payload, TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>
+    /// 执行当前项目插件注册的编辑器命令
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>命令结果</returns>
+    private object InvokeCommand(JsonElement request)
+    {
+        if (_pluginRuntime is null) throw new InvalidOperationException("当前没有激活的插件运行时");
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : default;
+        var id = arguments.GetProperty("commandId").GetString();
+        using var emptyPayload = JsonDocument.Parse("{}");
+        var payload = arguments.TryGetProperty("payload", out var item) ? item : emptyPayload.RootElement;
+        if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("命令 ID 不能为空");
+        return _pluginRuntime.InvokeCommand(id, payload, TimeSpan.FromSeconds(10));
     }
 
     /// <summary>
@@ -405,6 +422,18 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _pluginRuntime = new JavaScriptPluginRuntime();
         _pluginRuntime.Activate(_project, TimeSpan.FromSeconds(2));
         _statusText = "插件已重新加载";
+    }
+
+    /// <summary>
+    /// 在窗口线程执行插件命令
+    /// </summary>
+    /// <param name="commandId">命令 ID</param>
+    private void ExecutePluginCommand(string commandId)
+    {
+        if (_pluginRuntime is null) return;
+        using var payload = JsonDocument.Parse("{}");
+        _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10));
+        _statusText = $"已执行插件命令：{commandId}";
     }
 
     private void RequestWelcomeWindow() => _showWelcomeRequested = true;
@@ -587,6 +616,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     if (visible) _visiblePluginPanels.Add(panel.Id);
                     else _visiblePluginPanels.Remove(panel.Id);
                 }
+            }
+            var commands = _pluginRuntime?.Commands ?? [];
+            if (commands.Count > 0) ImGui.Separator();
+            foreach (var command in commands)
+            {
+                if (ImGui.MenuItem(command.Name)) _pendingActions.Enqueue(() => ExecutePluginCommand(command.Id));
             }
             ImGui.EndMenu();
         }

@@ -29,6 +29,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     private readonly Dictionary<string, EditorPluginPackage> _automationOwners = new(StringComparer.Ordinal);
     private readonly List<PluginCommand> _commands = new();
     private readonly List<PluginPanel> _panels = new();
+    private readonly Dictionary<string, EditorPluginPackage> _commandOwners = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 当前已注册的自动化入口
@@ -72,7 +73,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                     _automationOwners[item.Id] = package;
                 }
                 var extensions = ExecuteExtensions(package, timeout);
-                _commands.AddRange(extensions.Commands.Select(item => new PluginCommand(item.Id, item.Name, package.Id)));
+                foreach (var item in extensions.Commands)
+                {
+                    _commands.Add(new PluginCommand(item.Id, item.Name, package.Id));
+                    _commandOwners[item.Id] = package;
+                }
                 _panels.AddRange(extensions.Panels.Select(item => new PluginPanel(item.Id, item.Name, package.Id)));
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
@@ -126,6 +131,39 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         var output = process.StandardOutput.ReadToEnd();
         var error = process.StandardError.ReadToEnd();
         if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "自动化执行失败" : error.Trim());
+        using var document = JsonDocument.Parse(output);
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// 执行当前项目已注册的编辑器命令
+    /// </summary>
+    /// <param name="commandId">命令 ID</param>
+    /// <param name="arguments">命令参数</param>
+    /// <param name="timeout">单次执行时间上限</param>
+    /// <returns>命令返回值</returns>
+    public JsonElement InvokeCommand(string commandId, JsonElement arguments, TimeSpan timeout)
+    {
+        if (!_commandOwners.TryGetValue(commandId, out var package))
+            throw new InvalidOperationException($"未找到已启用的编辑器命令：{commandId}");
+        var entry = PluginManager.ResolveEntryPath(package);
+        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
+            "const p=await import(m);const id=process.argv[2];const a=JSON.parse(process.argv[3]);" +
+            "let r=null;if(typeof p.runCommand==='function')r=await p.runCommand(id,a);process.stdout.write(JSON.stringify(r??null));";
+        var startInfo = new ProcessStartInfo { FileName = "node", UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        startInfo.ArgumentList.Add("--permission");
+        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
+        startInfo.ArgumentList.Add("--input-type=module");
+        startInfo.ArgumentList.Add("-e");
+        startInfo.ArgumentList.Add(script);
+        startInfo.ArgumentList.Add(entry);
+        startInfo.ArgumentList.Add(commandId);
+        startInfo.ArgumentList.Add(arguments.GetRawText());
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds)) { process.Kill(true); throw new TimeoutException("编辑器命令执行超时"); }
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "编辑器命令执行失败" : error.Trim());
         using var document = JsonDocument.Parse(output);
         return document.RootElement.Clone();
     }
@@ -208,6 +246,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         _automationOwners.Clear();
         _commands.Clear();
         _panels.Clear();
+        _commandOwners.Clear();
     }
 
     private sealed record PluginAutomationData(string Id, string Name);

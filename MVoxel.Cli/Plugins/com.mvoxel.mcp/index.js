@@ -12,3 +12,8 @@ export function runAutomation(id, payload) {
   if (id !== "mvoxel.project") throw new Error("未知的自动化入口");
   return { accepted: true, payload: payload ?? {} };
 }
+
+export function runCommand(id, payload) {
+  if (id !== "mvoxel.project.status") throw new Error("未知的编辑器命令");
+  return { accepted: true, payload: payload ?? {} };
+}
