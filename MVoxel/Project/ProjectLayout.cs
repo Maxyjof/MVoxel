@@ -80,6 +80,11 @@ public sealed class LockedPlugin
     /// 来源标记，内置插件为 embedded
     /// </summary>
     public string Source { get; set; } = "embedded";
+
+    /// <summary>
+    /// 安装时解析到的直接依赖及版本范围
+    /// </summary>
+    public Dictionary<string, string> Dependencies { get; set; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>

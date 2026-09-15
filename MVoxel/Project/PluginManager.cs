@@ -41,6 +41,11 @@ public sealed class EditorPluginPackage
     public List<string> Permissions { get; init; } = new();
 
     /// <summary>
+    /// 插件声明的直接依赖及版本范围
+    /// </summary>
+    public Dictionary<string, string> Dependencies { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// 插件实际目录
     /// </summary>
     [JsonIgnore]
@@ -100,6 +105,7 @@ public static class PluginManager
                             Source = "installed",
                             RootDirectory = Path.GetDirectoryName(packagePath)!,
                             Permissions = package.Permissions.ToList(),
+                            Dependencies = package.Dependencies.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal),
                         });
                     }
                 }
@@ -162,6 +168,7 @@ public static class PluginManager
             Source = "installed",
             RootDirectory = destination,
             Permissions = package.Permissions.ToList(),
+            Dependencies = package.Dependencies.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal),
         };
     }
 
@@ -212,6 +219,12 @@ public static class PluginManager
         {
             throw new InvalidDataException("插件 ID 或入口文件不符合安全要求");
         }
+        foreach (var dependency in packageInfo.Dependencies)
+        {
+            if (!IsValidPluginId(dependency.Key) || string.IsNullOrWhiteSpace(dependency.Value) ||
+                string.Equals(dependency.Key, packageInfo.Id, StringComparison.Ordinal))
+                throw new InvalidDataException("插件依赖声明不符合安全要求");
+        }
     }
 
     /// <summary>
@@ -257,7 +270,13 @@ public static class PluginManager
             Plugins = current.Order(StringComparer.Ordinal).Select(id =>
             {
                 var item = ListInstalled().First(package => package.Id == id);
-                return new LockedPlugin { Id = item.Id, Version = item.Version, Source = item.Source };
+                return new LockedPlugin
+                {
+                    Id = item.Id,
+                    Version = item.Version,
+                    Source = item.Source,
+                    Dependencies = item.Dependencies.ToDictionary(dependency => dependency.Key, dependency => dependency.Value, StringComparer.Ordinal),
+                };
             }).ToList(),
         };
         AtomicFile.WriteText(Path.Combine(project.PluginsPath, "plugins-lock.json"),
