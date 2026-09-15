@@ -97,6 +97,7 @@ internal sealed partial class ImGuiEditorWindow
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
         _sceneDocument = LoadSceneDocument(project);
+        _sceneDocumentDirty = false;
         _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;

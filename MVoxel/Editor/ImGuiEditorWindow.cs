@@ -73,6 +73,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _showVoxelOutlines = true;
     private bool _sceneMouseCaptured;
     private ViewportCaptureTarget _capturedViewport;
+    private bool _sceneDocumentDirty;
 
     /// <summary>
     /// 记录当前捕获鼠标的视口
@@ -1870,12 +1871,13 @@ DockId=0x6A3C3007,0
         {
             if (!string.IsNullOrWhiteSpace(_componentWarning))
                 ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
-            ImGui.Text($"对象  {selectedObject.Name}");
+            ImGui.Text($"对象  {selectedObject.Name}{(_sceneDocumentDirty ? " *" : string.Empty)}");
             ImGui.Text($"组件  {selectedObject.Components.Count}");
             var visible = selectedObject.Visible;
             if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
             {
                 selectedObject.Visible = visible;
+                MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
                 _accumulationSignature = string.Empty;
             }
@@ -1884,13 +1886,15 @@ DockId=0x6A3C3007,0
             if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
             {
                 selectedObject.Locked = locked;
-            if (locked)
-            {
-                _selectedSceneObjectId = null;
-            }
+                MarkSceneDocumentDirty();
+                if (locked)
+                {
+                    _selectedSceneObjectId = null;
+                }
             }
 
             ImGui.SeparatorText("组件");
+            var removeComponentIndex = -1;
             for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
             {
                 var component = selectedObject.Components[componentIndex];
@@ -1898,10 +1902,27 @@ DockId=0x6A3C3007,0
                 var label = definition is null
                     ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
                     : $"{definition.DisplayName} · {definition.Category}";
-                if (!ImGui.TreeNodeEx($"{label}##InspectorComponent{componentIndex}", ImGuiTreeNodeFlags.SpanAvailWidth))
-                    continue;
-                DrawComponentSummary(selectedObject, component);
-                ImGui.TreePop();
+                ImGui.PushID($"InspectorComponent{componentIndex}");
+                var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
+                ImGui.SameLine();
+                ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
+                if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;
+                ImGui.EndDisabled();
+                if (expanded)
+                {
+                    DrawComponentSummary(selectedObject, component);
+                    ImGui.TreePop();
+                }
+                ImGui.PopID();
+            }
+
+            if (removeComponentIndex >= 0)
+            {
+                var removed = selectedObject.Components[removeComponentIndex];
+                selectedObject.Components.RemoveAt(removeComponentIndex);
+                _componentWarning = null;
+                MarkSceneDocumentDirty();
+                SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
             }
 
             if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
@@ -1936,6 +1957,7 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     });
+                    MarkSceneDocumentDirty();
                 }
 
                 foreach (var definition in _pluginRuntime?.Components ?? [])
@@ -1948,6 +1970,7 @@ DockId=0x6A3C3007,0
                         SchemaVersion = 1,
                         Data = JsonSerializer.SerializeToElement(new { }),
                     });
+                    MarkSceneDocumentDirty();
                 }
                 ImGui.EndCombo();
             }
@@ -2008,6 +2031,7 @@ DockId=0x6A3C3007,0
                     selectedObject.Transform.SetFree(new FreeTransform(
                         new Double3(positionValue.X, positionValue.Y, positionValue.Z), rotation));
                     UpdateTransformMarker(selectedObject);
+                    MarkSceneDocumentDirty();
                 }
                 var euler = selectedObject.Transform.GetEulerDegrees();
                 var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
@@ -2017,6 +2041,7 @@ DockId=0x6A3C3007,0
                         position,
                         new Double3(eulerValue.X, eulerValue.Y, eulerValue.Z));
                     UpdateTransformMarker(selectedObject);
+                    MarkSceneDocumentDirty();
                 }
             }
             else
@@ -2075,6 +2100,7 @@ DockId=0x6A3C3007,0
         var current = sceneObject.Transform.Grid;
         sceneObject.Transform.SetGrid(new GridTransform(current.Position, current.Rotation.Compose(rotation)));
         UpdateTransformMarker(sceneObject);
+        MarkSceneDocumentDirty();
         _componentWarning = null;
         _pipeline?.ResetAccumulation();
     }
@@ -2084,6 +2110,11 @@ DockId=0x6A3C3007,0
         var transform = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
         if (transform is not null)
             transform.Data = JsonSerializer.SerializeToElement(new { kind = sceneObject.Transform.Mode.ToString() });
+    }
+
+    private void MarkSceneDocumentDirty()
+    {
+        _sceneDocumentDirty = true;
     }
 
     /// <summary>
@@ -2503,6 +2534,7 @@ DockId=0x6A3C3007,0
         SaveProjectSettings();
         _project = null;
         _sceneDocument = null;
+        _sceneDocumentDirty = false;
         _renderCameraId = null;
         _assetBrowser.Reset();
         _world = new VoxelWorld();
@@ -2529,6 +2561,7 @@ DockId=0x6A3C3007,0
         SaveProjectSettings();
         if (SaveWorldToProject(_project))
         {
+            _sceneDocumentDirty = false;
             SetStatus($"项目已保存：{_project.Manifest.Name}（{_world.OccupiedVoxelCount} 体素 → Assets/VoxelModels/主场景.vox）");
         }
     }
