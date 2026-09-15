@@ -131,12 +131,23 @@ public static class ProjectTemplateCatalog
         if (id != ProjectTemplateId.Empty)
         {
             var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
-            if (id == ProjectTemplateId.LargeWorld)
+            if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
-                var largePath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
-                LargeWorldFormat.WriteDemo(largePath);
-                WriteScene(project, Get(id), LargeWorldFormat.DemoVoxelCount,
-                    "Assets/VoxelModels/超大型场景.mvworld");
+                var largeFileName = id == ProjectTemplateId.LargeWorld ? "超大型场景.mvworld" : "渲染体验馆.mvworld";
+                var largePath = Path.Combine(project.AssetsPath, "VoxelModels", largeFileName);
+                if (id == ProjectTemplateId.LargeWorld)
+                {
+                    LargeWorldFormat.WriteDemo(largePath);
+                }
+                else
+                {
+                    LargeWorldFormat.Write(largePath, BuildWorld(id, VoxelPalette.Build()));
+                }
+
+                WriteScene(project, Get(id), id == ProjectTemplateId.LargeWorld
+                        ? LargeWorldFormat.DemoVoxelCount
+                        : BuildWorld(id, VoxelPalette.Build()).OccupiedVoxelCount,
+                    $"Assets/VoxelModels/{largeFileName}");
             }
             else
             {

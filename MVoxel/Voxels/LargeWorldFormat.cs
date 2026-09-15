@@ -8,7 +8,10 @@ namespace MVoxel.Voxels;
 public static class LargeWorldFormat
 {
     private const uint Magic = 0x3158564D;
-    private const int Version = 1;
+    private const int Version = 2;
+    private const int LegacyVersion = 1;
+    private const int LegacyRecordSize = 10;
+    private const int RecordSize = 13;
 
     /// <summary>
     /// 超大型模板的 X 轴尺寸
@@ -49,8 +52,8 @@ public static class LargeWorldFormat
         var bytes = new byte[checked(24 + DemoVoxelCount * 10)];
         using var stream = new MemoryStream(bytes, writable: true);
         using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        WriteHeader(writer, DemoWidth, DemoDepth, DemoHeight, DemoVoxelCount);
-        WriteDemoVoxels(writer, WriteVoxel);
+        WriteHeader(writer, DemoWidth, DemoDepth, DemoHeight, DemoVoxelCount, LegacyVersion);
+        WriteDemoVoxels(writer, WriteLegacyVoxel);
 
         AtomicFile.WriteBytes(path, bytes);
     }
@@ -73,7 +76,7 @@ public static class LargeWorldFormat
         var depth = checked((int)(maximum.Z - minimum.Z + 1));
         ValidateDimensions(width, height, depth);
         var count = world.OccupiedVoxelCount;
-        var bytes = new byte[checked(24 + count * 10)];
+        var bytes = new byte[checked(24 + count * RecordSize)];
         using var stream = new MemoryStream(bytes, writable: true);
         using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
         WriteHeader(writer, width, depth, height, count);
@@ -114,7 +117,13 @@ public static class LargeWorldFormat
 
         using var stream = new MemoryStream(bytes, writable: false);
         using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version)
+        if (reader.ReadUInt32() != Magic)
+        {
+            throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
+        }
+
+        var version = reader.ReadInt32();
+        if (version is not (LegacyVersion or Version))
         {
             throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
         }
@@ -124,7 +133,8 @@ public static class LargeWorldFormat
         var height = reader.ReadInt32();
         var count = reader.ReadInt32();
         ValidateDimensions(width, height, depth);
-        var expectedLength = checked(24L + count * 10L);
+        var recordSize = version == LegacyVersion ? LegacyRecordSize : RecordSize;
+        var expectedLength = checked(24L + count * recordSize);
         if (count < 0 || count > 32_000_000 || expectedLength != bytes.Length)
         {
             throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
@@ -136,7 +146,9 @@ public static class LargeWorldFormat
             var x = reader.ReadUInt16();
             var y = reader.ReadUInt16();
             var z = reader.ReadUInt16();
-            var value = new VoxelValue(new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()));
+            var value = new VoxelValue(new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()),
+                version == Version ? reader.ReadUInt16() : (ushort)0,
+                version == Version ? reader.ReadByte() : (byte)0);
             if (x >= width || y >= height || z >= depth || value.IsEmpty)
             {
                 throw new InvalidDataException("大世界模型包含越界或空体素记录");
@@ -156,10 +168,10 @@ public static class LargeWorldFormat
     /// <param name="depth">Z 轴尺寸</param>
     /// <param name="height">Y 轴尺寸</param>
     /// <param name="count">体素记录数量</param>
-    private static void WriteHeader(BinaryWriter writer, int width, int depth, int height, int count)
+    private static void WriteHeader(BinaryWriter writer, int width, int depth, int height, int count, int version = Version)
     {
         writer.Write(Magic);
-        writer.Write(Version);
+        writer.Write(version);
         writer.Write(width);
         writer.Write(depth);
         writer.Write(height);
@@ -175,6 +187,19 @@ public static class LargeWorldFormat
     /// <param name="z">局部 Z 坐标</param>
     /// <param name="value">体素值</param>
     private static void WriteVoxel(BinaryWriter writer, int x, int y, int z, VoxelValue value)
+    {
+        writer.Write(checked((ushort)x));
+        writer.Write(checked((ushort)y));
+        writer.Write(checked((ushort)z));
+        writer.Write(value.Color.R);
+        writer.Write(value.Color.G);
+        writer.Write(value.Color.B);
+        writer.Write(value.Color.A);
+        writer.Write(value.MaterialSlot);
+        writer.Write(value.Flags);
+    }
+
+    private static void WriteLegacyVoxel(BinaryWriter writer, int x, int y, int z, VoxelValue value)
     {
         writer.Write(checked((ushort)x));
         writer.Write(checked((ushort)y));

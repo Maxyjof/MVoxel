@@ -101,11 +101,14 @@ internal sealed partial class ImGuiEditorWindow
         _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
-        var largeWorldPath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
+        var largeWorldPath = Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
+            ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+            : null;
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
-            if (File.Exists(largeWorldPath))
+            if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
                 _world = LargeWorldFormat.Read(largeWorldPath);
                 SetStatus($"已载入大世界模型：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
@@ -228,12 +231,16 @@ internal sealed partial class ImGuiEditorWindow
         var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
-            var largeWorldPath = Path.Combine(project.AssetsPath, "VoxelModels", "超大型场景.mvworld");
+            var modelDirectory = Path.Combine(project.AssetsPath, "VoxelModels");
+            var largeWorldPath = Directory.Exists(modelDirectory)
+                ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+                : null;
             var modelAssetPath = "Assets/VoxelModels/主场景.vox";
-            if (File.Exists(largeWorldPath))
+            if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
                 LargeWorldFormat.Write(largeWorldPath, _world);
-                modelAssetPath = "Assets/VoxelModels/超大型场景.mvworld";
+                modelAssetPath = $"Assets/VoxelModels/{Path.GetFileName(largeWorldPath)}";
             }
             else if (_world.OccupiedVoxelCount > 0)
             {
