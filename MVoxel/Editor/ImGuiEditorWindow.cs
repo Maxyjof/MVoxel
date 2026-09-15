@@ -832,10 +832,20 @@ DockId=0x6A3C3007,0
         var rowMax = ImGui.GetItemRectMax();
         var rowClicked = ImGui.IsItemClicked();
         var treeCursor = ImGui.GetCursorScreenPos();
+        var rowWidth = Math.Max(1F, ImGui.GetContentRegionAvail().X);
         ImGui.SetCursorScreenPos(rowMin);
         var rowSelectableClicked = ImGui.InvisibleButton($"##SceneObjectRow_{sceneObject.Id}",
-            new Vector2(Math.Max(1F, ImGui.GetContentRegionAvail().X), rowMax.Y - rowMin.Y));
+            new Vector2(Math.Max(1F, rowWidth - 48F), rowMax.Y - rowMin.Y));
+        var rowSelectableHovered = ImGui.IsItemHovered();
         ImGui.SetCursorScreenPos(treeCursor);
+
+        var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
+        if (rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax))
+        {
+            var drawList = ImGui.GetWindowDrawList();
+            drawList.AddRectFilled(rowMin, fullRowMax,
+                ToPackedColor(Color.FromArgb(42, EditorPalette.AccentSoft)), 2F);
+        }
 
         var iconWidth = 22F;
         var iconGap = 2F;
