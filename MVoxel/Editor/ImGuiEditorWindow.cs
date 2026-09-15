@@ -2988,7 +2988,7 @@ DockId=0x6A3C3007,0
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = _sceneValidationErrors.Count == 0
             ? $"已打开项目：{project.Manifest.Name}"
-            : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题，未自动修改）";
+            : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}）";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
     }
 
