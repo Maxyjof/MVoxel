@@ -615,6 +615,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("插件"))
         {
+            var diagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project);
+            var missingCount = diagnostics.Count(item => !item.Installed);
+            if (missingCount > 0)
+            {
+                ImGui.TextColored(new Vector4(1F, .65F, .25F, 1F), $"缺失插件：{missingCount}");
+                ImGui.Separator();
+            }
             var panels = _pluginRuntime?.Panels ?? [];
             if (panels.Count == 0) ImGui.MenuItem("暂无已启用插件面板", enabled: false);
             foreach (var panel in panels)
