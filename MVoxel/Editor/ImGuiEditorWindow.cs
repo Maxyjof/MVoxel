@@ -2384,7 +2384,7 @@ DockId=0x6A3C3007,0
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var model = data.Model;
             var part = data.Part;
-            BeginInspectorField("模型", "体素模型资源路径。");
+            BeginInspectorField("模型", "对象使用的体素数据路径。");
             var changed = ImGui.InputText("##InspectorVoxelModel", ref model, 260);
             BeginInspectorField("部件", "模型中的部件名称；留空表示使用默认部件。");
             changed |= ImGui.InputText("##InspectorVoxelPart", ref part, 128);
