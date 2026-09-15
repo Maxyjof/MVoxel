@@ -59,6 +59,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _editPanelLayout;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
     private string _statusText = "就绪";
+    private IReadOnlyList<string> _sceneValidationErrors = Array.Empty<string>();
     private float _sceneZoom = 1F;
     private float _sceneOrbitYaw = MathF.PI / 4F;
     private float _sceneOrbitPitch = 0.48F;
@@ -2985,7 +2986,9 @@ DockId=0x6A3C3007,0
         LoadProjectSettings(project);
         LoadWorldForProject(project);
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
-        _statusText = $"已打开项目：{project.Manifest.Name}";
+        _statusText = _sceneValidationErrors.Count == 0
+            ? $"已打开项目：{project.Manifest.Name}"
+            : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题，未自动修改）";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
     }
 

@@ -178,20 +178,29 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="project">项目句柄</param>
     /// <returns>主场景文档</returns>
-    private static Scene.SceneDocument LoadSceneDocument(ProjectHandle project)
+    private Scene.SceneDocument LoadSceneDocument(ProjectHandle project)
     {
         var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
         if (!File.Exists(scenePath))
         {
+            _sceneValidationErrors = Array.Empty<string>();
             return new Scene.SceneDocument { Name = "主场景" };
         }
 
         try
         {
-            return Scene.SceneSerializer.Load(scenePath);
+            var scene = Scene.SceneSerializer.Load(scenePath);
+            _sceneValidationErrors = Scene.SceneValidation.Validate(scene);
+            foreach (var error in _sceneValidationErrors)
+            {
+                MVoxelLog.Warn($"主场景结构校验：{error}");
+            }
+
+            return scene;
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
         {
+            _sceneValidationErrors = Array.Empty<string>();
             MVoxelLog.Error($"主场景读取失败，已使用新的场景文档：{scenePath}", exception);
             return new Scene.SceneDocument { Name = "主场景" };
         }
