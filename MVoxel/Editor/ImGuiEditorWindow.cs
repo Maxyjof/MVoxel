@@ -970,9 +970,8 @@ DockId=0x6A3C3007,0
         var sceneSettings = CurrentSceneRenderSettings;
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(sceneSettings)));
 
-        DrawSceneCameraButton(origin, size);
-        var gizmoCenter = origin + new Vector2(size.X - 78F, 78F);
-        var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.11F, 42F, 58F);
+        var gizmoCenter = origin + new Vector2(size.X - 58F, 76F);
+        var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.07F, 28F, 36F);
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
@@ -1017,18 +1016,6 @@ DockId=0x6A3C3007,0
             DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
 
-        ImGui.SetCursorPos(new Vector2(14F, 12F));
-        if (_project is null)
-        {
-            ImGui.TextColored(ToColor(EditorPalette.Text), "三维场景");
-            ImGui.TextDisabled("创建或打开项目后，体素模型会显示在这里");
-        }
-        else
-        {
-            ImGui.TextColored(ToColor(EditorPalette.Text), $"{_project.Manifest.Name}  ·  三维场景");
-            ImGui.TextDisabled("在此观察和编辑体素模型");
-        }
-
         var hintLineHeight = ImGui.GetTextLineHeightWithSpacing();
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight * 2F - 8F)));
         ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
@@ -1038,6 +1025,7 @@ DockId=0x6A3C3007,0
                 ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键破坏 · 右键放置 · Shift 加速 · 中键平移"
                 : "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏 · Shift 加速 · 中键平移"
             : "左键放置 · 右键环绕 · 中键平移 · Shift+左键破坏 · 滚轮缩放 · 点击右上角 XYZ 定向");
+        DrawSceneCameraButton(origin, size);
         DrawSceneCameraPopup();
         ImGui.EndChild();
     }
@@ -1423,8 +1411,8 @@ DockId=0x6A3C3007,0
         }
 
         var screenLength = Vector2.Distance(startPoint, endPoint);
-        var worldLength = Vector3.Distance(clippedStart, clippedEnd);
-        var sampleCount = Math.Clamp((int)MathF.Ceiling(Math.Max(screenLength / 2F, worldLength / 2F)), 128, 2048);
+        // 遮挡采样按屏幕长度预算，避免相机拉远后按巨大世界长度重复执行体素 DDA
+        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 3F), 64, 512);
         var previousWorld = clippedStart;
         var previousScreen = startPoint;
         var previousVisible = IsAxisPointVisible(clippedStart, origin, size, camera);
@@ -1680,16 +1668,10 @@ DockId=0x6A3C3007,0
     private bool DrawOrientationGizmo(ImDrawListPtr drawList, Vector2 center, float radius, SceneCamera camera, bool hovered)
     {
         var io = ImGui.GetIO();
-        var outline = ToPackedColor(Color.FromArgb(220, 155, 173, 194));
-        var fill = ToPackedColor(Color.FromArgb(205, 28, 36, 48));
-        drawList.AddCircleFilled(center, radius, fill, 32);
-        drawList.AddCircle(center, radius, outline, 32, 1.4F);
-
-        // 方向球只保留一条纬线和一条经线
-        // 使用四段贝塞尔曲线绘制连续环线，避免小尺寸下出现线束噪声
-        var ring = ToPackedColor(Color.FromArgb(116, 122, 142, 162));
-        DrawGizmoEllipse(drawList, center, radius * .84F, radius * .23F, ring);
-        DrawGizmoEllipse(drawList, center, radius * .23F, radius * .84F, ring);
+        var panelMin = center - new Vector2(radius + 10F);
+        var panelMax = center + new Vector2(radius + 10F);
+        drawList.AddRectFilled(panelMin, panelMax, ToPackedColor(Color.FromArgb(205, 28, 36, 48)), 5F);
+        drawList.AddRect(panelMin, panelMax, ToPackedColor(Color.FromArgb(210, 155, 173, 194)), 5F, 0, 1.2F);
 
         var axes = new[]
         {
@@ -1705,8 +1687,8 @@ DockId=0x6A3C3007,0
         {
             var color = ToPackedColor(item.axis.Color);
             drawList.AddLine(center, item.point, color, 3F);
-            drawList.AddCircleFilled(item.point, 7F, color, 16);
-            drawList.AddText(item.point + new Vector2(9F, -8F), color, item.axis.Label);
+            drawList.AddCircleFilled(item.point, 5F, color, 12);
+            drawList.AddText(item.point + new Vector2(7F, -7F), color, item.axis.Label);
         }
 
         var mouse = io.MousePos;
@@ -1715,32 +1697,9 @@ DockId=0x6A3C3007,0
             return Vector2.Distance(mouse, center) <= radius + 8F;
         }
 
-        drawList.AddCircle(center, radius + 3F, ToPackedColor(EditorPalette.Accent), 32, 1.2F);
+        drawList.AddRect(panelMin - new Vector2(2F), panelMax + new Vector2(2F),
+            ToPackedColor(EditorPalette.Accent), 6F, 0, 1.2F);
         return true;
-    }
-
-    private static void DrawGizmoEllipse(ImDrawListPtr drawList, Vector2 center, float horizontalRadius,
-        float verticalRadius, uint color)
-    {
-        const float control = .55228475F;
-        var left = center - new Vector2(horizontalRadius, 0F);
-        var right = center + new Vector2(horizontalRadius, 0F);
-        drawList.AddBezierCubic(
-            left,
-            left - new Vector2(0F, verticalRadius * control),
-            right - new Vector2(0F, verticalRadius * control),
-            right,
-            color,
-            1F,
-            12);
-        drawList.AddBezierCubic(
-            right,
-            right + new Vector2(0F, verticalRadius * control),
-            left + new Vector2(0F, verticalRadius * control),
-            left,
-            color,
-            1F,
-            12);
     }
 
     private static string AxisName(Vector3 axis)
