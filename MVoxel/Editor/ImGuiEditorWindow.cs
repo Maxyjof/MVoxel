@@ -2082,7 +2082,14 @@ DockId=0x6A3C3007,0
             var changed = ImGui.DragFloat("视场角##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°") |
                           ImGui.DragFloat("近裁剪##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f") |
                           ImGui.DragFloat("远裁剪##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
-            if (changed)
+            var reset = ImGui.SmallButton("恢复默认##InspectorCameraReset");
+            if (reset)
+            {
+                SceneComponentTypes.WriteCamera(component, CameraComponentData.Default);
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
+            else if (changed)
             {
                 SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip));
                 MarkSceneDocumentDirty();
@@ -2099,7 +2106,14 @@ DockId=0x6A3C3007,0
             var changed = ImGui.DragFloat("强度##InspectorLightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f") |
                           ImGui.ColorEdit3("颜色##InspectorLightColor", ref color, ImGuiColorEditFlags.Float) |
                           ImGui.Checkbox("投射阴影##InspectorLightShadows", ref castShadows);
-            if (changed)
+            var reset = ImGui.SmallButton("恢复默认##InspectorLightReset");
+            if (reset)
+            {
+                SceneComponentTypes.WriteLight(component, LightComponentData.Default);
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
+            else if (changed)
             {
                 SceneComponentTypes.WriteLight(component, new LightComponentData(
                     intensity, color.X, color.Y, color.Z, castShadows));
