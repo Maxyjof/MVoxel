@@ -1913,9 +1913,11 @@ DockId=0x6A3C3007,0
             var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
             var label = definition is null
                 ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
-                : $"{definition.DisplayName} · {definition.Category}";
+                : definition.DisplayName;
             ImGui.PushID($"InspectorComponent{componentIndex}");
             var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(definition is null ? "插件组件" : $"组件分类：{definition.Category}");
             ImGui.SameLine();
             ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
             if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;
