@@ -1133,6 +1133,13 @@ DockId=0x6A3C3007,0
         var mouse = io.MousePos;
         var inViewport = mouse.X >= origin.X && mouse.X <= origin.X + size.X &&
                          mouse.Y >= origin.Y && mouse.Y <= origin.Y + size.Y;
+        if (inViewport)
+        {
+            MVoxelLog.SetRuntimeContext(
+                $"{captureTarget} 导航输入，鼠标=({mouse.X:0.0},{mouse.Y:0.0})，增量=({io.MouseDelta.X:0.0},{io.MouseDelta.Y:0.0})，" +
+                $"左键={ImGui.IsMouseDown(ImGuiMouseButton.Left)}，中键={ImGui.IsMouseDown(ImGuiMouseButton.Middle)}，右键={ImGui.IsMouseDown(ImGuiMouseButton.Right)}，" +
+                $"Shift={IsShiftPressed()}，CapsLock={IsCapsLockEnabled()}，距离={_sceneCameraDistance:0.000}，视口={size.X:0}x{size.Y:0}");
+        }
         var gizmoHovered = inViewport && Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F;
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
@@ -1727,6 +1734,11 @@ DockId=0x6A3C3007,0
 
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
+        var io = ImGui.GetIO();
+        MVoxelLog.SetRuntimeContext(
+            $"RenderView 导航输入，鼠标=({io.MousePos.X:0.0},{io.MousePos.Y:0.0})，增量=({io.MouseDelta.X:0.0},{io.MouseDelta.Y:0.0})，" +
+            $"左键={ImGui.IsMouseDown(ImGuiMouseButton.Left)}，中键={ImGui.IsMouseDown(ImGuiMouseButton.Middle)}，右键={ImGui.IsMouseDown(ImGuiMouseButton.Right)}，" +
+            $"Shift={IsShiftPressed()}，CapsLock={IsCapsLockEnabled()}，视口={size.X:0}x{size.Y:0}");
         HandleRenderCameraNavigation(origin, size);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
