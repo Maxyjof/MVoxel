@@ -86,6 +86,11 @@ public sealed class ComponentRecord
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// 提供该组件的插件 ID；内置组件和未知来源组件为空。
+    /// </summary>
+    public string? OwnerPluginId { get; set; }
+
+    /// <summary>
     /// 组件类型 ID，例如 mvoxel.voxelmodel
     /// </summary>
     public string TypeId { get; set; } = string.Empty;

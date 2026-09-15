@@ -2002,6 +2002,7 @@ DockId=0x6A3C3007,0
                     {
                         TypeId = definition.Id,
                         SchemaVersion = 1,
+                        OwnerPluginId = definition.PluginId,
                         Data = JsonSerializer.SerializeToElement(new { }),
                     });
                     MarkSceneDocumentDirty();
