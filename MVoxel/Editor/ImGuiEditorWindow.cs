@@ -1670,10 +1670,9 @@ DockId=0x6A3C3007,0
     private bool DrawOrientationGizmo(ImDrawListPtr drawList, Vector2 center, float radius, SceneCamera camera, bool hovered)
     {
         var io = ImGui.GetIO();
-        var panelMin = center - new Vector2(radius + 10F);
-        var panelMax = center + new Vector2(radius + 10F);
-        drawList.AddRectFilled(panelMin, panelMax, ToPackedColor(Color.FromArgb(205, 28, 36, 48)), 5F);
-        drawList.AddRect(panelMin, panelMax, ToPackedColor(Color.FromArgb(210, 155, 173, 194)), 5F, 0, 1.2F);
+        var panelRadius = radius + 8F;
+        drawList.AddCircleFilled(center, panelRadius, ToPackedColor(Color.FromArgb(215, 28, 36, 48)), 32);
+        drawList.AddCircle(center, panelRadius, ToPackedColor(Color.FromArgb(210, 155, 173, 194)), 32, 1.2F);
 
         var axes = new[]
         {
@@ -1690,8 +1689,10 @@ DockId=0x6A3C3007,0
             var color = ToPackedColor(item.axis.Color);
             drawList.AddLine(center, item.point, color, 3F);
             drawList.AddCircleFilled(item.point, 5F, color, 12);
+            drawList.AddCircle(item.point, 7F, ToPackedColor(Color.FromArgb(180, 8, 12, 18)), 12, 1.2F);
             drawList.AddText(item.point + new Vector2(7F, -7F), color, item.axis.Label);
         }
+        drawList.AddCircleFilled(center, 4F, ToPackedColor(Color.FromArgb(235, 220, 228, 238)), 16);
 
         var mouse = io.MousePos;
         if (!hovered)
@@ -1699,8 +1700,7 @@ DockId=0x6A3C3007,0
             return Vector2.Distance(mouse, center) <= radius + 8F;
         }
 
-        drawList.AddRect(panelMin - new Vector2(2F), panelMax + new Vector2(2F),
-            ToPackedColor(EditorPalette.Accent), 6F, 0, 1.2F);
+        drawList.AddCircle(center, panelRadius + 2F, ToPackedColor(EditorPalette.Accent), 32, 1.2F);
         return true;
     }
 
