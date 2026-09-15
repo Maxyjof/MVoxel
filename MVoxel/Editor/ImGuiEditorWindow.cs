@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using ImGuiNET;
 using MVoxel.Project;
@@ -26,6 +27,7 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
+    private const int CapsLockVirtualKey = 0x14;
     private const uint MainDockspaceId = 0x6A3C3001;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
@@ -175,7 +177,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnUpdateFrame(FrameEventArgs args)
     {
         base.OnUpdateFrame(args);
-        if (!IsFocused || !KeyboardState.IsKeyDown(Keys.CapsLock))
+        if (!IsFocused || !IsCapsLockEnabled())
         {
             EndSceneMouseCapture();
         }
@@ -671,7 +673,7 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight * 2F - 8F)));
         ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight - 8F)));
-        ImGui.TextDisabled(KeyboardState.IsKeyDown(Keys.CapsLock)
+        ImGui.TextDisabled(IsCapsLockEnabled()
             ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏"
             : "左键放置 · 右键破坏 · 中键平移 · Shift+左键环绕 · 滚轮缩放 · 点击右上角 XYZ 定向");
         DrawSceneCameraPopup();
@@ -788,7 +790,7 @@ DockId=0x6A3C3007,0
             return false;
         }
 
-        var capsLockMode = KeyboardState.IsKeyDown(Keys.CapsLock);
+        var capsLockMode = IsCapsLockEnabled();
         if (allowMouseCapture && capsLockMode)
         {
             BeginSceneMouseCapture();
@@ -902,20 +904,41 @@ DockId=0x6A3C3007,0
         if (movement.LengthSquared > 0.0001F)
         {
             movement = Vector3.Normalize(movement);
-            var speed = MathF.Max(0.1F, _sceneMoveSpeed);
+            var speed = MathF.Max(0.1F, _sceneMoveSpeed) * (IsShiftPressed() ? 4F : 1F);
             _scenePan += new Vector2(movement.X, movement.Z) * speed * MathF.Max(deltaTime, 0.001F);
         }
 
+        var verticalSpeed = MathF.Max(0.1F, _sceneMoveSpeed) * (IsShiftPressed() ? 4F : 1F);
         if (KeyboardState.IsKeyDown(Keys.E))
         {
-            _sceneFreeMoveHeight += MathF.Max(0.1F, _sceneMoveSpeed) * MathF.Max(deltaTime, 0.001F);
+            _sceneFreeMoveHeight += verticalSpeed * MathF.Max(deltaTime, 0.001F);
         }
 
         if (KeyboardState.IsKeyDown(Keys.Q))
         {
-            _sceneFreeMoveHeight -= MathF.Max(0.1F, _sceneMoveSpeed) * MathF.Max(deltaTime, 0.001F);
+            _sceneFreeMoveHeight -= verticalSpeed * MathF.Max(deltaTime, 0.001F);
         }
     }
+
+    /// <summary>
+    /// 读取 Caps Lock 的切换状态
+    /// </summary>
+    /// <returns>Caps Lock 是否已开启</returns>
+    private static bool IsCapsLockEnabled() => (GetKeyState(CapsLockVirtualKey) & 1) != 0;
+
+    /// <summary>
+    /// 判断 Shift 是否正在按下
+    /// </summary>
+    /// <returns>Shift 是否正在按下</returns>
+    private bool IsShiftPressed() => KeyboardState.IsKeyDown(Keys.LeftShift) || KeyboardState.IsKeyDown(Keys.RightShift);
+
+    /// <summary>
+    /// 读取 Windows 键盘切换键状态
+    /// </summary>
+    /// <param name="virtualKey">Windows 虚拟键码</param>
+    /// <returns>键的当前状态</returns>
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 
     private static void DrawSceneCrosshair(ImDrawListPtr drawList, Vector2 center)
     {

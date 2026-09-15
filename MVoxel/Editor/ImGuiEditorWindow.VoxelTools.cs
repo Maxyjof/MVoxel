@@ -481,7 +481,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        var capsLockMode = KeyboardState.IsKeyDown(OpenTK.Windowing.GraphicsLibraryFramework.Keys.CapsLock);
+        var capsLockMode = IsCapsLockEnabled();
         var shiftPressed = io.KeyShift;
         if (_activeTool == EditorTool.Pick && !capsLockMode && !shiftPressed)
         {

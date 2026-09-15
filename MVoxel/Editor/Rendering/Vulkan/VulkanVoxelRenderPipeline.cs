@@ -1007,7 +1007,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             {
                 float gridStep = max(values[89], 0.001);
                 vec2 gridPosition = point.xz / gridStep;
-                vec2 distanceToLine = abs(fract(gridPosition) - 0.5) * gridStep;
+                vec2 fractional = fract(gridPosition);
+                vec2 distanceToLine = min(fractional, 1.0 - fractional) * gridStep;
                 float lineAmount = 1.0 - smoothstep(0.0, 0.045, min(distanceToLine.x, distanceToLine.y));
                 groundColor = mix(groundColor, groundColor * 0.52 + vec3(0.16, 0.20, 0.28), lineAmount);
             }
@@ -1028,18 +1029,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 uint hitFlags;
                 if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags))
                 {
-                    if (!pathMode)
-                    {
-                        radiance += vec3(values[98], values[99], values[100]);
-                        break;
-                    }
-
                     float groundDistance = values[35] > 0.5 && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
-                    if (groundDistance > 0.0)
+                    if (groundDistance > 0.0 && groundDistance < values[97])
                         radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance);
                     else
-                        radiance += throughput * Sky(rayDirection);
+                        radiance += pathMode
+                            ? throughput * Sky(rayDirection)
+                            : vec3(values[98], values[99], values[100]);
                     break;
                 }
 
