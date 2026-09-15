@@ -338,6 +338,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 panels = _pluginRuntime?.Panels ?? [],
                 pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
             },
+            "scene.validate" => ValidateCurrentSceneCommand(),
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
@@ -3110,6 +3111,26 @@ DockId=0x6A3C3007,0
         SetStatus(_sceneValidationErrors.Count == 0
             ? "当前主场景校验通过"
             : $"当前主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}");
+    }
+
+    private object ValidateCurrentSceneCommand()
+    {
+        if (_project is null || _sceneDocument is null)
+            throw new InvalidOperationException("当前没有打开的项目场景");
+
+        _sceneValidationErrors = SceneValidation.Validate(_sceneDocument);
+        foreach (var error in _sceneValidationErrors)
+        {
+            MVoxelLog.Warn($"主场景结构校验：{error}");
+        }
+
+        return new
+        {
+            projectName = _project.Manifest.Name,
+            sceneName = _sceneDocument.Name,
+            valid = _sceneValidationErrors.Count == 0,
+            errors = _sceneValidationErrors,
+        };
     }
 
     private void SetStatus(string text) => _statusText = text;
