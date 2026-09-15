@@ -102,14 +102,13 @@ internal sealed partial class ImGuiEditorWindow
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
-        var referencedVoxPath = FindReferencedModelPath(project, _sceneDocument, ".vox");
+        var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
         var largeWorldPath = referencedLargeWorldPath ??
-            (referencedVoxPath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
+            (referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
                 ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                 : null);
-        var modelPath = referencedVoxPath ??
-            Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
+        var modelPath = referencedNativePath ?? Path.Combine(project.AssetsPath, "VoxelModels", "主场景.mvmodel");
         try
         {
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
@@ -119,7 +118,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             else if (File.Exists(modelPath))
             {
-                _world = VoxFormat.Read(modelPath);
+                _world = LargeWorldFormat.Read(modelPath);
                 SetStatus($"已载入体素模型：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
             }
             else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
@@ -254,7 +253,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
-        var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
+        var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.mvmodel");
         try
         {
             var modelDirectory = Path.Combine(project.AssetsPath, "VoxelModels");
@@ -262,7 +261,7 @@ internal sealed partial class ImGuiEditorWindow
                 ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                 : null;
-            var modelAssetPath = "Assets/VoxelModels/主场景.vox";
+            var modelAssetPath = "Assets/VoxelModels/主场景.mvmodel";
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
                 LargeWorldFormat.Write(largeWorldPath, _world);
@@ -270,7 +269,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             else if (_world.OccupiedVoxelCount > 0)
             {
-                VoxFormat.Write(modelPath, _world);
+                LargeWorldFormat.Write(modelPath, _world);
             }
 
             var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");

@@ -130,7 +130,7 @@ public static class ProjectTemplateCatalog
         settings.TemplateId = id.ToString();
         if (id != ProjectTemplateId.Empty)
         {
-            var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
+            var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.mvmodel");
             if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
                 var largeFileName = id == ProjectTemplateId.LargeWorld ? "超大型场景.mvworld" : "渲染体验馆.mvworld";
@@ -152,8 +152,9 @@ public static class ProjectTemplateCatalog
             else
             {
                 var world = BuildWorld(id, VoxelPalette.Build());
-                VoxFormat.Write(modelPath, world);
+                LargeWorldFormat.Write(modelPath, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
+                    $"Assets/VoxelModels/{Path.GetFileName(modelPath)}",
                     cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1);
             }
         }
@@ -281,7 +282,7 @@ public static class ProjectTemplateCatalog
     /// <param name="template">模板定义</param>
     /// <param name="voxelCount">体素数量</param>
     private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
-        string modelAssetPath = "Assets/VoxelModels/主场景.vox", int cameraCount = 1)
+        string modelAssetPath = "Assets/VoxelModels/主场景.mvmodel", int cameraCount = 1)
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
