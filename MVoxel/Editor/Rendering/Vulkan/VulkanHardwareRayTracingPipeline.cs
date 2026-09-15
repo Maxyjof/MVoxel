@@ -70,6 +70,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private uint _outputHeight;
     private bool _outputIsShaderReadOnly;
     private int _sourceVersion = -1;
+    private int _oversizedWarningVersion = -1;
     private bool _disposed;
     private string? _lastError;
 
@@ -217,9 +218,15 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         if (workset.Cells.Count > MaxHardwareRayTracingVoxels)
         {
             _lastError = $"硬件 RT 体素数量超过安全上限 {MaxHardwareRayTracingVoxels:N0}，已回退 Vulkan Compute";
-            MVoxelLog.Warn(_lastError);
+            if (_oversizedWarningVersion != workset.SourceVersion)
+            {
+                _oversizedWarningVersion = workset.SourceVersion;
+                MVoxelLog.Warn(_lastError);
+            }
             return false;
         }
+
+        _oversizedWarningVersion = -1;
 
         try
         {
