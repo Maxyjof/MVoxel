@@ -1,0 +1,209 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using MVoxel.Core;
+
+namespace MVoxel.Project;
+
+/// <summary>
+/// 编辑器级插件包的清单
+/// </summary>
+public sealed class EditorPluginPackage
+{
+    /// <summary>
+    /// 插件稳定 ID
+    /// </summary>
+    public string Id { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 插件显示名称
+    /// </summary>
+    public string Name { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 插件版本
+    /// </summary>
+    public string Version { get; init; } = "1.0.0";
+
+    /// <summary>
+    /// JavaScript 入口文件名
+    /// </summary>
+    [JsonPropertyName("main")]
+    public string Entry { get; init; } = "index.js";
+
+    /// <summary>
+    /// 插件来源
+    /// </summary>
+    public string Source { get; init; } = "installed";
+}
+
+/// <summary>
+/// 管理编辑器级插件和项目级启停状态
+/// </summary>
+public static class PluginManager
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+    };
+
+    /// <summary>
+    /// 内置 MVoxel MCP 插件稳定 ID
+    /// </summary>
+    public const string MvoxMcpPluginId = "com.mvoxel.mcp";
+
+    /// <summary>
+    /// 获取程序随附的内置插件
+    /// </summary>
+    /// <returns>内置插件清单</returns>
+    public static IReadOnlyList<EditorPluginPackage> ListInstalled()
+    {
+        var packages = new Dictionary<string, EditorPluginPackage>(StringComparer.Ordinal)
+        {
+            [MvoxMcpPluginId] = new EditorPluginPackage
+            {
+                Id = MvoxMcpPluginId,
+                Name = "MVoxel MCP",
+                Version = "1.0.0",
+                Entry = "index.js",
+                Source = "builtin",
+            },
+        };
+        if (Directory.Exists(AppPaths.PluginDirectory))
+        {
+            foreach (var packagePath in Directory.EnumerateFiles(AppPaths.PluginDirectory, "package.json", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var package = JsonSerializer.Deserialize<EditorPluginPackage>(File.ReadAllText(packagePath), JsonOptions);
+                    if (package is not null && !packages.ContainsKey(package.Id))
+                    {
+                        Validate(package);
+                        packages.Add(package.Id, new EditorPluginPackage
+                        {
+                            Id = package.Id,
+                            Name = package.Name,
+                            Version = package.Version,
+                            Entry = package.Entry,
+                            Source = "installed",
+                        });
+                    }
+                }
+                catch (Exception exception) when (exception is JsonException or InvalidDataException)
+                {
+                    MVoxelLog.Warn($"跳过无效插件清单：{packagePath}，原因：{exception.Message}");
+                }
+            }
+        }
+        return packages.Values.OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// 将 JavaScript 插件目录安装到编辑器级插件目录
+    /// </summary>
+    /// <param name="sourceDirectory">包含 package.json 的插件目录</param>
+    /// <returns>安装后的插件清单</returns>
+    public static EditorPluginPackage InstallFromDirectory(string sourceDirectory)
+    {
+        var source = Path.GetFullPath(sourceDirectory);
+        var packagePath = Path.Combine(source, "package.json");
+        if (!File.Exists(packagePath)) throw new FileNotFoundException("插件目录缺少 package.json", packagePath);
+        var package = JsonSerializer.Deserialize<EditorPluginPackage>(File.ReadAllText(packagePath), JsonOptions)
+            ?? throw new InvalidDataException("插件清单为空");
+        Validate(package);
+        var destination = Path.Combine(AppPaths.PluginDirectory, package.Id);
+        if (string.Equals(Path.GetFullPath(destination), source, StringComparison.OrdinalIgnoreCase)) return package;
+        if (Directory.Exists(destination)) Directory.Delete(destination, true);
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(source, file);
+            var target = Path.GetFullPath(Path.Combine(destination, relative));
+            if (!target.StartsWith(destination + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("插件文件路径超出插件目录");
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, true);
+        }
+        return package;
+    }
+
+    /// <summary>
+    /// 读取项目已启用插件
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <returns>已启用插件 ID</returns>
+    public static IReadOnlyList<string> ListEnabled(ProjectHandle project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var path = Path.Combine(project.PluginsPath, "manifest.json");
+        if (!File.Exists(path)) return [];
+        var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(path), JsonOptions);
+        return manifest?.Enabled ?? [];
+    }
+
+    /// <summary>
+    /// 启用项目插件并重建锁文件
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <param name="pluginId">插件 ID</param>
+    public static void Enable(ProjectHandle project, string pluginId)
+    {
+        Update(project, pluginId, enabled: true);
+    }
+
+    /// <summary>
+    /// 禁用项目插件并重建锁文件
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <param name="pluginId">插件 ID</param>
+    public static void Disable(ProjectHandle project, string pluginId)
+    {
+        Update(project, pluginId, enabled: false);
+    }
+
+    /// <summary>
+    /// 验证插件 JavaScript 入口名称
+    /// </summary>
+    /// <param name="packageInfo">插件清单</param>
+    public static void Validate(EditorPluginPackage packageInfo)
+    {
+        ArgumentNullException.ThrowIfNull(packageInfo);
+        if (string.IsNullOrWhiteSpace(packageInfo.Id) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
+            !packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+            Path.IsPathRooted(packageInfo.Entry) || packageInfo.Entry.Contains("..", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("插件入口必须是插件目录内的 JavaScript 文件");
+        }
+    }
+
+    /// <summary>
+    /// 写入项目插件启停清单并同步锁文件
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <param name="pluginId">插件 ID</param>
+    /// <param name="enabled">是否启用</param>
+    private static void Update(ProjectHandle project, string pluginId, bool enabled)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (string.IsNullOrWhiteSpace(pluginId)) throw new ArgumentException("插件 ID 不能为空", nameof(pluginId));
+        var packageInfo = ListInstalled().FirstOrDefault(item => item.Id == pluginId)
+            ?? throw new InvalidOperationException($"未找到编辑器级插件：{pluginId}");
+        Validate(packageInfo);
+
+        var current = ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+        if (enabled) current.Add(pluginId);
+        else current.Remove(pluginId);
+        var manifest = new PluginManifest { Enabled = current.Order(StringComparer.Ordinal).ToList() };
+        AtomicFile.WriteText(Path.Combine(project.PluginsPath, "manifest.json"),
+            JsonSerializer.Serialize(manifest, JsonOptions));
+        var lockFile = new PluginLockFile
+        {
+            Plugins = current.Order(StringComparer.Ordinal).Select(id =>
+            {
+                var item = ListInstalled().First(package => package.Id == id);
+                return new LockedPlugin { Id = item.Id, Version = item.Version, Source = item.Source };
+            }).ToList(),
+        };
+        AtomicFile.WriteText(Path.Combine(project.PluginsPath, "plugins-lock.json"),
+            JsonSerializer.Serialize(lockFile, JsonOptions));
+    }
+}

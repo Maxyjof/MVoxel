@@ -21,6 +21,11 @@ public static class AppPaths
     public static string ConfigDirectory => Path.Combine(DataDirectory, "Config");
 
     /// <summary>
+    /// 编辑器级插件目录
+    /// </summary>
+    public static string PluginDirectory => Path.Combine(DataDirectory, "Plugins");
+
+    /// <summary>
     /// 运行期间使用的当前日志目录
     /// </summary>
     public static string LogDirectory => Path.Combine(DataDirectory, "log");
@@ -43,6 +48,7 @@ public static class AppPaths
     public static void EnsureDirectories()
     {
         Directory.CreateDirectory(ConfigDirectory);
+        Directory.CreateDirectory(PluginDirectory);
         Directory.CreateDirectory(LogDirectory);
         Directory.CreateDirectory(OldLogDirectory);
     }
