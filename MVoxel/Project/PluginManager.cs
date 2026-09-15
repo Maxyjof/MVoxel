@@ -206,12 +206,30 @@ public static class PluginManager
     public static void Validate(EditorPluginPackage packageInfo)
     {
         ArgumentNullException.ThrowIfNull(packageInfo);
-        if (string.IsNullOrWhiteSpace(packageInfo.Id) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
+        if (!IsValidPluginId(packageInfo.Id) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
             !packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
             Path.IsPathRooted(packageInfo.Entry) || packageInfo.Entry.Contains("..", StringComparison.Ordinal))
         {
-            throw new InvalidDataException("插件入口必须是插件目录内的 JavaScript 文件");
+            throw new InvalidDataException("插件 ID 或入口文件不符合安全要求");
         }
+    }
+
+    /// <summary>
+    /// 验证插件 ID 是否可以安全作为目录名和清单键
+    /// </summary>
+    /// <param name="pluginId">插件 ID</param>
+    /// <returns>是否为安全的插件 ID</returns>
+    private static bool IsValidPluginId(string? pluginId)
+    {
+        if (string.IsNullOrWhiteSpace(pluginId) || pluginId.Length > 128 ||
+            pluginId[0] == '.' || pluginId[^1] == '.' || pluginId[0] == '-' || pluginId[^1] == '-')
+            return false;
+        foreach (var character in pluginId)
+        {
+            if (char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-') continue;
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
