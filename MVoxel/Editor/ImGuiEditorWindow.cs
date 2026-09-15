@@ -837,8 +837,10 @@ DockId=0x6A3C3007,0
         ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
         ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight - 8F)));
         ImGui.TextDisabled(IsCapsLockEnabled()
-            ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏"
-            : "左键放置 · 右键破坏 · 中键平移 · Shift+左键环绕 · 滚轮缩放 · 点击右上角 XYZ 定向");
+            ? _editorSettings.McMode
+                ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键破坏 · 右键放置 · Shift 加速 · 中键平移"
+                : "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏 · Shift 加速 · 中键平移"
+            : "左键放置 · 右键环绕 · 中键平移 · Shift+左键破坏 · 滚轮缩放 · 点击右上角 XYZ 定向");
         DrawSceneCameraPopup();
         ImGui.EndChild();
     }
@@ -964,10 +966,22 @@ DockId=0x6A3C3007,0
 
         if (_sceneMouseCaptured && _capturedViewport == captureTarget)
         {
-            _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
-            _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch + ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y),
-                -1.35F, 1.35F);
-            UpdateFreeMove(GetSceneCamera(), io.DeltaTime);
+            var camera = GetSceneCamera();
+            if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
+            {
+                var panScale = _sceneCameraDistance / Math.Max(160F, Math.Min(size.X, size.Y));
+                var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
+                _scenePan += new Vector2(pan.X, pan.Z);
+                _sceneFreeMoveHeight += pan.Y;
+            }
+            else
+            {
+                _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
+                _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch + ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y),
+                    -1.35F, 1.35F);
+            }
+
+            UpdateFreeMove(camera, io.DeltaTime);
             return false;
         }
 
@@ -980,8 +994,8 @@ DockId=0x6A3C3007,0
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
         }
 
-        var orbitLeft = !gizmoHovered && IsShiftPressed() && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
-        if (orbitLeft)
+        var orbitRight = !gizmoHovered && !capsLockMode && ImGui.IsMouseDragging(ImGuiMouseButton.Right);
+        if (orbitRight)
         {
             _sceneOrbitYaw += ViewportInputPolicy.OrbitYawDelta(io.MouseDelta.X);
             _sceneOrbitPitch = Math.Clamp(_sceneOrbitPitch + ViewportInputPolicy.OrbitPitchDelta(io.MouseDelta.Y),

@@ -459,8 +459,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("MC 模式（交换左右键）", ref _editorSettings.McMode);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip(_editorSettings.McMode
-                    ? "左键破坏，右键放置，Shift + 左键环绕原点"
-                    : "左键放置，右键破坏，Shift + 左键环绕原点");
+                    ? "Caps Lock 下左键破坏，右键放置；Shift 加速，中键平移，鼠标转向"
+                    : "Caps Lock 下左键放置，右键破坏；Shift 加速，中键平移，鼠标转向");
                 ImGui.EndTabItem();
             }
 

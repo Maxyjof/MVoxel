@@ -189,10 +189,21 @@ internal sealed partial class ImGuiEditorWindow
             BeginSceneMouseCapture(ViewportCaptureTarget.Render);
             if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Render)
             {
-                var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);
                 var movement = GetFreeMoveDelta(camera, io.DeltaTime);
-                WriteCameraTransform(cameraObject, camera.Position + movement,
-                    orientation.Forward, orientation.Up);
+                if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
+                {
+                    var panScale = MathF.Max(0.1F, Vector3.Distance(camera.Position, camera.Target) * 0.01F);
+                    var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
+                    WriteCameraTransform(cameraObject, camera.Position + movement + pan,
+                        camera.Forward, camera.Up);
+                }
+                else
+                {
+                    var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);
+                    WriteCameraTransform(cameraObject, camera.Position + movement,
+                        orientation.Forward, orientation.Up);
+                }
+
                 return;
             }
         }
@@ -208,7 +219,7 @@ internal sealed partial class ImGuiEditorWindow
             camera = ToSceneCamera(cameraObject);
         }
 
-        var orbiting = IsShiftPressed() && ImGui.IsMouseDragging(ImGuiMouseButton.Left);
+        var orbiting = ImGui.IsMouseDragging(ImGuiMouseButton.Right);
         if (orbiting)
         {
             var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);

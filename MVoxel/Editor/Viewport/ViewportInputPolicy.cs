@@ -44,15 +44,27 @@ internal static class ViewportInputPolicy
 
         if (!capsLockMode && shiftPressed && button == EditorMouseButton.Left)
         {
+            return ViewportMouseAction.Destroy;
+        }
+
+        if (!capsLockMode && button == EditorMouseButton.Right)
+        {
             return ViewportMouseAction.Orbit;
         }
 
-        return button switch
+        if (capsLockMode)
         {
-            EditorMouseButton.Left => mcMode ? ViewportMouseAction.Destroy : ViewportMouseAction.Place,
-            EditorMouseButton.Right => mcMode ? ViewportMouseAction.Place : ViewportMouseAction.Destroy,
-            _ => ViewportMouseAction.None,
-        };
+            return button switch
+            {
+                EditorMouseButton.Left => mcMode ? ViewportMouseAction.Destroy : ViewportMouseAction.Place,
+                EditorMouseButton.Right => mcMode ? ViewportMouseAction.Place : ViewportMouseAction.Destroy,
+                _ => ViewportMouseAction.None,
+            };
+        }
+
+        return button == EditorMouseButton.Left
+            ? ViewportMouseAction.Place
+            : ViewportMouseAction.None;
     }
 
     /// <summary>

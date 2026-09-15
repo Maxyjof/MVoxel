@@ -704,10 +704,10 @@ internal sealed partial class ImGuiEditorWindow
         if (previousTool == _activeTool) return;
         SetStatus(_activeTool switch
         {
-            EditorTool.Camera => "视口工具：左键放置 · 右键破坏 · Shift+左键环绕 · 中键平移",
+            EditorTool.Camera => "视口工具：左键放置 · 右键环绕 · Shift+左键破坏 · 中键平移",
             EditorTool.Pick => "选择工具：点击体素查看坐标与颜色（可取色）",
-            EditorTool.Draw => "绘制工具：左键放置 · 右键破坏",
-            _ => "擦除工具：左键放置 · 右键破坏",
+            EditorTool.Draw => "绘制工具：左键放置 · Shift+左键破坏",
+            _ => "擦除工具：Shift+左键破坏",
         });
     }
 
