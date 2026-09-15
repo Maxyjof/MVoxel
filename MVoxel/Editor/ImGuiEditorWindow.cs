@@ -348,6 +348,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
             "editor.saveProject" => QueueSaveProject(),
+            "editor.closeProject" => QueueCloseProject(),
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
@@ -422,6 +423,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (_project is null) throw new InvalidOperationException("当前没有打开的项目");
         _pendingActions.Enqueue(() => SaveProject());
         return new { queued = true };
+    }
+
+    /// <summary>
+    /// 将关闭项目操作投递到编辑器窗口线程，不替调用方保存场景。
+    /// </summary>
+    private object QueueCloseProject()
+    {
+        if (_project is null) return new { queued = false, alreadyClosed = true, sceneDirty = false };
+        var sceneDirty = _sceneDocumentDirty;
+        _pendingActions.Enqueue(CloseProject);
+        return new { queued = true, alreadyClosed = false, sceneDirty };
     }
 
     /// <summary>
