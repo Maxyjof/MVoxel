@@ -75,6 +75,8 @@ internal static class Program
         Console.WriteLine("      在项目中禁用插件");
         Console.WriteLine("  --editor-status");
         Console.WriteLine("      输出运行中编辑器状态");
+        Console.WriteLine("  --validate-editor-scene");
+        Console.WriteLine("      校验运行中编辑器当前场景");
         Console.WriteLine("  --open-project <项目目录>");
         Console.WriteLine("      请求运行中的编辑器打开项目");
         Console.WriteLine("  --install-plugin <插件目录>");
@@ -169,6 +171,13 @@ internal static class Program
                 using var arguments = JsonDocument.Parse("{}");
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.status", arguments.RootElement), JsonOptions));
                 return 0;
+            }
+            case "--validate-editor-scene" when args.Length == 1:
+            {
+                using var arguments = JsonDocument.Parse("{}");
+                var result = (JsonElement)CallEditor("scene.validate", arguments.RootElement);
+                Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+                return result.TryGetProperty("valid", out var valid) && valid.GetBoolean() ? 0 : 1;
             }
             case "--open-project" when args.Length == 2:
             {
