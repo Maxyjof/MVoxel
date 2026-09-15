@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/Maxyjof/MVoxel/main/Docs/Plugins/package.schema.json",
   "id": "com.mvoxel.mcp",
   "name": "MVoxel MCP",
   "version": "1.0.0",
