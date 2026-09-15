@@ -827,7 +827,10 @@ DockId=0x6A3C3007,0
         }
 
         var nodeId = $"{sceneObject.Name}##SceneObject_{sceneObject.Id}";
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,
+            ToColor(Color.FromArgb(42, EditorPalette.AccentSoft)));
         var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
+        ImGui.PopStyleColor();
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
         var rowClicked = ImGui.IsItemClicked();
@@ -847,12 +850,13 @@ DockId=0x6A3C3007,0
                 ToPackedColor(Color.FromArgb(42, EditorPalette.AccentSoft)), 2F);
         }
 
-        var iconWidth = 22F;
+        var rowHeight = rowMax.Y - rowMin.Y;
+        var iconWidth = Math.Max(16F, rowHeight - 2F);
         var iconGap = 2F;
         var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
-        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + (rowMax.Y - rowMin.Y - 20F) * 0.5F));
+        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + (rowHeight - iconWidth) * 0.5F));
         var visibilityClicked = DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
-            sceneObject.Visible, DrawVisibilityIcon);
+            sceneObject.Visible, DrawVisibilityIcon, iconWidth);
         if (visibilityClicked)
         {
             sceneObject.Visible = !sceneObject.Visible;
@@ -862,7 +866,7 @@ DockId=0x6A3C3007,0
 
         ImGui.SameLine(0F, iconGap);
         var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
-            !sceneObject.Locked, DrawSelectableIcon);
+            !sceneObject.Locked, DrawSelectableIcon, iconWidth);
         if (selectableClicked)
         {
             sceneObject.Locked = !sceneObject.Locked;
@@ -899,9 +903,9 @@ DockId=0x6A3C3007,0
     /// <param name="drawIcon">图标绘制回调</param>
     /// <returns>按钮是否被点击</returns>
     private static bool DrawHierarchyIconButton(string id, string enabledTip, string disabledTip, bool active,
-        Action<ImDrawListPtr, Vector2, Vector2, uint, bool> drawIcon)
+        Action<ImDrawListPtr, Vector2, Vector2, uint, bool> drawIcon, float size = 20F)
     {
-        var clicked = ImGui.InvisibleButton(id, new Vector2(20F, 20F));
+        var clicked = ImGui.InvisibleButton(id, new Vector2(size, size));
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         var drawList = ImGui.GetWindowDrawList();
