@@ -44,6 +44,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private IntPtr _imguiContext;
     private ProjectHandle? _project;
     private bool _showHierarchy = true;
+    private string _hierarchySearch = string.Empty;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
     private int _centerTab;
@@ -756,9 +757,11 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
+        ImGui.TextColored(ToColor(EditorPalette.Text), "场景");
         ImGui.SameLine();
         ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
+        ImGui.SetNextItemWidth(Math.Max(100F, ImGui.GetContentRegionAvail().X - 4F));
+        ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
         ImGui.Separator();
         if (_project is null)
         {
@@ -775,7 +778,7 @@ DockId=0x6A3C3007,0
                 }
                 else
                 {
-                    var roots = objects.Where(item => item.ParentId is null).ToArray();
+                    var roots = objects.Where(item => item.ParentId is null && MatchesHierarchySearch(item, objects)).ToArray();
                     foreach (var sceneObject in roots)
                     {
                         DrawSceneObjectNode(sceneObject, objects);
@@ -787,6 +790,15 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.End();
+    }
+
+    private bool MatchesHierarchySearch(SceneObject sceneObject, IReadOnlyList<SceneObject> objects)
+    {
+        if (string.IsNullOrWhiteSpace(_hierarchySearch) ||
+            sceneObject.Name.Contains(_hierarchySearch.Trim(), StringComparison.CurrentCultureIgnoreCase))
+            return true;
+        return objects.Where(item => item.ParentId == sceneObject.Id)
+            .Any(child => MatchesHierarchySearch(child, objects));
     }
 
     /// <summary>
@@ -846,7 +858,7 @@ DockId=0x6A3C3007,0
         {
             foreach (var child in children)
             {
-                DrawSceneObjectNode(child, objects);
+                if (MatchesHierarchySearch(child, objects)) DrawSceneObjectNode(child, objects);
             }
 
             ImGui.TreePop();
