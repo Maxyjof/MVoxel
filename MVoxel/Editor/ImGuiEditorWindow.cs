@@ -2820,7 +2820,7 @@ DockId=0x6A3C3007,0
 
     private static string GetNewProjectPath(string requestedPath)
     {
-        if (!File.Exists(Path.Combine(requestedPath, ProjectLayout.ProjectFileName))) return requestedPath;
+        if (CanCreateProjectAt(requestedPath)) return requestedPath;
 
         var parent = Directory.GetParent(requestedPath)?.FullName
                      ?? throw new IOException("无法为新项目确定父目录");
@@ -2832,6 +2832,12 @@ DockId=0x6A3C3007,0
         }
 
         throw new IOException("无法为新项目找到可用的项目文件夹");
+    }
+
+    private static bool CanCreateProjectAt(string path)
+    {
+        if (File.Exists(path)) return false;
+        return !Directory.Exists(path) || !Directory.EnumerateFileSystemEntries(path).Any();
     }
 
     private void BeginCreateProject(string path, ProjectTemplateId templateId, bool fromWelcome)
