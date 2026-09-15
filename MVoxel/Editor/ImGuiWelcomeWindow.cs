@@ -488,7 +488,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                 ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
                 ImGui.SetNextItemWidth(-1F);
                 ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("输入新项目文件夹，模板资源将由编辑器生成");
             }
             else
             {
@@ -551,11 +550,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         ImGui.TextDisabled(_browserPath);
         ImGui.SameLine();
         ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
-        if (ImGui.Button("↑##ProjectBrowserUp", new Vector2(34F, 28F))) NavigateProjectBrowserUp();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级");
+        if (ImGui.Button("^##ProjectBrowserUp", new Vector2(34F, 28F))) NavigateProjectBrowserUp();
         ImGui.SameLine();
-        if (ImGui.Button("←##ProjectBrowserBack", new Vector2(34F, 28F))) NavigateProjectBrowserBack();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一个位置");
+        if (ImGui.Button("<##ProjectBrowserBack", new Vector2(34F, 28F))) NavigateProjectBrowserBack();
         ImGui.PopStyleColor();
 
         ImGui.BeginChild("##ProjectBrowserFolders", new Vector2(0F, 350F), ImGuiChildFlags.Borders);
@@ -576,8 +573,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                     _errorText = string.Empty;
                     if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)) EnterProjectBrowser(directory);
                 }
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(isProject ? "双击进入项目，或选中后点击打开项目" : "双击进入文件夹");
             }
             if (directories.Length == 0) ImGui.TextDisabled("当前文件夹没有可浏览的子文件夹");
         }
@@ -641,7 +636,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             ImGui.EndCombo();
         }
 
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Focus}\n{selected.Description}");
     }
 
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;

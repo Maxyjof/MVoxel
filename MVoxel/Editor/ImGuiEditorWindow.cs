@@ -2693,7 +2693,6 @@ DockId=0x6A3C3007,0
             {
                 ImGui.SetNextItemWidth(540F);
                 ImGui.InputText("项目路径", ref _projectPathText, 2048);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("输入新项目文件夹，模板资源将由编辑器生成");
             }
             else
             {
@@ -2742,11 +2741,9 @@ DockId=0x6A3C3007,0
     {
         ImGui.TextDisabled(_projectBrowserPath);
         ImGui.SameLine();
-        if (ImGui.Button("↑##EditorBrowserUp", new Vector2(34F, 28F))) NavigateEditorProjectUp();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级");
+        if (ImGui.Button("^##EditorBrowserUp", new Vector2(34F, 28F))) NavigateEditorProjectUp();
         ImGui.SameLine();
-        if (ImGui.Button("←##EditorBrowserBack", new Vector2(34F, 28F))) NavigateEditorProjectBack();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一个位置");
+        if (ImGui.Button("<##EditorBrowserBack", new Vector2(34F, 28F))) NavigateEditorProjectBack();
         ImGui.BeginChild("##EditorProjectBrowserFolders", new Vector2(0F, 390F), ImGuiChildFlags.Borders);
         try
         {
@@ -2763,7 +2760,6 @@ DockId=0x6A3C3007,0
                     _projectPathError = string.Empty;
                     if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)) EnterEditorProjectDirectory(directory);
                 }
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip(isProject ? "双击进入项目，或选中后点击确认" : "双击进入文件夹");
             }
             if (directories.Length == 0) ImGui.TextDisabled("当前文件夹没有可浏览的子文件夹");
         }
@@ -2820,7 +2816,22 @@ DockId=0x6A3C3007,0
             ImGui.EndCombo();
         }
 
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Focus}\n{selected.Description}");
+    }
+
+    private static string GetNewProjectPath(string requestedPath)
+    {
+        if (!File.Exists(Path.Combine(requestedPath, ProjectLayout.ProjectFileName))) return requestedPath;
+
+        var parent = Directory.GetParent(requestedPath)?.FullName
+                     ?? throw new IOException("无法为新项目确定父目录");
+        var name = new DirectoryInfo(requestedPath).Name;
+        for (var index = 2; index < 10_000; index++)
+        {
+            var candidate = Path.Combine(parent, $"{name} {index}");
+            if (!Directory.Exists(candidate) && !File.Exists(candidate)) return candidate;
+        }
+
+        throw new IOException("无法为新项目找到可用的项目文件夹");
     }
 
     private void BeginCreateProject(string path, ProjectTemplateId templateId, bool fromWelcome)
@@ -2828,13 +2839,7 @@ DockId=0x6A3C3007,0
         try
         {
             var absolutePath = Path.GetFullPath(path.Trim().Trim('"'));
-            if (File.Exists(Path.Combine(absolutePath, ProjectLayout.ProjectFileName)))
-            {
-                ShowProjectOperationError("无法新建项目",
-                    new InvalidOperationException("所选文件夹已经是 MVoxel 项目，请使用“打开项目”。"),
-                    fromWelcome, editorDialogMode: 1, path);
-                return;
-            }
+            absolutePath = GetNewProjectPath(absolutePath);
 
             var name = new DirectoryInfo(absolutePath).Name;
             if (!_projectOperation.TryStart(
