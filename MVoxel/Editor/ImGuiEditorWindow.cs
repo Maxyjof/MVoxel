@@ -2301,7 +2301,7 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsVoxelModel(component)) return 150F;
         if (SceneComponentTypes.IsCamera(component)) return 132F;
         if (SceneComponentTypes.IsLight(component)) return 124F;
-        return 82F;
+        return 116F;
     }
 
     private static void DrawInspectorIcon(bool rotation, string tooltip)
@@ -2447,6 +2447,9 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        var pluginDefinition = _pluginRuntime?.Components.FirstOrDefault(item => item.Id == component.TypeId);
+        if (component.OwnerPluginId is { Length: > 0 } ownerPlugin && pluginDefinition is null)
+            ImGui.TextColored(new Vector4(1F, .65F, .25F, 1F), $"插件未启用或未安装：{ownerPlugin}");
         ImGui.TextDisabled($"类型 ID  {component.TypeId}");
         ImGui.TextDisabled($"来源插件  {component.OwnerPluginId ?? "未知插件"}");
         var pluginData = component.Data.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
