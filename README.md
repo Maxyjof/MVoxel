@@ -32,4 +32,4 @@ dotnet run --project .\MVoxel.Tests\MVoxel.Tests.csproj --no-build --configurati
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Scripts\Test-Docs.ps1
 ```
 
-开发约定集中在[编码规范](Docs/技术文档/11-编码规范.md)中。项目仍在开发阶段，不提供旧版本兼容层。
+开发约定集中在[编码规范](Docs/技术文档/11-编码规范.md)中。项目采用直接、清晰的当前实现，功能边界以技术文档和测试结果为准。
