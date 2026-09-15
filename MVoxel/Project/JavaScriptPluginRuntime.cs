@@ -74,6 +74,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                 var extensions = ExecuteActivate(package, timeout);
                 foreach (var item in extensions.Automations)
                 {
+                    if (_automationOwners.ContainsKey(item.Id))
+                    {
+                        MVoxelLog.Warn($"插件自动化 ID 冲突，跳过重复注册：{item.Id}");
+                        continue;
+                    }
                     var automation = new PluginAutomation(item.Id, item.Name, package.Id);
                     _automations.Add(automation);
                     _automationOwners[item.Id] = package;
@@ -81,11 +86,26 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                 foreach (var item in extensions.Commands)
                 {
                     if (!package.Permissions.Contains("editor.command", StringComparer.Ordinal)) continue;
+                    if (_commandOwners.ContainsKey(item.Id))
+                    {
+                        MVoxelLog.Warn($"插件命令 ID 冲突，跳过重复注册：{item.Id}");
+                        continue;
+                    }
                     _commands.Add(new PluginCommand(item.Id, item.Name, package.Id));
                     _commandOwners[item.Id] = package;
                 }
                 if (package.Permissions.Contains("editor.panel", StringComparer.Ordinal))
-                    _panels.AddRange(extensions.Panels.Select(item => new PluginPanel(item.Id, item.Name, package.Id)));
+                {
+                    foreach (var item in extensions.Panels)
+                    {
+                        if (_panels.Any(panel => panel.Id == item.Id))
+                        {
+                            MVoxelLog.Warn($"插件面板 ID 冲突，跳过重复注册：{item.Id}");
+                            continue;
+                        }
+                        _panels.Add(new PluginPanel(item.Id, item.Name, package.Id));
+                    }
+                }
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
             }
