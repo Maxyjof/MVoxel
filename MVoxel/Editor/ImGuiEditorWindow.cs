@@ -1886,7 +1886,7 @@ DockId=0x6A3C3007,0
             ImGui.SameLine();
         if (_sceneDocumentDirty)
             ImGui.TextDisabled("未保存");
-        ImGui.SeparatorText("对象");
+        ImGui.SameLine();
         var visible = selectedObject.Visible;
         if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
         {
@@ -1896,6 +1896,7 @@ DockId=0x6A3C3007,0
             _accumulationSignature = string.Empty;
         }
 
+        ImGui.SameLine();
         var locked = selectedObject.Locked;
         if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
         {
