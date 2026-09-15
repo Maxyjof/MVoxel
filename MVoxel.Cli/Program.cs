@@ -101,10 +101,10 @@ internal static class Program
             }
             case "--create-project" when args.Length is 2 or 3 or 4:
             {
-                var project = ProjectLayout.Create(args[1], args.Length == 3 ? args[2] : null);
                 var templateId = ProjectTemplateId.Empty;
                 if (args.Length == 4 && !Enum.TryParse(args[3], true, out templateId))
                     throw new ArgumentException($"未知项目模板：{args[3]}");
+                var project = ProjectLayout.Create(args[1], args.Length == 3 ? args[2] : null);
                 ProjectTemplateCatalog.Populate(project, templateId);
                 Console.WriteLine($"已创建项目：{project.Manifest.Name}");
                 Console.WriteLine($"模板：{ProjectTemplateCatalog.Get(templateId).Name}");
