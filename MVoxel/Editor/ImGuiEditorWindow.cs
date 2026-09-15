@@ -2007,12 +2007,15 @@ DockId=0x6A3C3007,0
                 {
                     if (selectedObject.Components.Any(item => item.TypeId == definition.Id)) continue;
                     if (!ImGui.Selectable($"{definition.Name} · {definition.Category}")) continue;
+                    var defaultData = definition.DefaultData.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+                        ? JsonSerializer.SerializeToElement(new { })
+                        : definition.DefaultData.Clone();
                     selectedObject.Components.Add(new ComponentRecord
                     {
                         TypeId = definition.Id,
                         SchemaVersion = 1,
                         OwnerPluginId = definition.PluginId,
-                        Data = JsonSerializer.SerializeToElement(new { }),
+                        Data = defaultData,
                     });
                     MarkSceneDocumentDirty();
                 }

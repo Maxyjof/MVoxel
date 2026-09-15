@@ -22,7 +22,7 @@ public sealed record PluginCommand(string Id, string Name, string PluginId);
 /// </summary>
 public sealed record PluginPanel(string Id, string Name, string PluginId);
 
-public sealed record PluginComponent(string Id, string Name, string Category, string PluginId);
+public sealed record PluginComponent(string Id, string Name, string Category, string PluginId, JsonElement DefaultData);
 
 /// <summary>
 /// 通过随程序发布的受限 JavaScript 或 Lua 解释器执行插件入口
@@ -124,7 +124,8 @@ public sealed class PluginScriptRuntime : IDisposable
                             continue;
                         }
                         if (_components.Any(component => component.Id == item.Id)) continue;
-                        _components.Add(new PluginComponent(item.Id, item.Name, item.Category, package.Id));
+                        _components.Add(new PluginComponent(item.Id, item.Name, item.Category, package.Id,
+                            ParseComponentData(item.DefaultDataJson)));
                     }
                 }
                 _active.Add(package);
@@ -241,7 +242,8 @@ public sealed class PluginScriptRuntime : IDisposable
         public void RegisterAutomation(string id, string name) => _automations.Add(new(id, name));
         public void RegisterCommand(string id, string name) => _commands.Add(new(id, name));
         public void RegisterPanel(string id, string name) => _panels.Add(new(id, name));
-        public void RegisterComponent(string id, string name, string category = "插件") => _components.Add(new(id, name, category));
+        public void RegisterComponent(string id, string name, string category = "插件", string defaultDataJson = "{}") =>
+            _components.Add(new(id, name, category, defaultDataJson));
     }
 
     private static PluginExtensionData ExecuteLuaActivate(EditorPluginPackage package, TimeSpan timeout)
@@ -356,8 +358,9 @@ public sealed class PluginScriptRuntime : IDisposable
         host.Set("registerComponent", DynValue.NewCallback((_, args) =>
         {
             if (args.Count >= 2)
-                components.Add(new PluginExtensionComponent(args[0].String ?? string.Empty,
-                    args[1].String ?? string.Empty, args.Count >= 3 ? args[2].String ?? "插件" : "插件"));
+                    components.Add(new PluginExtensionComponent(args[0].String ?? string.Empty,
+                    args[1].String ?? string.Empty, args.Count >= 3 ? args[2].String ?? "插件" : "插件",
+                    args.Count >= 4 ? args[3].String ?? "{}" : "{}"));
             return DynValue.Nil;
         }));
         return host;
@@ -410,13 +413,29 @@ public sealed class PluginScriptRuntime : IDisposable
             .Select(item => new PluginExtensionComponent(
                 item.GetProperty("id").GetString() ?? string.Empty,
                 item.GetProperty("name").GetString() ?? string.Empty,
-                item.TryGetProperty("category", out var category) ? category.GetString() ?? "插件" : "插件"))
+                item.TryGetProperty("category", out var category) ? category.GetString() ?? "插件" : "插件",
+                item.TryGetProperty("defaultDataJson", out var defaultData) ? defaultData.GetString() ?? "{}" : "{}"))
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name)).ToList();
     }
 
     private static bool IsValidComponentId(string id) =>
         id.Length >= 3 && id.Contains('.', StringComparison.Ordinal) &&
         id.All(character => char.IsLetterOrDigit(character) || character is '.' or '-' or '_');
+
+    private static JsonElement ParseComponentData(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return JsonSerializer.SerializeToElement(new { });
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException exception)
+        {
+            MVoxelLog.Warn($"插件组件默认数据不是合法 JSON，已使用空对象：{exception.Message}");
+            return JsonSerializer.SerializeToElement(new { });
+        }
+    }
 
     internal static bool HasRegistrationPermission(EditorPluginPackage package) =>
         package.Permissions.Any(permission => permission is "automation.register" or "editor.command" or "editor.panel" or "scene.component");
@@ -440,7 +459,7 @@ public sealed class PluginScriptRuntime : IDisposable
     /// 插件注册的单个扩展项
     /// </summary>
     private sealed record PluginExtensionItem(string Id, string Name);
-    private sealed record PluginExtensionComponent(string Id, string Name, string Category);
+    private sealed record PluginExtensionComponent(string Id, string Name, string Category, string DefaultDataJson);
 
     /// <summary>
     /// 插件激活阶段返回的扩展集合
