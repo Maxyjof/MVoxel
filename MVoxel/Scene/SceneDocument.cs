@@ -230,7 +230,24 @@ public static class SceneSerializer
     public static SceneDocument Load(string path)
     {
         var scene = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options);
-        return scene ?? throw new InvalidDataException($"Invalid scene: {path}");
+        if (scene is null) throw new InvalidDataException($"Invalid scene: {path}");
+
+        // 旧场景可能缺少组件列表、重复保存坐标组件或把坐标组件标记为停用。
+        // 加载时统一恢复对象不变量，同时不触碰其他内置和插件组件记录。
+        scene.Objects ??= new List<SceneObject>();
+        foreach (var sceneObject in scene.Objects)
+        {
+            sceneObject.Components ??= new List<ComponentRecord>();
+            sceneObject.Components.RemoveAll(SceneComponentTypes.IsTransform);
+            sceneObject.Components.Insert(0, SceneComponentTypes.CreateTransform(sceneObject.Transform));
+            foreach (var component in sceneObject.Components.Skip(1))
+            {
+                if (SceneComponentTypes.BuiltInDefinitions.Any(item => item.TypeId == component.TypeId))
+                    component.OwnerPluginId = null;
+            }
+        }
+
+        return scene;
     }
 
     /// <summary>
