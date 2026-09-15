@@ -49,11 +49,23 @@ internal sealed class EditorControlServer : IDisposable
                 await pipe.WaitForConnectionAsync(_cancellation.Token);
                 using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
-                var line = await reader.ReadLineAsync(_cancellation.Token);
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                using var document = JsonDocument.Parse(line);
-                var result = _handler(document.RootElement);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = true, result }));
+                try
+                {
+                    var line = await reader.ReadLineAsync(_cancellation.Token);
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    using var document = JsonDocument.Parse(line);
+                    var result = _handler(document.RootElement);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = true, result }));
+                }
+                catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    MVoxelLog.Warn($"编辑器 CLI 命令失败：{exception.Message}");
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = false, error = exception.Message }));
+                }
             }
             catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
             {
