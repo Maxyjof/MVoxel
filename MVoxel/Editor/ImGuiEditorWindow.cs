@@ -312,6 +312,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 automations = _pluginRuntime?.Automations ?? [],
                 commands = _pluginRuntime?.Commands ?? [],
                 panels = _pluginRuntime?.Panels ?? [],
+                pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
             },
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
