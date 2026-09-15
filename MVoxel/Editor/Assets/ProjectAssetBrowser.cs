@@ -455,7 +455,7 @@ internal static class ProjectAssetCatalog
     };
 
     /// <summary>
-    /// 按扩展名分类资产，扩展名规范见 Docs/Maintainers/11-coding-conventions.md
+    /// 按扩展名分类资产，扩展名规范见 Docs/技术文档/11-编码规范.md
     /// </summary>
     /// <param name="path">文件路径</param>
     /// <param name="isFolder">是否为目录</param>
