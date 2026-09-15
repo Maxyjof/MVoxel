@@ -266,7 +266,7 @@ internal enum ProjectAssetKind
     Folder,
     /// <summary>场景 .mvox</summary>
     Scene,
-    /// <summary>体素模型 .vox</summary>
+    /// <summary>项目内部体素数据</summary>
     VoxelModel,
     /// <summary>预制件 .prefab</summary>
     Prefab,
@@ -442,7 +442,7 @@ internal static class ProjectAssetCatalog
     {
         ProjectAssetKind.Folder => "文件夹",
         ProjectAssetKind.Scene => "场景",
-        ProjectAssetKind.VoxelModel => "体素模型",
+        ProjectAssetKind.VoxelModel => "体素数据",
         ProjectAssetKind.Prefab => "预制件",
         ProjectAssetKind.Material => "材质",
         ProjectAssetKind.Palette => "调色板",
@@ -522,7 +522,7 @@ internal static class ProjectAssetCatalog
     {
         "Scenes" => "场景",
         "Prefabs" => "预制件",
-        "VoxelModels" => "体素模型",
+        "VoxelModels" => "内部数据",
         "Materials" => "材质",
         "Palettes" => "调色板",
         "Environments" => "环境",
