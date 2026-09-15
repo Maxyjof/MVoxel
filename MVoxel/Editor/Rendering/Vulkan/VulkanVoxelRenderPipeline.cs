@@ -243,7 +243,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _ = frameState;
         _ = widthPixels;
         _ = heightPixels;
-        return _displayTextureId != IntPtr.Zero;
+        return DisplayTextureId != IntPtr.Zero;
     }
 
     /// <summary>
