@@ -225,6 +225,7 @@ public static class PluginManager
     {
         ArgumentNullException.ThrowIfNull(packageInfo);
         if (!IsValidPluginId(packageInfo.Id) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
+            packageInfo.Permissions is null || packageInfo.Dependencies is null ||
             !packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
             Path.IsPathRooted(packageInfo.Entry) || packageInfo.Entry.Contains("..", StringComparison.Ordinal))
         {
