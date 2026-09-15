@@ -3131,6 +3131,8 @@ DockId=0x6A3C3007,0
         {
             projectName = _project.Manifest.Name,
             sceneName = _sceneDocument.Name,
+            objectCount = _sceneDocument.Objects.Count,
+            componentCount = _sceneDocument.Objects.Sum(item => item.Components.Count),
             valid = _sceneValidationErrors.Count == 0,
             errors = _sceneValidationErrors,
         };
