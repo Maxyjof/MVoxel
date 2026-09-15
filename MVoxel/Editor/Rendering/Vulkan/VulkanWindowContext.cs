@@ -192,7 +192,14 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         catch (Exception exception) when (IsDeviceLostException(exception))
         {
             _deviceLost = true;
+            MVoxelLog.SetRuntimeContext($"Vulkan 帧提交，设备={DeviceName}，交换链尺寸={_extent.Width}x{_extent.Height}");
             MVoxelLog.Error("Vulkan 设备丢失，停止后续呈现", exception);
+        }
+        catch (Exception exception)
+        {
+            _deviceLost = true;
+            MVoxelLog.SetRuntimeContext($"Vulkan 帧提交异常，设备={DeviceName}，交换链尺寸={_extent.Width}x{_extent.Height}");
+            MVoxelLog.Error("Vulkan 帧提交异常，已禁用 GPU 呈现", exception);
         }
     }
 

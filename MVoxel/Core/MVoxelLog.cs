@@ -112,7 +112,9 @@ public static class MVoxelLog
 
             try
             {
+                _writer?.Flush();
                 WriteCore("崩溃", report.ToString());
+                _writer?.Flush();
                 PreviousCrash = new PreviousCrashNotice(message, AppPaths.OldLogFilePath, now);
             }
             catch
