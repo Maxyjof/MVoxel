@@ -101,11 +101,15 @@ internal sealed partial class ImGuiEditorWindow
         _renderCameraId = null;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
-        var largeWorldPath = Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
-            ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-            : null;
-        var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
+        var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
+        var referencedVoxPath = FindReferencedModelPath(project, _sceneDocument, ".vox");
+        var largeWorldPath = referencedLargeWorldPath ??
+            (referencedVoxPath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
+                ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+                : null);
+        var modelPath = referencedVoxPath ??
+            Path.Combine(project.AssetsPath, "VoxelModels", "主场景.vox");
         try
         {
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
@@ -139,6 +143,28 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         FrameCameraOnWorld();
+    }
+
+    /// <summary>
+    /// 按场景中的模型组件解析资源，避免项目同时存在多个模型时误载入其他文件。
+    /// 解析范围限定在 Assets 内，场景文件中的外部路径不会被访问。
+    /// </summary>
+    private static string? FindReferencedModelPath(ProjectHandle project, Scene.SceneDocument? document,
+        string extension)
+    {
+        var model = document?.Objects
+            .SelectMany(item => item.Components)
+            .Where(SceneComponentTypes.IsVoxelModel)
+            .Select(SceneComponentTypes.ReadVoxelModel)
+            .Select(data => data.Model)
+            .FirstOrDefault(path => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(model)) return null;
+
+        var candidate = Path.GetFullPath(Path.Combine(project.RootPath, model.Replace('/', Path.DirectorySeparatorChar)));
+        var assetsRoot = Path.GetFullPath(project.AssetsPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate)
+            ? candidate
+            : null;
     }
 
     /// <summary>
