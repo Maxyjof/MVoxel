@@ -398,6 +398,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
         _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
         _errorText = string.Empty;
+        ImGui.OpenPopup("##WelcomeProjectPathDialog");
     }
 
     private void DrawPathDialog()
@@ -407,26 +408,56 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             return;
         }
 
-        ImGui.Separator();
-        ImGui.TextColored(ToColor(EditorPalette.Accent), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
-        ImGui.TextWrapped(_pathMode == 1 ? "输入项目文件夹路径，项目文件会由编辑器创建。" : "输入你之前保存项目的文件夹路径。");
-        if (_pathMode == 1)
+        var display = ImGui.GetIO().DisplaySize;
+        var dialogWidth = Math.Min(680F, Math.Max(520F, display.X - 48F));
+        var dialogHeight = _pathMode == 1 ? 438F : 282F;
+        ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(.5F, .5F));
+        ImGui.SetNextWindowSize(new Vector2(dialogWidth, dialogHeight), ImGuiCond.Appearing);
+        var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
+                    ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
+        if (ImGui.BeginPopupModal("##WelcomeProjectPathDialog", flags))
         {
-            DrawTemplatePicker();
-        }
+            var draw = ImGui.GetWindowDrawList();
+            var window = ImGui.GetWindowPos();
+            var windowSize = ImGui.GetWindowSize();
+            draw.AddRectFilled(window, window + new Vector2(5F, windowSize.Y),
+                ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Accent)), 8F);
+            ImGui.PushFont(_fonts.Title);
+            ImGui.TextColored(ToColor(EditorPalette.Text), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
+            ImGui.PopFont();
+            ImGui.Dummy(new Vector2(0F, 6F));
+            ImGui.TextWrapped(_pathMode == 1
+                ? "选择一个示例模板并输入项目文件夹路径，编辑器会自动生成项目文件和示例资源。"
+                : "输入已有 MVoxel 项目文件夹的路径，编辑器会检查项目结构后打开。 ");
+            ImGui.Dummy(new Vector2(0F, 14F));
+            if (_pathMode == 1)
+            {
+                DrawTemplatePicker();
+                ImGui.Dummy(new Vector2(0F, 14F));
+            }
 
-        ImGui.SetNextItemWidth(-1F);
-        ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
-        if (ImGui.Button("确认", new Vector2(100F, 34F)))
-        {
-            SubmitPath();
-        }
+            ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
+            ImGui.SetNextItemWidth(-1F);
+            ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
+            if (!string.IsNullOrWhiteSpace(_errorText))
+            {
+                ImGui.TextColored(ToColor(EditorPalette.Error), _errorText);
+            }
 
-        ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(100F, 34F)))
-        {
-            _pathMode = 0;
-            _errorText = string.Empty;
+            ImGui.Dummy(new Vector2(0F, 14F));
+            if (ImGui.Button(_pathMode == 1 ? "创建项目" : "打开项目", new Vector2(120F, 36F)))
+            {
+                SubmitPath();
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button("取消", new Vector2(100F, 36F)))
+            {
+                _pathMode = 0;
+                _errorText = string.Empty;
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.EndPopup();
         }
     }
 
@@ -450,6 +481,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         }
 
         _pathMode = 0;
+        ImGui.CloseCurrentPopup();
     }
 
     private void OnProjectOpened(object? sender, EventArgs args) => RequestClose();
