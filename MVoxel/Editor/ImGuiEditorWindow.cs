@@ -2065,7 +2065,8 @@ DockId=0x6A3C3007,0
                 var bodyHeight = GetInspectorComponentBodyHeight(selectedObject, component);
                 ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4F);
                 ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
-                if (ImGui.BeginChild("##InspectorComponentBody", new Vector2(-1F, bodyHeight), ImGuiChildFlags.Borders))
+                if (ImGui.BeginChild("##InspectorComponentBody", new Vector2(-1F, bodyHeight),
+                        ImGuiChildFlags.Borders, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
                 {
                     ImGui.Indent(8F);
                     DrawComponentSummary(selectedObject, component);
@@ -2209,11 +2210,11 @@ DockId=0x6A3C3007,0
     private static float GetInspectorComponentBodyHeight(SceneObject sceneObject, ComponentRecord component)
     {
         if (SceneComponentTypes.IsTransform(component))
-            return sceneObject.Transform.Mode == TransformMode.Free ? 78F : 72F;
-        if (SceneComponentTypes.IsVoxelModel(component)) return 126F;
-        if (SceneComponentTypes.IsCamera(component)) return 108F;
-        if (SceneComponentTypes.IsLight(component)) return 104F;
-        return 64F;
+            return sceneObject.Transform.Mode == TransformMode.Free ? 92F : 76F;
+        if (SceneComponentTypes.IsVoxelModel(component)) return 150F;
+        if (SceneComponentTypes.IsCamera(component)) return 132F;
+        if (SceneComponentTypes.IsLight(component)) return 124F;
+        return 82F;
     }
 
     private static void DrawInspectorIcon(bool rotation, string tooltip)
