@@ -114,10 +114,10 @@ public static class MVoxelLog
             try
             {
                 Directory.CreateDirectory(AppPaths.LogDirectory);
-                File.WriteAllText(reportPath, report.ToString(), new UTF8Encoding(false));
+                AtomicFile.WriteText(reportPath, report.ToString(), backupExtension: null);
                 var noticePath = Path.Combine(AppPaths.LogDirectory, "last-crash.notice");
                 var notice = $"{now:O}{Environment.NewLine}{reportPath}{Environment.NewLine}{message.Replace(Environment.NewLine, " ", StringComparison.Ordinal)}";
-                File.WriteAllText(noticePath, notice, new UTF8Encoding(false));
+                AtomicFile.WriteText(noticePath, notice, backupExtension: null);
                 PreviousCrash = new PreviousCrashNotice(message, reportPath, now);
             }
             catch
