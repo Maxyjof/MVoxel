@@ -35,9 +35,9 @@ public static class SceneComponentTypes
         new(Light, "光照", "渲染", true),
     ];
 
-    public static bool IsTransform(ComponentRecord component) => string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
-    public static bool IsVoxelModel(ComponentRecord component) => string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
-    public static bool IsLight(ComponentRecord component) => string.Equals(component.TypeId, Light, StringComparison.Ordinal);
+    public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
+    public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
+    public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
 
     /// <summary>
     /// 判断类型 ID 是否属于宿主内置组件，供插件注册校验和检查器分类共用。
@@ -131,8 +131,8 @@ public static class SceneComponentTypes
     /// </summary>
     /// <param name="component">待判断的组件记录</param>
     /// <returns>是否为相机组件</returns>
-    public static bool IsCamera(ComponentRecord component) =>
-        string.Equals(component.TypeId, Camera, StringComparison.Ordinal);
+    public static bool IsCamera(ComponentRecord? component) =>
+        component is not null && string.Equals(component.TypeId, Camera, StringComparison.Ordinal);
 
     /// <summary>
     /// 读取相机组件的摄影参数

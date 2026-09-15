@@ -256,7 +256,7 @@ public static class SceneSerializer
         {
             sceneObject.Transform ??= TransformComponent.FromFree(FreeTransform.Identity);
             sceneObject.Components ??= new List<ComponentRecord>();
-            sceneObject.Components.RemoveAll(SceneComponentTypes.IsTransform);
+            sceneObject.Components.RemoveAll(component => component is null || SceneComponentTypes.IsTransform(component));
             sceneObject.Components.Insert(0, SceneComponentTypes.CreateTransform(sceneObject.Transform));
             foreach (var component in sceneObject.Components.Skip(1))
             {
