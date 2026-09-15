@@ -831,6 +831,11 @@ DockId=0x6A3C3007,0
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
         var rowClicked = ImGui.IsItemClicked();
+        var treeCursor = ImGui.GetCursorScreenPos();
+        ImGui.SetCursorScreenPos(rowMin);
+        var rowSelectableClicked = ImGui.InvisibleButton($"##SceneObjectRow_{sceneObject.Id}",
+            new Vector2(Math.Max(1F, ImGui.GetContentRegionAvail().X), rowMax.Y - rowMin.Y));
+        ImGui.SetCursorScreenPos(treeCursor);
 
         var iconWidth = 22F;
         var iconGap = 2F;
@@ -857,7 +862,7 @@ DockId=0x6A3C3007,0
             }
         }
 
-        if (rowClicked && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
+        if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
         {
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
