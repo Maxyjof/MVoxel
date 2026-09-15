@@ -57,8 +57,13 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         ArgumentNullException.ThrowIfNull(project);
         foreach (var pluginId in PluginManager.ListEnabled(project))
         {
+            if (_active.Any(item => item.Id == pluginId)) continue;
             var package = PluginManager.ListInstalled().FirstOrDefault(item => item.Id == pluginId);
-            if (package is null) continue;
+            if (package is null)
+            {
+                MVoxelLog.Warn($"项目插件尚未安装，跳过激活：{pluginId}");
+                continue;
+            }
             if (!package.Permissions.Contains("automation.register", StringComparer.Ordinal))
             {
                 MVoxelLog.Warn($"插件未声明 automation.register 权限，跳过激活：{package.Id}");
