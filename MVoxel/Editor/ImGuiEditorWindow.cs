@@ -111,6 +111,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
+    private readonly List<CpuPreviewSurfaceFace> _cpuPreviewSurfaceFaces = [];
+    private VoxelWorld? _cpuPreviewWorld;
+    private int _cpuPreviewWorldVersion = -1;
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
     private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
@@ -1627,24 +1630,19 @@ DockId=0x6A3C3007,0
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
     {
-        const int maximumPreviewVoxels = 100_000;
-        var faces = new List<CpuPreviewFace>();
-        foreach (var item in _world.EnumerateOccupied().Take(maximumPreviewVoxels))
+        EnsureCpuPreviewSurface();
+        var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
+        foreach (var surface in _cpuPreviewSurfaceFaces)
         {
-            var coordinate = item.Coordinate;
-            var color = Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z),
-                FaceDirection.Left, color, origin, size, camera);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z),
-                FaceDirection.Right, color, origin, size, camera);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z),
-                FaceDirection.Bottom, color, origin, size, camera);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z),
-                FaceDirection.Top, color, origin, size, camera);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1),
-                FaceDirection.Back, color, origin, size, camera);
-            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1),
-                FaceDirection.Front, color, origin, size, camera);
+            var points = new Vector2[4];
+            var depths = new float[4];
+            for (var index = 0; index < surface.Corners.Length; index++)
+            {
+                if (!TryProject(surface.Corners[index], origin, size, camera, out points[index], out depths[index]))
+                    goto nextFace;
+            }
+            faces.Add(new CpuPreviewFace(points, surface.Color, depths.Average()));
+            nextFace:;
         }
 
         foreach (var face in faces.OrderByDescending(face => face.Depth))
@@ -1660,9 +1658,30 @@ DockId=0x6A3C3007,0
         }
     }
 
-    private void AddCpuPreviewFace(List<CpuPreviewFace> faces, VoxelCoord64 coordinate,
-        VoxelCoord64 neighbor, FaceDirection direction, Color baseColor,
-        Vector2 origin, Vector2 size, SceneCamera camera)
+    private void EnsureCpuPreviewSurface()
+    {
+        if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion)
+            return;
+
+        const int maximumPreviewVoxels = 100_000;
+        _cpuPreviewSurfaceFaces.Clear();
+        foreach (var item in _world.EnumerateOccupied().Take(maximumPreviewVoxels))
+        {
+            var coordinate = item.Coordinate;
+            var color = Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z), FaceDirection.Left, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z), FaceDirection.Right, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z), FaceDirection.Bottom, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z), FaceDirection.Top, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1), FaceDirection.Back, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1), FaceDirection.Front, color);
+        }
+        _cpuPreviewWorld = _world;
+        _cpuPreviewWorldVersion = _world.ContentVersion;
+    }
+
+    private void AddCpuPreviewSurfaceFace(VoxelCoord64 coordinate, VoxelCoord64 neighbor,
+        FaceDirection direction, Color baseColor)
     {
         if (_world.TryGet(neighbor, out var neighborValue) && !neighborValue.IsEmpty)
             return;
@@ -1679,14 +1698,6 @@ DockId=0x6A3C3007,0
             FaceDirection.Back => new[] { new Vector3(x + 1, y, z), new Vector3(x + 1, y + 1, z), new Vector3(x, y + 1, z), new Vector3(x, y, z) },
             _ => new[] { new Vector3(x, y, z + 1), new Vector3(x, y + 1, z + 1), new Vector3(x + 1, y + 1, z + 1), new Vector3(x + 1, y, z + 1) },
         };
-        var points = new Vector2[4];
-        var depths = new float[4];
-        for (var index = 0; index < corners.Length; index++)
-        {
-            if (!TryProject(corners[index], origin, size, camera, out points[index], out depths[index]))
-                return;
-        }
-
         var shade = direction switch
         {
             FaceDirection.Top => 1.12F,
@@ -1696,7 +1707,7 @@ DockId=0x6A3C3007,0
             FaceDirection.Back => 0.86F,
             _ => 0.98F,
         };
-        faces.Add(new CpuPreviewFace(points, Shade(baseColor, shade), depths.Average()));
+        _cpuPreviewSurfaceFaces.Add(new CpuPreviewSurfaceFace(corners, Shade(baseColor, shade)));
     }
 
     private enum FaceDirection
@@ -1705,6 +1716,8 @@ DockId=0x6A3C3007,0
     }
 
     private readonly record struct CpuPreviewFace(Vector2[] Points, Color Color, float Depth);
+
+    private readonly record struct CpuPreviewSurfaceFace(Vector3[] Corners, Color Color);
 
     private static void DrawVoxelCube(ImDrawListPtr drawList, Vector3 center, float side, Color baseColor,
         Vector2 origin, Vector2 size, SceneCamera camera, bool showOutline)
