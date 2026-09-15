@@ -57,6 +57,8 @@ internal static class Program
         Console.WriteLine("      输出项目摘要");
         Console.WriteLine("  --scene-info <场景文件>");
         Console.WriteLine("      输出场景对象和组件摘要");
+        Console.WriteLine("  --list-scenes <项目目录>");
+        Console.WriteLine("      列出项目 Assets 中的场景文件");
         Console.WriteLine("  --create-project <项目目录> [项目名称] [模板 ID]");
         Console.WriteLine("      创建项目并生成指定示例模板");
         Console.WriteLine("  --list-templates");
@@ -106,6 +108,12 @@ internal static class Program
             {
                 var arguments = JsonSerializer.SerializeToElement(new { scenePath = args[1] });
                 Console.WriteLine(JsonSerializer.Serialize(SceneInfo(arguments), JsonOptions));
+                return 0;
+            }
+            case "--list-scenes" when args.Length == 2:
+            {
+                var arguments = JsonSerializer.SerializeToElement(new { projectPath = args[1] });
+                Console.WriteLine(JsonSerializer.Serialize(ListScenes(arguments), JsonOptions));
                 return 0;
             }
             case "--create-project" when args.Length is 2 or 3 or 4:
@@ -258,6 +266,7 @@ internal static class Program
             "project.create" => CreateProject(arguments),
             "project.listTemplates" => ListTemplates(),
             "project.pluginDiagnostics" => PluginDiagnostics(arguments),
+            "project.listScenes" => ListScenes(arguments),
             "scene.info" => SceneInfo(arguments),
             "project.info" => ProjectInfo(arguments),
             "project.listPlugins" => ListPlugins(arguments),
@@ -355,6 +364,24 @@ internal static class Program
     }
 
     /// <summary>
+    /// 列出项目 Assets 中的场景文件，只返回资产范围内的路径。
+    /// </summary>
+    private static object ListScenes(JsonElement arguments)
+    {
+        var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!);
+        var scenes = Directory.Exists(project.AssetsPath)
+            ? Directory.EnumerateFiles(project.AssetsPath, "*.mvox", SearchOption.AllDirectories)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .Select(path => new
+                {
+                    path = Path.GetRelativePath(project.RootPath, path).Replace('\\', '/'),
+                    absolutePath = Path.GetFullPath(path),
+                }).ToArray()
+            : [];
+        return new { projectPath = project.RootPath, scenes };
+    }
+
+    /// <summary>
     /// 读取编辑器级插件和项目启用状态
     /// </summary>
     private static object ListPlugins(JsonElement arguments)
@@ -432,6 +459,7 @@ internal static class Program
         new { name = "project.create", description = "创建 MVoxel 项目并生成可选示例模板", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, name = new { type = "string" }, templateId = new { type = "string", description = "ProjectTemplateId 枚举值，默认 Empty" } }, required = new[] { "path" } } },
         new { name = "project.listTemplates", description = "读取可用项目模板", inputSchema = new { type = "object", properties = new { } } },
         new { name = "project.pluginDiagnostics", description = "诊断项目插件安装状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
+        new { name = "project.listScenes", description = "列出项目 Assets 中的场景文件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "scene.info", description = "读取场景对象和组件摘要", inputSchema = new { type = "object", properties = new { scenePath = new { type = "string" } }, required = new[] { "scenePath" } } },
         new { name = "project.info", description = "读取项目摘要", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listPlugins", description = "读取编辑器级插件和项目启用状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
