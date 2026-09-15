@@ -53,6 +53,11 @@ public sealed class EditorPluginPackage
 }
 
 /// <summary>
+/// 项目插件启用状态诊断结果
+/// </summary>
+public sealed record ProjectPluginDiagnostic(string PluginId, bool Installed, string? Version);
+
+/// <summary>
 /// 管理编辑器级插件和项目级启停状态
 /// </summary>
 public static class PluginManager
@@ -195,6 +200,22 @@ public static class PluginManager
             MVoxelLog.Warn($"插件启停清单损坏，按空集合恢复：{path}，原因：{exception.Message}");
             return [];
         }
+    }
+
+    /// <summary>
+    /// 诊断项目清单中的插件安装状态
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <returns>项目插件诊断结果</returns>
+    public static IReadOnlyList<ProjectPluginDiagnostic> Diagnose(ProjectHandle project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var installed = ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
+        return ListEnabled(project).Select(pluginId =>
+        {
+            installed.TryGetValue(pluginId, out var package);
+            return new ProjectPluginDiagnostic(pluginId, package is not null, package?.Version);
+        }).ToArray();
     }
 
     /// <summary>

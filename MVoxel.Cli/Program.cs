@@ -60,6 +60,8 @@ internal static class Program
         Console.WriteLine("      列出可用项目模板");
         Console.WriteLine("  --list-plugins <项目目录>");
         Console.WriteLine("      输出已安装插件和项目启用状态");
+        Console.WriteLine("  --plugin-diagnostics <项目目录>");
+        Console.WriteLine("      诊断项目插件是否已安装");
         Console.WriteLine("  --enable-plugin <项目目录> <插件 ID>");
         Console.WriteLine("      在项目中启用插件");
         Console.WriteLine("  --disable-plugin <项目目录> <插件 ID>");
@@ -119,6 +121,13 @@ internal static class Program
                 var enabled = PluginManager.ListEnabled(project).ToHashSet(StringComparer.Ordinal);
                 foreach (var package in PluginManager.ListInstalled())
                     Console.WriteLine($"{(enabled.Contains(package.Id) ? "[启用]" : "[停用]")} {package.Id} {package.Version}");
+                return 0;
+            }
+            case "--plugin-diagnostics" when args.Length == 2:
+            {
+                var project = ProjectLayout.Open(args[1]);
+                foreach (var diagnostic in PluginManager.Diagnose(project))
+                    Console.WriteLine($"{(diagnostic.Installed ? "[已安装]" : "[缺失]")} {diagnostic.PluginId} {diagnostic.Version ?? string.Empty}");
                 return 0;
             }
             case "--enable-plugin" when args.Length == 3:
@@ -239,6 +248,7 @@ internal static class Program
         {
             "project.create" => CreateProject(arguments),
             "project.listTemplates" => ListTemplates(),
+            "project.pluginDiagnostics" => PluginDiagnostics(arguments),
             "project.info" => ProjectInfo(arguments),
             "project.listPlugins" => ListPlugins(arguments),
             "project.enablePlugin" => SetPlugin(arguments, true),
@@ -290,6 +300,17 @@ internal static class Program
         description = template.Description,
         focus = template.Focus,
     }).ToArray();
+
+    /// <summary>
+    /// 诊断项目插件是否已经安装
+    /// </summary>
+    /// <param name="arguments">工具参数</param>
+    /// <returns>插件诊断结果</returns>
+    private static object PluginDiagnostics(JsonElement arguments)
+    {
+        var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!);
+        return PluginManager.Diagnose(project);
+    }
 
     /// <summary>
     /// 读取项目摘要
@@ -377,6 +398,7 @@ internal static class Program
     [
         new { name = "project.create", description = "创建 MVoxel 项目并生成可选示例模板", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, name = new { type = "string" }, templateId = new { type = "string", description = "ProjectTemplateId 枚举值，默认 Empty" } }, required = new[] { "path" } } },
         new { name = "project.listTemplates", description = "读取可用项目模板", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "project.pluginDiagnostics", description = "诊断项目插件安装状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.info", description = "读取项目摘要", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listPlugins", description = "读取编辑器级插件和项目启用状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.enablePlugin", description = "在项目中启用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
