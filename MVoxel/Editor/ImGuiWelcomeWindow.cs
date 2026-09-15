@@ -5,8 +5,6 @@ using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
 using MVoxel.Editor.Templates;
 using OpenTK.Mathematics;
-using OpenTK.Windowing.Common;
-using OpenTK.Windowing.Desktop;
 using Color = System.Drawing.Color;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
@@ -38,18 +36,15 @@ internal sealed class ProjectOperationFailedEventArgs : EventArgs
 }
 
 /// <summary>
-/// 使用 ImGui 独立绘制的启动窗口
-/// Welcome 使用独立窗口，因此不会成为编辑器中的场景标签页
+/// 绘制在编辑器主窗口顶层的欢迎界面。
+/// 欢迎界面不再创建独立窗口，而是作为主窗口内的模态阻塞层存在。
 /// </summary>
-internal sealed class ImGuiWelcomeWindow : GameWindow
+internal sealed class ImGuiWelcomeWindow
 {
     private const float TitleBarHeight = 34F;
     private readonly IEditorWelcomeHost _editor;
-    private VulkanImGuiController? _controller;
-    private VulkanWindowContext? _vulkan;
     private VulkanImGuiRenderer? _imguiRenderer;
-    private readonly EditorFontCatalog _fonts = new();
-    private IntPtr _imguiContext;
+    private EditorFontCatalog? _fonts;
     private nint _logoTextureId;
     private string _pathText = string.Empty;
     private string _browserPath = string.Empty;
@@ -63,11 +58,20 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private int _closeAllowed;
 
     internal ImGuiWelcomeWindow(IEditorWelcomeHost editor)
-        : base(GameWindowSettings.Default, CreateWindowSettings())
     {
         _editor = editor;
         _editor.ProjectOpened += OnProjectOpened;
         _editor.ProjectOperationFailed += OnProjectOperationFailed;
+    }
+
+    internal bool IsOpen => Volatile.Read(ref _closeRequested) == 0;
+
+    internal void Initialize(VulkanImGuiRenderer renderer, EditorFontCatalog fonts)
+    {
+        _imguiRenderer = renderer;
+        _fonts = fonts;
+        if (AppBranding.TryLoadLogoPixels(out var logoPixels, out var logoWidth, out var logoHeight))
+            _logoTextureId = renderer.RegisterTexture(logoPixels, logoWidth, logoHeight);
     }
 
     internal void RequestClose()
@@ -76,194 +80,15 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         Interlocked.Exchange(ref _closeRequested, 1);
     }
 
-    internal void InitializeForManualLoop()
+    internal void Dispose()
     {
-        OnLoad();
-    }
-
-    /// <summary>
-    /// 手动推进独立 GLFW 窗口
-    /// 所有者循环负责处理关闭请求并释放窗口资源
-    /// </summary>
-    internal bool PumpFrame(double deltaSeconds)
-    {
-        if (IsExiting || Volatile.Read(ref _closeRequested) != 0)
-        {
-            return false;
-        }
-
-        ProcessEvents(0D);
-        if (IsExiting || Volatile.Read(ref _closeRequested) != 0)
-        {
-            return false;
-        }
-
-        ImGui.SetCurrentContext(_imguiContext);
-        OnUpdateFrame(new FrameEventArgs(deltaSeconds));
-        if (!IsExiting && Volatile.Read(ref _closeRequested) == 0)
-        {
-            OnRenderFrame(new FrameEventArgs(deltaSeconds));
-        }
-
-        return !IsExiting && Volatile.Read(ref _closeRequested) == 0;
-    }
-
-    protected override void OnLoad()
-    {
-        base.OnLoad();
-        CenterOnCurrentMonitor();
-        _vulkan = new VulkanWindowContext(this);
-        _controller = new VulkanImGuiController(this);
-        _imguiContext = ImGui.GetCurrentContext();
-        _fonts.Load(_controller, UiDiagnostics.Dpi(this));
-        _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
-        if (AppBranding.TryLoadLogoPixels(out var logoPixels, out var logoWidth, out var logoHeight))
-        {
-            _logoTextureId = _imguiRenderer.RegisterTexture(logoPixels, logoWidth, logoHeight);
-        }
-
-        ConfigureImGui();
-        UiDiagnostics.Configure();
-    }
-
-    protected override void OnUpdateFrame(FrameEventArgs args)
-    {
-        base.OnUpdateFrame(args);
-        if (Volatile.Read(ref _closeRequested) != 0)
-        {
-            Close();
-        }
-    }
-
-    /// <summary>
-    /// 标记独立 Welcome 窗口的 Vulkan 交换链需要按新尺寸重建
-    /// </summary>
-    protected override void OnResize(ResizeEventArgs args)
-    {
-        base.OnResize(args);
-        _vulkan?.RequestResize();
-    }
-
-    /// <summary>
-    /// 将欢迎窗口放到当前显示器工作区中央
-    /// </summary>
-    private void CenterOnCurrentMonitor()
-    {
-        var workArea = Monitors.GetMonitorFromWindow(this).WorkArea;
-        var windowSize = Bounds.Size;
-        if (windowSize.X <= 0 || windowSize.Y <= 0) windowSize = ClientSize;
-        Location = workArea.Min + new Vector2i(
-            Math.Max(0, (workArea.Size.X - windowSize.X) / 2),
-            Math.Max(0, (workArea.Size.Y - windowSize.Y) / 2));
-    }
-
-    protected override void OnClosing(System.ComponentModel.CancelEventArgs args)
-    {
-        if (Volatile.Read(ref _closeAllowed) == 0)
-        {
-            args.Cancel = true;
-            return;
-        }
-
-        // 只有项目创建或打开成功后的内部请求才允许结束 Welcome
-        base.OnClosing(args);
-    }
-
-    protected override void OnRenderFrame(FrameEventArgs args)
-    {
-        base.OnRenderFrame(args);
-        _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
-        _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
-        if (_controller is not null)
-        {
-            DrawWelcome();
-            _controller.Render();
-            UiDiagnostics.Capture(this, "welcome");
-        }
-
-        _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
-        {
-            if (_imguiRenderer is not null && _controller is not null)
-            {
-                _imguiRenderer.Record(commandBuffer, _controller);
-            }
-        });
-    }
-
-    protected override void OnUnload()
-    {
-        ReleaseResources();
-        base.OnUnload();
-    }
-
-    private void ReleaseResources()
-    {
-        if (_controller is null) return;
-        ImGui.SetCurrentContext(_imguiContext);
         _editor.ProjectOpened -= OnProjectOpened;
         _editor.ProjectOperationFailed -= OnProjectOperationFailed;
-        _controller.Dispose();
-        _controller = null;
-        _logoTextureId = IntPtr.Zero;
-        _imguiRenderer?.Dispose();
-        _imguiRenderer = null;
-        _vulkan?.Dispose();
-        _vulkan = null;
+        if (_logoTextureId != 0) _imguiRenderer?.UnregisterTexture(_logoTextureId);
+        _logoTextureId = 0;
     }
 
-    public override void Dispose()
-    {
-        // 这个独立窗口使用手动循环，因此必须在 GLFW 销毁前释放自己的 Vulkan 资源
-        ReleaseResources();
-        base.Dispose();
-    }
-
-    private static NativeWindowSettings CreateWindowSettings()
-    {
-        return new NativeWindowSettings
-        {
-            Title = "欢迎使用 MVoxel",
-            ClientSize = new Vector2i(780, 620),
-            MinimumClientSize = new Vector2i(680, 520),
-            WindowBorder = WindowBorder.Hidden,
-            StartVisible = true,
-            StartFocused = true,
-            API = ContextAPI.NoAPI,
-            Vsync = VSyncMode.On,
-            Icon = AppBranding.LoadWindowIcon(),
-        };
-    }
-
-    private void ConfigureImGui()
-    {
-        ImGui.StyleColorsDark();
-        var io = ImGui.GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard;
-        io.ConfigWindowsMoveFromTitleBarOnly = true;
-
-        var style = ImGui.GetStyle();
-        style.WindowRounding = 8F;
-        style.FrameRounding = 4F;
-        style.WindowBorderSize = 1F;
-        style.FrameBorderSize = 1F;
-        style.WindowPadding = Vector2.Zero;
-        style.ItemSpacing = new Vector2(10F, 8F);
-        style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
-        style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Window);
-        style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
-        style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);
-        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.PanelHeader);
-        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Accent);
-        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Accent);
-        style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
-        style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
-        style.Colors[(int)ImGuiCol.TextSelectedBg] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.Text] = ToColor(EditorPalette.Text);
-        style.Colors[(int)ImGuiCol.TextDisabled] = ToColor(EditorPalette.MutedText);
-    }
-
-    private void DrawWelcome()
+    internal void Draw()
     {
         var display = ImGui.GetIO().DisplaySize;
         var operation = _editor.ProjectOperationSnapshot;
@@ -283,17 +108,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Border)), 1F);
         drawList.AddText(titleBarPosition + new Vector2(14F, (TitleBarHeight - ImGui.GetTextLineHeight()) * 0.5F),
             ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Text)), "欢迎使用 MVoxel");
-        if (ImGui.IsItemHovered() && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
-        {
-            var delta = ImGui.GetIO().MouseDelta;
-            if (delta.LengthSquared() > 0F)
-            {
-                Location = new Vector2i(
-                    Location.X + (int)MathF.Round(delta.X),
-                    Location.Y + (int)MathF.Round(delta.Y));
-            }
-        }
-
         ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight));
 
         var crashNoticeHeight = DrawCrashNotice(display);
@@ -312,9 +126,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
         ImGui.BeginGroup();
         ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 14F);
-        ImGui.PushFont(_fonts.Title);
+        if (_fonts is not null) ImGui.PushFont(_fonts.Title);
         ImGui.TextColored(ToColor(EditorPalette.Text), "MVoxel");
-        ImGui.PopFont();
+        if (_fonts is not null) ImGui.PopFont();
         ImGui.TextColored(ToColor(EditorPalette.Accent), "用小方块，创造大世界");
         ImGui.TextDisabled("欢迎使用 MVoxel 体素建模软件");
         ImGui.EndGroup();

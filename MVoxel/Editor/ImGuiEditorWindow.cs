@@ -276,7 +276,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 }
             });
 
-            if (_welcomeWindow is not null && !_welcomeWindow.PumpFrame(Math.Max(args.Time, 1.0 / 120.0)))
+            if (_welcomeWindow is not null && !_welcomeWindow.IsOpen)
             {
                 _welcomeWindow.Dispose();
                 _welcomeWindow = null;
@@ -521,13 +521,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!_showWelcomeRequested || _welcomeWindow is not null) return;
         _showWelcomeRequested = false;
         _welcomeWindow = new ImGuiWelcomeWindow(this);
-        _welcomeWindow.InitializeForManualLoop();
-        // 独立欢迎窗口使用独立 Vulkan Surface
-        // 继续当前帧前恢复编辑器 ImGui 上下文
-        ImGui.SetCurrentContext(_imguiContext);
-            // 把独立欢迎窗口置于被阻塞主窗口上层
-            // 显式转移焦点，保证欢迎窗口接收用户输入
-        _welcomeWindow.Focus();
+        _welcomeWindow.Initialize(_imguiRenderer!, _fonts);
     }
 
     private static NativeWindowSettings CreateWindowSettings(string[] args)
@@ -633,7 +627,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void DrawEditorFrame()
     {
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
-        var welcomeIsOpen = _welcomeWindow is not null;
+        var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
         var operation = _projectOperation.Snapshot;
         var inputBlocked = welcomeIsOpen || operation is not null;
         if (!inputBlocked) HandleVoxelShortcuts();
@@ -653,7 +647,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen)
         {
-            BlockingOperationDialog.DrawInteractionBlocker("欢迎窗口已打开", "请先在“欢迎使用 MVoxel”窗口中创建或打开项目。");
+            _welcomeWindow!.Draw();
         }
         else if (operation is { } snapshot)
         {
