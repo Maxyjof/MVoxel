@@ -168,7 +168,7 @@ public static class MVoxelLog
     }
 
     /// <summary>
-    /// 将本次正常关闭的运行日志移动到归档目录
+    /// 将本次正常关闭的运行日志移动到归档文件
     /// </summary>
     private static void ArchiveCurrentLog()
     {
@@ -185,7 +185,7 @@ public static class MVoxelLog
     }
 
     /// <summary>
-    /// 将上次异常中断留下的当前日志移动到归档目录
+    /// 将上次异常中断留下的当前日志移动到归档文件
     /// </summary>
     private static void ArchiveUnclosedLog()
     {
@@ -237,14 +237,31 @@ public static class MVoxelLog
     {
         try
         {
-            if (!File.Exists(AppPaths.LogFilePath)) return null;
-            var occurredAt = File.GetLastWriteTimeUtc(AppPaths.LogFilePath);
-            return new PreviousCrashNotice("上次运行未正常结束，请检查 old_log 文件", AppPaths.OldLogFilePath, new DateTimeOffset(occurredAt));
+            // 未处理异常时当前 log 尚未归档；主循环异常被捕获后则会在 Shutdown
+            // 中归档到 old_log。两条路径都要识别，否则捕获型崩溃不会在欢迎界面提示。
+            var activeLog = ReadCrashLog(AppPaths.LogFilePath);
+            if (activeLog is not null)
+                return activeLog;
+
+            return ReadCrashLog(AppPaths.OldLogFilePath);
         }
         catch (Exception)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 从指定日志文件识别最近一次崩溃记录。
+    /// </summary>
+    private static PreviousCrashNotice? ReadCrashLog(string path)
+    {
+        if (!File.Exists(path)) return null;
+        var content = File.ReadAllText(path, Encoding.UTF8);
+        if (!content.Contains("] [崩溃]", StringComparison.Ordinal)) return null;
+        var occurredAt = File.GetLastWriteTimeUtc(path);
+        return new PreviousCrashNotice("上次运行未正常结束，请检查 old_log 文件", AppPaths.OldLogFilePath,
+            new DateTimeOffset(occurredAt));
     }
 }
 
