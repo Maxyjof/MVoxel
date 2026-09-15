@@ -170,6 +170,12 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return document.RootElement.Clone();
     }
 
+    /// <summary>
+    /// 在隔离进程中执行插件激活入口并收集扩展注册
+    /// </summary>
+    /// <param name="package">插件包</param>
+    /// <param name="timeout">执行时间上限</param>
+    /// <returns>插件注册的扩展项</returns>
     private static PluginExtensionData ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
     {
         var entry = PluginManager.ResolveEntryPath(package);
@@ -206,6 +212,12 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             ReadExtensionItems(document.RootElement, "panels"));
     }
 
+    /// <summary>
+    /// 从 JavaScript 返回值中读取有效扩展项
+    /// </summary>
+    /// <param name="root">插件返回的 JSON 根节点</param>
+    /// <param name="property">扩展数组属性名</param>
+    /// <returns>过滤后的扩展项</returns>
     private static IReadOnlyList<PluginExtensionItem> ReadExtensionItems(JsonElement root, string property)
     {
         return root.GetProperty(property).EnumerateArray()
@@ -227,6 +239,13 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         _commandOwners.Clear();
     }
 
+    /// <summary>
+    /// 插件注册的单个扩展项
+    /// </summary>
     private sealed record PluginExtensionItem(string Id, string Name);
+
+    /// <summary>
+    /// 插件激活阶段返回的扩展集合
+    /// </summary>
     private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Automations, IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels);
 }

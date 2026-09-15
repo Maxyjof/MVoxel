@@ -35,6 +35,9 @@ internal sealed class EditorControlServer : IDisposable
         MVoxelLog.Info($"编辑器 CLI 通道已启动：{_pipeName}");
     }
 
+    /// <summary>
+    /// 循环接收并处理本机编辑器命令
+    /// </summary>
     private async Task RunAsync()
     {
         while (!_cancellation.IsCancellationRequested)
