@@ -220,20 +220,50 @@ public static class PluginManager
     {
         ArgumentNullException.ThrowIfNull(project);
         var installed = ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
-        return ListEnabled(project).Select(pluginId =>
+        var enabled = ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+        return enabled.Select(pluginId =>
         {
             installed.TryGetValue(pluginId, out var package);
             if (package is null)
                 return new ProjectPluginDiagnostic(pluginId, false, null, "缺失插件");
-            var missingDependency = package.Dependencies.Keys.FirstOrDefault(dependencyId => !installed.ContainsKey(dependencyId));
-            if (missingDependency is not null)
-                return new ProjectPluginDiagnostic(pluginId, true, package.Version, $"缺失依赖：{missingDependency}");
-            var invalidDependency = package.Dependencies.FirstOrDefault(dependency =>
-                !IsVersionSatisfied(installed[dependency.Key].Version, dependency.Value));
-            return invalidDependency.Key is null
+            var issue = FindDependencyIssue(pluginId, installed, enabled, new HashSet<string>(StringComparer.Ordinal));
+            return issue is null
                 ? new ProjectPluginDiagnostic(pluginId, true, package.Version, "正常")
-                : new ProjectPluginDiagnostic(pluginId, true, package.Version, $"依赖版本不满足：{invalidDependency.Key} {invalidDependency.Value}");
+                : new ProjectPluginDiagnostic(pluginId, true, package.Version, issue);
         }).ToArray();
+    }
+
+    /// <summary>
+    /// 递归查找插件依赖链中的第一个问题
+    /// </summary>
+    /// <param name="pluginId">当前插件 ID</param>
+    /// <param name="installed">编辑器级已安装插件</param>
+    /// <param name="enabled">项目已启用插件</param>
+    /// <param name="visiting">当前递归路径</param>
+    /// <returns>诊断文字，没有问题时返回 null</returns>
+    private static string? FindDependencyIssue(string pluginId,
+        IReadOnlyDictionary<string, EditorPluginPackage> installed,
+        IReadOnlySet<string> enabled,
+        ISet<string> visiting)
+    {
+        if (!installed.TryGetValue(pluginId, out var package))
+            return $"缺失插件：{pluginId}";
+        if (!visiting.Add(pluginId))
+            return $"依赖存在循环：{pluginId}";
+        foreach (var dependency in package.Dependencies)
+        {
+            if (!installed.TryGetValue(dependency.Key, out var dependencyPackage))
+                return $"缺失依赖：{dependency.Key}";
+            if (!enabled.Contains(dependency.Key))
+                return $"依赖未启用：{dependency.Key}";
+            if (!IsVersionSatisfied(dependencyPackage.Version, dependency.Value))
+                return $"依赖版本不满足：{dependency.Key} {dependency.Value}";
+            var issue = FindDependencyIssue(dependency.Key, installed, enabled, visiting);
+            if (issue is not null)
+                return issue;
+        }
+        visiting.Remove(pluginId);
+        return null;
     }
 
     /// <summary>
