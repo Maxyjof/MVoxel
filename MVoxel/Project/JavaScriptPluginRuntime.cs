@@ -5,11 +5,22 @@ using MVoxel.Core;
 namespace MVoxel.Project;
 
 /// <summary>
+/// 插件向编辑器注册的自动化入口
+/// </summary>
+public sealed record PluginAutomation(string Id, string Name, string PluginId);
+
+/// <summary>
 /// 通过受限 Node.js 子进程执行 JavaScript 插件入口
 /// </summary>
 public sealed class JavaScriptPluginRuntime : IDisposable
 {
     private readonly List<EditorPluginPackage> _active = new();
+    private readonly List<PluginAutomation> _automations = new();
+
+    /// <summary>
+    /// 当前已注册的自动化入口
+    /// </summary>
+    public IReadOnlyList<PluginAutomation> Automations => _automations;
 
     /// <summary>
     /// 激活项目中已启用的 JavaScript 插件
@@ -26,7 +37,8 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             if (package is null) continue;
             try
             {
-                ExecuteActivate(package, timeout);
+                _automations.AddRange(ExecuteActivate(package, timeout).Select(item =>
+                    new PluginAutomation(item.Id, item.Name, package.Id)));
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
             }
@@ -38,7 +50,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return _active;
     }
 
-    private static void ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
+    private static IReadOnlyList<PluginAutomationData> ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
@@ -67,7 +79,13 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         var output = process.StandardOutput.ReadToEnd();
         var error = process.StandardError.ReadToEnd();
         if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "JavaScript 插件返回失败" : error.Trim());
-        JsonDocument.Parse(output);
+        using var document = JsonDocument.Parse(output);
+        return document.RootElement.EnumerateArray()
+            .Select(item => new PluginAutomationData(
+                item.GetProperty("id").GetString() ?? string.Empty,
+                item.GetProperty("name").GetString() ?? string.Empty))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name))
+            .ToList();
     }
 
     /// <summary>
@@ -77,5 +95,8 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     {
         foreach (var package in _active) MVoxelLog.Info($"JavaScript 插件已停用：{package.Id}");
         _active.Clear();
+        _automations.Clear();
     }
+
+    private sealed record PluginAutomationData(string Id, string Name);
 }

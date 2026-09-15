@@ -303,7 +303,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             : string.Empty;
         return method switch
         {
-            "editor.status" => new { processId = Environment.ProcessId, hasProject = _project is not null, projectName = _project?.Manifest.Name },
+            "editor.status" => new
+            {
+                processId = Environment.ProcessId,
+                hasProject = _project is not null,
+                projectName = _project?.Manifest.Name,
+                automations = _pluginRuntime?.Automations ?? [],
+            },
             "editor.openProject" => QueueOpenProject(request),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
         };

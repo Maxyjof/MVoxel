@@ -198,7 +198,7 @@ internal static class Program
         new { name = "project.enablePlugin", description = "在项目中启用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
         new { name = "project.disablePlugin", description = "在项目中禁用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
         new { name = "plugin.install", description = "安装编辑器级 JavaScript 插件", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
-        new { name = "editor.status", description = "读取运行中编辑器状态", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.status", description = "读取运行中编辑器状态和插件自动化入口", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
     ];
 }
