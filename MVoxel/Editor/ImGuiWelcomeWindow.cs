@@ -566,7 +566,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                 var name = Path.GetFileName(directory);
                 var isProject = IsProjectFolder(directory);
                 var selected = string.Equals(_browserSelectedPath, directory, StringComparison.OrdinalIgnoreCase);
-                var label = $"▰  {name}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}";
+                var label = $"目录  {name}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}";
                 if (ImGui.Selectable(label, selected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0F, 30F)))
                 {
                     _browserSelectedPath = directory;

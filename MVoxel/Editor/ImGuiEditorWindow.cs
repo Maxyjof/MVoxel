@@ -2753,7 +2753,7 @@ DockId=0x6A3C3007,0
             {
                 var isProject = IsProjectFolder(directory);
                 var selected = string.Equals(_projectBrowserSelectedPath, directory, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable($"▰  {Path.GetFileName(directory)}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}",
+                if (ImGui.Selectable($"目录  {Path.GetFileName(directory)}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}",
                         selected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0F, 30F)))
                 {
                     _projectBrowserSelectedPath = directory;
