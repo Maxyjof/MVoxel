@@ -288,9 +288,11 @@ public static class PluginManager
         var manifest = new PluginManifest { Enabled = current.Order(StringComparer.Ordinal).ToList() };
         AtomicFile.WriteText(Path.Combine(project.PluginsPath, "manifest.json"),
             JsonSerializer.Serialize(manifest, JsonOptions));
+        foreach (var missingId in current.Where(id => !installed.ContainsKey(id)))
+            MVoxelLog.Warn($"项目插件尚未安装，保留清单但不写入锁文件：{missingId}");
         var lockFile = new PluginLockFile
         {
-            Plugins = current.Order(StringComparer.Ordinal).Select(id =>
+            Plugins = current.Where(installed.ContainsKey).Order(StringComparer.Ordinal).Select(id =>
             {
                 var item = installed[id];
                 return new LockedPlugin
