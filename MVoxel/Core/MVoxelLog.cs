@@ -36,7 +36,7 @@ public static class MVoxelLog
                 AppPaths.EnsureDirectories();
                 PreviousCrash = LoadPreviousCrash();
                 ArchiveUnclosedLog();
-                CurrentLogPath = Path.Combine(AppPaths.LogDirectory, "MVoxel.log");
+                CurrentLogPath = AppPaths.LogFilePath;
                 _writer = new StreamWriter(CurrentLogPath, append: true, new UTF8Encoding(false))
                 {
                     AutoFlush = true,
@@ -97,8 +97,6 @@ public static class MVoxelLog
         lock (Gate)
         {
             var now = DateTimeOffset.Now;
-            var fileName = $"MVoxel-Crash-{now:yyyyMMdd-HHmmss-fff}.log";
-            var reportPath = Path.Combine(AppPaths.OldLogDirectory, fileName);
             var report = new StringBuilder()
                 .AppendLine("MVoxel 崩溃报告")
                 .AppendLine($"时间：{now:yyyy-MM-dd HH:mm:ss.fff zzz}")
@@ -114,19 +112,13 @@ public static class MVoxelLog
 
             try
             {
-                Directory.CreateDirectory(AppPaths.LogDirectory);
-                Directory.CreateDirectory(AppPaths.OldLogDirectory);
-                AtomicFile.WriteText(reportPath, report.ToString(), backupExtension: null);
-                var noticePath = Path.Combine(AppPaths.LogDirectory, "last-crash.notice");
-                var notice = $"{now:O}{Environment.NewLine}{reportPath}{Environment.NewLine}{message.Replace(Environment.NewLine, " ", StringComparison.Ordinal)}";
-                AtomicFile.WriteText(noticePath, notice, backupExtension: null);
-                PreviousCrash = new PreviousCrashNotice(message, reportPath, now);
+                WriteCore("崩溃", report.ToString());
+                PreviousCrash = new PreviousCrashNotice(message, AppPaths.OldLogFilePath, now);
             }
             catch
             {
             }
 
-            WriteCore("崩溃", $"{message}{Environment.NewLine}{exception}");
         }
     }
 
@@ -139,7 +131,6 @@ public static class MVoxelLog
         {
             try
             {
-                File.Delete(Path.Combine(AppPaths.LogDirectory, "last-crash.notice"));
             }
             catch
             {
@@ -182,10 +173,7 @@ public static class MVoxelLog
         if (string.IsNullOrWhiteSpace(CurrentLogPath) || !File.Exists(CurrentLogPath)) return;
         try
         {
-            Directory.CreateDirectory(AppPaths.OldLogDirectory);
-            var archivePath = Path.Combine(AppPaths.OldLogDirectory, $"MVoxel-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
-            archivePath = GetAvailableArchivePath(archivePath);
-            File.Move(CurrentLogPath, archivePath);
+            File.Move(CurrentLogPath, AppPaths.OldLogFilePath, true);
             CurrentLogPath = null;
         }
         catch (Exception exception)
@@ -199,14 +187,11 @@ public static class MVoxelLog
     /// </summary>
     private static void ArchiveUnclosedLog()
     {
-        var currentPath = Path.Combine(AppPaths.LogDirectory, "MVoxel.log");
+        var currentPath = AppPaths.LogFilePath;
         if (!File.Exists(currentPath)) return;
         try
         {
-            Directory.CreateDirectory(AppPaths.OldLogDirectory);
-            var archivePath = Path.Combine(AppPaths.OldLogDirectory, $"MVoxel-Unclosed-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
-            archivePath = GetAvailableArchivePath(archivePath);
-            File.Move(currentPath, archivePath);
+            File.Move(currentPath, AppPaths.OldLogFilePath, true);
         }
         catch (Exception exception)
         {
@@ -215,23 +200,6 @@ public static class MVoxelLog
     }
 
     /// <summary>
-    /// 生成不存在的归档路径，避免同一毫秒内多次关闭覆盖日志
-    /// </summary>
-    /// <param name="path">首选归档路径</param>
-    /// <returns>可用归档路径</returns>
-    private static string GetAvailableArchivePath(string path)
-    {
-        if (!File.Exists(path)) return path;
-        var directory = Path.GetDirectoryName(path)!;
-        var name = Path.GetFileNameWithoutExtension(path);
-        var extension = Path.GetExtension(path);
-        for (var index = 1; ; index++)
-        {
-            var candidate = Path.Combine(directory, $"{name}-{index}{extension}");
-            if (!File.Exists(candidate)) return candidate;
-        }
-    }
-
     private static void WriteCore(string level, string message)
     {
         lock (Gate)
@@ -265,20 +233,11 @@ public static class MVoxelLog
     /// <returns>崩溃提示或 null</returns>
     private static PreviousCrashNotice? LoadPreviousCrash()
     {
-        var noticePath = Path.Combine(AppPaths.LogDirectory, "last-crash.notice");
         try
         {
-            var lines = File.ReadAllLines(noticePath, Encoding.UTF8);
-            if (lines.Length < 3 || !DateTimeOffset.TryParse(lines[0], out var occurredAt))
-            {
-                return null;
-            }
-
-            var reportPath = lines[1];
-            var summary = string.Join(" ", lines.Skip(2)).Trim();
-            return string.IsNullOrWhiteSpace(summary) || string.IsNullOrWhiteSpace(reportPath)
-                ? null
-                : new PreviousCrashNotice(summary, reportPath, occurredAt);
+            if (!File.Exists(AppPaths.LogFilePath)) return null;
+            var occurredAt = File.GetLastWriteTimeUtc(AppPaths.LogFilePath);
+            return new PreviousCrashNotice("上次运行未正常结束，请检查 old_log 文件", AppPaths.OldLogFilePath, new DateTimeOffset(occurredAt));
         }
         catch (Exception)
         {
