@@ -30,6 +30,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
     private const int CapsLockVirtualKey = 0x14;
     private const uint MainDockspaceId = 0x6A3C3001;
+    private const float HierarchyRowIconSize = 18F;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
     private string? _imguiLayoutPath;
@@ -850,11 +851,10 @@ DockId=0x6A3C3007,0
                 ToPackedColor(Color.FromArgb(42, EditorPalette.AccentSoft)), 2F);
         }
 
-        var rowHeight = rowMax.Y - rowMin.Y;
-        var iconWidth = Math.Max(16F, rowHeight - 2F);
+        const float iconWidth = HierarchyRowIconSize;
         var iconGap = 2F;
         var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
-        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + (rowHeight - iconWidth) * 0.5F));
+        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + 1F));
         var visibilityClicked = DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
             sceneObject.Visible, DrawVisibilityIcon, iconWidth);
         if (visibilityClicked)
