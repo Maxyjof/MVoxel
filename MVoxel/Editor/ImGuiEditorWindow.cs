@@ -1532,7 +1532,13 @@ DockId=0x6A3C3007,0
     /// 判断体素模型对象是否允许显示
     /// </summary>
     /// <returns>允许显示时返回 true</returns>
-    private bool IsVoxelWorldVisible() => GetVoxelWorldObject()?.Visible ?? true;
+    private bool IsVoxelWorldVisible()
+    {
+        var modelObject = GetVoxelWorldObject();
+        return modelObject is null ||
+               (modelObject.Visible && modelObject.Components.Any(component =>
+                   SceneComponentTypes.IsVoxelModel(component) && component.Enabled));
+    }
 
     /// <summary>
     /// 判断体素模型对象是否允许选中和编辑
@@ -1918,6 +1924,14 @@ DockId=0x6A3C3007,0
             var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(definition is null ? "插件组件" : $"组件分类：{definition.Category}");
+            ImGui.SameLine();
+            var enabled = component.Enabled;
+            if (ImGui.Checkbox("##InspectorComponentEnabled", ref enabled) && component.Enabled != enabled)
+            {
+                component.Enabled = enabled;
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
             ImGui.SameLine();
             ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
             if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;

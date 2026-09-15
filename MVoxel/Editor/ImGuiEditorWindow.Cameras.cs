@@ -21,7 +21,8 @@ internal sealed partial class ImGuiEditorWindow
     private IReadOnlyList<SceneObject> GetRenderCameraObjects()
     {
         return _sceneDocument?.Objects
-                   .Where(item => item.Visible && item.Components.Any(SceneComponentTypes.IsCamera))
+                   .Where(item => item.Visible && item.Components.Any(component =>
+                       SceneComponentTypes.IsCamera(component) && component.Enabled))
                    .ToArray()
                ?? Array.Empty<SceneObject>();
     }

@@ -81,6 +81,11 @@ public sealed class SceneObject
 public sealed class ComponentRecord
 {
     /// <summary>
+    /// 组件是否启用。停用组件仍保留在场景文件中，便于随时恢复。
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
     /// 组件类型 ID，例如 mvoxel.voxelmodel
     /// </summary>
     public string TypeId { get; set; } = string.Empty;
