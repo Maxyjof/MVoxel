@@ -258,16 +258,24 @@ internal static class Program
     /// <summary>
     /// 创建项目
     /// </summary>
-    private static object CreateProject(JsonElement arguments) =>
-        CreateProjectCore(arguments.GetProperty("path").GetString()!, arguments.TryGetProperty("name", out var name) ? name.GetString() : null);
+    private static object CreateProject(JsonElement arguments)
+    {
+        var templateId = ProjectTemplateId.Empty;
+        if (arguments.TryGetProperty("templateId", out var template) &&
+            !Enum.TryParse(template.GetString(), true, out templateId))
+            throw new ArgumentException($"未知项目模板：{template.GetString()}");
+        return CreateProjectCore(arguments.GetProperty("path").GetString()!,
+            arguments.TryGetProperty("name", out var name) ? name.GetString() : null, templateId);
+    }
 
     /// <summary>
     /// 创建项目并返回摘要
     /// </summary>
-    private static object CreateProjectCore(string path, string? name)
+    private static object CreateProjectCore(string path, string? name, ProjectTemplateId templateId = ProjectTemplateId.Empty)
     {
         var project = ProjectLayout.Create(path, name);
-        return new { project.RootPath, project.Manifest.Name };
+        ProjectTemplateCatalog.Populate(project, templateId);
+        return new { project.RootPath, project.Manifest.Name, Template = templateId.ToString() };
     }
 
     /// <summary>
@@ -354,7 +362,7 @@ internal static class Program
 
     private static readonly object[] ToolDefinitions =
     [
-        new { name = "project.create", description = "创建 MVoxel 项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, name = new { type = "string" } }, required = new[] { "path" } } },
+        new { name = "project.create", description = "创建 MVoxel 项目并生成可选示例模板", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, name = new { type = "string" }, templateId = new { type = "string", description = "ProjectTemplateId 枚举值，默认 Empty" } }, required = new[] { "path" } } },
         new { name = "project.info", description = "读取项目摘要", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listPlugins", description = "读取编辑器级插件和项目启用状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.enablePlugin", description = "在项目中启用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
