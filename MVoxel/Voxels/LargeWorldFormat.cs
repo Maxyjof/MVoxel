@@ -9,8 +9,6 @@ public static class LargeWorldFormat
 {
     private const uint Magic = 0x3158564D;
     private const int Version = 2;
-    private const int LegacyVersion = 1;
-    private const int LegacyRecordSize = 10;
     private const int RecordSize = 13;
 
     /// <summary>
@@ -49,11 +47,11 @@ public static class LargeWorldFormat
     /// <param name="path">目标文件路径</param>
     public static void WriteDemo(string path)
     {
-        var bytes = new byte[checked(24 + DemoVoxelCount * 10)];
+        var bytes = new byte[checked(24 + DemoVoxelCount * RecordSize)];
         using var stream = new MemoryStream(bytes, writable: true);
         using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        WriteHeader(writer, DemoWidth, DemoDepth, DemoHeight, DemoVoxelCount, LegacyVersion);
-        WriteDemoVoxels(writer, WriteLegacyVoxel);
+        WriteHeader(writer, DemoWidth, DemoDepth, DemoHeight, DemoVoxelCount);
+        WriteDemoVoxels(writer, WriteVoxel);
 
         AtomicFile.WriteBytes(path, bytes);
     }
@@ -123,7 +121,7 @@ public static class LargeWorldFormat
         }
 
         var version = reader.ReadInt32();
-        if (version is not (LegacyVersion or Version))
+        if (version != Version)
         {
             throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
         }
@@ -133,8 +131,7 @@ public static class LargeWorldFormat
         var height = reader.ReadInt32();
         var count = reader.ReadInt32();
         ValidateDimensions(width, height, depth);
-        var recordSize = version == LegacyVersion ? LegacyRecordSize : RecordSize;
-        var expectedLength = checked(24L + count * recordSize);
+        var expectedLength = checked(24L + count * RecordSize);
         if (count < 0 || count > 32_000_000 || expectedLength != bytes.Length)
         {
             throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
@@ -147,8 +144,7 @@ public static class LargeWorldFormat
             var y = reader.ReadUInt16();
             var z = reader.ReadUInt16();
             var value = new VoxelValue(new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()),
-                version == Version ? reader.ReadUInt16() : (ushort)0,
-                version == Version ? reader.ReadByte() : (byte)0);
+                reader.ReadUInt16(), reader.ReadByte());
             if (x >= width || y >= height || z >= depth || value.IsEmpty)
             {
                 throw new InvalidDataException("大世界模型包含越界或空体素记录");
@@ -197,17 +193,6 @@ public static class LargeWorldFormat
         writer.Write(value.Color.A);
         writer.Write(value.MaterialSlot);
         writer.Write(value.Flags);
-    }
-
-    private static void WriteLegacyVoxel(BinaryWriter writer, int x, int y, int z, VoxelValue value)
-    {
-        writer.Write(checked((ushort)x));
-        writer.Write(checked((ushort)y));
-        writer.Write(checked((ushort)z));
-        writer.Write(value.Color.R);
-        writer.Write(value.Color.G);
-        writer.Write(value.Color.B);
-        writer.Write(value.Color.A);
     }
 
     /// <summary>
