@@ -1604,7 +1604,15 @@ DockId=0x6A3C3007,0
     {
         _ = drawList;
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        ImGui.TextColored(ToColor(EditorPalette.Accent), "Vulkan Compute 直接预览");
+        var pipeline = _pipeline;
+        var backendName = pipeline?.UsingHardwareRayTracing == true
+            ? "Vulkan 硬件 RT"
+            : "Vulkan Compute 路径追踪";
+        ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
+        if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(hardwareError);
+        }
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing()));
         if (ImGui.SmallButton("重新计算"))
         {
