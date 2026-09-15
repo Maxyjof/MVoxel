@@ -26,9 +26,78 @@ internal static class Program
             return 0;
         }
 
-        Console.Error.WriteLine("MVoxel CLI：使用 --mcp 启动 MCP stdio 服务");
-        Console.Error.WriteLine("支持工具：项目管理、插件管理、编辑器状态、项目打开、插件重载、自动化和命令调用");
-        return 0;
+        if (args.Length == 0 || args[0] is "--help" or "-h")
+        {
+            PrintHelp();
+            return 0;
+        }
+
+        try
+        {
+            return RunHumanCommand(args);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"错误：{exception.Message}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// 输出人工使用的命令行帮助
+    /// </summary>
+    private static void PrintHelp()
+    {
+        Console.WriteLine("MVoxel CLI");
+        Console.WriteLine("  --mcp");
+        Console.WriteLine("      启动 MCP stdio 服务");
+        Console.WriteLine("  --project-info <项目目录>");
+        Console.WriteLine("      输出项目摘要");
+        Console.WriteLine("  --list-plugins <项目目录>");
+        Console.WriteLine("      输出已安装插件和项目启用状态");
+        Console.WriteLine("  --enable-plugin <项目目录> <插件 ID>");
+        Console.WriteLine("      在项目中启用插件");
+        Console.WriteLine("  --disable-plugin <项目目录> <插件 ID>");
+        Console.WriteLine("      在项目中禁用插件");
+    }
+
+    /// <summary>
+    /// 执行人工使用的命令行操作
+    /// </summary>
+    /// <param name="args">命令行参数</param>
+    /// <returns>进程退出码</returns>
+    private static int RunHumanCommand(string[] args)
+    {
+        switch (args[0].ToLowerInvariant())
+        {
+            case "--project-info" when args.Length == 2:
+            {
+                var project = ProjectLayout.Open(args[1]);
+                Console.WriteLine($"项目：{project.Manifest.Name}");
+                Console.WriteLine($"路径：{project.RootPath}");
+                Console.WriteLine($"引擎版本：{project.Manifest.EngineVersion}");
+                return 0;
+            }
+            case "--list-plugins" when args.Length == 2:
+            {
+                var project = ProjectLayout.Open(args[1]);
+                var enabled = PluginManager.ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+                foreach (var package in PluginManager.ListInstalled())
+                    Console.WriteLine($"{(enabled.Contains(package.Id) ? "[启用]" : "[停用]")} {package.Id} {package.Version}");
+                return 0;
+            }
+            case "--enable-plugin" when args.Length == 3:
+                PluginManager.Enable(ProjectLayout.Open(args[1]), args[2]);
+                Console.WriteLine($"已启用插件：{args[2]}");
+                return 0;
+            case "--disable-plugin" when args.Length == 3:
+                PluginManager.Disable(ProjectLayout.Open(args[1]), args[2]);
+                Console.WriteLine($"已禁用插件：{args[2]}");
+                return 0;
+            default:
+                PrintHelp();
+                return 2;
+        }
     }
 
     /// <summary>
