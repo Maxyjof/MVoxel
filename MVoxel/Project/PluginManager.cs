@@ -182,8 +182,19 @@ public static class PluginManager
         ArgumentNullException.ThrowIfNull(project);
         var path = Path.Combine(project.PluginsPath, "manifest.json");
         if (!File.Exists(path)) return [];
-        var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(path), JsonOptions);
-        return manifest?.Enabled ?? [];
+        try
+        {
+            var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(path), JsonOptions);
+            return manifest?.Enabled?
+                .Where(item => IsValidPluginId(item))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray() ?? [];
+        }
+        catch (JsonException exception)
+        {
+            MVoxelLog.Warn($"插件启停清单损坏，按空集合恢复：{path}，原因：{exception.Message}");
+            return [];
+        }
     }
 
     /// <summary>
