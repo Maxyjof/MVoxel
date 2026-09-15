@@ -1925,6 +1925,8 @@ DockId=0x6A3C3007,0
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(definition is null ? "插件组件" : $"组件分类：{definition.Category}");
             ImGui.SameLine();
+            var isTransformComponent = SceneComponentTypes.IsTransform(component);
+            ImGui.BeginDisabled(isTransformComponent);
             var enabled = component.Enabled;
             if (ImGui.Checkbox("##InspectorComponentEnabled", ref enabled) && component.Enabled != enabled)
             {
@@ -1932,8 +1934,9 @@ DockId=0x6A3C3007,0
                 MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
             }
+            ImGui.EndDisabled();
             ImGui.SameLine();
-            ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
+            ImGui.BeginDisabled(isTransformComponent);
             if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;
             ImGui.EndDisabled();
             if (expanded)
