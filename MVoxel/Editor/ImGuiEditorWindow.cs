@@ -1876,6 +1876,7 @@ DockId=0x6A3C3007,0
             {
                 _selectedSceneObjectId = null;
             }
+            }
 
             ImGui.SeparatorText("组件");
             for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
@@ -1938,7 +1939,6 @@ DockId=0x6A3C3007,0
                 }
                 ImGui.EndCombo();
             }
-        }
         }
 
         if (_selectedVoxel is { } selected)
