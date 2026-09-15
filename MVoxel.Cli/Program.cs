@@ -65,6 +65,12 @@ internal static class Program
         Console.WriteLine("      输出运行中编辑器状态");
         Console.WriteLine("  --open-project <项目目录>");
         Console.WriteLine("      请求运行中的编辑器打开项目");
+        Console.WriteLine("  --install-plugin <插件目录>");
+        Console.WriteLine("      安装编辑器级 JavaScript 插件");
+        Console.WriteLine("  --reload-plugins");
+        Console.WriteLine("      请求运行中的编辑器重载插件");
+        Console.WriteLine("  --set-plugin-enabled <插件 ID> <true|false>");
+        Console.WriteLine("      修改运行中项目的插件启停状态");
     }
 
     /// <summary>
@@ -117,6 +123,24 @@ internal static class Program
             {
                 using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { path = args[1] }));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.openProject", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--install-plugin" when args.Length == 2:
+            {
+                var package = PluginManager.InstallFromDirectory(args[1]);
+                Console.WriteLine($"已安装插件：{package.Id} {package.Version}");
+                return 0;
+            }
+            case "--reload-plugins" when args.Length == 1:
+            {
+                using var arguments = JsonDocument.Parse("{}");
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.reloadPlugins", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--set-plugin-enabled" when args.Length == 3 && bool.TryParse(args[2], out var enabled):
+            {
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { pluginId = args[1], enabled }));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.setPluginEnabled", arguments.RootElement), JsonOptions));
                 return 0;
             }
             default:
