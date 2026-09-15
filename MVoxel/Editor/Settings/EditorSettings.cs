@@ -39,7 +39,7 @@ public sealed class EditorSettingsDocument
     /// <summary>
     /// 新建项目对话框默认使用的项目根目录
     /// </summary>
-    public const string DefaultProjectRootPath = @"D:\MVoxel_Workspae";
+    public static string DefaultProjectRootPath => Path.Combine(AppPaths.BaseDirectory, "MVoxel_Workspace");
 
     public int FormatVersion = 2;
     public string ProjectRootPath = DefaultProjectRootPath;
