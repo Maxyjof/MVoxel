@@ -41,7 +41,7 @@ internal static class ViewportNavigationMath
         var yaw = MathF.Atan2(offset.X, offset.Z) + ViewportInputPolicy.OrbitYawDelta(mouseDelta.X);
         var pitch = Math.Clamp(MathF.Asin(Math.Clamp(offset.Y / distance, -1F, 1F)) +
             ViewportInputPolicy.OrbitPitchDelta(mouseDelta.Y), -1.55F, 1.55F);
-        // 渲染相机保持在地面平面上方，避免绕到地下后天空和地面在屏幕上下看起来互换。
+        // 轨道相机保持在地面平面上方，避免绕到地下后天空和地面在屏幕上下看起来互换。
         var minimumPitch = MathF.Asin(Math.Clamp((0.25F - pivot.Y) / distance, -1F, 1F));
         pitch = MathF.Max(pitch, minimumPitch);
         var position = pivot + new Vector3(

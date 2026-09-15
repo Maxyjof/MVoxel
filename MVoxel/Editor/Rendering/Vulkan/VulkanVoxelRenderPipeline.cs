@@ -358,6 +358,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _disposed = true;
         if (_api is { } api)
         {
+            // 设备已丢失后，继续等待队列或逐项销毁原生资源可能再次触发驱动异常。
+            // 此时放弃管线的原生清理，最终由 Vulkan 设备销毁统一回收。
+            if (_context?.IsDeviceLost == true)
+            {
+                _hardwareRayTracingPipeline = null;
+                _displayTextureId = IntPtr.Zero;
+                return;
+            }
+
             api.DeviceWaitIdle(_device);
             _hardwareRayTracingPipeline?.Dispose();
             _hardwareRayTracingPipeline = null;

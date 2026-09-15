@@ -939,6 +939,12 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        if (_context.IsDeviceLost)
+        {
+            _displayTextureId = IntPtr.Zero;
+            return;
+        }
+
         _api.DeviceWaitIdle(_device);
         if (_displayTextureId != 0) _imguiRenderer.UnregisterTexture(_displayTextureId);
         DestroyOutputImage();
