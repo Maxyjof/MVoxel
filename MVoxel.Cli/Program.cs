@@ -27,7 +27,7 @@ internal static class Program
         }
 
         Console.Error.WriteLine("MVoxel CLI：使用 --mcp 启动 MCP stdio 服务");
-        Console.Error.WriteLine("支持工具：project.create、project.info、project.listPlugins、project.enablePlugin、project.disablePlugin、plugin.install、editor.status、editor.openProject");
+        Console.Error.WriteLine("支持工具：项目管理、插件管理、编辑器状态、项目打开、插件重载、自动化和命令调用");
         return 0;
     }
 
@@ -40,6 +40,7 @@ internal static class Program
         while ((line = Console.ReadLine()) is not null)
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
+            JsonElement? requestId = null;
             try
             {
                 using var document = JsonDocument.Parse(line);
@@ -47,13 +48,13 @@ internal static class Program
                 if (!root.TryGetProperty("method", out var methodElement)) continue;
                 var method = methodElement.GetString() ?? string.Empty;
                 if (method.StartsWith("notifications/", StringComparison.Ordinal)) continue;
-                JsonElement? id = root.TryGetProperty("id", out var idElement) ? idElement.Clone() : null;
+                requestId = root.TryGetProperty("id", out var idElement) ? idElement.Clone() : null;
                 var result = Handle(method, root.TryGetProperty("params", out var parameters) ? parameters : default);
-                WriteResponse(id, result, error: null);
+                WriteResponse(requestId, result, error: null);
             }
             catch (Exception exception)
             {
-                WriteResponse(default, null, new { code = -32603, message = exception.Message });
+                WriteResponse(requestId, null, new { code = -32603, message = exception.Message });
             }
         }
     }
