@@ -96,6 +96,7 @@ internal static class Program
             "editor.status" => CallEditor("editor.status", arguments),
             "editor.openProject" => CallEditor("editor.openProject", arguments),
             "editor.invokeAutomation" => CallEditor("editor.invokeAutomation", arguments),
+            "editor.reloadPlugins" => CallEditor("editor.reloadPlugins", arguments),
             _ => throw new InvalidOperationException($"未找到 MCP 工具：{name}"),
         };
         return new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(result, JsonOptions) } }, structuredContent = result };
@@ -202,5 +203,6 @@ internal static class Program
         new { name = "editor.status", description = "读取运行中编辑器状态和插件自动化入口", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
+        new { name = "editor.reloadPlugins", description = "请求运行中的编辑器重新加载当前项目插件", inputSchema = new { type = "object", properties = new { } } },
     ];
 }

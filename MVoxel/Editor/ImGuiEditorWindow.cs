@@ -312,6 +312,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             },
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
+            "editor.reloadPlugins" => QueueReloadPlugins(),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
         };
     }
@@ -344,6 +345,28 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var payload = arguments.TryGetProperty("payload", out var item) ? item : emptyPayload.RootElement;
         if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("自动化入口 ID 不能为空");
         return _pluginRuntime.Invoke(id, payload, TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>
+    /// 将插件重载操作投递到窗口线程
+    /// </summary>
+    /// <returns>投递结果</returns>
+    private object QueueReloadPlugins()
+    {
+        _pendingActions.Enqueue(ReloadPlugins);
+        return new { queued = true };
+    }
+
+    /// <summary>
+    /// 根据当前项目清单重建插件运行时
+    /// </summary>
+    private void ReloadPlugins()
+    {
+        if (_project is null) return;
+        _pluginRuntime?.Dispose();
+        _pluginRuntime = new JavaScriptPluginRuntime();
+        _pluginRuntime.Activate(_project, TimeSpan.FromSeconds(2));
+        _statusText = "插件已重新加载";
     }
 
     private void RequestWelcomeWindow() => _showWelcomeRequested = true;
