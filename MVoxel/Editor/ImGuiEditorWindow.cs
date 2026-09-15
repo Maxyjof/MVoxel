@@ -2149,7 +2149,27 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.TextDisabled($"类型 ID  {component.TypeId}");
-        ImGui.TextDisabled("由插件提供组件数据和编辑命令");
+        ImGui.TextDisabled($"来源插件  {component.OwnerPluginId ?? "未知插件"}");
+        var pluginData = component.Data.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+            ? "{}"
+            : component.Data.GetRawText();
+        if (ImGui.InputTextMultiline("数据##InspectorPluginComponentData", ref pluginData,
+                16_384, new Vector2(-1F, 108F), ImGuiInputTextFlags.AllowTabInput))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(pluginData);
+                component.Data = document.RootElement.Clone();
+                _componentWarning = null;
+                MarkSceneDocumentDirty();
+            }
+            catch (JsonException)
+            {
+                _componentWarning = "插件组件数据必须是合法 JSON";
+            }
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("插件可以通过自己的面板解释这些数据；没有专用面板时可在此编辑 JSON。保存前会校验格式。");
     }
 
     private void RotateModel(SceneObject sceneObject, OrthogonalRotation rotation)
