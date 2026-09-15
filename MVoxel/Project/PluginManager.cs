@@ -34,6 +34,12 @@ public sealed class EditorPluginPackage
     /// 插件来源
     /// </summary>
     public string Source { get; init; } = "installed";
+
+    /// <summary>
+    /// 插件实际目录
+    /// </summary>
+    [JsonIgnore]
+    public string RootDirectory { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -66,6 +72,7 @@ public static class PluginManager
                 Version = "1.0.0",
                 Entry = "index.js",
                 Source = "builtin",
+                RootDirectory = Path.Combine(AppContext.BaseDirectory, "Plugins", MvoxMcpPluginId),
             },
         };
         if (Directory.Exists(AppPaths.PluginDirectory))
@@ -85,6 +92,7 @@ public static class PluginManager
                             Version = package.Version,
                             Entry = package.Entry,
                             Source = "installed",
+                            RootDirectory = Path.GetDirectoryName(packagePath)!,
                         });
                     }
                 }
@@ -95,6 +103,21 @@ public static class PluginManager
             }
         }
         return packages.Values.OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// 获取插件 JavaScript 入口的绝对路径
+    /// </summary>
+    /// <param name="packageInfo">插件清单</param>
+    /// <returns>入口文件绝对路径</returns>
+    public static string ResolveEntryPath(EditorPluginPackage packageInfo)
+    {
+        Validate(packageInfo);
+        var root = Path.GetFullPath(packageInfo.RootDirectory);
+        var entry = Path.GetFullPath(Path.Combine(root, packageInfo.Entry));
+        if (!entry.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(entry))
+            throw new FileNotFoundException("插件 JavaScript 入口不存在", entry);
+        return entry;
     }
 
     /// <summary>

@@ -3,6 +3,7 @@
   "name": "MVoxel MCP",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "engine": "mvoxel",
   "permissions": ["project.read", "project.write", "plugin.manage"]
 }

@@ -23,6 +23,7 @@
         <Content Include="Editor\Fonts\*.ttf" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Rendering\LICENSE.Bytesized.txt" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Plugins\**\*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

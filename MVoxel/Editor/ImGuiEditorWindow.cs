@@ -105,6 +105,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
     private EditorControlServer? _controlServer;
+    private JavaScriptPluginRuntime? _pluginRuntime;
 
     public ImGuiEditorWindow(string[] args)
         : base(GameWindowSettings.Default, CreateWindowSettings(args))
@@ -278,6 +279,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _projectOperation.Dispose();
         _controlServer?.Dispose();
         _controlServer = null;
+        _pluginRuntime?.Dispose();
+        _pluginRuntime = null;
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
         _imguiRenderer?.Dispose();
@@ -2154,11 +2157,14 @@ DockId=0x6A3C3007,0
 
     private void OpenProject(ProjectHandle project)
     {
+        _pluginRuntime?.Dispose();
+        _pluginRuntime = new JavaScriptPluginRuntime();
         _project = project;
         _assetBrowser.Reset();
         RecentProjects.Record(project);
         LoadProjectSettings(project);
         LoadWorldForProject(project);
+        _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = $"已打开项目：{project.Manifest.Name}";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
     }
@@ -2184,6 +2190,8 @@ DockId=0x6A3C3007,0
 
     private void CloseProject()
     {
+        _pluginRuntime?.Dispose();
+        _pluginRuntime = null;
         SaveProjectSettings();
         _project = null;
         _sceneDocument = null;
