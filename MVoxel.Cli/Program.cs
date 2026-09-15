@@ -54,7 +54,8 @@ internal static class Program
             }
             catch (Exception exception)
             {
-                WriteResponse(requestId, null, new { code = -32603, message = exception.Message });
+                var code = exception is McpProtocolException protocolException ? protocolException.Code : -32603;
+                WriteResponse(requestId, null, new { code, message = exception.Message });
             }
         }
     }
@@ -75,7 +76,7 @@ internal static class Program
             "ping" => new { },
             "tools/list" => new { tools = ToolDefinitions },
             "tools/call" => CallTool(parameters),
-            _ => throw new InvalidOperationException($"不支持的 MCP 方法：{method}"),
+            _ => throw new McpProtocolException(-32601, $"不支持的 MCP 方法：{method}"),
         };
     }
 
@@ -101,7 +102,7 @@ internal static class Program
             "editor.reloadPlugins" => CallEditor("editor.reloadPlugins", arguments),
             "editor.installPlugin" => CallEditor("editor.installPlugin", arguments),
             "editor.setPluginEnabled" => CallEditor("editor.setPluginEnabled", arguments),
-            _ => throw new InvalidOperationException($"未找到 MCP 工具：{name}"),
+            _ => throw new McpProtocolException(-32601, $"未找到 MCP 工具：{name}"),
         };
         return new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(result, JsonOptions) } }, structuredContent = result };
     }
@@ -212,4 +213,25 @@ internal static class Program
         new { name = "editor.installPlugin", description = "让运行中的编辑器安装 JavaScript 插件并重载", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
         new { name = "editor.setPluginEnabled", description = "修改当前项目插件启停状态并重载", inputSchema = new { type = "object", properties = new { pluginId = new { type = "string" }, enabled = new { type = "boolean" } }, required = new[] { "pluginId", "enabled" } } },
     ];
+
+    /// <summary>
+    /// 表示 MCP 请求可以直接返回的协议错误
+    /// </summary>
+    private sealed class McpProtocolException : Exception
+    {
+        /// <summary>
+        /// 创建协议错误
+        /// </summary>
+        /// <param name="code">JSON-RPC 错误码</param>
+        /// <param name="message">错误信息</param>
+        public McpProtocolException(int code, string message) : base(message)
+        {
+            Code = code;
+        }
+
+        /// <summary>
+        /// JSON-RPC 错误码
+        /// </summary>
+        public int Code { get; }
+    }
 }
