@@ -69,9 +69,9 @@ public sealed class PluginScriptRuntime : IDisposable
                 MVoxelLog.Warn($"项目插件尚未安装，跳过激活：{pluginId}");
                 continue;
             }
-            if (!package.Permissions.Contains("automation.register", StringComparer.Ordinal))
+            if (!HasRegistrationPermission(package))
             {
-                MVoxelLog.Warn($"插件未声明 automation.register 权限，跳过激活：{package.Id}");
+                MVoxelLog.Warn($"插件没有声明任何扩展注册权限，跳过激活：{package.Id}");
                 continue;
             }
             try
@@ -79,6 +79,7 @@ public sealed class PluginScriptRuntime : IDisposable
                 var extensions = ExecuteActivate(package, timeout);
                 foreach (var item in extensions.Automations)
                 {
+                    if (!package.Permissions.Contains("automation.register", StringComparer.Ordinal)) continue;
                     if (_automationOwners.ContainsKey(item.Id))
                     {
                         MVoxelLog.Warn($"插件自动化 ID 冲突，跳过重复注册：{item.Id}");
@@ -385,6 +386,9 @@ public sealed class PluginScriptRuntime : IDisposable
     private static bool IsValidComponentId(string id) =>
         id.Length >= 3 && id.Contains('.', StringComparison.Ordinal) &&
         id.All(character => char.IsLetterOrDigit(character) || character is '.' or '-' or '_');
+
+    internal static bool HasRegistrationPermission(EditorPluginPackage package) =>
+        package.Permissions.Any(permission => permission is "automation.register" or "editor.command" or "editor.panel" or "scene.component");
 
     /// <summary>
     /// 停用当前运行时中的插件
