@@ -20,6 +20,7 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// </remarks>
 internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
 {
+    internal const int MaxHardwareRayTracingVoxels = 250_000;
     private const int VerticesPerVoxel = 8;
     private const int IndicesPerVoxel = 36;
     private const int PrimitivesPerVoxel = 12;
@@ -210,6 +211,13 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     {
         if (_disposed || workset.IsEmpty || widthPixels <= 0 || heightPixels <= 0)
         {
+            return false;
+        }
+
+        if (workset.Cells.Count > MaxHardwareRayTracingVoxels)
+        {
+            _lastError = $"硬件 RT 体素数量超过安全上限 {MaxHardwareRayTracingVoxels:N0}，已回退 Vulkan Compute";
+            MVoxelLog.Warn(_lastError);
             return false;
         }
 
