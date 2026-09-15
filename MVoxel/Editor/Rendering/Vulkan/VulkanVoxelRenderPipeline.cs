@@ -230,6 +230,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 AccumulatedSamples = Math.Max(1, settings.PathMaxAccumulatedSamples);
                 return true;
             }
+
+            // 硬件光追失败后不能对已经丢失的设备继续提交 Compute 命令，
+            // 否则会把一次设备丢失扩大成连续的原生驱动调用异常。
+            if (_context.IsDeviceLost) return false;
         }
 
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: true);
