@@ -106,6 +106,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _gpuRenderingDisabled;
     private EditorControlServer? _controlServer;
     private JavaScriptPluginRuntime? _pluginRuntime;
+    private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
 
     public ImGuiEditorWindow(string[] args)
         : base(GameWindowSettings.Default, CreateWindowSettings(args))
@@ -530,6 +531,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawInspector();
         DrawRenderConfig();
         DrawProjectAssets();
+        DrawPluginPanels();
         DrawStatusBar();
         DrawProjectPathDialog();
         if (inputBlocked) ImGui.EndDisabled();
@@ -570,6 +572,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
             if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
+            ImGui.EndMenu();
+        }
+
+        if (ImGui.BeginMenu("插件"))
+        {
+            var panels = _pluginRuntime?.Panels ?? [];
+            if (panels.Count == 0) ImGui.MenuItem("暂无已启用插件面板", enabled: false);
+            foreach (var panel in panels)
+            {
+                var visible = _visiblePluginPanels.Contains(panel.Id);
+                if (ImGui.MenuItem(panel.Name, null, ref visible))
+                {
+                    if (visible) _visiblePluginPanels.Add(panel.Id);
+                    else _visiblePluginPanels.Remove(panel.Id);
+                }
+            }
             ImGui.EndMenu();
         }
 
@@ -1974,6 +1992,30 @@ DockId=0x6A3C3007,0
         _assetBrowser.Draw(_project, SetStatus);
 
         ImGui.End();
+    }
+
+    /// <summary>
+    /// 绘制已启用插件注册的面板
+    /// </summary>
+    private void DrawPluginPanels()
+    {
+        var panels = _pluginRuntime?.Panels ?? [];
+        foreach (var panel in panels)
+        {
+            if (!_visiblePluginPanels.Contains(panel.Id)) continue;
+            var open = true;
+            if (!ImGui.Begin($"{panel.Name}##PluginPanel:{panel.Id}", ref open, PanelWindowFlags))
+            {
+                ImGui.End();
+                continue;
+            }
+            ImGui.TextUnformatted($"插件：{panel.PluginId}");
+            ImGui.Separator();
+            ImGui.TextWrapped("这是由 JavaScript 插件注册的编辑器面板");
+            ImGui.TextWrapped("面板内容只能通过宿主白名单接口访问项目数据和编辑器命令");
+            ImGui.End();
+            if (!open) _visiblePluginPanels.Remove(panel.Id);
+        }
     }
 
     private void DrawStatusBar()
