@@ -1873,7 +1873,11 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(_componentWarning))
+        var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
+                                     selectedObject.Components.Any(SceneComponentTypes.IsCamera);
+        if (hasModelCameraConflict)
+            ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "警告：模型组件与相机组件不能同时挂载");
+        else if (!string.IsNullOrWhiteSpace(_componentWarning))
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
         var objectName = selectedObject.Name;
         if (ImGui.InputText("名称##InspectorObjectName", ref objectName, 128) &&
@@ -1924,7 +1928,9 @@ DockId=0x6A3C3007,0
             ImGui.PushID($"InspectorComponent{componentIndex}");
             var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(definition is null ? "插件组件" : $"组件分类：{definition.Category}");
+                ImGui.SetTooltip(definition is null
+                    ? $"插件组件\n来源：{component.OwnerPluginId ?? "未知插件"}"
+                    : $"组件分类：{definition.Category}");
             ImGui.SameLine();
             var isTransformComponent = SceneComponentTypes.IsTransform(component);
             ImGui.BeginDisabled(isTransformComponent);
