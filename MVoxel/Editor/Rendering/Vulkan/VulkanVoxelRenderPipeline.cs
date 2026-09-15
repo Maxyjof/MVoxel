@@ -1114,12 +1114,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (values[90] > 0.5)
             {
                 float gridStep = max(values[89], 0.001);
-                vec2 gridPosition = point.xz / gridStep;
+                float radialDistance = length(point.xz - rayOrigin.xz);
+                float level = floor(log2(max(1.0, radialDistance / (gridStep * 32.0))));
+                float localStep = gridStep * exp2(clamp(level, 0.0, 12.0));
+                vec2 gridPosition = point.xz / localStep;
                 vec2 fractional = fract(gridPosition);
-                vec2 distanceToLine = min(fractional, 1.0 - fractional) * gridStep;
+                vec2 distanceToLine = min(fractional, 1.0 - fractional) * localStep;
                 float lineAmount = 1.0 - smoothstep(0.0, 0.045, min(distanceToLine.x, distanceToLine.y));
-                float pixelSpacing = gridStep * values[3] / max(length(point - rayOrigin), 1.0);
+                float pixelSpacing = localStep * values[3] / max(length(point - rayOrigin), 1.0);
                 lineAmount *= smoothstep(0.85, 1.75, pixelSpacing);
+                lineAmount *= 1.0 - smoothstep(0.0, 12.0, level) * 0.18;
                 groundColor = mix(groundColor, groundColor * 0.52 + vec3(0.16, 0.20, 0.28), lineAmount);
             }
             return groundColor;

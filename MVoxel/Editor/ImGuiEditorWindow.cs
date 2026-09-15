@@ -980,9 +980,6 @@ DockId=0x6A3C3007,0
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
 
-        // 坐标轴先于模型绘制，模型和地面会按场景深度覆盖轴线
-        DrawSceneWorldAxes(drawList, origin, size, camera);
-
         // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
         var showVoxelWorld = IsVoxelWorldVisible();
         var gpuRendered = showVoxelWorld && _project is not null &&
@@ -1006,6 +1003,12 @@ DockId=0x6A3C3007,0
         else if (!gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
             RequestWelcomeWindow();
+        }
+
+        // ImGui 绘制列表没有场景深度，轴线在体素图像之后提交并按体素射线裁剪遮挡段
+        if (showVoxelWorld)
+        {
+            DrawSceneWorldAxes(drawList, origin, size, camera);
         }
 
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
