@@ -2068,8 +2068,11 @@ DockId=0x6A3C3007,0
         {
             var component = selectedObject.Components[componentIndex];
             var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
+            var pluginDefinition = _pluginRuntime?.Components.FirstOrDefault(item => item.Id == component.TypeId);
             var label = definition is null
-                ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
+                ? pluginDefinition is null
+                    ? $"{SceneComponentTypes.GetDisplayName(component)} · 缺失插件"
+                    : pluginDefinition.Name
                 : definition.DisplayName;
             ImGui.PushID($"InspectorComponent{componentIndex}");
             var headerMin = ImGui.GetCursorScreenPos();
