@@ -44,7 +44,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _assetPreviewWidth;
     private int _assetPreviewHeight;
     private readonly BlockingOperationRunner _projectOperation = new();
-    private ImGuiWelcomeWindow? _welcomeWindow;
+    private ImGuiWelcomeContent? _welcomeWindow;
     private bool _showWelcomeRequested;
     private IntPtr _imguiContext;
     private ProjectHandle? _project;
@@ -283,11 +283,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 }
             });
 
-            if (_welcomeWindow is not null && !_welcomeWindow.IsOpen)
-            {
-                _welcomeWindow.Dispose();
-                _welcomeWindow = null;
-            }
             ImGui.SetCurrentContext(_imguiContext);
             UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
         }
@@ -527,8 +522,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         if (!_showWelcomeRequested || _welcomeWindow is not null) return;
         _showWelcomeRequested = false;
-        _welcomeWindow = new ImGuiWelcomeWindow(this);
-        _welcomeWindow.Initialize();
+        _welcomeWindow = new ImGuiWelcomeContent(this);
+        _welcomeWindow.Initialize(_imguiRenderer!, _fonts);
     }
 
     private static NativeWindowSettings CreateWindowSettings(string[] args)
@@ -652,10 +647,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawCloseProjectDialog();
         if (inputBlocked) ImGui.EndDisabled();
         if (!inputBlocked) DrawSettingsWindow();
-        if (welcomeIsOpen)
-        {
-            // 欢迎内容在独立窗口中绘制；主窗口启动阶段保持隐藏。
-        }
+        if (welcomeIsOpen) _welcomeWindow!.Draw();
         else if (operation is { } snapshot)
         {
             BlockingOperationDialog.Draw(snapshot, CancelProjectOperation);
