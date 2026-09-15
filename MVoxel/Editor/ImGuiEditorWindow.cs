@@ -1940,6 +1940,7 @@ DockId=0x6A3C3007,0
                 component.Enabled = enabled;
                 MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
+                SetStatus($"{selectedObject.Name} 的{SceneComponentTypes.GetDisplayName(component)}组件已{(enabled ? "启用" : "停用")}");
             }
             ImGui.EndDisabled();
             ImGui.SameLine();
