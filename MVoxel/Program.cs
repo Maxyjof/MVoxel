@@ -23,7 +23,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            MVoxelLog.Error("应用主循环异常结束", exception);
+            MVoxelLog.RecordCrash("应用主循环异常结束", exception);
             Environment.ExitCode = 1;
         }
         finally

@@ -208,34 +208,44 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnRenderFrame(FrameEventArgs args)
     {
-        base.OnRenderFrame(args);
-        ImGui.SetCurrentContext(_imguiContext);
-        _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
-        _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
-        _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
-        if (_controller is not null)
+        try
         {
-            if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
-            DrawEditorFrame();
-                _controller.Render();
-            UiDiagnostics.Capture(this, "editor");
-        }
-
-        _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
-        {
-            if (_imguiRenderer is not null && _controller is not null)
+            base.OnRenderFrame(args);
+            ImGui.SetCurrentContext(_imguiContext);
+            _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
+            _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
+            _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
+            if (_controller is not null)
             {
-                _imguiRenderer.Record(commandBuffer, _controller);
+                if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
+                DrawEditorFrame();
+                _controller.Render();
+                UiDiagnostics.Capture(this, "editor");
             }
-        });
 
-        if (_welcomeWindow is not null && !_welcomeWindow.PumpFrame(Math.Max(args.Time, 1.0 / 120.0)))
-        {
-            _welcomeWindow.Dispose();
-            _welcomeWindow = null;
+            _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
+            {
+                if (_imguiRenderer is not null && _controller is not null)
+                {
+                    _imguiRenderer.Record(commandBuffer, _controller);
+                }
+            });
+
+            if (_welcomeWindow is not null && !_welcomeWindow.PumpFrame(Math.Max(args.Time, 1.0 / 120.0)))
+            {
+                _welcomeWindow.Dispose();
+                _welcomeWindow = null;
+            }
+            ImGui.SetCurrentContext(_imguiContext);
+            UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
         }
-        ImGui.SetCurrentContext(_imguiContext);
-        UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
+        catch (Exception exception)
+        {
+            MVoxelLog.SetRuntimeContext($"编辑器帧渲染，项目={_project?.Manifest.Name ?? "未打开项目"}，体素={_world.OccupiedVoxelCount}");
+            MVoxelLog.RecordCrash("编辑器帧渲染异常", exception);
+            _gpuRenderingDisabled = true;
+            Close();
+        }
     }
 
     protected override void OnUnload()
@@ -624,6 +634,9 @@ DockId=0x6A3C3007,0
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.11F, 42F, 58F);
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius, allowMouseCapture: true);
         var camera = GetSceneCamera();
+        MVoxelLog.SetRuntimeContext(
+            $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
+            $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
 
         // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
         var gpuRendered = _project is not null &&
@@ -994,7 +1007,7 @@ DockId=0x6A3C3007,0
         }
 
         var screenLength = Vector2.Distance(startPoint, endPoint);
-        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 1.5F), 96, 1024);
+        var sampleCount = Math.Clamp((int)MathF.Ceiling(screenLength / 3F), 96, 512);
         var previousScreen = startPoint;
         var previousVisible = IsAxisPointVisible(clippedStart, origin, size, camera);
         for (var index = 1; index <= sampleCount; index++)

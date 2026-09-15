@@ -79,7 +79,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取当前体素 GPU 绘制管线是否已经可以呈现视图
     /// </summary>
-    internal bool IsAvailable => _computePipeline.Handle != 0 && GpuWorksetUploaded && _bvhNodeCount > 0;
+    internal bool IsAvailable => (_context is null || !_context.IsDeviceLost) &&
+        _computePipeline.Handle != 0 && GpuWorksetUploaded && _bvhNodeCount > 0;
 
     /// <summary>
     /// 获取显示纹理句柄
@@ -198,6 +199,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         int widthPixels, int heightPixels)
     {
         _usingHardwareRayTracing = false;
+        if (_context?.IsDeviceLost == true) return false;
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: false);
     }
 
@@ -207,6 +209,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
+        if (_context?.IsDeviceLost == true) return false;
         if (settings.UseHardwareRayTracing && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
         {
@@ -1019,6 +1022,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec2 fractional = fract(gridPosition);
                 vec2 distanceToLine = min(fractional, 1.0 - fractional) * gridStep;
                 float lineAmount = 1.0 - smoothstep(0.0, 0.045, min(distanceToLine.x, distanceToLine.y));
+                float pixelSpacing = gridStep * values[3] / max(length(point - rayOrigin), 1.0);
+                lineAmount *= smoothstep(0.85, 1.75, pixelSpacing);
                 groundColor = mix(groundColor, groundColor * 0.52 + vec3(0.16, 0.20, 0.28), lineAmount);
             }
             return groundColor;
@@ -1132,8 +1137,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (sampleIndex >= samples) break;
                 vec2 jitter = pathMode ? vec2(Random(state), Random(state)) - 0.5 : vec2(0.0);
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
-                vec3 direction = normalize(forward + right * screenPosition.x * float(width) / focalPixels
-                    + up * -screenPosition.y * float(height) / focalPixels);
+            vec3 direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
+                + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
                 sampleColor += TracePath(origin, direction, state, pathMode);
             }
             sampleColor /= float(samples);

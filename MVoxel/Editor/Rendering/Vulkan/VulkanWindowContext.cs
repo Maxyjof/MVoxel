@@ -825,10 +825,15 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// <summary>
     /// 检查 Vulkan 调用结果
     /// </summary>
-    private static void Check(Result result, string operation)
+    private void Check(Result result, string operation)
     {
         if (result != Result.Success)
         {
+            if (result == Result.ErrorDeviceLost)
+            {
+                _deviceLost = true;
+            }
+
             MVoxelLog.Error($"Vulkan 调用失败：{operation}，结果：{result}");
             throw new InvalidOperationException($"{operation}失败：{result}");
         }

@@ -329,6 +329,9 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (Exception exception)
         {
+            MVoxelLog.SetRuntimeContext(
+                $"Vulkan 场景绘制失败，设备={_vulkan?.DeviceName ?? "未知"}，视口={size.X:0}x{size.Y:0}，" +
+                $"体素={_world.OccupiedVoxelCount}，管线={pipeline.ShaderLog ?? "无诊断信息"}");
             DisableGpuRendering(exception);
             return false;
         }

@@ -1,4 +1,5 @@
 using ImGuiNET;
+using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
@@ -291,6 +292,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
         ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight));
 
+        var crashNoticeHeight = DrawCrashNotice(display);
+        ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight + crashNoticeHeight));
+
         var contentWidth = Math.Min(660F, display.X - 68F);
         var contentLeft = MathF.Floor(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
@@ -391,6 +395,35 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             ImGui.EndDisabled();
             BlockingOperationDialog.Draw(operation.Value, _editor.CancelProjectOperation);
         }
+    }
+
+    /// <summary>
+    /// 在欢迎界面顶部显示上次异常退出提示
+    /// </summary>
+    /// <param name="display">欢迎窗口尺寸</param>
+    /// <returns>提示区域占用高度</returns>
+    private static float DrawCrashNotice(Vector2 display)
+    {
+        var crash = MVoxelLog.PreviousCrash;
+        if (crash is null)
+        {
+            return 0F;
+        }
+
+        const float margin = 22F;
+        const float height = 92F;
+        ImGui.SetCursorPos(new Vector2(margin, TitleBarHeight + 10F));
+        ImGui.BeginChild("##PreviousCrashNotice", new Vector2(display.X - margin * 2F, height), ImGuiChildFlags.Borders);
+        ImGui.TextColored(ToColor(EditorPalette.Error), "检测到上次运行异常退出");
+        ImGui.TextWrapped($"时间：{crash.OccurredAt:yyyy-MM-dd HH:mm:ss}  ·  {crash.Summary}");
+        ImGui.TextDisabled($"详细日志：{crash.ReportPath}");
+        if (ImGui.Button("我知道了##PreviousCrash"))
+        {
+            MVoxelLog.AcknowledgePreviousCrash();
+        }
+
+        ImGui.EndChild();
+        return height + 20F;
     }
 
     private void BeginPathDialog(int mode)
