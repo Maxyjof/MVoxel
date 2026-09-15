@@ -274,7 +274,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return value.ValueKind switch
         {
             JsonValueKind.Object => DynValue.NewTable(CreateLuaTable(script, value.EnumerateObject().Select(item => (item.Name, item.Value)))),
-            JsonValueKind.Array => DynValue.NewTable(CreateLuaTable(script, value.EnumerateArray().Select((item, index) => ((index + 1).ToString(), item)))),
+            JsonValueKind.Array => DynValue.NewTable(CreateLuaArray(script, value)),
             JsonValueKind.String => DynValue.NewString(value.GetString() ?? string.Empty),
             JsonValueKind.Number => value.TryGetInt64(out var integer) ? DynValue.NewNumber(integer) : DynValue.NewNumber(value.GetDouble()),
             JsonValueKind.True => DynValue.NewBoolean(true),
@@ -290,6 +290,14 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return table;
     }
 
+    private static Table CreateLuaArray(Script script, JsonElement value)
+    {
+        var table = new Table(script);
+        var index = 1;
+        foreach (var item in value.EnumerateArray()) table.Set(index++, JsonToLua(script, item));
+        return table;
+    }
+
     private static object? LuaToObject(DynValue value)
     {
         return value.Type switch
@@ -298,11 +306,26 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             DataType.Boolean => value.Boolean,
             DataType.Number => value.Number,
             DataType.String => value.String,
-            DataType.Table => value.Table.Pairs.ToDictionary(
-                pair => pair.Key.String ?? pair.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                pair => LuaToObject(pair.Value), StringComparer.Ordinal),
+            DataType.Table => LuaTableToObject(value.Table),
             _ => value.ToObject(),
         };
+    }
+
+    private static object LuaTableToObject(Table table)
+    {
+        var pairs = table.Pairs.ToList();
+        var isArray = pairs.Count > 0 && pairs.All(pair =>
+            pair.Key.Type == DataType.Number && pair.Key.Number >= 1 &&
+            pair.Key.Number == Math.Truncate(pair.Key.Number));
+        if (isArray)
+        {
+            var ordered = pairs.OrderBy(pair => pair.Key.Number).ToList();
+            if (ordered.Select((pair, index) => (long)pair.Key.Number == index + 1).All(item => item))
+                return ordered.Select(pair => LuaToObject(pair.Value)).ToList();
+        }
+        return pairs.ToDictionary(
+            pair => pair.Key.String ?? pair.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            pair => LuaToObject(pair.Value), StringComparer.Ordinal);
     }
 
     private static Table CreateLuaHost(Script script, List<PluginExtensionItem> automations,
