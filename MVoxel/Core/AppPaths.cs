@@ -52,7 +52,26 @@ public static class AppPaths
     /// </summary>
     public static void EnsureDirectories()
     {
+        RemoveLegacyLogDirectories();
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(PluginDirectory);
+    }
+
+    /// <summary>
+    /// 删除程序目录下与当前日志文件方案冲突的旧日志目录
+    /// </summary>
+    private static void RemoveLegacyLogDirectories()
+    {
+        foreach (var path in new[] { LogFilePath, OldLogFilePath })
+        {
+            if (!Directory.Exists(path)) continue;
+            try
+            {
+                Directory.Delete(path, true);
+            }
+            catch
+            {
+            }
+        }
     }
 }
