@@ -79,6 +79,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _sceneMouseCaptured;
     private ViewportCaptureTarget _capturedViewport;
     private bool _sceneDocumentDirty;
+    private float _autoSaveCountdown = float.PositiveInfinity;
+    private bool _autoSaveQueued;
 
     /// <summary>
     /// 记录当前捕获鼠标的视口
@@ -220,6 +222,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         _projectOperation.Pump();
         EnsureWelcomeWindow();
+        if (_project is not null && _projectSettings.AutoSave && _sceneDocumentDirty)
+        {
+            _autoSaveCountdown -= (float)Math.Max(args.Time, 0.01F);
+            if (_autoSaveCountdown <= 0F && !_autoSaveQueued)
+            {
+                _autoSaveQueued = true;
+                _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+                _pendingActions.Enqueue(TryAutoSaveProject);
+            }
+        }
         if (_renderSettingsDirty && (_renderSettingsSaveCountdown -= (float)Math.Max(args.Time, 0.01F)) <= 0F)
         {
             _renderSettingsDirty = false;
@@ -2986,6 +2998,8 @@ DockId=0x6A3C3007,0
         _assetBrowser.Reset();
         RecentProjects.Record(project);
         LoadProjectSettings(project);
+        _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+        _autoSaveQueued = false;
         LoadWorldForProject(project);
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = _sceneValidationErrors.Count == 0
@@ -3029,17 +3043,19 @@ DockId=0x6A3C3007,0
         _selectedSceneObjectId = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
+        _autoSaveCountdown = float.PositiveInfinity;
+        _autoSaveQueued = false;
         ApplyEditorSettingsToUi();
         SyncSettingsToggles();
         _statusText = "已关闭项目";
         RequestWelcomeWindow();
     }
 
-    private void SaveProject()
+    private void SaveProject(bool automatic = false)
     {
         if (_project is null)
         {
-            SetStatus("没有可保存的项目");
+            if (!automatic) SetStatus("没有可保存的项目");
             return;
         }
 
@@ -3048,7 +3064,25 @@ DockId=0x6A3C3007,0
         if (SaveWorldToProject(_project))
         {
             _sceneDocumentDirty = false;
-            SetStatus($"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
+            SetStatus(automatic
+                ? $"项目已自动保存：{_project.Manifest.Name}"
+                : $"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
+        }
+    }
+
+    private void TryAutoSaveProject()
+    {
+        _autoSaveQueued = false;
+        if (_project is null || !_projectSettings.AutoSave || !_sceneDocumentDirty) return;
+
+        try
+        {
+            SaveProject(automatic: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            MVoxelLog.Error("自动保存项目失败", exception);
+            SetStatus($"自动保存失败：{exception.Message}");
         }
     }
 
