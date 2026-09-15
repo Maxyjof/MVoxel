@@ -1869,7 +1869,17 @@ DockId=0x6A3C3007,0
 
         if (!string.IsNullOrWhiteSpace(_componentWarning))
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
-        ImGui.Text($"{selectedObject.Name}{(_sceneDocumentDirty ? " *" : string.Empty)}");
+        var objectName = selectedObject.Name;
+        if (ImGui.InputText("名称##InspectorObjectName", ref objectName, 128) &&
+            !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
+        {
+            selectedObject.Name = objectName.Trim();
+            MarkSceneDocumentDirty();
+        }
+        if (_sceneDocumentDirty)
+            ImGui.SameLine();
+        if (_sceneDocumentDirty)
+            ImGui.TextDisabled("未保存");
         ImGui.SeparatorText("对象");
         var visible = selectedObject.Visible;
         if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
@@ -1893,6 +1903,10 @@ DockId=0x6A3C3007,0
 
         ImGui.SeparatorText("组件");
         var removeComponentIndex = -1;
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(6F, 5F));
+        ImGui.PushStyleColor(ImGuiCol.Header, ToColor(EditorPalette.PanelHeader));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(EditorPalette.AccentSoft));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive, ToColor(EditorPalette.AccentSoft));
         for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
         {
             var component = selectedObject.Components[componentIndex];
@@ -1913,6 +1927,8 @@ DockId=0x6A3C3007,0
             }
             ImGui.PopID();
         }
+        ImGui.PopStyleColor(3);
+        ImGui.PopStyleVar();
 
         if (removeComponentIndex >= 0)
         {
@@ -2032,18 +2048,36 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsCamera(component))
         {
             var data = SceneComponentTypes.ReadCamera(component);
-            ImGui.Text($"视场角  {data.FieldOfViewDegrees:0.##}°");
-            ImGui.Text($"近裁剪  {data.NearClip:0.###}");
-            ImGui.Text($"远裁剪  {data.FarClip:0.###}");
+            var fieldOfView = data.FieldOfViewDegrees;
+            var nearClip = data.NearClip;
+            var farClip = data.FarClip;
+            var changed = ImGui.DragFloat("视场角##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°") |
+                          ImGui.DragFloat("近裁剪##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f") |
+                          ImGui.DragFloat("远裁剪##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
+            if (changed)
+            {
+                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip));
+                MarkSceneDocumentDirty();
+            }
             return;
         }
 
         if (SceneComponentTypes.IsLight(component))
         {
             var data = SceneComponentTypes.ReadLight(component);
-            ImGui.Text($"强度  {data.Intensity:0.##}");
-            ImGui.Text($"颜色  {data.ColorR:0.##}, {data.ColorG:0.##}, {data.ColorB:0.##}");
-            ImGui.Text($"阴影  {(data.CastShadows ? "开启" : "关闭")}");
+            var intensity = data.Intensity;
+            var color = new NumVector3(data.ColorR, data.ColorG, data.ColorB);
+            var castShadows = data.CastShadows;
+            var changed = ImGui.DragFloat("强度##InspectorLightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f") |
+                          ImGui.ColorEdit3("颜色##InspectorLightColor", ref color, ImGuiColorEditFlags.Float) |
+                          ImGui.Checkbox("投射阴影##InspectorLightShadows", ref castShadows);
+            if (changed)
+            {
+                SceneComponentTypes.WriteLight(component, new LightComponentData(
+                    intensity, color.X, color.Y, color.Z, castShadows));
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
             return;
         }
 
