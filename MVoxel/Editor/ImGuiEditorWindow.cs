@@ -107,7 +107,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
     private EditorControlServer? _controlServer;
-    private JavaScriptPluginRuntime? _pluginRuntime;
+    private PluginScriptRuntime? _pluginRuntime;
     private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
 
     public ImGuiEditorWindow(string[] args)
@@ -422,7 +422,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         if (_project is null) return;
         _pluginRuntime?.Dispose();
-        _pluginRuntime = new JavaScriptPluginRuntime();
+        _pluginRuntime = new PluginScriptRuntime();
         _pluginRuntime.Activate(_project, TimeSpan.FromSeconds(2));
         _statusText = "插件已重新加载";
     }
@@ -2454,7 +2454,7 @@ DockId=0x6A3C3007,0
     private void OpenProject(ProjectHandle project)
     {
         _pluginRuntime?.Dispose();
-        _pluginRuntime = new JavaScriptPluginRuntime();
+        _pluginRuntime = new PluginScriptRuntime();
         _project = project;
         _assetBrowser.Reset();
         RecentProjects.Record(project);

@@ -25,7 +25,7 @@ public sealed record PluginComponent(string Id, string Name, string Category, st
 /// <summary>
 /// 通过随程序发布的受限 JavaScript 或 Lua 解释器执行插件入口
 /// </summary>
-public sealed class JavaScriptPluginRuntime : IDisposable
+public sealed class PluginScriptRuntime : IDisposable
 {
     private readonly List<EditorPluginPackage> _active = new();
     private readonly List<PluginAutomation> _automations = new();
