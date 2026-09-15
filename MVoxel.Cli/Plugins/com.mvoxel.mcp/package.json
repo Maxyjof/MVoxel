@@ -5,5 +5,5 @@
   "main": "index.js",
   "type": "module",
   "engine": "mvoxel",
-  "permissions": ["project.read", "project.write", "plugin.manage"]
+  "permissions": ["project.read", "project.write", "plugin.manage", "automation.register"]
 }

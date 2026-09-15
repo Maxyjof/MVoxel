@@ -36,6 +36,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         {
             var package = PluginManager.ListInstalled().FirstOrDefault(item => item.Id == pluginId);
             if (package is null) continue;
+            if (!package.Permissions.Contains("automation.register", StringComparer.Ordinal))
+            {
+                MVoxelLog.Warn($"插件未声明 automation.register 权限，跳过激活：{package.Id}");
+                continue;
+            }
             try
             {
                 foreach (var item in ExecuteActivate(package, timeout))

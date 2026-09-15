@@ -36,6 +36,11 @@ public sealed class EditorPluginPackage
     public string Source { get; init; } = "installed";
 
     /// <summary>
+    /// 插件申请的宿主权限
+    /// </summary>
+    public List<string> Permissions { get; init; } = new();
+
+    /// <summary>
     /// 插件实际目录
     /// </summary>
     [JsonIgnore]
@@ -73,6 +78,7 @@ public static class PluginManager
                 Entry = "index.js",
                 Source = "builtin",
                 RootDirectory = Path.Combine(AppContext.BaseDirectory, "Plugins", MvoxMcpPluginId),
+                Permissions = ["project.read", "project.write", "plugin.manage", "automation.register"],
             },
         };
         if (Directory.Exists(AppPaths.PluginDirectory))
@@ -93,6 +99,7 @@ public static class PluginManager
                             Entry = package.Entry,
                             Source = "installed",
                             RootDirectory = Path.GetDirectoryName(packagePath)!,
+                            Permissions = package.Permissions.ToList(),
                         });
                     }
                 }
@@ -146,7 +153,16 @@ public static class PluginManager
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target, true);
         }
-        return package;
+        return new EditorPluginPackage
+        {
+            Id = package.Id,
+            Name = package.Name,
+            Version = package.Version,
+            Entry = package.Entry,
+            Source = "installed",
+            RootDirectory = destination,
+            Permissions = package.Permissions.ToList(),
+        };
     }
 
     /// <summary>
