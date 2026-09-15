@@ -138,16 +138,16 @@ public static class ProjectTemplateCatalog
                 if (id == ProjectTemplateId.LargeWorld)
                 {
                     LargeWorldFormat.WriteDemo(largePath);
+                    WriteScene(project, Get(id), LargeWorldFormat.DemoVoxelCount,
+                        $"Assets/VoxelModels/{largeFileName}");
                 }
                 else
                 {
-                    LargeWorldFormat.Write(largePath, BuildWorld(id, VoxelPalette.Build()));
+                    var world = BuildWorld(id, VoxelPalette.Build());
+                    LargeWorldFormat.Write(largePath, world);
+                    WriteScene(project, Get(id), world.OccupiedVoxelCount,
+                        $"Assets/VoxelModels/{largeFileName}");
                 }
-
-                WriteScene(project, Get(id), id == ProjectTemplateId.LargeWorld
-                        ? LargeWorldFormat.DemoVoxelCount
-                        : BuildWorld(id, VoxelPalette.Build()).OccupiedVoxelCount,
-                    $"Assets/VoxelModels/{largeFileName}");
             }
             else
             {
