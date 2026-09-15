@@ -178,11 +178,11 @@ public static class ProjectLayout
     }
 
     /// <summary>
-    /// 打开已有项目，缺少资产目录时自动补齐（用户手动删目录也不报错）
+    /// 打开已有项目；默认会补齐用户手动删除的固定目录。
     /// </summary>
     /// <param name="rootPath">项目文件夹路径</param>
     /// <returns>项目句柄</returns>
-    public static ProjectHandle Open(string rootPath)
+    public static ProjectHandle Open(string rootPath, bool ensureDirectories = true)
     {
         var absolutePath = Path.GetFullPath(rootPath);
         var manifestPath = Path.Combine(absolutePath, ProjectFileName);
@@ -193,7 +193,7 @@ public static class ProjectLayout
 
         var manifest = JsonSerializer.Deserialize<ProjectManifest>(File.ReadAllText(manifestPath), JsonOptions)
             ?? throw new InvalidDataException($"Invalid project manifest: {manifestPath}");
-        EnsureDirectories(absolutePath);
+        if (ensureDirectories) EnsureDirectories(absolutePath);
         return new ProjectHandle(absolutePath, manifest);
     }
 

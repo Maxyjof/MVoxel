@@ -396,8 +396,12 @@ internal static class Program
     /// </summary>
     private static object ValidateProject(JsonElement arguments)
     {
-        var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!);
+        var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!, ensureDirectories: false);
         var errors = new List<string>();
+        var missingDirectories = ProjectLayout.AssetDirectories
+            .Where(directory => !Directory.Exists(Path.Combine(project.AssetsPath, directory)))
+            .ToArray();
+        errors.AddRange(missingDirectories.Select(directory => $"缺少资产目录：Assets/{directory}"));
         var scenePaths = Directory.Exists(project.AssetsPath)
             ? Directory.EnumerateFiles(project.AssetsPath, "*.mvox", SearchOption.AllDirectories).ToArray()
             : [];
@@ -418,6 +422,7 @@ internal static class Program
             projectPath = project.RootPath,
             projectName = project.Manifest.Name,
             sceneCount = scenePaths.Length,
+            missingDirectories,
             valid = errors.Count == 0,
             errors,
         };
