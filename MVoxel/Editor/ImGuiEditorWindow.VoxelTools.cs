@@ -404,6 +404,16 @@ internal sealed partial class ImGuiEditorWindow
 
             var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                              ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            // 交互时保留上一帧 GPU 结果，限制同步提交频率，避免每个鼠标事件都阻塞队列。
+            // 这不是后端降级：下一次提交仍使用当前相机和同一条 Vulkan Compute 管线。
+            var nowMs = Environment.TickCount64;
+            if (navigating && pipeline.DisplayTextureId != IntPtr.Zero &&
+                nowMs - _lastRenderGpuSubmitMs < 33)
+            {
+                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                    Vector2.Zero, pipeline.DisplayUvMax);
+                return true;
+            }
             var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
@@ -418,6 +428,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 return false;
             }
+
+            _lastRenderGpuSubmitMs = nowMs;
 
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                 Vector2.Zero, pipeline.DisplayUvMax);

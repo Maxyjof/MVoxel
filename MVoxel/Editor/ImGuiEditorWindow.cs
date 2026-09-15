@@ -111,6 +111,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
+    private long _lastRenderGpuSubmitMs;
     private readonly List<CpuPreviewSurfaceFace> _cpuPreviewSurfaceFaces = [];
     private VoxelWorld? _cpuPreviewWorld;
     private int _cpuPreviewWorldVersion = -1;
