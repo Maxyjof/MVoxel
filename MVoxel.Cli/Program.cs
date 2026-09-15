@@ -81,8 +81,8 @@ internal static class Program
         Console.WriteLine("      请求运行中的编辑器打开项目");
         Console.WriteLine("  --save-editor-project");
         Console.WriteLine("      请求运行中的编辑器保存当前项目");
-        Console.WriteLine("  --close-editor-project");
-        Console.WriteLine("      请求运行中的编辑器关闭当前项目");
+        Console.WriteLine("  --close-editor-project [--discard]");
+        Console.WriteLine("      请求运行中的编辑器关闭当前项目；有未保存修改时需显式丢弃");
         Console.WriteLine("  --install-plugin <插件目录>");
         Console.WriteLine("      安装编辑器级 JavaScript 插件");
         Console.WriteLine("  --reload-plugins");
@@ -195,9 +195,10 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.saveProject", arguments.RootElement), JsonOptions));
                 return 0;
             }
-            case "--close-editor-project" when args.Length == 1:
+            case "--close-editor-project" when args.Length is 1 or 2 && (args.Length == 1 ||
+                string.Equals(args[1], "--discard", StringComparison.OrdinalIgnoreCase)):
             {
-                using var arguments = JsonDocument.Parse("{}");
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { discard = args.Length == 2 }));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.closeProject", arguments.RootElement), JsonOptions));
                 return 0;
             }
@@ -545,7 +546,7 @@ internal static class Program
         new { name = "editor.status", description = "读取运行中编辑器状态和插件自动化入口", inputSchema = new { type = "object", properties = new { } } },
         new { name = "scene.validate", description = "校验运行中编辑器当前打开的场景结构", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.saveProject", description = "请求运行中的编辑器保存当前项目", inputSchema = new { type = "object", properties = new { } } },
-        new { name = "editor.closeProject", description = "请求运行中的编辑器关闭当前项目，不自动保存场景", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.closeProject", description = "请求运行中的编辑器关闭当前项目；有未保存修改时需传 discard=true", inputSchema = new { type = "object", properties = new { discard = new { type = "boolean", description = "明确丢弃未保存场景修改" } } } },
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
         new { name = "editor.invokeCommand", description = "调用当前项目插件注册的编辑器命令", inputSchema = new { type = "object", properties = new { commandId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "commandId" } } },

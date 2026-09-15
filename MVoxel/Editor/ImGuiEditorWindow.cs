@@ -350,7 +350,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
             "editor.saveProject" => QueueSaveProject(),
-            "editor.closeProject" => QueueCloseProject(),
+            "editor.closeProject" => QueueCloseProject(request),
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
@@ -430,12 +430,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     /// <summary>
     /// 将关闭项目操作投递到编辑器窗口线程，不替调用方保存场景。
     /// </summary>
-    private object QueueCloseProject()
+    private object QueueCloseProject(JsonElement request)
     {
         if (_project is null) return new { queued = false, alreadyClosed = true, sceneDirty = false };
         var sceneDirty = _sceneDocumentDirty;
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
+        var discard = arguments.ValueKind == JsonValueKind.Object &&
+                      arguments.TryGetProperty("discard", out var discardValue) && discardValue.GetBoolean();
+        if (sceneDirty && !discard)
+            return new { queued = false, alreadyClosed = false, sceneDirty = true, requiresSave = true };
         _pendingActions.Enqueue(CloseProject);
-        return new { queued = true, alreadyClosed = false, sceneDirty };
+        return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false };
     }
 
     /// <summary>
