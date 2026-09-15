@@ -614,15 +614,15 @@ DockId=0x6A3C3007,0
         var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
-        var rowHovered = ImGui.IsItemHovered();
-        var rowClicked = rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left);
+        var rowClicked = ImGui.IsItemClicked();
 
         var iconWidth = 22F;
         var iconGap = 2F;
         var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
         ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + (rowMax.Y - rowMin.Y - 20F) * 0.5F));
-        if (DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
-                sceneObject.Visible, DrawVisibilityIcon))
+        var visibilityClicked = DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
+            sceneObject.Visible, DrawVisibilityIcon);
+        if (visibilityClicked)
         {
             sceneObject.Visible = !sceneObject.Visible;
             _pipeline?.ResetAccumulation();
@@ -630,8 +630,9 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SameLine(0F, iconGap);
-        if (DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
-                !sceneObject.Locked, DrawSelectableIcon))
+        var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
+            !sceneObject.Locked, DrawSelectableIcon);
+        if (selectableClicked)
         {
             sceneObject.Locked = !sceneObject.Locked;
             if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
@@ -640,9 +641,10 @@ DockId=0x6A3C3007,0
             }
         }
 
-        if (rowClicked && !sceneObject.Locked)
+        if (rowClicked && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
         {
             _selectedSceneObjectId = sceneObject.Id;
+            _selectedVoxel = null;
         }
 
         if (children.Length > 0 && expanded)
@@ -1662,6 +1664,32 @@ DockId=0x6A3C3007,0
         ImGui.SameLine(90F);
         ImGui.TextWrapped(_project?.RootPath ?? "欢迎使用 MVoxel");
         ImGui.SeparatorText("选择");
+        var selectedObject = _selectedSceneObjectId is { } selectedObjectId
+            ? _sceneDocument?.Objects.FirstOrDefault(item => item.Id == selectedObjectId)
+            : null;
+        if (selectedObject is not null)
+        {
+            ImGui.Text($"对象  {selectedObject.Name}");
+            ImGui.Text($"组件  {selectedObject.Components.Count}");
+            var visible = selectedObject.Visible;
+            if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
+            {
+                selectedObject.Visible = visible;
+                _pipeline?.ResetAccumulation();
+                _accumulationSignature = string.Empty;
+            }
+
+            var locked = selectedObject.Locked;
+            if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
+            {
+                selectedObject.Locked = locked;
+                if (locked)
+                {
+                    _selectedSceneObjectId = null;
+                }
+            }
+        }
+
         if (_selectedVoxel is { } selected)
         {
             var voxel = _world.TryGet(selected.Coordinate, out var existing) ? existing : default;
@@ -1690,7 +1718,7 @@ DockId=0x6A3C3007,0
                 SetStatus($"画笔颜色已取自选中的体素（色板 #{nearest}）");
             }
         }
-        else
+        else if (selectedObject is null)
         {
             ImGui.TextDisabled("未选择对象 · 使用“选择”工具点击体素");
         }

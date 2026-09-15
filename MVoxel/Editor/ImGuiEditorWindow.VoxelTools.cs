@@ -476,6 +476,10 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
                 _selectedVoxel = PickVoxel(mouse, origin, size, camera);
+                var modelObject = GetVoxelWorldObject();
+                _selectedSceneObjectId = _selectedVoxel is not null && modelObject is not null
+                    ? modelObject.Id
+                    : null;
                 SetStatus(_selectedVoxel is { } picked
                     ? $"已选择体素 ({picked.Coordinate.X}, {picked.Coordinate.Y}, {picked.Coordinate.Z})"
                     : "未点中体素");
