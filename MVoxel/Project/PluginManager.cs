@@ -254,7 +254,7 @@ public static class PluginManager
     public static void Validate(EditorPluginPackage packageInfo)
     {
         ArgumentNullException.ThrowIfNull(packageInfo);
-        if (!IsValidPluginId(packageInfo.Id) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
+        if (!IsValidPluginId(packageInfo.Id) || !Version.TryParse(packageInfo.Version, out _) || string.IsNullOrWhiteSpace(packageInfo.Entry) ||
             packageInfo.Permissions is null || packageInfo.Dependencies is null ||
             !packageInfo.Entry.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
             Path.IsPathRooted(packageInfo.Entry) || packageInfo.Entry.Contains("..", StringComparison.Ordinal))
@@ -391,9 +391,60 @@ public static class PluginManager
             throw new InvalidOperationException($"插件依赖未安装：{pluginId}");
         if (!visiting.Add(pluginId))
             throw new InvalidOperationException($"插件依赖存在循环：{pluginId}");
-        foreach (var dependencyId in package.Dependencies.Keys)
-            AddDependencies(dependencyId, installed, enabled, visiting);
+        foreach (var dependency in package.Dependencies)
+        {
+            if (!installed.TryGetValue(dependency.Key, out var dependencyPackage))
+                throw new InvalidOperationException($"插件依赖未安装：{dependency.Key}");
+            if (!IsVersionSatisfied(dependencyPackage.Version, dependency.Value))
+                throw new InvalidOperationException($"插件依赖版本不满足：{dependency.Key} {dependency.Value}，实际为 {dependencyPackage.Version}");
+            AddDependencies(dependency.Key, installed, enabled, visiting);
+        }
         visiting.Remove(pluginId);
         enabled.Add(pluginId);
+    }
+
+    /// <summary>
+    /// 判断插件版本是否满足依赖范围
+    /// </summary>
+    /// <param name="versionText">已安装版本</param>
+    /// <param name="range">依赖版本范围</param>
+    /// <returns>是否满足版本范围</returns>
+    private static bool IsVersionSatisfied(string versionText, string range)
+    {
+        if (range.Trim() == "*") return Version.TryParse(versionText, out _);
+        if (!Version.TryParse(versionText, out var actual)) return false;
+        foreach (var alternative in range.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var matches = true;
+            foreach (var part in alternative.Split(',', ' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var prefix = part.Length > 0 && part[0] is '^' or '~' ? part[0] : '\0';
+                var value = prefix == '\0' ? part : part[1..];
+                if (value.EndsWith(".*", StringComparison.Ordinal))
+                {
+                    var prefixParts = value[..^2].Split('.', StringSplitOptions.RemoveEmptyEntries);
+                    matches &= prefixParts.Length switch
+                    {
+                        1 => int.TryParse(prefixParts[0], out var major) && actual.Major == major,
+                        2 => int.TryParse(prefixParts[0], out var major) && int.TryParse(prefixParts[1], out var minor) && actual.Major == major && actual.Minor == minor,
+                        _ => false,
+                    };
+                    continue;
+                }
+                if (!Version.TryParse(value.TrimStart('>', '<', '='), out var expected)) { matches = false; continue; }
+                matches &= prefix switch
+                {
+                    '^' => actual.Major == expected.Major && actual >= expected,
+                    '~' => actual.Major == expected.Major && actual.Minor == expected.Minor && actual >= expected,
+                    _ when part.StartsWith(">=", StringComparison.Ordinal) => actual >= expected,
+                    _ when part.StartsWith(">", StringComparison.Ordinal) => actual > expected,
+                    _ when part.StartsWith("<=", StringComparison.Ordinal) => actual <= expected,
+                    _ when part.StartsWith("<", StringComparison.Ordinal) => actual < expected,
+                    _ => actual == expected,
+                };
+            }
+            if (matches) return true;
+        }
+        return false;
     }
 }
