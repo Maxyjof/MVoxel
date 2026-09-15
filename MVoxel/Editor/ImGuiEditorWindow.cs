@@ -1874,13 +1874,17 @@ DockId=0x6A3C3007,0
             }
 
             ImGui.SeparatorText("组件");
-            foreach (var component in selectedObject.Components)
+            for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
             {
+                var component = selectedObject.Components[componentIndex];
                 var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
                 var label = definition is null
                     ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
                     : $"{definition.DisplayName} · {definition.Category}";
-                ImGui.BulletText(label);
+                if (!ImGui.TreeNodeEx($"{label}##InspectorComponent{componentIndex}", ImGuiTreeNodeFlags.SpanAvailWidth))
+                    continue;
+                DrawComponentSummary(component);
+                ImGui.TreePop();
             }
 
             if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
@@ -1953,6 +1957,47 @@ DockId=0x6A3C3007,0
         ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
         ImGui.TextDisabled("坐标  0, 0, 0");
         ImGui.SeparatorText("材质");
+    }
+
+    private static void DrawComponentSummary(ComponentRecord component)
+    {
+        if (SceneComponentTypes.IsTransform(component))
+        {
+            ImGui.TextDisabled("对象坐标与旋转的基础组件");
+            return;
+        }
+
+        if (SceneComponentTypes.IsVoxelModel(component))
+        {
+            ImGui.Text("模型");
+            ImGui.SameLine(72F);
+            ImGui.Text(component.Data.TryGetProperty("model", out var model) ? model.GetString() ?? "未指定" : "未指定");
+            ImGui.Text("部件");
+            ImGui.SameLine(72F);
+            ImGui.Text(component.Data.TryGetProperty("part", out var part) ? part.GetString() ?? "模型" : "模型");
+            return;
+        }
+
+        if (SceneComponentTypes.IsCamera(component))
+        {
+            var data = SceneComponentTypes.ReadCamera(component);
+            ImGui.Text($"视场角  {data.FieldOfViewDegrees:0.##}°");
+            ImGui.Text($"近裁剪  {data.NearClip:0.###}");
+            ImGui.Text($"远裁剪  {data.FarClip:0.###}");
+            return;
+        }
+
+        if (SceneComponentTypes.IsLight(component))
+        {
+            var data = SceneComponentTypes.ReadLight(component);
+            ImGui.Text($"强度  {data.Intensity:0.##}");
+            ImGui.Text($"颜色  {data.ColorR:0.##}, {data.ColorG:0.##}, {data.ColorB:0.##}");
+            ImGui.Text($"阴影  {(data.CastShadows ? "开启" : "关闭")}");
+            return;
+        }
+
+        ImGui.TextDisabled($"类型 ID  {component.TypeId}");
+        ImGui.TextDisabled("由插件提供组件数据和编辑命令");
     }
 
     /// <summary>
