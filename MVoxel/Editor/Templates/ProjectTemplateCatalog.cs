@@ -68,6 +68,11 @@ public enum ProjectTemplateId
     /// 展示 1024×1024×1024 的超大型稀疏建筑和长距离视锥
     /// </summary>
     LargeWorld,
+
+    /// <summary>
+    /// 展示小型花园、中型建筑群和大型远景塔楼的完整渲染效果
+    /// </summary>
+    RenderingGallery,
 }
 
 /// <summary>
@@ -100,6 +105,7 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
         new(ProjectTemplateId.CameraGallery, "多相机构图室", "同一体素场景配置三个相机，演示渲染视图切换和相机对象联动", "相机 · 构图 · 渲染视图"),
         new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "三轴 1024 格的稀疏建筑群、塔楼和高空连桥性能验证", "大世界 · LOD · 建筑 · 性能压力"),
+        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "小型花园、中型大厅、大型塔楼、玻璃水池和发光灯带组成的完整展示场景", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪"),
     ];
 
     /// <summary>
@@ -166,6 +172,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.Architecture => BuildArchitecture(),
             ProjectTemplateId.CameraGallery => BuildCameraGallery(),
             ProjectTemplateId.LargeWorld => LargeWorldFormat.BuildDemoWorld(),
+            ProjectTemplateId.RenderingGallery => BuildRenderingGallery(),
             _ => new VoxelWorld(),
         };
     }
@@ -221,6 +228,34 @@ public static class ProjectTemplateCatalog
             case ProjectTemplateId.CameraGallery:
                 settings.DefaultRenderPreset = "多相机构图";
                 settings.RenderSettings.PathMaxAccumulatedSamples = 256;
+                break;
+            case ProjectTemplateId.RenderingGallery:
+                settings.LodLevels = 6;
+                settings.LodDistances = [32F, 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F];
+                settings.DefaultRenderPreset = "全效果展示";
+                settings.RenderSettings.ShowGround = true;
+                settings.RenderSettings.GroundColor = new Vector3(.18F, .24F, .30F);
+                settings.RenderSettings.GroundFade = 220F;
+                settings.RenderSettings.SkyTop = new Vector3(.08F, .18F, .38F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.62F, .72F, .88F);
+                settings.RenderSettings.SkyAmbient = .55F;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .95F;
+                settings.RenderSettings.AoPower = 1.35F;
+                settings.RenderSettings.ShadowSoftness = .12F;
+                settings.RenderSettings.ShadowSamples = 5;
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 768;
+                settings.RenderSettings.MaxBounces = 7;
+                settings.RenderSettings.PathDenoising = true;
+                settings.RenderSettings.PathDenoiseStrength = .28F;
+                settings.RenderSettings.EmissiveVoxels = true;
+                settings.RenderSettings.EmissiveIntensity = 20F;
+                settings.RenderSettings.TransmissiveAbsorption = .28F;
+                settings.RenderSettings.DepthOfField = true;
+                settings.RenderSettings.ApertureRadius = .045F;
+                settings.RenderSettings.FocusDistance = 36F;
+                settings.RenderSettings.SceneBackgroundColor = new Vector3(.02F, .025F, .05F);
                 break;
         }
 
@@ -289,6 +324,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.Architecture => [("模块化建筑", "建筑", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.CameraGallery => [("多相机构图场景", "场景", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LargeWorld => [("超大型建筑群", "建筑群", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.RenderingGallery => [("渲染体验馆", "全效果展示", new VoxelCoord64(0, 0, 0))],
             _ => [],
         };
     }
@@ -507,6 +543,66 @@ public static class ProjectTemplateCatalog
         foreach (var x in new[] { -20L, 20L })
         foreach (var z in new[] { -14L, 14L })
             FillBox(world, x - 2, 1, z - 2, x + 2, 12, z + 2, platform);
+        return world;
+    }
+
+    /// <summary>
+    /// 构建覆盖小、中、大规模和主要材质效果的完整渲染体验馆
+    /// </summary>
+    private static VoxelWorld BuildRenderingGallery()
+    {
+        var world = new VoxelWorld();
+        var ground = new VoxelValue(new Rgba32(48, 64, 82));
+        var stone = new VoxelValue(new Rgba32(112, 126, 148));
+        var wall = new VoxelValue(new Rgba32(210, 198, 172));
+        var trim = new VoxelValue(new Rgba32(54, 104, 156), MaterialSlot: 1);
+        var roof = new VoxelValue(new Rgba32(176, 64, 70), MaterialSlot: 2);
+        var leaf = new VoxelValue(new Rgba32(74, 168, 96), MaterialSlot: 3);
+        var wood = new VoxelValue(new Rgba32(116, 76, 46), MaterialSlot: 4);
+        var glass = new VoxelValue(new Rgba32(94, 200, 238, 105), MaterialSlot: 5, Flags: VoxelFlags.Translucent);
+        var lamp = new VoxelValue(new Rgba32(255, 202, 82), MaterialSlot: 6, Flags: VoxelFlags.Emissive);
+        var water = new VoxelValue(new Rgba32(50, 150, 220, 120), MaterialSlot: 7, Flags: VoxelFlags.Translucent);
+
+        FillBox(world, -64, 0, -42, 64, 0, 42, ground);
+        // 小型花园与水池
+        FillBox(world, -48, 1, -28, -26, 1, -8, stone);
+        FillBox(world, -44, 2, -24, -30, 2, -12, water);
+        FillBox(world, -39, 3, -21, -35, 7, -17, wood);
+        FillBox(world, -42, 8, -24, -32, 10, -14, leaf);
+        FillBox(world, -39, 11, -21, -35, 11, -17, leaf);
+        for (var index = 0; index < 5; index++)
+            FillBox(world, -49 + index * 5, 2, -6, -47 + index * 5, 4, -4, lamp);
+
+        // 中型主厅，玻璃幕墙与暖色灯带
+        FillBox(world, -18, 1, -20, 20, 1, 20, stone);
+        FillBox(world, -15, 2, -17, 17, 13, -17, wall);
+        FillBox(world, -15, 2, 17, 17, 13, 17, wall);
+        FillBox(world, -15, 2, -17, -15, 13, 17, wall);
+        FillBox(world, 17, 2, -17, 17, 13, 17, wall);
+        FillBox(world, -11, 4, -18, 13, 9, -18, glass);
+        FillBox(world, -13, 14, -15, 15, 14, 15, trim);
+        for (var layer = 0; layer < 4; layer++)
+            FillBox(world, -12 + layer, 15 + layer, -14 + layer, 14 - layer, 15 + layer, 14 - layer, roof);
+        for (var x = -10; x <= 10; x += 5)
+            FillBox(world, x, 12, -16, x + 1, 13, -16, lamp);
+
+        // 大型远景塔楼与连桥，测试大范围深度、雾和区块边界
+        FillBox(world, 34, 1, -18, 48, 44, -4, trim);
+        FillBox(world, 31, 8, -21, 51, 8, -1, stone);
+        for (var level = 0; level < 6; level++)
+        {
+            var y = 45 + level * 3;
+            FillBox(world, 32 - level, y, -20 - level, 50 + level, y, -2 + level, roof);
+        }
+        FillBox(world, 19, 10, -12, 34, 12, -10, stone);
+        FillBox(world, 20, 13, -11, 33, 13, -9, lamp);
+        for (var tree = 0; tree < 7; tree++)
+        {
+            var tx = 24 + tree * 4;
+            FillBox(world, tx, 1, 24, tx + 1, 7 + tree % 3, 25, wood);
+            FillBox(world, tx - 3, 8 + tree % 3, 21, tx + 4, 11 + tree % 3, 28, leaf);
+        }
+
         return world;
     }
 
