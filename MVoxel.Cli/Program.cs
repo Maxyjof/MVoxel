@@ -79,6 +79,8 @@ internal static class Program
         Console.WriteLine("      校验运行中编辑器当前场景");
         Console.WriteLine("  --open-project <项目目录>");
         Console.WriteLine("      请求运行中的编辑器打开项目");
+        Console.WriteLine("  --save-editor-project");
+        Console.WriteLine("      请求运行中的编辑器保存当前项目");
         Console.WriteLine("  --install-plugin <插件目录>");
         Console.WriteLine("      安装编辑器级 JavaScript 插件");
         Console.WriteLine("  --reload-plugins");
@@ -183,6 +185,12 @@ internal static class Program
             {
                 using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { path = args[1] }));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.openProject", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--save-editor-project" when args.Length == 1:
+            {
+                using var arguments = JsonDocument.Parse("{}");
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.saveProject", arguments.RootElement), JsonOptions));
                 return 0;
             }
             case "--install-plugin" when args.Length == 2:
@@ -294,6 +302,7 @@ internal static class Program
             "plugin.install" => InstallPlugin(arguments),
             "editor.status" => CallEditor("editor.status", arguments),
             "scene.validate" => CallEditor("scene.validate", arguments),
+            "editor.saveProject" => CallEditor("editor.saveProject", arguments),
             "editor.openProject" => CallEditor("editor.openProject", arguments),
             "editor.invokeAutomation" => CallEditor("editor.invokeAutomation", arguments),
             "editor.invokeCommand" => CallEditor("editor.invokeCommand", arguments),
@@ -526,6 +535,7 @@ internal static class Program
         new { name = "plugin.install", description = "安装编辑器级 JavaScript 插件", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
         new { name = "editor.status", description = "读取运行中编辑器状态和插件自动化入口", inputSchema = new { type = "object", properties = new { } } },
         new { name = "scene.validate", description = "校验运行中编辑器当前打开的场景结构", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.saveProject", description = "请求运行中的编辑器保存当前项目", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
         new { name = "editor.invokeCommand", description = "调用当前项目插件注册的编辑器命令", inputSchema = new { type = "object", properties = new { commandId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "commandId" } } },

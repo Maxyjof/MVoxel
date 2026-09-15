@@ -342,6 +342,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
+            "editor.saveProject" => QueueSaveProject(),
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
@@ -405,6 +406,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private object QueueReloadPlugins()
     {
         _pendingActions.Enqueue(ReloadPlugins);
+        return new { queued = true };
+    }
+
+    /// <summary>
+    /// 将项目保存操作投递到编辑器窗口线程
+    /// </summary>
+    private object QueueSaveProject()
+    {
+        if (_project is null) throw new InvalidOperationException("当前没有打开的项目");
+        _pendingActions.Enqueue(() => SaveProject());
         return new { queued = true };
     }
 
