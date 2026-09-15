@@ -104,6 +104,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
+    private EditorControlServer? _controlServer;
 
     public ImGuiEditorWindow(string[] args)
         : base(GameWindowSettings.Default, CreateWindowSettings(args))
@@ -153,6 +154,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         EditorPalette.ApplyTheme(_editorSettings.Theme);
         ConfigureImGui();
         UiDiagnostics.Configure();
+        _controlServer = new EditorControlServer(HandleControlCommand);
+        _controlServer.Start();
         _palette = EditorPalettes.ResolveEditorPalette();
         InitializeVoxelPipeline();
         if (!string.IsNullOrWhiteSpace(_startupProjectPath))
@@ -273,6 +276,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _welcomeWindow?.Dispose();
         _welcomeWindow = null;
         _projectOperation.Dispose();
+        _controlServer?.Dispose();
+        _controlServer = null;
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
         _imguiRenderer?.Dispose();
@@ -281,6 +286,38 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _vulkan?.Dispose();
         _vulkan = null;
         base.OnUnload();
+    }
+
+    /// <summary>
+    /// 处理 CLI 发来的只读状态和项目打开命令
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>命令结果</returns>
+    private object HandleControlCommand(JsonElement request)
+    {
+        var method = request.TryGetProperty("method", out var methodElement)
+            ? methodElement.GetString() ?? string.Empty
+            : string.Empty;
+        return method switch
+        {
+            "editor.status" => new { processId = Environment.ProcessId, hasProject = _project is not null, projectName = _project?.Manifest.Name },
+            "editor.openProject" => QueueOpenProject(request),
+            _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
+        };
+    }
+
+    /// <summary>
+    /// 将打开项目操作安全地投递到窗口线程
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>投递结果</returns>
+    private object QueueOpenProject(JsonElement request)
+    {
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
+        var path = arguments.GetProperty("path").GetString();
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("项目路径不能为空");
+        RequestOpenProject(path);
+        return new { queued = true, path };
     }
 
     private void RequestWelcomeWindow() => _showWelcomeRequested = true;

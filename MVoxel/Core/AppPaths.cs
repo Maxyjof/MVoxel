@@ -26,6 +26,11 @@ public static class AppPaths
     public static string PluginDirectory => Path.Combine(DataDirectory, "Plugins");
 
     /// <summary>
+    /// 运行中编辑器的本机控制端点文件
+    /// </summary>
+    public static string EditorEndpointPath => Path.Combine(DataDirectory, "editor.endpoint");
+
+    /// <summary>
     /// 运行期间使用的当前日志目录
     /// </summary>
     public static string LogDirectory => Path.Combine(DataDirectory, "log");

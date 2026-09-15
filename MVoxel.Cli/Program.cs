@@ -1,4 +1,7 @@
 using System.Text.Json;
+using System.IO.Pipes;
+using System.Text;
+using MVoxel.Core;
 using MVoxel.Project;
 
 namespace MVoxel.Cli;
@@ -24,7 +27,7 @@ internal static class Program
         }
 
         Console.Error.WriteLine("MVoxel CLI：使用 --mcp 启动 MCP stdio 服务");
-        Console.Error.WriteLine("支持工具：project.create、project.info、project.listPlugins、project.enablePlugin、project.disablePlugin、plugin.install");
+        Console.Error.WriteLine("支持工具：project.create、project.info、project.listPlugins、project.enablePlugin、project.disablePlugin、plugin.install、editor.status、editor.openProject");
         return 0;
     }
 
@@ -90,6 +93,8 @@ internal static class Program
             "project.enablePlugin" => SetPlugin(arguments, true),
             "project.disablePlugin" => SetPlugin(arguments, false),
             "plugin.install" => InstallPlugin(arguments),
+            "editor.status" => CallEditor("editor.status", arguments),
+            "editor.openProject" => CallEditor("editor.openProject", arguments),
             _ => throw new InvalidOperationException($"未找到 MCP 工具：{name}"),
         };
         return new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(result, JsonOptions) } }, structuredContent = result };
@@ -150,6 +155,30 @@ internal static class Program
     }
 
     /// <summary>
+    /// 通过程序目录下的端点文件调用运行中的编辑器
+    /// </summary>
+    /// <param name="method">编辑器命令名</param>
+    /// <param name="arguments">命令参数</param>
+    /// <returns>编辑器返回结果</returns>
+    private static object CallEditor(string method, JsonElement arguments)
+    {
+        if (!File.Exists(AppPaths.EditorEndpointPath)) throw new InvalidOperationException("没有发现运行中的 MVoxel 编辑器");
+        var pipeName = File.ReadAllText(AppPaths.EditorEndpointPath).Trim();
+        if (string.IsNullOrWhiteSpace(pipeName)) throw new InvalidDataException("编辑器控制端点为空");
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        client.Connect(2000);
+        using var writer = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+        using var reader = new StreamReader(client, Encoding.UTF8, leaveOpen: true);
+        var request = new Dictionary<string, object?> { ["method"] = method, ["arguments"] = arguments };
+        writer.WriteLine(JsonSerializer.Serialize(request, JsonOptions));
+        var response = reader.ReadLine() ?? throw new IOException("编辑器控制端点没有返回结果");
+        using var document = JsonDocument.Parse(response);
+        if (!document.RootElement.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
+            throw new InvalidOperationException("编辑器控制命令失败");
+        return document.RootElement.TryGetProperty("result", out var result) ? result.Clone() : new { };
+    }
+
+    /// <summary>
     /// 写出单行 JSON-RPC 响应
     /// </summary>
     private static void WriteResponse(JsonElement? id, object? result, object? error)
@@ -169,5 +198,7 @@ internal static class Program
         new { name = "project.enablePlugin", description = "在项目中启用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
         new { name = "project.disablePlugin", description = "在项目中禁用编辑器级插件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" }, pluginId = new { type = "string" } }, required = new[] { "projectPath", "pluginId" } } },
         new { name = "plugin.install", description = "安装编辑器级 JavaScript 插件", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
+        new { name = "editor.status", description = "读取运行中编辑器状态", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
     ];
 }
