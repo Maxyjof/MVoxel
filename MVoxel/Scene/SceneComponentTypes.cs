@@ -39,6 +39,12 @@ public static class SceneComponentTypes
     public static bool IsVoxelModel(ComponentRecord component) => string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
     public static bool IsLight(ComponentRecord component) => string.Equals(component.TypeId, Light, StringComparison.Ordinal);
 
+    /// <summary>
+    /// 判断类型 ID 是否属于宿主内置组件，供插件注册校验和检查器分类共用。
+    /// </summary>
+    public static bool IsBuiltInTypeId(string? typeId) =>
+        !string.IsNullOrWhiteSpace(typeId) && BuiltInDefinitions.Any(item => item.TypeId == typeId);
+
     public static ComponentRecord CreateTransform(TransformComponent transform) => new()
     {
         TypeId = Transform,

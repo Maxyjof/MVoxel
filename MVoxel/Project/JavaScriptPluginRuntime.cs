@@ -119,8 +119,7 @@ public sealed class PluginScriptRuntime : IDisposable
                 {
                     foreach (var item in extensions.Components)
                     {
-                        if (!IsValidComponentId(item.Id) ||
-                            SceneComponentTypes.BuiltInDefinitions.Any(definition => definition.TypeId == item.Id))
+                        if (!IsValidComponentId(item.Id) || SceneComponentTypes.IsBuiltInTypeId(item.Id))
                         {
                             MVoxelLog.Warn($"插件组件 ID 无效或与内置组件冲突，跳过注册：{item.Id}");
                             continue;
