@@ -22,6 +22,7 @@ using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 using Vector3 = OpenTK.Mathematics.Vector3;
 using NumVector3 = System.Numerics.Vector3;
+using NumQuaternion = System.Numerics.Quaternion;
 
 namespace MVoxel.Editor;
 
@@ -1989,8 +1990,24 @@ DockId=0x6A3C3007,0
             {
                 var position = selectedObject.Transform.Free.Position;
                 var rotation = selectedObject.Transform.Free.Rotation;
-                ImGui.Text($"位置  {position.X:0.###}, {position.Y:0.###}, {position.Z:0.###}");
-                ImGui.Text($"旋转  {rotation.X:0.###}, {rotation.Y:0.###}, {rotation.Z:0.###}, {rotation.W:0.###}");
+                var positionValue = new NumVector3((float)position.X, (float)position.Y, (float)position.Z);
+                if (ImGui.InputFloat3("位置##TransformPosition", ref positionValue))
+                {
+                    selectedObject.Transform.SetFree(new FreeTransform(
+                        new Double3(positionValue.X, positionValue.Y, positionValue.Z), rotation));
+                    UpdateTransformMarker(selectedObject);
+                }
+                var rotationValue = new Vector4(rotation.X, rotation.Y, rotation.Z, rotation.W);
+                if (ImGui.InputFloat4("旋转四元数##TransformRotation", ref rotationValue))
+                {
+                    var quaternion = new NumQuaternion(rotationValue.X, rotationValue.Y, rotationValue.Z, rotationValue.W);
+                    if (quaternion.LengthSquared() > 0.000001F && float.IsFinite(quaternion.LengthSquared()))
+                    {
+                        selectedObject.Transform.SetFree(new FreeTransform(
+                            position, NumQuaternion.Normalize(quaternion)));
+                        UpdateTransformMarker(selectedObject);
+                    }
+                }
             }
             else
             {
@@ -2047,10 +2064,16 @@ DockId=0x6A3C3007,0
         if (sceneObject.Transform.Mode != TransformMode.Grid) return;
         var current = sceneObject.Transform.Grid;
         sceneObject.Transform.SetGrid(new GridTransform(current.Position, current.Rotation.Compose(rotation)));
-        var transform = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
-        if (transform is not null) transform.Data = JsonSerializer.SerializeToElement(new { kind = "Grid" });
+        UpdateTransformMarker(sceneObject);
         _componentWarning = null;
         _pipeline?.ResetAccumulation();
+    }
+
+    private static void UpdateTransformMarker(SceneObject sceneObject)
+    {
+        var transform = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
+        if (transform is not null)
+            transform.Data = JsonSerializer.SerializeToElement(new { kind = sceneObject.Transform.Mode.ToString() });
     }
 
     /// <summary>
