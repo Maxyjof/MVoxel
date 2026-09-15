@@ -535,7 +535,7 @@ internal sealed partial class ImGuiEditorWindow
     private void HandleVoxelToolInput(Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var io = ImGui.GetIO();
-        if (_welcomeWindow is not null || _projectOperation.IsRunning || !IsFocused || IsVoxelWorldLocked())
+        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning || !IsFocused || IsVoxelWorldLocked())
         {
             _brushPreview = null;
             return;
