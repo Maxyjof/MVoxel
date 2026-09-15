@@ -59,6 +59,8 @@ internal static class Program
         Console.WriteLine("      输出场景对象和组件摘要");
         Console.WriteLine("  --list-scenes <项目目录>");
         Console.WriteLine("      列出项目 Assets 中的场景文件");
+        Console.WriteLine("  --validate-project <项目目录>");
+        Console.WriteLine("      校验项目清单和场景文件");
         Console.WriteLine("  --create-project <项目目录> [项目名称] [模板 ID]");
         Console.WriteLine("      创建项目并生成指定示例模板");
         Console.WriteLine("  --list-templates");
@@ -114,6 +116,13 @@ internal static class Program
             {
                 var arguments = JsonSerializer.SerializeToElement(new { projectPath = args[1] });
                 Console.WriteLine(JsonSerializer.Serialize(ListScenes(arguments), JsonOptions));
+                return 0;
+            }
+            case "--validate-project" when args.Length == 2:
+            {
+                var arguments = JsonSerializer.SerializeToElement(new { projectPath = args[1] });
+                var result = ValidateProject(arguments);
+                Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
                 return 0;
             }
             case "--create-project" when args.Length is 2 or 3 or 4:
@@ -267,6 +276,7 @@ internal static class Program
             "project.listTemplates" => ListTemplates(),
             "project.pluginDiagnostics" => PluginDiagnostics(arguments),
             "project.listScenes" => ListScenes(arguments),
+            "project.validate" => ValidateProject(arguments),
             "scene.info" => SceneInfo(arguments),
             "project.info" => ProjectInfo(arguments),
             "project.listPlugins" => ListPlugins(arguments),
@@ -382,6 +392,38 @@ internal static class Program
     }
 
     /// <summary>
+    /// 校验项目清单并尝试加载 Assets 下的所有场景。
+    /// </summary>
+    private static object ValidateProject(JsonElement arguments)
+    {
+        var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!);
+        var errors = new List<string>();
+        var scenePaths = Directory.Exists(project.AssetsPath)
+            ? Directory.EnumerateFiles(project.AssetsPath, "*.mvox", SearchOption.AllDirectories).ToArray()
+            : [];
+        foreach (var scenePath in scenePaths)
+        {
+            try
+            {
+                _ = SceneSerializer.Load(scenePath);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                errors.Add($"{Path.GetRelativePath(project.RootPath, scenePath).Replace('\\', '/')}: {exception.Message}");
+            }
+        }
+
+        return new
+        {
+            projectPath = project.RootPath,
+            projectName = project.Manifest.Name,
+            sceneCount = scenePaths.Length,
+            valid = errors.Count == 0,
+            errors,
+        };
+    }
+
+    /// <summary>
     /// 读取编辑器级插件和项目启用状态
     /// </summary>
     private static object ListPlugins(JsonElement arguments)
@@ -460,6 +502,7 @@ internal static class Program
         new { name = "project.listTemplates", description = "读取可用项目模板", inputSchema = new { type = "object", properties = new { } } },
         new { name = "project.pluginDiagnostics", description = "诊断项目插件安装状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listScenes", description = "列出项目 Assets 中的场景文件", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
+        new { name = "project.validate", description = "校验项目清单并加载检查所有场景", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "scene.info", description = "读取场景对象和组件摘要", inputSchema = new { type = "object", properties = new { scenePath = new { type = "string" } }, required = new[] { "scenePath" } } },
         new { name = "project.info", description = "读取项目摘要", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
         new { name = "project.listPlugins", description = "读取编辑器级插件和项目启用状态", inputSchema = new { type = "object", properties = new { projectPath = new { type = "string" } }, required = new[] { "projectPath" } } },
