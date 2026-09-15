@@ -257,10 +257,13 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             var modelDirectory = Path.Combine(project.AssetsPath, "VoxelModels");
-            var largeWorldPath = Directory.Exists(modelDirectory)
-                ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-                : null;
+            var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
+            var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
+            var largeWorldPath = referencedLargeWorldPath ??
+                (referencedNativePath is null && Directory.Exists(modelDirectory)
+                    ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+                    : null);
             var modelAssetPath = "Assets/VoxelModels/主场景.mvmodel";
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
