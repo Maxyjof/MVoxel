@@ -53,6 +53,17 @@ public sealed class CommandHistory
     }
 
     /// <summary>
+    /// 记录一条已经由界面完成修改的命令。用于属性编辑器这类即时控件，
+    /// 它们在控件返回 changed 时已经写入目标对象，不能再次执行一次。
+    /// </summary>
+    public void RecordExecuted(IEditorCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        _undo.Push(command);
+        _redo.Clear();
+    }
+
+    /// <summary>
     /// 撤销最近一条命令
     /// </summary>
     /// <returns>栈为空时返回 false</returns>

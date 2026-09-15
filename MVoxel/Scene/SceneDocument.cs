@@ -222,6 +222,23 @@ public static class SceneSerializer
         AtomicFile.WriteText(path, JsonSerializer.Serialize(scene, Options));
     }
 
+    /// <summary>复制场景对象，供编辑器命令历史保存精确的前后状态。</summary>
+    public static SceneObject CloneObject(SceneObject source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var json = JsonSerializer.Serialize(source, Options);
+        return JsonSerializer.Deserialize<SceneObject>(json, Options)
+            ?? throw new InvalidDataException("无法复制场景对象");
+    }
+
+    /// <summary>比较场景对象的可保存状态，不受对象引用身份影响。</summary>
+    public static bool ObjectsEqual(SceneObject left, SceneObject right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        return JsonSerializer.Serialize(left, Options) == JsonSerializer.Serialize(right, Options);
+    }
+
     /// <summary>
     /// 读取场景文档
     /// </summary>

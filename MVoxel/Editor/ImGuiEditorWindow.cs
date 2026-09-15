@@ -493,7 +493,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         AppPaths.EnsureDirectories();
         var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         var layoutVersionPath = AppPaths.ConfigPath("imgui-layout.version");
-        const string layoutVersion = "3";
+        const string layoutVersion = "4";
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
         var hasCurrentLayoutVersion = File.Exists(layoutVersionPath) &&
@@ -501,7 +501,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                                           StringComparison.Ordinal);
         var hasCurrentPanelLayout = hasCurrentLayoutVersion &&
                                      savedLayout.Contains("DockSpace ID=0x6A3C3001", StringComparison.Ordinal) &&
-                                     savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
+                                     savedLayout.Contains("[Window][场景窗口##场景窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][检查器##检查器窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染配置##渲染配置窗口]", StringComparison.Ordinal) &&
@@ -738,7 +738,7 @@ DockSpace ID=0x6A3C3001 Pos=0,24 Size=1440,840 Split=Y Selected=0x6A3C3002
   DockNode ID=0x6A3C3007 Parent=0x6A3C3001 SizeRef=1440,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
 DockId=0x6A3C3003,0
-[Window][场景##场景窗口]
+[Window][场景窗口##场景窗口]
 DockId=0x6A3C3005,0
 [Window][渲染##渲染窗口]
 DockId=0x6A3C3005,1
@@ -766,7 +766,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        ImGui.TextColored(ToColor(EditorPalette.Text), "场景");
+        ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
         ImGui.SameLine();
         ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
         ImGui.SetNextItemWidth(Math.Max(100F, ImGui.GetContentRegionAvail().X - 4F));
@@ -954,7 +954,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
         if (_requestedCenterTab == 0) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("场景##场景窗口", PanelWindowFlags))
+        if (!ImGui.Begin("场景窗口##场景窗口", PanelWindowFlags))
         {
         }
         else
@@ -1897,6 +1897,8 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        var inspectorBefore = SceneSerializer.CloneObject(selectedObject);
+
         var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
                                      selectedObject.Components.Any(SceneComponentTypes.IsCamera);
         if (hasModelCameraConflict)
@@ -1962,10 +1964,11 @@ DockId=0x6A3C3007,0
                 : definition.DisplayName;
             ImGui.PushID($"InspectorComponent{componentIndex}");
             var headerMin = ImGui.GetCursorScreenPos();
-            var headerWidth = Math.Max(120F, ImGui.GetContentRegionAvail().X - 64F);
+            var totalHeaderWidth = ImGui.GetContentRegionAvail().X;
+            var headerWidth = Math.Max(120F, totalHeaderWidth - 64F);
             var headerHeight = ImGui.GetFrameHeight() + 6F;
             var headerClicked = ImGui.InvisibleButton("##InspectorComponentHeader", new Vector2(headerWidth, headerHeight));
-            var headerMax = headerMin + new Vector2(headerWidth, headerHeight);
+            var headerMax = headerMin + new Vector2(totalHeaderWidth, headerHeight);
             var expanded = _expandedInspectorComponents.Contains(component.TypeId);
             if (headerClicked)
             {
@@ -1987,7 +1990,7 @@ DockId=0x6A3C3007,0
             draw.AddText(headerMin + new Vector2(25F, 5F), ToPackedColor(EditorPalette.Text), label);
 
             var resetComponent = false;
-            ImGui.SetCursorScreenPos(new Vector2(headerMax.X + 6F, headerMin.Y + 3F));
+            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - 58F, headerMin.Y + 3F));
             var isTransformComponent = SceneComponentTypes.IsTransform(component);
             ImGui.BeginDisabled(isTransformComponent);
             var enabled = component.Enabled;
@@ -2004,6 +2007,21 @@ DockId=0x6A3C3007,0
             if (ImGui.BeginPopup("##InspectorComponentMenuPopup"))
             {
                 if (ImGui.MenuItem("恢复默认")) resetComponent = true;
+                ImGui.Separator();
+                var canMoveUp = !isTransformComponent && componentIndex > 1;
+                var canMoveDown = !isTransformComponent && componentIndex < selectedObject.Components.Count - 1;
+                if (ImGui.MenuItem("上移组件", null, false, canMoveUp))
+                {
+                    (selectedObject.Components[componentIndex - 1], selectedObject.Components[componentIndex]) =
+                        (selectedObject.Components[componentIndex], selectedObject.Components[componentIndex - 1]);
+                    SetStatus($"已上移{SceneComponentTypes.GetDisplayName(component)}组件");
+                }
+                if (ImGui.MenuItem("下移组件", null, false, canMoveDown))
+                {
+                    (selectedObject.Components[componentIndex + 1], selectedObject.Components[componentIndex]) =
+                        (selectedObject.Components[componentIndex], selectedObject.Components[componentIndex + 1]);
+                    SetStatus($"已下移{SceneComponentTypes.GetDisplayName(component)}组件");
+                }
                 ImGui.Separator();
                 ImGui.BeginDisabled(isTransformComponent);
                 if (ImGui.MenuItem("移除组件")) removeComponentIndex = componentIndex;
@@ -2089,6 +2107,20 @@ DockId=0x6A3C3007,0
                 }
                 ImGui.EndPopup();
             }
+
+        var inspectorAfter = SceneSerializer.CloneObject(selectedObject);
+        if (!SceneSerializer.ObjectsEqual(inspectorBefore, inspectorAfter))
+        {
+            _voxelHistory.RecordExecuted(new SceneObjectStateCommand(
+                selectedObject,
+                inspectorBefore,
+                inspectorAfter,
+                () =>
+                {
+                    _sceneDocumentDirty = true;
+                    _pipeline?.ResetAccumulation();
+                }));
+        }
     }
 
     private void ResetInspectorComponent(SceneObject sceneObject, ComponentRecord component)
@@ -2145,7 +2177,10 @@ DockId=0x6A3C3007,0
                 var position = selectedObject.Transform.Free.Position;
                 var rotation = selectedObject.Transform.Free.Rotation;
                 var positionValue = new NumVector3((float)position.X, (float)position.Y, (float)position.Z);
-                BeginInspectorField("位置", "对象在场景中的位置。");
+                ImGui.TextDisabled("↔");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象在场景中的位置。");
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(Math.Max(130F, ImGui.GetContentRegionAvail().X * 0.48F));
                 if (ImGui.InputFloat3("##TransformPosition", ref positionValue))
                 {
                     selectedObject.Transform.SetFree(new FreeTransform(
@@ -2155,7 +2190,11 @@ DockId=0x6A3C3007,0
                 }
                 var euler = selectedObject.Transform.GetEulerDegrees();
                 var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
-                BeginInspectorField("旋转", "对象的 XYZ 旋转角度。");
+                ImGui.SameLine(0F, 8F);
+                ImGui.TextDisabled("⟳");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象的 XYZ 旋转角度。");
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(-1F);
                 if (ImGui.InputFloat3("##TransformRotation", ref eulerValue))
                 {
                     selectedObject.Transform.SetFreeEuler(
@@ -2168,10 +2207,14 @@ DockId=0x6A3C3007,0
             else
             {
                 var grid = selectedObject.Transform.Grid;
-                BeginInspectorField("位置", "体素对象的整数网格坐标。");
-                ImGui.Text($"X {grid.Position.X}   Y {grid.Position.Y}   Z {grid.Position.Z}");
-                BeginInspectorField("旋转", "模型按 90 度为单位旋转。");
-                ImGui.TextDisabled("以 90° 为单位");
+                ImGui.TextDisabled("↔");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素对象的整数网格坐标。");
+                ImGui.SameLine();
+                ImGui.Text($"{grid.Position.X}, {grid.Position.Y}, {grid.Position.Z}");
+                ImGui.SameLine(0F, 10F);
+                ImGui.TextDisabled("⟳");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("模型按 90 度为单位旋转。");
+                ImGui.SameLine();
                 var thirdWidth = Math.Max(46F, (ImGui.GetContentRegionAvail().X - 12F) / 3F);
                 if (ImGui.Button("X +90°##TransformRotateX", new Vector2(thirdWidth, 0F)))
                     RotateModel(selectedObject, OrthogonalRotation.AroundX90);
@@ -2787,6 +2830,53 @@ DockId=0x6A3C3007,0
         }
 
         return args.FirstOrDefault(argument => !argument.StartsWith("-", StringComparison.Ordinal));
+    }
+
+    private sealed class SceneObjectStateCommand : IEditorCommand
+    {
+        private readonly SceneObject _target;
+        private readonly SceneObject _before;
+        private readonly SceneObject _after;
+        private readonly Action _afterApply;
+
+        public SceneObjectStateCommand(SceneObject target, SceneObject before, SceneObject after, Action afterApply)
+        {
+            _target = target;
+            _before = before;
+            _after = after;
+            _afterApply = afterApply;
+        }
+
+        public string Name => "检查器属性修改";
+
+        public void Execute()
+        {
+            Copy(_target, _after);
+            _afterApply();
+        }
+
+        public void Undo()
+        {
+            Copy(_target, _before);
+            _afterApply();
+        }
+
+        private static void Copy(SceneObject target, SceneObject source)
+        {
+            target.Name = source.Name;
+            target.ParentId = source.ParentId;
+            target.Visible = source.Visible;
+            target.Locked = source.Locked;
+            target.Transform = source.Transform;
+            target.Components = source.Components.Select(component => new ComponentRecord
+            {
+                Enabled = component.Enabled,
+                OwnerPluginId = component.OwnerPluginId,
+                TypeId = component.TypeId,
+                SchemaVersion = component.SchemaVersion,
+                Data = component.Data.Clone(),
+            }).ToList();
+        }
     }
 
     private readonly record struct LayoutMetrics(float LeftWidth, float RightWidth, float AssetsHeight)
