@@ -114,6 +114,11 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                 {
                     foreach (var item in extensions.Components)
                     {
+                        if (!IsValidComponentId(item.Id))
+                        {
+                            MVoxelLog.Warn($"插件组件 ID 无效，跳过注册：{item.Id}");
+                            continue;
+                        }
                         if (_components.Any(component => component.Id == item.Id)) continue;
                         _components.Add(new PluginComponent(item.Id, item.Name, item.Category, package.Id));
                     }
@@ -273,6 +278,10 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                 item.TryGetProperty("category", out var category) ? category.GetString() ?? "插件" : "插件"))
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name)).ToList();
     }
+
+    private static bool IsValidComponentId(string id) =>
+        id.Length >= 3 && id.Contains('.', StringComparison.Ordinal) &&
+        id.All(character => char.IsLetterOrDigit(character) || character is '.' or '-' or '_');
 
     /// <summary>
     /// 停用当前运行时中的插件

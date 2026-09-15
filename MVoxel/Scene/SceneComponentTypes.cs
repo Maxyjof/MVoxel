@@ -10,12 +10,21 @@ public static class SceneComponentTypes
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// 坐标组件的稳定类型标识
+    /// </summary>
     public const string Transform = "mvoxel.transform";
+    /// <summary>
+    /// 体素模型组件的稳定类型标识
+    /// </summary>
     public const string VoxelModel = "mvoxel.voxelmodel";
     /// <summary>
     /// 相机组件的稳定类型标识
     /// </summary>
     public const string Camera = "mvoxel.camera";
+    /// <summary>
+    /// 光照组件的稳定类型标识
+    /// </summary>
     public const string Light = "mvoxel.light";
 
     public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
@@ -50,6 +59,32 @@ public static class SceneComponentTypes
         SchemaVersion = 1,
         Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
     };
+
+    /// <summary>
+    /// 读取光照组件并规范化数据
+    /// </summary>
+    public static LightComponentData ReadLight(ComponentRecord component)
+    {
+        if (!IsLight(component) || component.Data.ValueKind != JsonValueKind.Object)
+            return LightComponentData.Default;
+        var data = component.Data;
+        return new LightComponentData(
+            ReadFloat(data, "intensity", 1F),
+            ReadFloat(data, "colorR", 1F),
+            ReadFloat(data, "colorG", 1F),
+            ReadFloat(data, "colorB", 1F),
+            !data.TryGetProperty("castShadows", out var shadows) ||
+            shadows.ValueKind != JsonValueKind.False);
+    }
+
+    /// <summary>
+    /// 写回光照组件数据
+    /// </summary>
+    public static void WriteLight(ComponentRecord component, LightComponentData data)
+    {
+        if (!IsLight(component)) throw new ArgumentException("组件记录不是光照组件", nameof(component));
+        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+    }
 
     public static string GetDisplayName(ComponentRecord component) =>
         BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId)?.DisplayName ?? component.TypeId;
