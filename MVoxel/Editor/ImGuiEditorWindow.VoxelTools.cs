@@ -468,7 +468,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var capsLockMode = IsCapsLockEnabled();
-        var shiftPressed = io.KeyShift;
+        var shiftPressed = IsShiftPressed();
         if (_activeTool == EditorTool.Pick && !capsLockMode && !shiftPressed)
         {
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
