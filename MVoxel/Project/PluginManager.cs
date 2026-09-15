@@ -255,13 +255,24 @@ public static class PluginManager
     {
         ArgumentNullException.ThrowIfNull(project);
         if (string.IsNullOrWhiteSpace(pluginId)) throw new ArgumentException("插件 ID 不能为空", nameof(pluginId));
-        var packageInfo = ListInstalled().FirstOrDefault(item => item.Id == pluginId)
+        var installed = ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
+        var packageInfo = installed.GetValueOrDefault(pluginId)
             ?? throw new InvalidOperationException($"未找到编辑器级插件：{pluginId}");
         Validate(packageInfo);
 
         var current = ListEnabled(project).ToHashSet(StringComparer.Ordinal);
-        if (enabled) current.Add(pluginId);
-        else current.Remove(pluginId);
+        if (enabled)
+        {
+            AddDependencies(pluginId, installed, current, new HashSet<string>(StringComparer.Ordinal));
+        }
+        else
+        {
+            var dependent = installed.Values.FirstOrDefault(item =>
+                current.Contains(item.Id) && item.Dependencies.ContainsKey(pluginId));
+            if (dependent is not null)
+                throw new InvalidOperationException($"插件仍被已启用插件依赖：{dependent.Id}");
+            current.Remove(pluginId);
+        }
         var manifest = new PluginManifest { Enabled = current.Order(StringComparer.Ordinal).ToList() };
         AtomicFile.WriteText(Path.Combine(project.PluginsPath, "manifest.json"),
             JsonSerializer.Serialize(manifest, JsonOptions));
@@ -269,7 +280,7 @@ public static class PluginManager
         {
             Plugins = current.Order(StringComparer.Ordinal).Select(id =>
             {
-                var item = ListInstalled().First(package => package.Id == id);
+                var item = installed[id];
                 return new LockedPlugin
                 {
                     Id = item.Id,
@@ -281,5 +292,27 @@ public static class PluginManager
         };
         AtomicFile.WriteText(Path.Combine(project.PluginsPath, "plugins-lock.json"),
             JsonSerializer.Serialize(lockFile, JsonOptions));
+    }
+
+    /// <summary>
+    /// 递归解析插件依赖并加入项目启用集合
+    /// </summary>
+    /// <param name="pluginId">当前插件 ID</param>
+    /// <param name="installed">编辑器级已安装插件</param>
+    /// <param name="enabled">项目启用集合</param>
+    /// <param name="visiting">当前递归路径</param>
+    private static void AddDependencies(string pluginId,
+        IReadOnlyDictionary<string, EditorPluginPackage> installed,
+        ISet<string> enabled,
+        ISet<string> visiting)
+    {
+        if (!installed.TryGetValue(pluginId, out var package))
+            throw new InvalidOperationException($"插件依赖未安装：{pluginId}");
+        if (!visiting.Add(pluginId))
+            throw new InvalidOperationException($"插件依赖存在循环：{pluginId}");
+        foreach (var dependencyId in package.Dependencies.Keys)
+            AddDependencies(dependencyId, installed, enabled, visiting);
+        visiting.Remove(pluginId);
+        enabled.Add(pluginId);
     }
 }
