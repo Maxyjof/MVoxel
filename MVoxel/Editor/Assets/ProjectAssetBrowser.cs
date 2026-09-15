@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Diagnostics;
 using ImGuiNET;
 using MVoxel.Project;
 using Vector2 = System.Numerics.Vector2;
@@ -20,6 +21,8 @@ internal sealed class ProjectAssetBrowser
     private bool _searchAll = true;
     private float _treeWidth = 216F;
     private float _tileSize = 76F;
+
+    internal string SelectedAssetPath => _selectedAsset;
 
     /// <summary>
     /// 清空选择状态（切换项目或手动刷新时调用）
@@ -168,15 +171,39 @@ internal sealed class ProjectAssetBrowser
             if (ImGui.Selectable("##资源平铺项", selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(tileWidth, tileHeight)))
             {
                 _selectedAsset = entry.RelativePath;
-                if (entry.IsFolder && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                reportStatus($"已选择{ProjectAssetCatalog.KindLabel(entry.Kind)}：{entry.DisplayName}");
+            }
+
+            if (entry.IsFolder && ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            {
+                _selectedFolder = entry.RelativePath;
+                _selectedAsset = string.Empty;
+                reportStatus($"已打开文件夹：{entry.DisplayName}");
+            }
+
+            if (ImGui.BeginPopupContextItem("##资源右键菜单"))
+            {
+                _selectedAsset = entry.RelativePath;
+                if (ImGui.MenuItem("打开"))
                 {
-                    _selectedFolder = entry.RelativePath;
-                    _selectedAsset = string.Empty;
+                    if (entry.IsFolder)
+                    {
+                        _selectedFolder = entry.RelativePath;
+                        _selectedAsset = string.Empty;
+                    }
+                    else
+                    {
+                        OpenWithShell(project, entry.RelativePath, reportStatus);
+                    }
                 }
-                else
+                if (ImGui.MenuItem("在资源管理器中打开"))
+                    RevealInExplorer(project, entry.RelativePath, reportStatus);
+                if (ImGui.MenuItem("复制相对路径"))
                 {
-                    reportStatus($"已选择{ProjectAssetCatalog.KindLabel(entry.Kind)}：{entry.DisplayName}");
+                    ImGui.SetClipboardText(entry.RelativePath);
+                    reportStatus($"已复制相对路径：{entry.RelativePath}");
                 }
+                ImGui.EndPopup();
             }
 
             var min = ImGui.GetItemRectMin();
@@ -237,6 +264,40 @@ internal sealed class ProjectAssetBrowser
 
     private static string FilterLabel(ProjectAssetKind? kind) => kind is null ? "筛选：全部" : ProjectAssetCatalog.KindLabel(kind.Value);
 
+    private static void OpenWithShell(ProjectHandle? project, string relativePath, Action<string> reportStatus)
+    {
+        var path = ResolveAssetPath(project, relativePath);
+        if (path is null) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception exception) { reportStatus($"打开资源失败：{exception.Message}"); }
+    }
+
+    private static void RevealInExplorer(ProjectHandle? project, string relativePath, Action<string> reportStatus)
+    {
+        var path = ResolveAssetPath(project, relativePath);
+        if (path is null) return;
+        try
+        {
+            if (Directory.Exists(path))
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+            else
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception exception) { reportStatus($"打开资源管理器失败：{exception.Message}"); }
+    }
+
+    private static string? ResolveAssetPath(ProjectHandle? project, string relativePath)
+    {
+        if (project is null || Path.IsPathRooted(relativePath)) return null;
+        var root = Path.GetFullPath(project.AssetsPath);
+        var path = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        return path.Equals(root, StringComparison.OrdinalIgnoreCase) || path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            ? path : null;
+    }
+
     private static void DrawCenteredText(ImDrawListPtr draw, string text, float x, float width, float y, Color color)
     {
         var truncated = Truncate(text, width - 8F);
@@ -284,6 +345,8 @@ internal enum ProjectAssetKind
     Script,
     /// <summary>文档</summary>
     Document,
+    /// <summary>PNG 图片</summary>
+    Image,
     /// <summary>其他</summary>
     Unknown,
 }
@@ -319,6 +382,7 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Generator,
         ProjectAssetKind.Script,
         ProjectAssetKind.Document,
+        ProjectAssetKind.Image,
         ProjectAssetKind.Unknown,
     };
 
@@ -451,6 +515,7 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Generator => "生成器",
         ProjectAssetKind.Script => "脚本",
         ProjectAssetKind.Document => "文档",
+        ProjectAssetKind.Image => "PNG 图像",
         _ => "其他文件",
     };
 
@@ -475,6 +540,7 @@ internal static class ProjectAssetCatalog
             ".mvgenerator" => ProjectAssetKind.Generator,
             ".cs" or ".lua" => ProjectAssetKind.Script,
             ".txt" or ".md" or ".json" => ProjectAssetKind.Document,
+            ".png" => ProjectAssetKind.Image,
             _ => ProjectAssetKind.Unknown,
         };
     }
@@ -602,6 +668,10 @@ internal static class AssetIconPainter
             case ProjectAssetKind.Script:
                 DrawDocument(draw, p, main, shade, outline, kind == ProjectAssetKind.Generator);
                 break;
+            case ProjectAssetKind.Image:
+                DrawDocument(draw, p, Color.FromArgb(255, 220, 74, 74), shade, outline, false);
+                draw.AddText(p(new Vector2(.29F, .43F)), ToPackedColor(Color.White), "PNG");
+                break;
             default:
                 DrawDocument(draw, p, main, shade, outline, false);
                 break;
@@ -645,6 +715,7 @@ internal static class AssetIconPainter
         ProjectAssetKind.Generator => Color.FromArgb(255, 99, 215, 145),
         ProjectAssetKind.Script => Color.FromArgb(255, 132, 196, 246),
         ProjectAssetKind.Document => Color.FromArgb(255, 170, 183, 201),
+        ProjectAssetKind.Image => Color.FromArgb(255, 224, 86, 86),
         _ => selected ? EditorPalette.Icon : Color.FromArgb(255, 143, 157, 177),
     };
 

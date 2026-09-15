@@ -47,6 +47,12 @@ internal static class AppBranding
         return PngDecoder.TryDecode(FindLogoPath(), out pixels, out width, out height);
     }
 
+    /// <summary>读取项目中的 PNG 文件并转换为 RGBA8 像素。</summary>
+    internal static bool TryLoadPngPixels(string path, out byte[] pixels, out int width, out int height)
+    {
+        return PngDecoder.TryDecode(path, out pixels, out width, out height);
+    }
+
     /// <summary>
     /// 查找构建输出中的品牌图路径
     /// </summary>

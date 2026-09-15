@@ -468,10 +468,16 @@ internal sealed partial class ImGuiEditorWindow
             }
             var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
-            var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
+            // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
+            var firstSubmit = pipeline.DisplayTextureId == IntPtr.Zero;
+            var wantTrace = (firstSubmit || _settingsTogglePath) &&
+                            pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                if (!pipeline.RenderPathView(renderSettings, frame, width, height))
+                var submitted = _settingsTogglePath
+                    ? pipeline.RenderPathView(renderSettings, frame, width, height)
+                    : pipeline.RenderSceneView(renderSettings, frame, width, height);
+                if (!submitted)
                 {
                     return false;
                 }

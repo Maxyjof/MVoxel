@@ -39,6 +39,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
+    private nint _assetPreviewTextureId;
+    private string _assetPreviewPath = string.Empty;
+    private int _assetPreviewWidth;
+    private int _assetPreviewHeight;
     private readonly BlockingOperationRunner _projectOperation = new();
     private ImGuiWelcomeWindow? _welcomeWindow;
     private bool _showWelcomeRequested;
@@ -308,6 +312,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _pluginRuntime = null;
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
+        if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
+        _assetPreviewTextureId = 0;
         _imguiRenderer?.Dispose();
         _imguiRenderer = null;
         _controller?.Dispose();
@@ -2054,6 +2060,11 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawInspectorProperties()
     {
+        if (_selectedSceneObjectId is null && TryDrawSelectedPngInspector())
+        {
+            return;
+        }
+
         var selectedObject = _selectedSceneObjectId is { } selectedObjectId
             ? _sceneDocument?.Objects.FirstOrDefault(item => item.Id == selectedObjectId)
             : null;
@@ -2308,6 +2319,46 @@ DockId=0x6A3C3007,0
                     _pipeline?.ResetAccumulation();
                 }));
         }
+    }
+
+    private bool TryDrawSelectedPngInspector()
+    {
+        var relativePath = _assetBrowser.SelectedAssetPath;
+        if (_project is null || !relativePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) return false;
+        var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(path)) return false;
+
+        if (!string.Equals(_assetPreviewPath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
+            _assetPreviewTextureId = 0;
+            _assetPreviewPath = path;
+            if (AppBranding.TryLoadPngPixels(path, out var pixels, out _assetPreviewWidth, out _assetPreviewHeight) && _imguiRenderer is not null)
+            {
+                _assetPreviewTextureId = _imguiRenderer.RegisterTexture(pixels, _assetPreviewWidth, _assetPreviewHeight);
+            }
+        }
+
+        ImGui.Text("PNG 图像");
+        ImGui.Separator();
+        ImGui.TextWrapped(Path.GetFileName(path));
+        var info = new FileInfo(path);
+        ImGui.TextDisabled($"尺寸  {_assetPreviewWidth} × {_assetPreviewHeight}");
+        ImGui.TextDisabled($"大小  {info.Length / 1024F:0.0} KB");
+        ImGui.TextDisabled("格式  PNG");
+        ImGui.Spacing();
+        if (_assetPreviewTextureId != 0)
+        {
+            var available = ImGui.GetContentRegionAvail().X;
+            var width = Math.Min(available, Math.Max(1F, _assetPreviewWidth));
+            var height = width * _assetPreviewHeight / Math.Max(1F, _assetPreviewWidth);
+            ImGui.Image(_assetPreviewTextureId, new Vector2(width, height));
+        }
+        else
+        {
+            ImGui.TextDisabled("无法读取此 PNG 图像");
+        }
+        return true;
     }
 
     private void ResetInspectorComponent(SceneObject sceneObject, ComponentRecord component)
@@ -2649,6 +2700,11 @@ DockId=0x6A3C3007,0
         }
 
         _assetBrowser.Draw(_project, SetStatus);
+        if (_assetBrowser.SelectedAssetPath.Length > 0)
+        {
+            _selectedSceneObjectId = null;
+            _selectedVoxel = null;
+        }
 
         ImGui.End();
     }
