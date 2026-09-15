@@ -828,10 +828,12 @@ DockId=0x6A3C3007,0
         }
 
         var nodeId = $"{sceneObject.Name}##SceneObject_{sceneObject.Id}";
-        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,
-            ToColor(Color.FromArgb(42, EditorPalette.AccentSoft)));
+        var transparentHeader = Color.FromArgb(0, EditorPalette.PanelHeader);
+        ImGui.PushStyleColor(ImGuiCol.Header, ToColor(transparentHeader));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(transparentHeader));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive, ToColor(transparentHeader));
         var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
-        ImGui.PopStyleColor();
+        ImGui.PopStyleColor(3);
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
         var rowClicked = ImGui.IsItemClicked();
@@ -844,11 +846,15 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorScreenPos(treeCursor);
 
         var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
-        if (rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax))
+        var rowHovered = rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax);
+        if (rowHovered || _selectedSceneObjectId == sceneObject.Id)
         {
             var drawList = ImGui.GetWindowDrawList();
+            var rowColor = _selectedSceneObjectId == sceneObject.Id
+                ? Color.FromArgb(150, EditorPalette.Accent)
+                : Color.FromArgb(42, EditorPalette.AccentSoft);
             drawList.AddRectFilled(rowMin, fullRowMax,
-                ToPackedColor(Color.FromArgb(42, EditorPalette.AccentSoft)), 2F);
+                ToPackedColor(rowColor), 2F);
         }
 
         const float iconWidth = HierarchyRowIconSize;
