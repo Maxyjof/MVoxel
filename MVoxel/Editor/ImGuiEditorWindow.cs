@@ -313,6 +313,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.openProject" => QueueOpenProject(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.reloadPlugins" => QueueReloadPlugins(),
+            "editor.installPlugin" => InstallPlugin(request),
+            "editor.setPluginEnabled" => SetPluginEnabled(request),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
         };
     }
@@ -355,6 +357,39 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         _pendingActions.Enqueue(ReloadPlugins);
         return new { queued = true };
+    }
+
+    /// <summary>
+    /// 由编辑器进程安装插件并请求重载
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>安装结果</returns>
+    private object InstallPlugin(JsonElement request)
+    {
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
+        var source = arguments.GetProperty("sourceDirectory").GetString();
+        if (string.IsNullOrWhiteSpace(source)) throw new ArgumentException("插件目录不能为空");
+        var package = PluginManager.InstallFromDirectory(source);
+        _pendingActions.Enqueue(ReloadPlugins);
+        return new { package.Id, package.Name, package.Version, queued = true };
+    }
+
+    /// <summary>
+    /// 由编辑器进程修改当前项目插件启停状态并请求重载
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>启停结果</returns>
+    private object SetPluginEnabled(JsonElement request)
+    {
+        if (_project is null) throw new InvalidOperationException("当前没有打开项目");
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
+        var pluginId = arguments.GetProperty("pluginId").GetString();
+        var enabled = arguments.GetProperty("enabled").GetBoolean();
+        if (string.IsNullOrWhiteSpace(pluginId)) throw new ArgumentException("插件 ID 不能为空");
+        if (enabled) PluginManager.Enable(_project, pluginId);
+        else PluginManager.Disable(_project, pluginId);
+        _pendingActions.Enqueue(ReloadPlugins);
+        return new { pluginId, enabled, queued = true };
     }
 
     /// <summary>

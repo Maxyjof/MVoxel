@@ -97,6 +97,8 @@ internal static class Program
             "editor.openProject" => CallEditor("editor.openProject", arguments),
             "editor.invokeAutomation" => CallEditor("editor.invokeAutomation", arguments),
             "editor.reloadPlugins" => CallEditor("editor.reloadPlugins", arguments),
+            "editor.installPlugin" => CallEditor("editor.installPlugin", arguments),
+            "editor.setPluginEnabled" => CallEditor("editor.setPluginEnabled", arguments),
             _ => throw new InvalidOperationException($"未找到 MCP 工具：{name}"),
         };
         return new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(result, JsonOptions) } }, structuredContent = result };
@@ -204,5 +206,7 @@ internal static class Program
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
         new { name = "editor.reloadPlugins", description = "请求运行中的编辑器重新加载当前项目插件", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.installPlugin", description = "让运行中的编辑器安装 JavaScript 插件并重载", inputSchema = new { type = "object", properties = new { sourceDirectory = new { type = "string" } }, required = new[] { "sourceDirectory" } } },
+        new { name = "editor.setPluginEnabled", description = "修改当前项目插件启停状态并重载", inputSchema = new { type = "object", properties = new { pluginId = new { type = "string" }, enabled = new { type = "boolean" } }, required = new[] { "pluginId", "enabled" } } },
     ];
 }
