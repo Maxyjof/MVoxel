@@ -127,7 +127,7 @@ internal static class Program
             {
                 var project = ProjectLayout.Open(args[1]);
                 foreach (var diagnostic in PluginManager.Diagnose(project))
-                    Console.WriteLine($"{(diagnostic.Installed ? "[已安装]" : "[缺失]")} {diagnostic.PluginId} {diagnostic.Version ?? string.Empty}");
+                    Console.WriteLine($"{(diagnostic.Installed ? "[已安装]" : "[缺失]")} {diagnostic.PluginId} {diagnostic.Version ?? string.Empty} {diagnostic.Status}");
                 return 0;
             }
             case "--enable-plugin" when args.Length == 3:

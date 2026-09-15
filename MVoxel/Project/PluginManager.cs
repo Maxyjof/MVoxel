@@ -55,7 +55,7 @@ public sealed class EditorPluginPackage
 /// <summary>
 /// 项目插件启用状态诊断结果
 /// </summary>
-public sealed record ProjectPluginDiagnostic(string PluginId, bool Installed, string? Version);
+public sealed record ProjectPluginDiagnostic(string PluginId, bool Installed, string? Version, string Status);
 
 /// <summary>
 /// 管理编辑器级插件和项目级启停状态
@@ -223,7 +223,16 @@ public static class PluginManager
         return ListEnabled(project).Select(pluginId =>
         {
             installed.TryGetValue(pluginId, out var package);
-            return new ProjectPluginDiagnostic(pluginId, package is not null, package?.Version);
+            if (package is null)
+                return new ProjectPluginDiagnostic(pluginId, false, null, "缺失插件");
+            var missingDependency = package.Dependencies.Keys.FirstOrDefault(dependencyId => !installed.ContainsKey(dependencyId));
+            if (missingDependency is not null)
+                return new ProjectPluginDiagnostic(pluginId, true, package.Version, $"缺失依赖：{missingDependency}");
+            var invalidDependency = package.Dependencies.FirstOrDefault(dependency =>
+                !IsVersionSatisfied(installed[dependency.Key].Version, dependency.Value));
+            return invalidDependency.Key is null
+                ? new ProjectPluginDiagnostic(pluginId, true, package.Version, "正常")
+                : new ProjectPluginDiagnostic(pluginId, true, package.Version, $"依赖版本不满足：{invalidDependency.Key} {invalidDependency.Value}");
         }).ToArray();
     }
 
