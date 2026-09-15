@@ -10,6 +10,6 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="..\MVoxel\MVoxel.csproj" />
-        <Content Include="Plugins\**\*" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="..\MVoxel\Plugins\**\*" Link="Plugins\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 </Project>
