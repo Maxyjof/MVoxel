@@ -53,12 +53,18 @@ internal static class Program
         Console.WriteLine("      启动 MCP stdio 服务");
         Console.WriteLine("  --project-info <项目目录>");
         Console.WriteLine("      输出项目摘要");
+        Console.WriteLine("  --create-project <项目目录> [项目名称]");
+        Console.WriteLine("      创建空项目");
         Console.WriteLine("  --list-plugins <项目目录>");
         Console.WriteLine("      输出已安装插件和项目启用状态");
         Console.WriteLine("  --enable-plugin <项目目录> <插件 ID>");
         Console.WriteLine("      在项目中启用插件");
         Console.WriteLine("  --disable-plugin <项目目录> <插件 ID>");
         Console.WriteLine("      在项目中禁用插件");
+        Console.WriteLine("  --editor-status");
+        Console.WriteLine("      输出运行中编辑器状态");
+        Console.WriteLine("  --open-project <项目目录>");
+        Console.WriteLine("      请求运行中的编辑器打开项目");
     }
 
     /// <summary>
@@ -78,6 +84,13 @@ internal static class Program
                 Console.WriteLine($"引擎版本：{project.Manifest.EngineVersion}");
                 return 0;
             }
+            case "--create-project" when args.Length is 2 or 3:
+            {
+                var project = ProjectLayout.Create(args[1], args.Length == 3 ? args[2] : null);
+                Console.WriteLine($"已创建项目：{project.Manifest.Name}");
+                Console.WriteLine($"路径：{project.RootPath}");
+                return 0;
+            }
             case "--list-plugins" when args.Length == 2:
             {
                 var project = ProjectLayout.Open(args[1]);
@@ -94,6 +107,18 @@ internal static class Program
                 PluginManager.Disable(ProjectLayout.Open(args[1]), args[2]);
                 Console.WriteLine($"已禁用插件：{args[2]}");
                 return 0;
+            case "--editor-status" when args.Length == 1:
+            {
+                using var arguments = JsonDocument.Parse("{}");
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.status", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--open-project" when args.Length == 2:
+            {
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { path = args[1] }));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.openProject", arguments.RootElement), JsonOptions));
+                return 0;
+            }
             default:
                 PrintHelp();
                 return 2;
