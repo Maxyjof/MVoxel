@@ -1857,75 +1857,73 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawInspectorProperties()
     {
-        ImGui.Text("项目");
-        ImGui.SameLine(90F);
-        ImGui.TextColored(ToColor(EditorPalette.Text), _project?.Manifest.Name ?? "未打开项目");
-        ImGui.Text("路径");
-        ImGui.SameLine(90F);
-        ImGui.TextWrapped(_project?.RootPath ?? "欢迎使用 MVoxel");
-        ImGui.SeparatorText("选择");
         var selectedObject = _selectedSceneObjectId is { } selectedObjectId
             ? _sceneDocument?.Objects.FirstOrDefault(item => item.Id == selectedObjectId)
             : null;
-        if (selectedObject is not null)
+        if (selectedObject is null)
         {
-            if (!string.IsNullOrWhiteSpace(_componentWarning))
-                ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
-            ImGui.Text($"对象  {selectedObject.Name}{(_sceneDocumentDirty ? " *" : string.Empty)}");
-            ImGui.Text($"组件  {selectedObject.Components.Count}");
-            var visible = selectedObject.Visible;
-            if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
-            {
-                selectedObject.Visible = visible;
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-                _accumulationSignature = string.Empty;
-            }
+            ImGui.TextDisabled("未选择对象");
+            ImGui.TextDisabled("在层级或场景窗口中选择一个对象");
+            return;
+        }
 
-            var locked = selectedObject.Locked;
-            if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
-            {
-                selectedObject.Locked = locked;
-                MarkSceneDocumentDirty();
-                if (locked)
-                {
-                    _selectedSceneObjectId = null;
-                }
-            }
+        if (!string.IsNullOrWhiteSpace(_componentWarning))
+            ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
+        ImGui.Text($"{selectedObject.Name}{(_sceneDocumentDirty ? " *" : string.Empty)}");
+        ImGui.SeparatorText("对象");
+        var visible = selectedObject.Visible;
+        if (ImGui.Checkbox("可见##InspectorObjectVisibility", ref visible))
+        {
+            selectedObject.Visible = visible;
+            MarkSceneDocumentDirty();
+            _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
+        }
 
-            ImGui.SeparatorText("组件");
-            var removeComponentIndex = -1;
-            for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
+        var locked = selectedObject.Locked;
+        if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
+        {
+            selectedObject.Locked = locked;
+            MarkSceneDocumentDirty();
+            if (locked)
             {
-                var component = selectedObject.Components[componentIndex];
-                var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
-                var label = definition is null
-                    ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
-                    : $"{definition.DisplayName} · {definition.Category}";
-                ImGui.PushID($"InspectorComponent{componentIndex}");
-                var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
-                ImGui.SameLine();
-                ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
-                if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;
-                ImGui.EndDisabled();
-                if (expanded)
-                {
-                    DrawComponentSummary(selectedObject, component);
-                    ImGui.TreePop();
-                }
-                ImGui.PopID();
+                _selectedSceneObjectId = null;
             }
+        }
 
-            if (removeComponentIndex >= 0)
+        ImGui.SeparatorText("组件");
+        var removeComponentIndex = -1;
+        for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
+        {
+            var component = selectedObject.Components[componentIndex];
+            var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
+            var label = definition is null
+                ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
+                : $"{definition.DisplayName} · {definition.Category}";
+            ImGui.PushID($"InspectorComponent{componentIndex}");
+            var expanded = ImGui.TreeNodeEx(label, ImGuiTreeNodeFlags.SpanAvailWidth);
+            ImGui.SameLine();
+            ImGui.BeginDisabled(SceneComponentTypes.IsTransform(component));
+            if (ImGui.SmallButton("移除")) removeComponentIndex = componentIndex;
+            ImGui.EndDisabled();
+            if (expanded)
             {
-                var removed = selectedObject.Components[removeComponentIndex];
-                selectedObject.Components.RemoveAt(removeComponentIndex);
-                _componentWarning = null;
-                MarkSceneDocumentDirty();
-                SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
+                DrawComponentSummary(selectedObject, component);
+                ImGui.TreePop();
             }
+            ImGui.PopID();
+        }
 
-            if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
+        if (removeComponentIndex >= 0)
+        {
+            var removed = selectedObject.Components[removeComponentIndex];
+            selectedObject.Components.RemoveAt(removeComponentIndex);
+            _componentWarning = null;
+            MarkSceneDocumentDirty();
+            SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
+        }
+
+        if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
             {
                 foreach (var definition in SceneComponentTypes.BuiltInDefinitions)
                 {
@@ -1974,47 +1972,6 @@ DockId=0x6A3C3007,0
                 }
                 ImGui.EndCombo();
             }
-        }
-
-        if (_selectedVoxel is { } selected)
-        {
-            var voxel = _world.TryGet(selected.Coordinate, out var existing) ? existing : default;
-            ImGui.Text($"坐标  {selected.Coordinate.X}, {selected.Coordinate.Y}, {selected.Coordinate.Z}");
-            ImGui.Text($"颜色  #{voxel.Color.R}, {voxel.Color.G}, {voxel.Color.B} · A{voxel.Color.A}");
-            var flags = voxel.Flags;
-            ImGui.TextDisabled($"材质标志  {(VoxelFlags.Has(flags, VoxelFlags.Emissive) ? "自发光 " : string.Empty)}" +
-                               $"{(VoxelFlags.Has(flags, VoxelFlags.Translucent) ? "半透明" : string.Empty)}" +
-                               (VoxelFlags.Has(flags, VoxelFlags.Emissive | VoxelFlags.Translucent) ? string.Empty : "不透明"));
-            if (ImGui.Button("取为画笔颜色"))
-            {
-                var nearest = 0;
-                var best = int.MaxValue;
-                for (var index = 0; index < _palette.Length; index++)
-                {
-                    var candidate = _palette[index];
-                    var distance = Math.Abs(candidate.R - voxel.Color.R) +
-                                   Math.Abs(candidate.G - voxel.Color.G) +
-                                   Math.Abs(candidate.B - voxel.Color.B) +
-                                   Math.Abs(candidate.A - voxel.Color.A) / 2;
-                    if (distance >= best) continue;
-                    best = distance;
-                    nearest = index;
-                }
-                _paletteIndex = nearest;
-                SetStatus($"画笔颜色已取自选中的体素（色板 #{nearest}）");
-            }
-        }
-        else if (selectedObject is null)
-        {
-            ImGui.TextDisabled("未选择对象 · 使用“选择”工具点击体素");
-        }
-
-        ImGui.SeparatorText("体素世界");
-        ImGui.Text($"占用体素  {_world.OccupiedVoxelCount:N0}");
-        ImGui.Text($"驻留区块  {_world.LoadedChunkCount:N0} × 32³");
-        ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
-        ImGui.TextDisabled("坐标  0, 0, 0");
-        ImGui.SeparatorText("材质");
     }
 
     private void DrawComponentSummary(SceneObject selectedObject, ComponentRecord component)
