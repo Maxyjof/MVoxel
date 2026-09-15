@@ -2301,7 +2301,8 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsVoxelModel(component)) return 150F;
         if (SceneComponentTypes.IsCamera(component)) return 132F;
         if (SceneComponentTypes.IsLight(component)) return 124F;
-        return 116F;
+        // 插件组件包含状态、类型、来源和 JSON 编辑区，固定留出完整显示空间；组件内部不滚动。
+        return 190F;
     }
 
     private static void DrawInspectorIcon(bool rotation, string tooltip)
