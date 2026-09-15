@@ -115,14 +115,18 @@ internal sealed class ImGuiWelcomeContent
 
     internal void Draw()
     {
-        var display = ImGui.GetIO().DisplaySize;
+        var screen = ImGui.GetIO().DisplaySize;
+        var panelSize = new Vector2(
+            Math.Min(780F, Math.Max(520F, screen.X - 32F)),
+            Math.Min(620F, Math.Max(420F, screen.Y - 64F)));
         var operation = _editor.ProjectOperationSnapshot;
         if (operation is not null) ImGui.BeginDisabled();
-        ImGui.SetNextWindowPos(Vector2.Zero, ImGuiCond.Always);
-        ImGui.SetNextWindowSize(display, ImGuiCond.Always);
+        ImGui.SetNextWindowPos(screen / 2F, ImGuiCond.Always, new Vector2(.5F, .5F));
+        ImGui.SetNextWindowSize(panelSize, ImGuiCond.Always);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelWelcome", flags);
+        var display = ImGui.GetWindowSize();
 
         var titleBarPosition = ImGui.GetCursorScreenPos();
         ImGui.InvisibleButton("##WelcomeTitleBar", new Vector2(display.X, TitleBarHeight));
