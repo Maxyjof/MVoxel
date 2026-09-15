@@ -71,6 +71,10 @@ internal static class Program
         Console.WriteLine("      请求运行中的编辑器重载插件");
         Console.WriteLine("  --set-plugin-enabled <插件 ID> <true|false>");
         Console.WriteLine("      修改运行中项目的插件启停状态");
+        Console.WriteLine("  --invoke-automation <自动化 ID> [JSON 参数]");
+        Console.WriteLine("      调用运行中插件的自动化入口");
+        Console.WriteLine("  --invoke-command <命令 ID> [JSON 参数]");
+        Console.WriteLine("      调用运行中插件的编辑器命令");
     }
 
     /// <summary>
@@ -141,6 +145,20 @@ internal static class Program
             {
                 using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { pluginId = args[1], enabled }));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.setPluginEnabled", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--invoke-automation" when args.Length is 2 or 3:
+            {
+                using var payload = JsonDocument.Parse(args.Length == 3 ? args[2] : "{}");
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { automationId = args[1], payload = payload.RootElement }));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.invokeAutomation", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--invoke-command" when args.Length is 2 or 3:
+            {
+                using var payload = JsonDocument.Parse(args.Length == 3 ? args[2] : "{}");
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { commandId = args[1], payload = payload.RootElement }));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.invokeCommand", arguments.RootElement), JsonOptions));
                 return 0;
             }
             default:
