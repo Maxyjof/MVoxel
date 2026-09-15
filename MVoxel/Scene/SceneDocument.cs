@@ -252,6 +252,7 @@ public static class SceneSerializer
         // 旧场景可能缺少组件列表、重复保存坐标组件或把坐标组件标记为停用。
         // 加载时统一恢复对象不变量，同时不触碰其他内置和插件组件记录。
         scene.Objects ??= new List<SceneObject>();
+        scene.Objects.RemoveAll(sceneObject => sceneObject is null);
         foreach (var sceneObject in scene.Objects)
         {
             sceneObject.Transform ??= TransformComponent.FromFree(FreeTransform.Identity);
