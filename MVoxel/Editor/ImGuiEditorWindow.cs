@@ -311,6 +311,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 automations = _pluginRuntime?.Automations ?? [],
             },
             "editor.openProject" => QueueOpenProject(request),
+            "editor.invokeAutomation" => InvokeAutomation(request),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
         };
     }
@@ -327,6 +328,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("项目路径不能为空");
         RequestOpenProject(path);
         return new { queued = true, path };
+    }
+
+    /// <summary>
+    /// 执行当前项目插件注册的自动化入口
+    /// </summary>
+    /// <param name="request">命令 JSON</param>
+    /// <returns>自动化结果</returns>
+    private object InvokeAutomation(JsonElement request)
+    {
+        if (_pluginRuntime is null) throw new InvalidOperationException("当前没有激活的插件运行时");
+        var arguments = request.TryGetProperty("arguments", out var value) ? value : default;
+        var id = arguments.GetProperty("automationId").GetString();
+        using var emptyPayload = JsonDocument.Parse("{}");
+        var payload = arguments.TryGetProperty("payload", out var item) ? item : emptyPayload.RootElement;
+        if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("自动化入口 ID 不能为空");
+        return _pluginRuntime.Invoke(id, payload, TimeSpan.FromSeconds(10));
     }
 
     private void RequestWelcomeWindow() => _showWelcomeRequested = true;

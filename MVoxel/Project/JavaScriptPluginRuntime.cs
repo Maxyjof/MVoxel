@@ -16,6 +16,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
 {
     private readonly List<EditorPluginPackage> _active = new();
     private readonly List<PluginAutomation> _automations = new();
+    private readonly Dictionary<string, EditorPluginPackage> _automationOwners = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 当前已注册的自动化入口
@@ -37,8 +38,12 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             if (package is null) continue;
             try
             {
-                _automations.AddRange(ExecuteActivate(package, timeout).Select(item =>
-                    new PluginAutomation(item.Id, item.Name, package.Id)));
+                foreach (var item in ExecuteActivate(package, timeout))
+                {
+                    var automation = new PluginAutomation(item.Id, item.Name, package.Id);
+                    _automations.Add(automation);
+                    _automationOwners[item.Id] = package;
+                }
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
             }
@@ -48,6 +53,51 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             }
         }
         return _active;
+    }
+
+    /// <summary>
+    /// 执行当前项目已注册的自动化入口
+    /// </summary>
+    /// <param name="automationId">自动化入口 ID</param>
+    /// <param name="arguments">自动化参数</param>
+    /// <param name="timeout">单次执行时间上限</param>
+    /// <returns>自动化返回值</returns>
+    public JsonElement Invoke(string automationId, JsonElement arguments, TimeSpan timeout)
+    {
+        if (!_automationOwners.TryGetValue(automationId, out var package))
+            throw new InvalidOperationException($"未找到已启用的自动化入口：{automationId}");
+        var entry = PluginManager.ResolveEntryPath(package);
+        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
+            "const p=await import(m);const id=process.argv[2];const a=JSON.parse(process.argv[3]);" +
+            "const h={registerAutomation:()=>{}};let r=null;if(typeof p.runAutomation==='function')r=await p.runAutomation(id,a,h);" +
+            "process.stdout.write(JSON.stringify(r??null));";
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "node",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("--permission");
+        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
+        startInfo.ArgumentList.Add("--input-type=module");
+        startInfo.ArgumentList.Add("-e");
+        startInfo.ArgumentList.Add(script);
+        startInfo.ArgumentList.Add(entry);
+        startInfo.ArgumentList.Add(automationId);
+        startInfo.ArgumentList.Add(arguments.GetRawText());
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        {
+            process.Kill(true);
+            throw new TimeoutException("自动化执行超时");
+        }
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "自动化执行失败" : error.Trim());
+        using var document = JsonDocument.Parse(output);
+        return document.RootElement.Clone();
     }
 
     private static IReadOnlyList<PluginAutomationData> ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
@@ -96,6 +146,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         foreach (var package in _active) MVoxelLog.Info($"JavaScript 插件已停用：{package.Id}");
         _active.Clear();
         _automations.Clear();
+        _automationOwners.Clear();
     }
 
     private sealed record PluginAutomationData(string Id, string Name);
