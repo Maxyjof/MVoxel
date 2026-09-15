@@ -220,14 +220,14 @@ public static class SceneValidation
 
             var visited = new HashSet<StableId>();
             var current = sceneObject;
-            while (current.ParentId is { } parentId)
+            while (current.ParentId is { } ancestorId)
             {
                 if (!visited.Add(current.Id))
                 {
                     errors.Add($"对象“{sceneObject.Name}”所在层级存在循环");
                     break;
                 }
-                if (!objects.TryGetValue(parentId, out current!)) break;
+                if (!objects.TryGetValue(ancestorId, out current!)) break;
             }
 
             if (sceneObject.Components.Count(SceneComponentTypes.IsTransform) != 1 ||
