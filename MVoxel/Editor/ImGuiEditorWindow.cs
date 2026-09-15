@@ -1535,9 +1535,9 @@ DockId=0x6A3C3007,0
     private bool IsVoxelWorldVisible()
     {
         var modelObject = GetVoxelWorldObject();
-        return modelObject is null ||
-               (modelObject.Visible && modelObject.Components.Any(component =>
-                   SceneComponentTypes.IsVoxelModel(component) && component.Enabled));
+        return modelObject is not null && modelObject.Visible &&
+               modelObject.Components.Any(component =>
+                   SceneComponentTypes.IsVoxelModel(component) && component.Enabled);
     }
 
     /// <summary>
