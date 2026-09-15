@@ -263,7 +263,7 @@ public static class PluginManager
         }
         foreach (var dependency in packageInfo.Dependencies)
         {
-            if (!IsValidPluginId(dependency.Key) || string.IsNullOrWhiteSpace(dependency.Value) ||
+            if (!IsValidPluginId(dependency.Key) || !IsValidVersionRange(dependency.Value) ||
                 string.Equals(dependency.Key, packageInfo.Id, StringComparison.Ordinal))
                 throw new InvalidDataException("插件依赖声明不符合安全要求");
         }
@@ -285,6 +285,25 @@ public static class PluginManager
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// 验证依赖版本范围的基础字符集
+    /// </summary>
+    /// <param name="versionRange">版本范围</param>
+    /// <returns>是否为可解析的基础版本范围</returns>
+    private static bool IsValidVersionRange(string? versionRange)
+    {
+        if (string.IsNullOrWhiteSpace(versionRange)) return false;
+        var hasVersionCharacter = false;
+        foreach (var character in versionRange)
+        {
+            if (char.IsAsciiDigit(character)) hasVersionCharacter = true;
+            if (char.IsAsciiLetterOrDigit(character) || character is '.' or '-' or '_' or '^' or '~' or '<' or '>' or '=' or '*' or '|' or ',' or ' ')
+                continue;
+            return false;
+        }
+        return hasVersionCharacter || versionRange.Trim() == "*";
     }
 
     /// <summary>
