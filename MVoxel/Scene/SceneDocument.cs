@@ -197,6 +197,49 @@ public sealed class SceneGraph
 }
 
 /// <summary>
+/// 对已加载场景执行不修改数据的结构校验，供编辑器诊断和 CLI/MCP 共用。
+/// </summary>
+public static class SceneValidation
+{
+    public static IReadOnlyList<string> Validate(SceneDocument scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        var errors = new List<string>();
+        var duplicates = scene.Objects.GroupBy(item => item.Id).Where(group => group.Count() > 1);
+        foreach (var duplicate in duplicates)
+            errors.Add($"对象 ID 重复：{duplicate.Key}");
+
+        var objects = scene.Objects.GroupBy(item => item.Id).ToDictionary(group => group.Key, group => group.First());
+        foreach (var sceneObject in scene.Objects)
+        {
+            if (sceneObject.ParentId is { } parentId && !objects.ContainsKey(parentId))
+            {
+                errors.Add($"对象“{sceneObject.Name}”的父对象不存在：{parentId}");
+                continue;
+            }
+
+            var visited = new HashSet<StableId>();
+            var current = sceneObject;
+            while (current.ParentId is { } parentId)
+            {
+                if (!visited.Add(current.Id))
+                {
+                    errors.Add($"对象“{sceneObject.Name}”所在层级存在循环");
+                    break;
+                }
+                if (!objects.TryGetValue(parentId, out current!)) break;
+            }
+
+            if (sceneObject.Components.Count(SceneComponentTypes.IsTransform) != 1 ||
+                !SceneComponentTypes.IsTransform(sceneObject.Components[0]))
+                errors.Add($"对象“{sceneObject.Name}”的坐标组件不在首位或数量不正确");
+        }
+
+        return errors;
+    }
+}
+
+/// <summary>
 /// 场景文档的 JSON 序列化入口，保存走原子写入并保留上一版备份
 /// </summary>
 public static class SceneSerializer

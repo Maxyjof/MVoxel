@@ -409,7 +409,9 @@ internal static class Program
         {
             try
             {
-                _ = SceneSerializer.Load(scenePath);
+                var scene = SceneSerializer.Load(scenePath);
+                errors.AddRange(SceneValidation.Validate(scene).Select(error =>
+                    $"{Path.GetRelativePath(project.RootPath, scenePath).Replace('\\', '/')}: {error}"));
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
             {
