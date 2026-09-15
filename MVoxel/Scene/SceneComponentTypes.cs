@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MVoxel.Core;
 
 namespace MVoxel.Scene;
 
@@ -9,10 +10,49 @@ public static class SceneComponentTypes
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    public const string Transform = "mvoxel.transform";
+    public const string VoxelModel = "mvoxel.voxelmodel";
     /// <summary>
     /// 相机组件的稳定类型标识
     /// </summary>
     public const string Camera = "mvoxel.camera";
+    public const string Light = "mvoxel.light";
+
+    public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
+    [
+        new(Transform, "坐标", "基础", true),
+        new(VoxelModel, "模型", "体素", true),
+        new(Camera, "相机", "视图", true),
+        new(Light, "光照", "渲染", true),
+    ];
+
+    public static bool IsTransform(ComponentRecord component) => string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
+    public static bool IsVoxelModel(ComponentRecord component) => string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
+    public static bool IsLight(ComponentRecord component) => string.Equals(component.TypeId, Light, StringComparison.Ordinal);
+
+    public static ComponentRecord CreateTransform(TransformComponent transform) => new()
+    {
+        TypeId = Transform,
+        SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(new { kind = transform.Mode.ToString() }, JsonOptions),
+    };
+
+    public static ComponentRecord CreateVoxelModel(string model, int voxelCount, string template, string part) => new()
+    {
+        TypeId = VoxelModel,
+        SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(new { model, voxelCount, template, part }, JsonOptions),
+    };
+
+    public static ComponentRecord CreateLight(LightComponentData data) => new()
+    {
+        TypeId = Light,
+        SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
+    };
+
+    public static string GetDisplayName(ComponentRecord component) =>
+        BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId)?.DisplayName ?? component.TypeId;
 
     /// <summary>
     /// 判断组件记录是否为内置相机组件
@@ -93,6 +133,25 @@ public static class SceneComponentTypes
             ? value
             : fallback;
     }
+}
+
+public sealed record SceneComponentDefinition(string TypeId, string DisplayName, string Category, bool BuiltIn);
+
+public readonly record struct LightComponentData(
+    float Intensity,
+    float ColorR,
+    float ColorG,
+    float ColorB,
+    bool CastShadows)
+{
+    public static LightComponentData Default => new(1F, 1F, 1F, 1F, true);
+
+    public LightComponentData Normalize() => new(
+        Math.Clamp(float.IsFinite(Intensity) ? Intensity : 1F, 0F, 1000F),
+        Math.Clamp(float.IsFinite(ColorR) ? ColorR : 1F, 0F, 1F),
+        Math.Clamp(float.IsFinite(ColorG) ? ColorG : 1F, 0F, 1F),
+        Math.Clamp(float.IsFinite(ColorB) ? ColorB : 1F, 0F, 1F),
+        CastShadows);
 }
 
 /// <summary>

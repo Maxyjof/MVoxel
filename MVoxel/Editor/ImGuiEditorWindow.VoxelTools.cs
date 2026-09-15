@@ -8,6 +8,7 @@ using MVoxel.Rendering;
 using MVoxel.Editor.Settings;
 using MVoxel.Editor.Templates;
 using MVoxel.Voxels;
+using MVoxel.Scene;
 using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
 using OpenTK.Mathematics;
@@ -242,20 +243,21 @@ internal sealed partial class ImGuiEditorWindow
             var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
             var graph = new Scene.SceneGraph(document);
             var modelObject = document.Objects.FirstOrDefault(item =>
-                item.Components.Any(component => string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal)));
+                item.Components.Any(SceneComponentTypes.IsVoxelModel));
             modelObject ??= graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
             var modelComponent = modelObject.Components.FirstOrDefault(component =>
-                string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal));
+                SceneComponentTypes.IsVoxelModel(component));
             if (modelComponent is null)
             {
                 modelObject.Components.Add(new Scene.ComponentRecord
                 {
-                    TypeId = "mvoxel.voxelmodel",
+                    TypeId = SceneComponentTypes.VoxelModel,
                     SchemaVersion = 1,
                     Data = JsonSerializer.SerializeToElement(new
                     {
                         model = modelAssetPath,
                         voxelCount = _world.OccupiedVoxelCount,
+                        part = "场景模型",
                     }),
                 });
             }
@@ -265,6 +267,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     model = modelAssetPath,
                     voxelCount = _world.OccupiedVoxelCount,
+                    part = "场景模型",
                 });
             }
             _sceneDocument = document;

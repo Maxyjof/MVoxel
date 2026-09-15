@@ -1515,7 +1515,7 @@ DockId=0x6A3C3007,0
     private SceneObject? GetVoxelWorldObject()
     {
         return _sceneDocument?.Objects.FirstOrDefault(item =>
-            item.Components.Any(component => string.Equals(component.TypeId, "mvoxel.voxelmodel", StringComparison.Ordinal)));
+            item.Components.Any(SceneComponentTypes.IsVoxelModel));
     }
 
     /// <summary>
@@ -1868,11 +1868,50 @@ DockId=0x6A3C3007,0
             if (ImGui.Checkbox("禁止选中##InspectorObjectLock", ref locked))
             {
                 selectedObject.Locked = locked;
-                if (locked)
-                {
-                    _selectedSceneObjectId = null;
-                }
+            if (locked)
+            {
+                _selectedSceneObjectId = null;
             }
+
+            ImGui.SeparatorText("组件");
+            foreach (var component in selectedObject.Components)
+            {
+                var definition = SceneComponentTypes.BuiltInDefinitions.FirstOrDefault(item => item.TypeId == component.TypeId);
+                var label = definition is null
+                    ? $"{SceneComponentTypes.GetDisplayName(component)} · 插件"
+                    : $"{definition.DisplayName} · {definition.Category}";
+                ImGui.BulletText(label);
+            }
+
+            if (ImGui.BeginCombo("添加组件##InspectorAddComponent", "选择组件"))
+            {
+                foreach (var definition in SceneComponentTypes.BuiltInDefinitions)
+                {
+                    if (selectedObject.Components.Any(item => item.TypeId == definition.TypeId)) continue;
+                    if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
+                    selectedObject.Components.Add(definition.TypeId switch
+                    {
+                        SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
+                        SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
+                        SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
+                        _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
+                    });
+                }
+
+                foreach (var definition in _pluginRuntime?.Components ?? [])
+                {
+                    if (selectedObject.Components.Any(item => item.TypeId == definition.Id)) continue;
+                    if (!ImGui.Selectable($"{definition.Name} · {definition.Category}")) continue;
+                    selectedObject.Components.Add(new ComponentRecord
+                    {
+                        TypeId = definition.Id,
+                        SchemaVersion = 1,
+                        Data = JsonSerializer.SerializeToElement(new { }),
+                    });
+                }
+                ImGui.EndCombo();
+            }
+        }
         }
 
         if (_selectedVoxel is { } selected)

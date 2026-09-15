@@ -19,6 +19,8 @@ public sealed record PluginCommand(string Id, string Name, string PluginId);
 /// </summary>
 public sealed record PluginPanel(string Id, string Name, string PluginId);
 
+public sealed record PluginComponent(string Id, string Name, string Category, string PluginId);
+
 /// <summary>
 /// 通过受限 Node.js 子进程执行 JavaScript 插件入口
 /// </summary>
@@ -29,6 +31,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     private readonly Dictionary<string, EditorPluginPackage> _automationOwners = new(StringComparer.Ordinal);
     private readonly List<PluginCommand> _commands = new();
     private readonly List<PluginPanel> _panels = new();
+    private readonly List<PluginComponent> _components = new();
     private readonly Dictionary<string, EditorPluginPackage> _commandOwners = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -45,6 +48,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     /// 当前已注册的编辑器面板
     /// </summary>
     public IReadOnlyList<PluginPanel> Panels => _panels;
+    public IReadOnlyList<PluginComponent> Components => _components;
 
     /// <summary>
     /// 激活项目中已启用的 JavaScript 插件
@@ -104,6 +108,14 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                             continue;
                         }
                         _panels.Add(new PluginPanel(item.Id, item.Name, package.Id));
+                    }
+                }
+                if (package.Permissions.Contains("scene.component", StringComparer.Ordinal))
+                {
+                    foreach (var item in extensions.Components)
+                    {
+                        if (_components.Any(component => component.Id == item.Id)) continue;
+                        _components.Add(new PluginComponent(item.Id, item.Name, item.Category, package.Id));
                     }
                 }
                 _active.Add(package);
@@ -205,8 +217,8 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const a=[],c=[],u=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name})};" +
-            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({automations:a,commands:c,panels:u}));";
+            "const p=await import(m);const a=[],c=[],u=[],s=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name}),registerComponent:(id,name,category='插件')=>s.push({id,name,category})};" +
+            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({automations:a,commands:c,panels:u,components:s}));";
         var startInfo = new ProcessStartInfo
         {
             FileName = "node",
@@ -234,7 +246,8 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return new PluginExtensionData(
             ReadExtensionItems(document.RootElement, "automations"),
             ReadExtensionItems(document.RootElement, "commands"),
-            ReadExtensionItems(document.RootElement, "panels"));
+            ReadExtensionItems(document.RootElement, "panels"),
+            ReadComponentItems(document.RootElement));
     }
 
     /// <summary>
@@ -250,6 +263,17 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name)).ToList();
     }
 
+    private static IReadOnlyList<PluginExtensionComponent> ReadComponentItems(JsonElement root)
+    {
+        if (!root.TryGetProperty("components", out var property)) return [];
+        return property.EnumerateArray()
+            .Select(item => new PluginExtensionComponent(
+                item.GetProperty("id").GetString() ?? string.Empty,
+                item.GetProperty("name").GetString() ?? string.Empty,
+                item.TryGetProperty("category", out var category) ? category.GetString() ?? "插件" : "插件"))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name)).ToList();
+    }
+
     /// <summary>
     /// 停用当前运行时中的插件
     /// </summary>
@@ -261,6 +285,7 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         _automationOwners.Clear();
         _commands.Clear();
         _panels.Clear();
+        _components.Clear();
         _commandOwners.Clear();
     }
 
@@ -268,9 +293,10 @@ public sealed class JavaScriptPluginRuntime : IDisposable
     /// 插件注册的单个扩展项
     /// </summary>
     private sealed record PluginExtensionItem(string Id, string Name);
+    private sealed record PluginExtensionComponent(string Id, string Name, string Category);
 
     /// <summary>
     /// 插件激活阶段返回的扩展集合
     /// </summary>
-    private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Automations, IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels);
+    private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Automations, IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels, IReadOnlyList<PluginExtensionComponent> Components);
 }

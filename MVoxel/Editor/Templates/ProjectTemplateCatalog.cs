@@ -239,18 +239,17 @@ public static class ProjectTemplateCatalog
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
-        var modelObject = graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
-        modelObject.Components.Add(new ComponentRecord
+        foreach (var (name, part, position) in GetTemplateParts(template.Id))
         {
-            TypeId = "mvoxel.voxelmodel",
-            SchemaVersion = 1,
-            Data = JsonSerializer.SerializeToElement(new
-            {
-                model = modelAssetPath,
-                voxelCount,
-                template = template.Id.ToString(),
-            }),
-        });
+            var modelObject = graph.Add(name,
+                transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
+            modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
+                modelAssetPath, voxelCount, template.Id.ToString(), part));
+        }
+
+        var lightObject = graph.Add("主光照", transform: TransformComponent.FromFree(new FreeTransform(
+            new Double3(0D, 24D, 0D), Quaternion.Identity)));
+        lightObject.Components.Add(SceneComponentTypes.CreateLight(LightComponentData.Default));
         var positions = new[]
         {
             new Double3(0D, 8D, 18D),
@@ -267,6 +266,31 @@ public static class ProjectTemplateCatalog
             cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
         }
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
+    }
+
+    private static IReadOnlyList<(string Name, string Part, VoxelCoord64 Position)> GetTemplateParts(ProjectTemplateId id)
+    {
+        return id switch
+        {
+            ProjectTemplateId.Showcase =>
+            [
+                ("小屋", "房屋", new VoxelCoord64(0, 0, 0)),
+                ("左侧树木", "左侧树木", new VoxelCoord64(-6, 0, 5)),
+                ("右侧树木", "右侧树木", new VoxelCoord64(8, 0, -5)),
+                ("石板小路", "小路", new VoxelCoord64(0, 0, 12)),
+                ("门口提灯", "提灯", new VoxelCoord64(3, 0, 8)),
+            ],
+            ProjectTemplateId.MaterialLab => [("材质实验区", "材质实验区", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.PaletteWorkshop => [("调色板展示台", "调色板展示台", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.SparseWorld => [("远距离地标群", "地标群", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.LodPlayground => [("LOD 建筑组", "建筑组", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.RayTracingStudio => [("光追展示台", "展示台", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.ProceduralTerrain => [("程序化地形", "地形", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.Architecture => [("模块化建筑", "建筑", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.CameraGallery => [("多相机构图场景", "场景", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.LargeWorld => [("超大型建筑群", "建筑群", new VoxelCoord64(0, 0, 0))],
+            _ => [],
+        };
     }
 
     /// <summary>

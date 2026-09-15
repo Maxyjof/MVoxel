@@ -70,7 +70,8 @@ public sealed class SceneObject
     /// <summary>
     /// 挂载的组件记录，未知组件按原样保留不丢失
     /// </summary>
-    public List<ComponentRecord> Components { get; set; } = new();
+    public List<ComponentRecord> Components { get; set; } =
+    [SceneComponentTypes.CreateTransform(TransformComponent.FromGrid(GridTransform.Identity))];
 }
 
 /// <summary>
@@ -137,6 +138,8 @@ public sealed class SceneGraph
             ParentId = parentId,
             Transform = transform ?? TransformComponent.FromGrid(GridTransform.Identity),
         };
+        sceneObject.Components.RemoveAll(SceneComponentTypes.IsTransform);
+        sceneObject.Components.Insert(0, SceneComponentTypes.CreateTransform(sceneObject.Transform));
         _document.Objects.Add(sceneObject);
         return sceneObject;
     }
