@@ -20,7 +20,7 @@ internal sealed partial class ImGuiEditorWindow
     private string _renameShortcutScheme = string.Empty;
 
     /// <summary>
-    /// 获取当前场景窗口实际使用的画面配置
+    /// 获取当前场景实际使用的画面配置
     /// </summary>
     /// <returns>项目配置优先，未打开项目时返回编辑器默认配置</returns>
     private RenderSettings CurrentSceneRenderSettings =>
@@ -334,7 +334,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("远处裁剪", ref _editorSettings.SceneFarClip, 1F, 100000000F, "%.0f 格");
                 SliderFloat("视场角 FOV", ref _editorSettings.SceneFieldOfView, 20F, 120F, "%.0f°");
                 ImGui.SeparatorText("场景背景");
-                DrawColorSlider("场景窗口背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
+                DrawColorSlider("场景背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("未打开项目时使用此颜色，新项目会继承该颜色");
                 ImGui.EndTabItem();
             }
@@ -701,7 +701,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("显示网格", ref _showGrid);
                 ImGui.Checkbox("显示体素棱线", ref _showVoxelOutlines);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("网格和轮廓只显示在场景窗口");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("网格和轮廓只显示在场景中");
                 ImGui.SeparatorText("场景相机");
                 SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
@@ -721,7 +721,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("场景画面"))
             {
-                DrawColorSlider("场景窗口背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
+                DrawColorSlider("场景背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("打开项目后优先使用项目级背景色");
                 ImGui.EndTabItem();
             }

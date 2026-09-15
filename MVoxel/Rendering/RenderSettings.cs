@@ -69,7 +69,7 @@ public sealed class RenderSettings
     public bool ShowGround = true;
 
     /// <summary>
-    /// 场景窗口的纯色背景，按线性空间存储
+    /// 场景的纯色背景，按线性空间存储
     /// </summary>
     public Vector3 SceneBackgroundColor = new(0.025F, 0.035F, 0.05F);
 

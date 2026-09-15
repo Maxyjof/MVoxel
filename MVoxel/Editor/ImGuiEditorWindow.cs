@@ -622,7 +622,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("视图"))
         {
-            if (ImGui.MenuItem("场景窗口", "F1")) _requestedCenterTab = 0;
+            if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
             if (ImGui.MenuItem("渲染窗口", "F2")) _requestedCenterTab = 1;
             ImGui.Separator();
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
@@ -1128,7 +1128,7 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 绘制场景窗口右上角的相机设置按钮
+    /// 绘制场景右上角的相机设置按钮
     /// </summary>
     /// <param name="origin">视口左上角屏幕坐标</param>
     /// <param name="size">视口尺寸</param>
@@ -2005,7 +2005,7 @@ DockId=0x6A3C3007,0
         if (selectedObject is null)
         {
             ImGui.TextDisabled("未选择对象");
-            ImGui.TextDisabled("在层级或场景窗口中选择一个对象");
+            ImGui.TextDisabled("在层级或场景中选择一个对象");
             return;
         }
 

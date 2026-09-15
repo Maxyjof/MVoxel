@@ -80,7 +80,7 @@ public sealed class VoxelRenderParameters
     public const int VoxelCount = 94, BvhNodeCount = 95;
     /// <summary>场景相机近平面与远平面</summary>
     public const int NearClip = 96, FarClip = 97;
-    /// <summary>场景窗口背景色的线性 RGB 分量</summary>
+    /// <summary>场景背景色的线性 RGB 分量</summary>
     public const int SceneBackgroundR = 98, SceneBackgroundG = 99, SceneBackgroundB = 100;
 
     /// <summary>

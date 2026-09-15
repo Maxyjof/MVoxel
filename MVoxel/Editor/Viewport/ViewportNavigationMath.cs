@@ -31,7 +31,7 @@ internal static class ViewportNavigationMath
     }
 
     /// <summary>
-    /// 围绕观察中心旋转相机，供场景窗口和渲染窗口共用。
+    /// 围绕观察中心旋转相机，供场景和渲染窗口共用。
     /// </summary>
     internal static (Vector3 Position, Vector3 Forward, Vector3 Up) OrbitAroundPivot(
         SceneCamera camera, Vector3 pivot, Vector2 mouseDelta)

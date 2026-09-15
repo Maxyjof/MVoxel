@@ -71,7 +71,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.TextUnformatted("渲染相机");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(Math.Max(220F, ImGui.GetContentRegionAvail().X - 12F));
-        var currentName = selectedCamera?.Name ?? "场景视角（跟随场景窗口）";
+        var currentName = selectedCamera?.Name ?? "场景视角（跟随场景）";
         if (!ImGui.BeginCombo("##RenderCameraSelector", currentName))
         {
             return;
@@ -79,7 +79,7 @@ internal sealed partial class ImGuiEditorWindow
 
         if (cameras.Count == 0)
         {
-            ImGui.Selectable("场景视角（跟随场景窗口）", true);
+            ImGui.Selectable("场景视角（跟随场景）", true);
             ImGui.EndCombo();
             return;
         }
