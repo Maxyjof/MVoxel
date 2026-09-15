@@ -164,6 +164,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     public void CancelProjectOperation() => _projectOperation.RequestCancel();
 
+    public void CloseEditor() => Close();
+
     internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
 
     protected override void OnLoad()
@@ -190,6 +192,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         else
         {
             RequestWelcomeWindow();
+            IsVisible = false;
             EnsureWelcomeWindow();
         }
     }
@@ -526,7 +529,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!_showWelcomeRequested || _welcomeWindow is not null) return;
         _showWelcomeRequested = false;
         _welcomeWindow = new ImGuiWelcomeWindow(this);
-        _welcomeWindow.Initialize(_imguiRenderer!, _fonts);
+        _welcomeWindow.Initialize();
     }
 
     private static NativeWindowSettings CreateWindowSettings(string[] args)
@@ -652,7 +655,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen)
         {
-            _welcomeWindow!.Draw();
+            // 欢迎内容在独立窗口中绘制；主窗口启动阶段保持隐藏。
         }
         else if (operation is { } snapshot)
         {
@@ -3185,6 +3188,8 @@ DockId=0x6A3C3007,0
             ? $"已打开项目：{project.Manifest.Name}"
             : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}）";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
+        IsVisible = true;
+        Focus();
     }
 
     private bool TryOpenProject(string path, bool showError)

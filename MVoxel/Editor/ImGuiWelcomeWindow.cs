@@ -23,6 +23,7 @@ internal interface IEditorWelcomeHost
     void OpenProjectFromWelcome(string path);
     void OpenRecentProject(string path);
     void CancelProjectOperation();
+    void CloseEditor();
 }
 
 internal sealed class ProjectOperationFailedEventArgs : EventArgs
@@ -36,10 +37,9 @@ internal sealed class ProjectOperationFailedEventArgs : EventArgs
 }
 
 /// <summary>
-/// 绘制在编辑器主窗口顶层的欢迎界面。
-/// 欢迎界面不再创建独立窗口，而是作为主窗口内的模态阻塞层存在。
+/// 欢迎界面的内容绘制层，由独立窗口宿主调用。
 /// </summary>
-internal sealed class ImGuiWelcomeWindow
+internal sealed class ImGuiWelcomeContent
 {
     private const float TitleBarHeight = 34F;
     private readonly IEditorWelcomeHost _editor;
@@ -57,7 +57,7 @@ internal sealed class ImGuiWelcomeWindow
     private int _closeRequested;
     private int _closeAllowed;
 
-    internal ImGuiWelcomeWindow(IEditorWelcomeHost editor)
+    internal ImGuiWelcomeContent(IEditorWelcomeHost editor)
     {
         _editor = editor;
         _editor.ProjectOpened += OnProjectOpened;
@@ -72,6 +72,31 @@ internal sealed class ImGuiWelcomeWindow
         _fonts = fonts;
         if (AppBranding.TryLoadLogoPixels(out var logoPixels, out var logoWidth, out var logoHeight))
             _logoTextureId = renderer.RegisterTexture(logoPixels, logoWidth, logoHeight);
+    }
+
+    internal void ConfigureForHost(VulkanImGuiController controller, float dpi)
+    {
+        _fonts?.Load(controller, dpi);
+        ImGui.StyleColorsDark();
+        var style = ImGui.GetStyle();
+        style.WindowRounding = 8F;
+        style.FrameRounding = 4F;
+        style.WindowBorderSize = 1F;
+        style.FrameBorderSize = 1F;
+        style.WindowPadding = Vector2.Zero;
+        style.ItemSpacing = new Vector2(10F, 8F);
+        style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
+        style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Window);
+        style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
+        style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);
+        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
+        style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.Text] = ToColor(EditorPalette.Text);
+        style.Colors[(int)ImGuiCol.TextDisabled] = ToColor(EditorPalette.MutedText);
     }
 
     internal void RequestClose()
