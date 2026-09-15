@@ -642,6 +642,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawPluginPanels();
         DrawStatusBar();
         DrawProjectPathDialog();
+        DrawCloseProjectDialog();
         if (inputBlocked) ImGui.EndDisabled();
         if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen)
@@ -667,7 +668,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("新建项目", "Ctrl+N")) ShowProjectPathDialog(create: true);
             if (ImGui.MenuItem("打开项目", "Ctrl+O")) ShowProjectPathDialog(create: false);
             ImGui.Separator();
-            if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) CloseProject();
+            if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
             if (ImGui.MenuItem("退出", "Alt+F4")) Close();
             ImGui.EndMenu();
         }
@@ -3088,6 +3089,51 @@ DockId=0x6A3C3007,0
         SyncSettingsToggles();
         _statusText = "已关闭项目";
         RequestWelcomeWindow();
+    }
+
+    private bool _closeProjectDialogRequested;
+
+    private void RequestCloseProject()
+    {
+        if (_project is null) return;
+        if (_sceneDocumentDirty)
+        {
+            _closeProjectDialogRequested = true;
+            return;
+        }
+
+        CloseProject();
+    }
+
+    private void DrawCloseProjectDialog()
+    {
+        if (_closeProjectDialogRequested)
+        {
+            ImGui.OpenPopup("关闭项目##UnsavedScene");
+            _closeProjectDialogRequested = false;
+        }
+
+        if (!ImGui.BeginPopupModal("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        ImGui.TextWrapped("当前场景有未保存修改。请选择如何处理这些修改。");
+        ImGui.Spacing();
+        if (ImGui.Button("保存并关闭", new Vector2(120F, 30F)))
+        {
+            SaveProject();
+            if (!_sceneDocumentDirty)
+            {
+                ImGui.CloseCurrentPopup();
+                CloseProject();
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("不保存关闭", new Vector2(120F, 30F)))
+        {
+            ImGui.CloseCurrentPopup();
+            CloseProject();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("取消", new Vector2(90F, 30F))) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
     }
 
     private void SaveProject(bool automatic = false)
