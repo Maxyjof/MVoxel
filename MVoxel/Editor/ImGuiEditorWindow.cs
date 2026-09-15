@@ -3029,7 +3029,7 @@ DockId=0x6A3C3007,0
         if (SaveWorldToProject(_project))
         {
             _sceneDocumentDirty = false;
-            SetStatus($"项目已保存：{_project.Manifest.Name}（{_world.OccupiedVoxelCount} 体素 → Assets/VoxelModels/主场景.mvmodel）");
+            SetStatus($"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
         }
     }
 
