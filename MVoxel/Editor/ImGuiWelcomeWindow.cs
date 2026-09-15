@@ -52,6 +52,10 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private IntPtr _imguiContext;
     private nint _logoTextureId;
     private string _pathText = string.Empty;
+    private string _browserPath = string.Empty;
+    private string? _browserSelectedPath;
+    private readonly Stack<string> _browserBack = new();
+    private string _browserError = string.Empty;
     private string _errorText = string.Empty;
     private int _pathMode;
     private ProjectTemplateId _selectedTemplate = ProjectTemplateId.Empty;
@@ -431,6 +435,16 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         _pathMode = mode;
         if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
         _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
+        if (mode == 2)
+        {
+            var start = Directory.Exists(_editor.DefaultProjectRootPath)
+                ? _editor.DefaultProjectRootPath
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            _browserPath = Path.GetFullPath(start);
+            _browserSelectedPath = null;
+            _browserBack.Clear();
+            _browserError = string.Empty;
+        }
         _errorText = string.Empty;
         ImGui.OpenPopup("##WelcomeProjectPathDialog");
     }
@@ -444,7 +458,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
         var display = ImGui.GetIO().DisplaySize;
         var dialogWidth = Math.Min(680F, Math.Max(520F, display.X - 48F));
-        var dialogHeight = _pathMode == 1 ? 438F : 282F;
+        var dialogHeight = _pathMode == 1 ? 438F : 610F;
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(dialogWidth, dialogHeight), ImGuiCond.Appearing);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
@@ -469,12 +483,17 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                 ImGui.Dummy(new Vector2(0F, 14F));
             }
 
-            ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
-            ImGui.SetNextItemWidth(-1F);
-            ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(_pathMode == 1
-                ? "输入新项目文件夹，模板资源将由编辑器生成"
-                : "输入已有 MVoxel 项目文件夹");
+            if (_pathMode == 1)
+            {
+                ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
+                ImGui.SetNextItemWidth(-1F);
+                ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("输入新项目文件夹，模板资源将由编辑器生成");
+            }
+            else
+            {
+                DrawProjectBrowser();
+            }
             if (!string.IsNullOrWhiteSpace(_errorText))
             {
                 ImGui.TextColored(ToColor(EditorPalette.Error), _errorText);
@@ -500,10 +519,10 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
 
     private void SubmitPath()
     {
-        var path = _pathText.Trim().Trim('"');
+        var path = (_pathMode == 2 ? _browserSelectedPath ?? string.Empty : _pathText).Trim().Trim('"');
         if (string.IsNullOrWhiteSpace(path))
         {
-            _errorText = "请先输入项目文件夹路径。";
+            _errorText = _pathMode == 2 ? "请先选择一个项目文件夹。" : "请先输入项目文件夹路径。";
             return;
         }
 
@@ -514,12 +533,93 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
         }
         else
         {
+            if (!IsProjectFolder(path))
+            {
+                _errorText = "所选文件夹不是 MVoxel 项目（缺少 Project.mvoxproj）。";
+                return;
+            }
             _editor.OpenProjectFromWelcome(path);
         }
 
         _pathMode = 0;
         ImGui.CloseCurrentPopup();
     }
+
+    private void DrawProjectBrowser()
+    {
+        ImGui.TextColored(ToColor(EditorPalette.MutedText), "选择 MVoxel 项目文件夹");
+        ImGui.TextDisabled(_browserPath);
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
+        if (ImGui.Button("↑##ProjectBrowserUp", new Vector2(34F, 28F))) NavigateProjectBrowserUp();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级");
+        ImGui.SameLine();
+        if (ImGui.Button("←##ProjectBrowserBack", new Vector2(34F, 28F))) NavigateProjectBrowserBack();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一个位置");
+        ImGui.PopStyleColor();
+
+        ImGui.BeginChild("##ProjectBrowserFolders", new Vector2(0F, 350F), ImGuiChildFlags.Borders);
+        try
+        {
+            var directories = Directory.EnumerateDirectories(_browserPath)
+                .OrderBy(path => Path.GetFileName(path), StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+            foreach (var directory in directories)
+            {
+                var name = Path.GetFileName(directory);
+                var isProject = IsProjectFolder(directory);
+                var selected = string.Equals(_browserSelectedPath, directory, StringComparison.OrdinalIgnoreCase);
+                var label = $"▰  {name}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}";
+                if (ImGui.Selectable(label, selected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0F, 30F)))
+                {
+                    _browserSelectedPath = directory;
+                    _errorText = string.Empty;
+                    if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)) EnterProjectBrowser(directory);
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(isProject ? "双击进入项目，或选中后点击打开项目" : "双击进入文件夹");
+            }
+            if (directories.Length == 0) ImGui.TextDisabled("当前文件夹没有可浏览的子文件夹");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _browserError = "无法读取当前文件夹：" + exception.Message;
+            ImGui.TextColored(ToColor(EditorPalette.Error), _browserError);
+        }
+        ImGui.EndChild();
+        if (!string.IsNullOrWhiteSpace(_browserSelectedPath))
+            ImGui.TextDisabled(IsProjectFolder(_browserSelectedPath) ? "已选择 MVoxel 项目" : "已选择普通文件夹");
+    }
+
+    private void EnterProjectBrowser(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        _browserBack.Push(_browserPath);
+        _browserPath = Path.GetFullPath(path);
+        _browserSelectedPath = null;
+        _browserError = string.Empty;
+    }
+
+    private void NavigateProjectBrowserBack()
+    {
+        if (_browserBack.Count == 0) return;
+        _browserPath = _browserBack.Pop();
+        _browserSelectedPath = null;
+        _browserError = string.Empty;
+    }
+
+    private void NavigateProjectBrowserUp()
+    {
+        var parent = Directory.GetParent(_browserPath)?.FullName;
+        if (string.IsNullOrWhiteSpace(parent)) return;
+        _browserBack.Push(_browserPath);
+        _browserPath = parent;
+        _browserSelectedPath = null;
+        _browserError = string.Empty;
+    }
+
+    private static bool IsProjectFolder(string path) =>
+        Directory.Exists(path) && File.Exists(Path.Combine(path, ProjectLayout.ProjectFileName));
 
     private void OnProjectOpened(object? sender, EventArgs args) => RequestClose();
 
