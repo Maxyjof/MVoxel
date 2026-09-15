@@ -350,6 +350,21 @@ public sealed class RenderSettings
     public float CameraFovDegrees = 50F;
 
     /// <summary>
+    /// 创建视角拖动期间使用的 GPU 交互参数副本。它仍然走同一条 GPU 管线，
+    /// 只减少单帧路径复杂度，停止拖动后下一帧自动恢复原始设置。
+    /// </summary>
+    internal RenderSettings CreateInteractionPreview()
+    {
+        var preview = (RenderSettings)MemberwiseClone();
+        preview.PathSamplesPerFrame = 1;
+        preview.MaxBounces = Math.Min(preview.MaxBounces, 2);
+        preview.ShadowSamples = 1;
+        preview.PathDenoising = false;
+        preview.DirectLightingMIS = false;
+        return preview;
+    }
+
+    /// <summary>
     /// 由方位角与仰角推导的单位太阳方向
     /// </summary>
     public Vector3 SunDirection

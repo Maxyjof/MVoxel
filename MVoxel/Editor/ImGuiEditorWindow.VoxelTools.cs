@@ -389,10 +389,6 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_gpuRenderingDisabled || _renderSettings.Backend == RenderBackend.Cpu ||
             _pipeline is not { IsAvailable: true } pipeline) return false;
-        // 相机操作期间只显示轻量 CPU 预览，避免每个鼠标事件都提交一次路径追踪
-        // Compute，降低驱动 watchdog 触发 ErrorDeviceLost 的概率。
-        if (ImGui.IsMouseDragging(ImGuiMouseButton.Right) || ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
-            return false;
         try
         {
             pipeline.SyncWorld(_world);
@@ -406,16 +402,19 @@ internal sealed partial class ImGuiEditorWindow
                 pipeline.ResetAccumulation();
             }
 
+            var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
+                             ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
-            var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < _renderSettings.PathMaxAccumulatedSamples;
+            var wantTrace = _settingsTogglePath && pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                if (!pipeline.RenderPathView(_renderSettings, frame, width, height))
+                if (!pipeline.RenderPathView(renderSettings, frame, width, height))
                 {
                     return false;
                 }
             }
-            else if (!pipeline.Present(_renderSettings, frame, width, height))
+            else if (!pipeline.Present(renderSettings, frame, width, height))
             {
                 return false;
             }

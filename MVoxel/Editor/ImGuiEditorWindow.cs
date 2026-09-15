@@ -1627,20 +1627,84 @@ DockId=0x6A3C3007,0
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
     {
-        const int maximumPreviewVoxels = 4096;
-        var preview = _world.EnumerateOccupied()
-            .Take(maximumPreviewVoxels)
-            .Select(item => new PreviewVoxel(
-                new Vector3((float)item.Coordinate.X + 0.5F, (float)item.Coordinate.Y + 0.5F,
-                    (float)item.Coordinate.Z + 0.5F),
-                Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B)))
-            .OrderByDescending(item => Vector3.Dot(item.Center - camera.Position, camera.Forward));
-
-        foreach (var voxel in preview)
+        const int maximumPreviewVoxels = 100_000;
+        var faces = new List<CpuPreviewFace>();
+        foreach (var item in _world.EnumerateOccupied().Take(maximumPreviewVoxels))
         {
-            DrawVoxelCube(drawList, voxel.Center, 1F, voxel.Color, origin, size, camera, showOutlines);
+            var coordinate = item.Coordinate;
+            var color = Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z),
+                FaceDirection.Left, color, origin, size, camera);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z),
+                FaceDirection.Right, color, origin, size, camera);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z),
+                FaceDirection.Bottom, color, origin, size, camera);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z),
+                FaceDirection.Top, color, origin, size, camera);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1),
+                FaceDirection.Back, color, origin, size, camera);
+            AddCpuPreviewFace(faces, coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1),
+                FaceDirection.Front, color, origin, size, camera);
+        }
+
+        foreach (var face in faces.OrderByDescending(face => face.Depth))
+        {
+            var polygon = face.Points;
+            drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(face.Color));
+            if (showOutlines)
+            {
+                for (var index = 0; index < polygon.Length; index++)
+                    drawList.AddLine(polygon[index], polygon[(index + 1) % polygon.Length],
+                        ToPackedColor(Color.FromArgb(245, 4, 7, 11)), 1.2F);
+            }
         }
     }
+
+    private void AddCpuPreviewFace(List<CpuPreviewFace> faces, VoxelCoord64 coordinate,
+        VoxelCoord64 neighbor, FaceDirection direction, Color baseColor,
+        Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (_world.TryGet(neighbor, out var neighborValue) && !neighborValue.IsEmpty)
+            return;
+
+        var x = (float)coordinate.X;
+        var y = (float)coordinate.Y;
+        var z = (float)coordinate.Z;
+        var corners = direction switch
+        {
+            FaceDirection.Left => new[] { new Vector3(x, y, z), new Vector3(x, y + 1, z), new Vector3(x, y + 1, z + 1), new Vector3(x, y, z + 1) },
+            FaceDirection.Right => new[] { new Vector3(x + 1, y, z + 1), new Vector3(x + 1, y + 1, z + 1), new Vector3(x + 1, y + 1, z), new Vector3(x + 1, y, z) },
+            FaceDirection.Bottom => new[] { new Vector3(x, y, z + 1), new Vector3(x + 1, y, z + 1), new Vector3(x + 1, y, z), new Vector3(x, y, z) },
+            FaceDirection.Top => new[] { new Vector3(x, y + 1, z), new Vector3(x + 1, y + 1, z), new Vector3(x + 1, y + 1, z + 1), new Vector3(x, y + 1, z + 1) },
+            FaceDirection.Back => new[] { new Vector3(x + 1, y, z), new Vector3(x + 1, y + 1, z), new Vector3(x, y + 1, z), new Vector3(x, y, z) },
+            _ => new[] { new Vector3(x, y, z + 1), new Vector3(x, y + 1, z + 1), new Vector3(x + 1, y + 1, z + 1), new Vector3(x + 1, y, z + 1) },
+        };
+        var points = new Vector2[4];
+        var depths = new float[4];
+        for (var index = 0; index < corners.Length; index++)
+        {
+            if (!TryProject(corners[index], origin, size, camera, out points[index], out depths[index]))
+                return;
+        }
+
+        var shade = direction switch
+        {
+            FaceDirection.Top => 1.12F,
+            FaceDirection.Bottom => 0.62F,
+            FaceDirection.Left => 0.72F,
+            FaceDirection.Right => 0.94F,
+            FaceDirection.Back => 0.86F,
+            _ => 0.98F,
+        };
+        faces.Add(new CpuPreviewFace(points, Shade(baseColor, shade), depths.Average()));
+    }
+
+    private enum FaceDirection
+    {
+        Left, Right, Bottom, Top, Back, Front,
+    }
+
+    private readonly record struct CpuPreviewFace(Vector2[] Points, Color Color, float Depth);
 
     private static void DrawVoxelCube(ImDrawListPtr drawList, Vector3 center, float side, Color baseColor,
         Vector2 origin, Vector2 size, SceneCamera camera, bool showOutline)
