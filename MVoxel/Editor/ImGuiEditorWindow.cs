@@ -682,6 +682,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
             if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw)) _activeTool = EditorTool.Draw;
             if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase)) _activeTool = EditorTool.Erase;
+            ImGui.Separator();
+            if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
             ImGui.EndMenu();
         }
 
@@ -3054,6 +3056,25 @@ DockId=0x6A3C3007,0
     {
         _assetBrowser.Reset();
         SetStatus(_project is null ? "资源视图已刷新：未打开项目" : "资源视图已刷新");
+    }
+
+    private void ValidateCurrentScene()
+    {
+        if (_project is null || _sceneDocument is null)
+        {
+            SetStatus("没有可验证的场景");
+            return;
+        }
+
+        _sceneValidationErrors = SceneValidation.Validate(_sceneDocument);
+        foreach (var error in _sceneValidationErrors)
+        {
+            MVoxelLog.Warn($"主场景结构校验：{error}");
+        }
+
+        SetStatus(_sceneValidationErrors.Count == 0
+            ? "当前主场景校验通过"
+            : $"当前主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}");
     }
 
     private void SetStatus(string text) => _statusText = text;
