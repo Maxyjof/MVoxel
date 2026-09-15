@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using MVoxel.Core;
+using MVoxel.Scene;
 using Jint;
 using MoonSharp.Interpreter;
 using MoonSharp.Interpreter.Debugging;
@@ -118,9 +119,10 @@ public sealed class PluginScriptRuntime : IDisposable
                 {
                     foreach (var item in extensions.Components)
                     {
-                        if (!IsValidComponentId(item.Id))
+                        if (!IsValidComponentId(item.Id) ||
+                            SceneComponentTypes.BuiltInDefinitions.Any(definition => definition.TypeId == item.Id))
                         {
-                            MVoxelLog.Warn($"插件组件 ID 无效，跳过注册：{item.Id}");
+                            MVoxelLog.Warn($"插件组件 ID 无效或与内置组件冲突，跳过注册：{item.Id}");
                             continue;
                         }
                         if (_components.Any(component => component.Id == item.Id)) continue;
