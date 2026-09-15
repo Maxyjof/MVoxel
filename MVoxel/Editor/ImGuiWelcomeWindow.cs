@@ -462,9 +462,6 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
                 ToPackedColor(EditorPalette.Accent), 8F, ImDrawFlags.RoundCornersLeft);
             ImGui.TextColored(ToColor(EditorPalette.Text), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
             ImGui.Dummy(new Vector2(0F, 6F));
-            ImGui.TextWrapped(_pathMode == 1
-                ? "选择一个示例模板并输入项目文件夹路径，编辑器会自动生成项目文件和示例资源。"
-                : "输入已有 MVoxel 项目文件夹的路径，编辑器会检查项目结构后打开。 ");
             ImGui.Dummy(new Vector2(0F, 14F));
             if (_pathMode == 1)
             {
@@ -475,6 +472,9 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
             ImGui.SetNextItemWidth(-1F);
             ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(_pathMode == 1
+                ? "输入新项目文件夹，模板资源将由编辑器生成"
+                : "输入已有 MVoxel 项目文件夹");
             if (!string.IsNullOrWhiteSpace(_errorText))
             {
                 ImGui.TextColored(ToColor(EditorPalette.Error), _errorText);
@@ -524,7 +524,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
     private void OnProjectOpened(object? sender, EventArgs args) => RequestClose();
 
     /// <summary>
-    /// 绘制新项目模板选择器和模板说明
+    /// 绘制新项目模板选择器
     /// </summary>
     private void DrawTemplatePicker()
     {
@@ -541,8 +541,7 @@ internal sealed class ImGuiWelcomeWindow : GameWindow
             ImGui.EndCombo();
         }
 
-        ImGui.TextDisabled(selected.Focus);
-        ImGui.TextWrapped(selected.Description);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Focus}\n{selected.Description}");
     }
 
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;

@@ -1603,8 +1603,6 @@ DockId=0x6A3C3007,0
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
-        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing() * 2F));
-        ImGui.TextDisabled("渲染页不显示网格与辅助元素；路径追踪和导出功能正在接入");
     }
 
     private void ExportRenderPng()
@@ -1646,7 +1644,6 @@ DockId=0x6A3C3007,0
         else
         {
             ImGui.TextColored(ToColor(EditorPalette.Text), "检查器");
-            ImGui.TextDisabled("对象属性");
             DrawInspectorProperties();
         }
         ImGui.End();
@@ -1729,7 +1726,6 @@ DockId=0x6A3C3007,0
         ImGui.Text($"撤销历史  {_voxelHistory.UndoCount} 步");
         ImGui.TextDisabled("坐标  0, 0, 0");
         ImGui.SeparatorText("材质");
-        ImGui.TextDisabled("颜色、透明度和表面效果");
     }
 
     /// <summary>
@@ -1753,7 +1749,6 @@ DockId=0x6A3C3007,0
         else
         {
             ImGui.TextColored(ToColor(EditorPalette.Text), "渲染配置");
-            ImGui.TextDisabled("LOD 与画面设置");
             DrawConfigurationPanel();
         }
         ImGui.End();
@@ -1763,11 +1758,8 @@ DockId=0x6A3C3007,0
     private void DrawConfigurationPanel()
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
-        ImGui.TextWrapped("LOD（细节等级）控制远处物体的显示精度，让场景操作更流畅。渲染和导出始终保留完整细节。");
         if (ImGui.Button("打开完整设置")) OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
-        ImGui.SameLine();
-        ImGui.TextDisabled("编辑器设置 / 项目设置 / 快捷键方案");
-        if (ImGui.CollapsingHeader("LOD 等级（Phase 5 预留，当前版本未参与剔除）"))
+        if (ImGui.CollapsingHeader("LOD 等级"))
         {
             ImGui.PushItemWidth(Math.Max(64F, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("第 8 级距离").X - 16F));
             ImGui.SliderInt("等级数量##editor", ref _editorLodLevels, 1, _editorLodDistances.Length);
@@ -1788,7 +1780,6 @@ DockId=0x6A3C3007,0
         ImGui.SeparatorText("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        ImGui.TextDisabled("场景窗口固定显示体素原色，不使用光照渲染");
         ImGui.SeparatorText("渲染设置（GPU 计算 · 实时生效）");
         var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
@@ -1895,9 +1886,6 @@ DockId=0x6A3C3007,0
         if (ImGui.Begin(_projectPathDialogMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目", ref open,
                 ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse))
         {
-            ImGui.TextWrapped(_projectPathDialogMode == 1
-                ? "输入项目文件夹路径，编辑器会为你创建项目和资产文件夹。"
-                : "输入你之前保存项目的文件夹路径。");
             if (_projectPathDialogMode == 1)
             {
                 DrawProjectTemplatePicker();
@@ -1905,6 +1893,9 @@ DockId=0x6A3C3007,0
 
             ImGui.SetNextItemWidth(540F);
             ImGui.InputText("项目路径", ref _projectPathText, 2048);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(_projectPathDialogMode == 1
+                ? "输入新项目文件夹，模板资源将由编辑器生成"
+                : "输入已有 MVoxel 项目文件夹");
             if (!string.IsNullOrWhiteSpace(_projectPathError))
             {
                 ImGui.TextColored(ToColor(EditorPalette.Error), _projectPathError);
@@ -1960,8 +1951,7 @@ DockId=0x6A3C3007,0
             ImGui.EndCombo();
         }
 
-        ImGui.TextDisabled(selected.Focus);
-        ImGui.TextWrapped(selected.Description);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Focus}\n{selected.Description}");
     }
 
     private void BeginCreateProject(string path, ProjectTemplateId templateId, bool fromWelcome)

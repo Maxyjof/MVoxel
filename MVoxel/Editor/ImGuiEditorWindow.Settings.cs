@@ -138,8 +138,6 @@ internal sealed partial class ImGuiEditorWindow
                 ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
         {
             ImGui.TextColored(ToColor(EditorPalette.Accent), "配置中心");
-            ImGui.SameLine();
-            ImGui.TextDisabled("编辑器级配置保存个人偏好，项目级配置随项目保存");
             if (ImGui.Button("保存编辑器设置")) SaveEditorSettings();
             if (_project is not null)
             {
@@ -249,9 +247,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("基本"))
             {
-                ImGui.TextWrapped("新建项目默认放在项目根目录下，你也可以在新建项目对话框中改成其他路径");
                 ImGui.SetNextItemWidth(-1F);
                 ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("新建项目的默认保存位置");
 
                 if (ImGui.Button("恢复默认项目根目录"))
                 {
@@ -261,26 +259,25 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextDisabled(EditorSettingsDocument.DefaultProjectRootPath);
                 ImGui.Checkbox("启用 GPU 诊断输出", ref _editorSettings.EnableGpuDiagnostics);
                 ImGui.Checkbox("新项目优先使用硬件 RT", ref _editorSettings.UseHardwareRayTracing);
-                ImGui.TextDisabled("硬件 RT 默认关闭，仅在新建项目时作为项目渲染设置的初始值");
-                ImGui.TextWrapped("欢迎窗口是独立的强制入口；必须新建或打开项目后才可操作编辑器主窗口。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("只作为新项目渲染设置的初始值，默认关闭");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("输入行为"))
             {
-                ImGui.TextWrapped("体素工具的具体鼠标行为在这里统一说明，快捷键方案在“输入 / 快捷键方案”中管理。");
-                ImGui.TextDisabled("Caps Lock 游戏式移动、鼠标中键平移、Shift 环绕原点");
+                ImGui.TextUnformatted("鼠标与视角");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("具体绑定可在快捷键方案中调整");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("撤回"))
             {
-                ImGui.TextWrapped("Ctrl+Z 第一次按下立即撤回，持续按住达到延迟后按设定速度重复撤回");
                 var changed = false;
                 changed |= ImGui.SliderInt("开始持续撤回延迟（毫秒）", ref _editorSettings.UndoRepeatDelayMs, 100, 2000);
                 changed |= ImGui.SliderInt("持续撤回间隔（毫秒）", ref _editorSettings.UndoRepeatIntervalMs, 20, 500);
                 _editorSettings.Normalize();
                 ImGui.TextDisabled($"当前速度：{1000F / _editorSettings.UndoRepeatIntervalMs:0.0} 次/秒");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Ctrl+Z 首次按下立即撤回，达到延迟后按间隔持续撤回");
                 if (changed) SaveEditorSettings();
                 ImGui.EndTabItem();
             }
@@ -296,7 +293,6 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("面板"))
             {
-                ImGui.TextWrapped("默认布局：左侧层级、中间场景与渲染标签页、右侧检查器与渲染配置标签页，下方项目资产横跨全宽。");
                 if (ImGui.Button("应用默认布局")) SelectLayout(LayoutPreset.Default);
                 ImGui.SameLine();
                 if (ImGui.Button("应用建模布局")) SelectLayout(LayoutPreset.Modeling);
@@ -307,9 +303,9 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("停靠"))
             {
-                ImGui.TextWrapped("开启布局编辑后，可拖拽面板标题栏停靠、悬浮和调整分割线；固定停靠的单窗口隐藏多余标签栏，浮动窗口保留标题栏。");
                 if (ImGui.Button(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
                     _editPanelLayout = !_editPanelLayout;
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("编辑停靠位置、面板分割线和浮动状态");
                 ImGui.EndTabItem();
             }
 
@@ -324,8 +320,6 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("场景画面"))
             {
-                ImGui.TextWrapped("场景窗口固定使用无光照的纯体素预览，网格和体素棱线由场景辅助显示控制");
-                ImGui.TextDisabled("LOD 只在场景窗口生效，硬件 RT 不参与场景预览");
                 ImGui.SeparatorText("场景辅助显示");
                 ImGui.Checkbox("显示场景网格", ref _editorSettings.ShowSceneGrid);
                 ImGui.Checkbox("显示体素轮廓", ref _editorSettings.ShowVoxelOutlines);
@@ -341,7 +335,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("视场角 FOV", ref _editorSettings.SceneFieldOfView, 20F, 120F, "%.0f°");
                 ImGui.SeparatorText("场景背景");
                 DrawColorSlider("场景窗口背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
-                ImGui.TextDisabled("未打开项目时使用此颜色，新项目会继承该颜色作为初始值");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("未打开项目时使用此颜色，新项目会继承该颜色");
                 ImGui.EndTabItem();
             }
 
@@ -354,7 +348,6 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("渲染导出画面"))
             {
                 DrawEditorRenderConfiguration(_editorSettings.ExportRenderSettings, "导出画面");
-                ImGui.TextDisabled("导出使用完整体素数据，不使用场景 LOD");
                 ImGui.EndTabItem();
             }
 
@@ -370,22 +363,21 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawFullRenderConfiguration(RenderSettings settings, string context)
     {
         ImGui.PushID(context);
-        ImGui.TextDisabled($"{context}独立保存，默认使用 Vulkan GPU；GPU 不可用时安全回退 CPU");
 
         ImGui.SeparatorText("计算后端");
         var backend = (int)settings.Backend;
         if (ImGui.Combo("计算后端", ref backend, "GPU（Vulkan）\0CPU\0", 2))
             settings.Backend = (RenderBackend)Math.Clamp(backend, 0, 1);
-        ImGui.TextDisabled(settings.Backend == RenderBackend.Gpu
-            ? "GPU 模式优先执行 Vulkan Compute 或硬件 RT"
-            : "CPU 模式用于兼容性、调试和无独立显卡环境");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(settings.Backend == RenderBackend.Gpu
+            ? "优先使用 Vulkan GPU 计算"
+            : "使用 CPU 计算，适合调试或无可用 GPU 时使用");
         var hardwareRayTracing = settings.UseHardwareRayTracing;
         if (settings.Backend == RenderBackend.Cpu) hardwareRayTracing = false;
         ImGui.BeginDisabled(settings.Backend == RenderBackend.Cpu);
         ImGui.Checkbox("启用硬件 RT", ref hardwareRayTracing);
         ImGui.EndDisabled();
         settings.UseHardwareRayTracing = hardwareRayTracing;
-        ImGui.TextDisabled("硬件 RT 默认关闭，需要设备支持；不可用时自动回退 Vulkan Compute");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持，不可用时回退 Vulkan Compute");
 
         ImGui.SeparatorText("光照与环境");
         ImGui.Checkbox("太阳平行光", ref settings.SunEnabled);
@@ -466,10 +458,9 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("鼠标与视角"))
             {
                 ImGui.Checkbox("MC 模式（交换左右键）", ref _editorSettings.McMode);
-                ImGui.TextWrapped(_editorSettings.McMode
-                    ? "当前：左键破坏、右键放置；Shift + 左键环绕原点。"
-                    : "当前：左键放置、右键破坏；Shift + 左键环绕原点。");
-                ImGui.TextDisabled("中键平移；Caps Lock 开启后鼠标转向，WASD 八向移动，Q/E 升降，光标锁定在视口中心。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(_editorSettings.McMode
+                    ? "左键破坏，右键放置，Shift + 左键环绕原点"
+                    : "左键放置，右键破坏，Shift + 左键环绕原点");
                 ImGui.EndTabItem();
             }
 
@@ -581,7 +572,6 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PopID();
         }
 
-        ImGui.TextWrapped("支持 Ctrl / Shift / Alt 加字母、Space、F1-F12，例如 Ctrl+Z 或 Shift+Space。未知绑定不会触发命令。");
         ImGui.EndChild();
     }
 
@@ -593,7 +583,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("字体"))
             {
                 ImGui.SliderFloat("界面缩放", ref _editorSettings.UiScale, 0.75F, 2F, "%.2fx");
-                ImGui.TextDisabled("中文像素字体按 DPI 以整数倍构建图集，避免缩放后发虚。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按 DPI 使用整数倍字体缩放，降低文字发虚");
                 ImGui.EndTabItem();
             }
 
@@ -616,7 +606,7 @@ internal sealed partial class ImGuiEditorWindow
                     ImGui.EndCombo();
                 }
 
-                ImGui.TextDisabled("主题改动会立即应用并保存。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("主题切换立即生效并自动保存");
                 ImGui.EndTabItem();
             }
 
@@ -631,15 +621,15 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("性能策略"))
             {
-                ImGui.TextWrapped("场景视图允许 LOD 和稀疏网格；渲染窗口与导出始终使用完整体素数据，不受 LOD 影响。");
-                ImGui.TextDisabled("超大型建筑优先使用稀疏区块、视锥裁剪和有界网格线计划。");
+                ImGui.TextUnformatted("LOD 与稀疏数据");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景视图使用 LOD 和稀疏区块，渲染与导出保留完整数据");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("诊断"))
             {
-                ImGui.TextWrapped("诊断模式会检查字体缺字、Vulkan 帧尺寸和绘制顶点数。");
-                ImGui.TextDisabled("仅建议开发和回归测试时开启。");
+                ImGui.TextUnformatted("GPU 诊断");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("检查字体缺字、Vulkan 帧尺寸和绘制顶点数");
                 ImGui.EndTabItem();
             }
 
@@ -686,7 +676,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("启用自动保存建议", ref _projectSettings.AutoSave);
                 ImGui.SliderInt("间隔（秒）", ref _projectSettings.AutoSaveSeconds, 10, 3600);
-                ImGui.TextDisabled("当前阶段只保存建议值；真正写盘仍由项目保存流程统一执行。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("自动保存建议的时间间隔");
                 ImGui.EndTabItem();
             }
 
@@ -701,7 +691,6 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("LOD"))
             {
-                ImGui.TextWrapped("LOD 仅用于场景窗口交互流畅度，渲染窗口和导出不会使用 LOD。");
                 SliderInt("等级数量", ref _projectLodLevels, 1, _projectLodDistances.Length);
                 for (var index = 0; index < _projectLodLevels; index++)
                     SliderFloat($"第 {index + 1} 级距离", ref _projectLodDistances[index], 1F, 16384F, "%.0f 格");
@@ -712,7 +701,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.Checkbox("显示网格", ref _showGrid);
                 ImGui.Checkbox("显示体素棱线", ref _showVoxelOutlines);
-                ImGui.TextDisabled("网格和轮廓只出现在场景窗口，不会进入渲染窗口或导出结果");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("网格和轮廓只显示在场景窗口");
                 ImGui.SeparatorText("场景相机");
                 SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
@@ -732,9 +721,8 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("场景画面"))
             {
-                ImGui.TextWrapped("场景画面配置：网格、辅助线、体素轮廓和编辑视图质量。场景窗口只显示体素原色，不使用光照渲染。LOD 只在这里生效。");
                 DrawColorSlider("场景窗口背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
-                ImGui.TextDisabled("打开项目后优先使用项目级背景色");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("打开项目后优先使用项目级背景色");
                 ImGui.EndTabItem();
             }
 
@@ -747,7 +735,6 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("渲染导出画面"))
             {
                 DrawFullRenderConfiguration(_projectSettings.ExportRenderSettings, "导出画面");
-                ImGui.TextDisabled("导出使用完整体素数据，不使用场景 LOD。");
                 ImGui.EndTabItem();
             }
 
@@ -762,14 +749,15 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("目录"))
             {
-                ImGui.TextWrapped("Assets 下的场景、预制件、体素模型、材质、调色板、环境、渲染预设和生成器目录由项目结构自动维护。体素材质不使用贴图，基础色只能从当前调色板选择。");
-                ImGui.TextDisabled("项目设置文件：ProjectSettings/settings.json");
+                ImGui.TextUnformatted("项目资源目录");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Assets 下的项目资源由目录结构统一管理，体素材质使用调色板基础色");
                 ImGui.EndTabItem();
             }
 
             if (ImGui.BeginTabItem("导入"))
             {
-                ImGui.TextWrapped("导入与导出设置将在格式适配器接入后在这里配置；当前已支持 MagicaVoxel .vox 和 .palette。");
+                ImGui.TextUnformatted("导入与导出格式");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前支持 .vox 和 .palette 格式");
                 ImGui.EndTabItem();
             }
 

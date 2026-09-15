@@ -854,7 +854,7 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
         }
 
-        if (ImGui.CollapsingHeader("接触阴影 AO（MagicaVoxel 顶点 AO）"))
+        if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
             Toggle("角点环境光遮蔽", ref _settingsToggleAo, value => settings.AmbientOcclusionEnabled = value);
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
@@ -872,8 +872,8 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPaletteSection(RenderSettings settings)
     {
         if (!ImGui.CollapsingHeader("材质基础色与笔刷", ImGuiTreeNodeFlags.DefaultOpen)) return;
-        ImGui.TextWrapped("体素表面使用纯色。材质基础色来自当前调色板，材质属性只控制粗糙度、金属度、透明和自发光等效果，不提供 UV 或贴图输入。");
-        Toggle("MagicaVoxel 调色着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
+        Toggle("调色板着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色板，不使用贴图");
         SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
         SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
         SliderFloat("对比度", ref settings.ColorContrast, 0.3F, 2.5F, "%.2f");
@@ -899,7 +899,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus(_brushEmissive ? "新绘制的体素将带自发光标记" : "新绘制的体素为普通颜色");
         }
 
-        ImGui.SeparatorText("色板（256 · MagicaVoxel 风格渐变）");
+        ImGui.SeparatorText("色板（256 色）");
         DrawPaletteSelector();
 
         ImGui.SeparatorText("调色板管理");
@@ -952,7 +952,7 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("白平衡色温（K）", ref settings.WhiteBalance, 2000F, 12000F, "%.0f K");
         SliderFloat("暗角", ref settings.Vignette, 0F, 1F, "%.2f");
         Toggle("输出抖动（消除色带）", ref _settingsToggleDither, value => settings.Dither = value);
-        ImGui.TextDisabled("体素颜色按 sRGB 存储；光照计算在线性空间进行，最后经色调曲线与 Gamma 输出。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素颜色按 sRGB 存储，渲染计算在线性空间进行");
     }
 
     private void DrawPathTraceSection(RenderSettings settings)
