@@ -21,17 +21,27 @@ public static class LargeWorldFormat
     public const int DemoDepth = 1024;
 
     /// <summary>
-    /// 超大型模板的 Y 轴尺寸
+    /// 超大型建筑模板的 Y 轴尺寸
     /// </summary>
-    public const int DemoHeight = 14;
+    public const int DemoHeight = 1024;
+
+    private const int DemoTowerSize = 8;
+    private const int DemoTowerInset = 160;
+    private const int DemoBridgeStart = DemoTowerInset + DemoTowerSize;
+    private const int DemoBridgeEnd = DemoWidth - DemoBridgeStart - 1;
+    private const int DemoBridgeSpan = DemoBridgeEnd - DemoBridgeStart + 1;
+    private const int DemoBridgeWidth = 8;
+    private const int DemoBridgeLevels = 3;
 
     /// <summary>
     /// 超大型模板的实际占用体素数量
     /// </summary>
-    public const int DemoVoxelCount = DemoWidth * DemoDepth + 64 * (DemoHeight - 1);
+    public const int DemoVoxelCount = DemoWidth * DemoDepth +
+        4 * DemoTowerSize * DemoTowerSize * (DemoHeight - 1) +
+        DemoBridgeLevels * (2 * DemoBridgeSpan * DemoBridgeWidth - DemoBridgeWidth * DemoBridgeWidth);
 
     /// <summary>
-    /// 将超大型示例地表写入紧凑的大世界文件
+    /// 将超大型建筑示例写入紧凑的大世界文件
     /// </summary>
     /// <param name="path">目标文件路径</param>
     public static void WriteDemo(string path)
@@ -40,16 +50,7 @@ public static class LargeWorldFormat
         using var stream = new MemoryStream(bytes, writable: true);
         using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
         WriteHeader(writer, DemoWidth, DemoDepth, DemoHeight, DemoVoxelCount);
-        for (var z = 0; z < DemoDepth; z++)
-        for (var x = 0; x < DemoWidth; x++)
-        {
-            var pillar = IsDemoPillar(x, z);
-            var height = pillar ? DemoHeight : 1;
-            for (var y = 0; y < height; y++)
-            {
-                WriteVoxel(writer, x, y, z, new VoxelValue(DemoColor(x, y, z, pillar)));
-            }
-        }
+        WriteDemoVoxels(writer, WriteVoxel);
 
         AtomicFile.WriteBytes(path, bytes);
     }
@@ -199,52 +200,110 @@ public static class LargeWorldFormat
     }
 
     /// <summary>
-    /// 判断示例地表中的高柱位置
+    /// 判断超大型建筑中的塔楼位置
     /// </summary>
     /// <param name="x">X 坐标</param>
     /// <param name="z">Z 坐标</param>
     /// <returns>是否为高柱</returns>
-    private static bool IsDemoPillar(int x, int z) => x % 128 == 64 && z % 128 == 64;
+    private static bool IsDemoTower(int x, int z) =>
+        (x is >= DemoTowerInset and < DemoTowerInset + DemoTowerSize ||
+         x is >= DemoWidth - DemoTowerInset - DemoTowerSize and < DemoWidth - DemoTowerInset) &&
+        (z is >= DemoTowerInset and < DemoTowerInset + DemoTowerSize ||
+         z is >= DemoDepth - DemoTowerInset - DemoTowerSize and < DemoDepth - DemoTowerInset);
 
     /// <summary>
-    /// 生成示例地表的确定性颜色
+    /// 判断桥面层是否覆盖某个水平位置
+    /// </summary>
+    /// <param name="x">X 坐标</param>
+    /// <param name="z">Z 坐标</param>
+    /// <returns>是否属于桥面</returns>
+    private static bool IsDemoBridge(int x, int z) =>
+        (x is >= DemoBridgeStart and <= DemoBridgeEnd && z is >= DemoBridgeStart and < DemoBridgeStart + DemoBridgeWidth) ||
+        (z is >= DemoBridgeStart and <= DemoBridgeEnd && x is >= DemoBridgeStart and < DemoBridgeStart + DemoBridgeWidth);
+
+    /// <summary>
+    /// 生成超大型建筑的确定性颜色
     /// </summary>
     /// <param name="x">X 坐标</param>
     /// <param name="y">Y 坐标</param>
     /// <param name="z">Z 坐标</param>
-    /// <param name="pillar">是否为高柱</param>
+    /// <param name="tower">是否为塔楼</param>
     /// <returns>体素颜色</returns>
-    private static Rgba32 DemoColor(int x, int y, int z, bool pillar)
+    private static Rgba32 DemoColor(int x, int y, int z, bool tower)
     {
-        if (pillar)
+        if (tower)
         {
             return y == DemoHeight - 1
-                ? new Rgba32(92, 196, 126)
-                : new Rgba32(66, 105, 156);
+                ? new Rgba32(232, 170, 76)
+                : (y / 64) % 2 == 0 ? new Rgba32(66, 105, 156) : new Rgba32(58, 88, 132);
         }
 
+        if (IsDemoBridge(x, z)) return new Rgba32(104, 142, 184);
         return (x / 32 + z / 32) % 2 == 0
             ? new Rgba32(66, 138, 102)
             : new Rgba32(57, 119, 91);
     }
 
     /// <summary>
-    /// 构建超大型模板的完整内存世界供测试使用
+    /// 按确定性顺序写入超大型建筑的全部稀疏体素
     /// </summary>
-    /// <returns>1024×1024×14 的示例世界</returns>
+    /// <param name="writer">写入器</param>
+    /// <param name="write">单体素写入动作</param>
+    private static void WriteDemoVoxels(BinaryWriter writer, Action<BinaryWriter, int, int, int, VoxelValue> write)
+    {
+        for (var z = 0; z < DemoDepth; z++)
+        for (var x = 0; x < DemoWidth; x++)
+            write(writer, x, 0, z, new VoxelValue(DemoColor(x, 0, z, false)));
+
+        for (var z = 0; z < DemoDepth; z++)
+        for (var x = 0; x < DemoWidth; x++)
+        {
+            if (!IsDemoTower(x, z)) continue;
+            for (var y = 1; y < DemoHeight; y++)
+                write(writer, x, y, z, new VoxelValue(DemoColor(x, y, z, true)));
+        }
+
+        foreach (var y in new[] { 256, 512, 768 })
+        {
+            for (var z = DemoBridgeStart; z < DemoBridgeStart + DemoBridgeWidth; z++)
+            for (var x = DemoBridgeStart; x <= DemoBridgeEnd; x++)
+                write(writer, x, y, z, new VoxelValue(DemoColor(x, y, z, false)));
+            for (var x = DemoBridgeStart; x < DemoBridgeStart + DemoBridgeWidth; x++)
+            for (var z = DemoBridgeStart; z <= DemoBridgeEnd; z++)
+            {
+                if (z < DemoBridgeStart + DemoBridgeWidth) continue;
+                write(writer, x, y, z, new VoxelValue(DemoColor(x, y, z, false)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 构建超大型建筑模板的完整内存世界供测试使用
+    /// </summary>
+    /// <returns>1024×1024×1024 的稀疏建筑示例世界</returns>
     public static VoxelWorld BuildDemoWorld()
     {
         var world = new VoxelWorld();
         for (var z = 0; z < DemoDepth; z++)
         for (var x = 0; x < DemoWidth; x++)
+            world.Set(new VoxelCoord64(x, 0, z), new VoxelValue(DemoColor(x, 0, z, false)));
+
+        for (var z = 0; z < DemoDepth; z++)
+        for (var x = 0; x < DemoWidth; x++)
         {
-            var pillar = IsDemoPillar(x, z);
-            var height = pillar ? DemoHeight : 1;
-            for (var y = 0; y < height; y++)
-            {
-                world.Set(new VoxelCoord64(x, y, z),
-                    new VoxelValue(DemoColor(x, y, z, pillar)));
-            }
+            if (!IsDemoTower(x, z)) continue;
+            for (var y = 1; y < DemoHeight; y++)
+                world.Set(new VoxelCoord64(x, y, z), new VoxelValue(DemoColor(x, y, z, true)));
+        }
+
+        foreach (var y in new[] { 256, 512, 768 })
+        {
+            for (var z = DemoBridgeStart; z < DemoBridgeStart + DemoBridgeWidth; z++)
+            for (var x = DemoBridgeStart; x <= DemoBridgeEnd; x++)
+                world.Set(new VoxelCoord64(x, y, z), new VoxelValue(DemoColor(x, y, z, false)));
+            for (var x = DemoBridgeStart; x < DemoBridgeStart + DemoBridgeWidth; x++)
+            for (var z = DemoBridgeStart; z <= DemoBridgeEnd; z++)
+                world.Set(new VoxelCoord64(x, y, z), new VoxelValue(DemoColor(x, y, z, false)));
         }
 
         return world;

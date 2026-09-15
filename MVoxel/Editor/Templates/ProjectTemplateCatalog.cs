@@ -65,7 +65,7 @@ public enum ProjectTemplateId
     CameraGallery,
 
     /// <summary>
-    /// 展示 1024×1024×14 的超大型稀疏场景和长距离视锥
+    /// 展示 1024×1024×1024 的超大型稀疏建筑和长距离视锥
     /// </summary>
     LargeWorld,
 }
@@ -99,7 +99,7 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "由高度函数生成的分层山谷、平台和水面", "程序化 · 地形 · 大量体素"),
         new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
         new(ProjectTemplateId.CameraGallery, "多相机构图室", "同一体素场景配置三个相机，演示渲染视图切换和相机对象联动", "相机 · 构图 · 渲染视图"),
-        new(ProjectTemplateId.LargeWorld, "超大型场景 · 1024×1024×14", "1024×1024 的超大地表、分散高柱和远距离视角性能验证", "大世界 · LOD · 性能压力"),
+        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "三轴 1024 格的稀疏建筑群、塔楼和高空连桥性能验证", "大世界 · LOD · 建筑 · 性能压力"),
     ];
 
     /// <summary>
