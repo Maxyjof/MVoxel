@@ -2121,7 +2121,10 @@ DockId=0x6A3C3007,0
             if (ImGui.SmallButton("...##InspectorComponentMenu")) ImGui.OpenPopup("##InspectorComponentMenuPopup");
             if (ImGui.BeginPopup("##InspectorComponentMenuPopup"))
             {
-                if (ImGui.MenuItem("恢复默认")) resetComponent = true;
+                var canResetComponent = definition is not null || pluginDefinition is not null;
+                if (ImGui.MenuItem("恢复默认", null, false, canResetComponent)) resetComponent = true;
+                if (!canResetComponent)
+                    ImGui.TextDisabled("插件未启用时无法恢复默认");
                 ImGui.Separator();
                 var canMoveUp = !isTransformComponent && componentIndex > 1;
                 var canMoveDown = !isTransformComponent && componentIndex < selectedObject.Components.Count - 1;
