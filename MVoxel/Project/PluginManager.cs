@@ -78,7 +78,7 @@ public static class PluginManager
                 Entry = "index.js",
                 Source = "builtin",
                 RootDirectory = Path.Combine(AppContext.BaseDirectory, "Plugins", MvoxMcpPluginId),
-                Permissions = ["project.read", "project.write", "plugin.manage", "automation.register"],
+                Permissions = ["project.read", "project.write", "plugin.manage", "automation.register", "editor.command", "editor.panel"],
             },
         };
         if (Directory.Exists(AppPaths.PluginDirectory))

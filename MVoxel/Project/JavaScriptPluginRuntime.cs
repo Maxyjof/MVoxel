@@ -75,10 +75,12 @@ public sealed class JavaScriptPluginRuntime : IDisposable
                 }
                 foreach (var item in extensions.Commands)
                 {
+                    if (!package.Permissions.Contains("editor.command", StringComparer.Ordinal)) continue;
                     _commands.Add(new PluginCommand(item.Id, item.Name, package.Id));
                     _commandOwners[item.Id] = package;
                 }
-                _panels.AddRange(extensions.Panels.Select(item => new PluginPanel(item.Id, item.Name, package.Id)));
+                if (package.Permissions.Contains("editor.panel", StringComparer.Ordinal))
+                    _panels.AddRange(extensions.Panels.Select(item => new PluginPanel(item.Id, item.Name, package.Id)));
                 _active.Add(package);
                 MVoxelLog.Info($"JavaScript 插件已激活：{package.Id}");
             }
