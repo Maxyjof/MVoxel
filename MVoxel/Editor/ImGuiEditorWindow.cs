@@ -1808,13 +1808,18 @@ DockId=0x6A3C3007,0
         {
             if (showVoxelWorld)
             {
-                DrawVoxelPreview(drawList, origin, size, camera, showOutlines: false);
+                DrawVoxelWorldPreview(drawList, origin, size, camera, showOutlines: false);
             }
-            ImGui.SetCursorScreenPos(origin + new Vector2(
-                Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
-            ImGui.TextDisabled(showVoxelWorld
-                ? _pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中"
-                : "体素世界已隐藏");
+            var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
+                             ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            if (!navigating)
+            {
+                ImGui.SetCursorScreenPos(origin + new Vector2(
+                    Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
+                ImGui.TextDisabled(showVoxelWorld
+                    ? _pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中"
+                    : "体素世界已隐藏");
+            }
         }
         else
         {
