@@ -119,6 +119,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
     private long _lastRenderGpuSubmitMs;
+    private Vector2 _lastRenderViewportSize;
+    private Queue<ExportJob> _exportQueue = new();
+    private ExportJob? _activeExport;
+    private bool _exportQueueExpanded;
+    private int _exportSequence;
     private readonly List<CpuPreviewSurfaceFace> _cpuPreviewSurfaceFaces = [];
     private VoxelWorld? _cpuPreviewWorld;
     private int _cpuPreviewWorldVersion = -1;
@@ -1078,6 +1083,7 @@ DockId=0x6A3C3007,0
 
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
+        _lastRenderViewportSize = size;
         var drawList = ImGui.GetWindowDrawList();
         var sceneSettings = CurrentSceneRenderSettings;
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(sceneSettings)));
@@ -1936,7 +1942,14 @@ DockId=0x6A3C3007,0
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
         var camera = GetRenderViewCamera();
         var showVoxelWorld = IsVoxelWorldVisible();
-        var gpuRendered = showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
+        var exporting = _activeExport is not null || _exportQueue.Count > 0;
+        var gpuRendered = !exporting && showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
+        if (exporting && showVoxelWorld && _project is not null)
+        {
+            ProcessExportQueue(camera, size);
+            if (_pipeline?.DisplayTextureId is { } exportTexture && exportTexture != IntPtr.Zero)
+                drawList.AddImage(exportTexture, origin, origin + size, Vector2.Zero, _pipeline.DisplayUvMax);
+        }
         if (!gpuRendered)
         {
             if (showVoxelWorld)
@@ -1967,6 +1980,49 @@ DockId=0x6A3C3007,0
         ImGui.EndChild();
     }
 
+    private void ProcessExportQueue(SceneCamera camera, Vector2 size)
+    {
+        if (_pipeline is not { IsAvailable: true } pipeline) return;
+        if (_activeExport is null && _exportQueue.Count > 0)
+        {
+            _activeExport = _exportQueue.Dequeue();
+            pipeline.ResetAccumulation();
+        }
+        if (_activeExport is null) return;
+        try
+        {
+            var settings = _activeExport.Settings;
+            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            var width = Math.Max(16, (int)(size.X * scale));
+            var height = Math.Max(16, (int)(size.Y * scale));
+            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
+            var submitted = settings.PathTracingEnabled
+                ? pipeline.RenderPathView(settings, frame, width, height)
+                : pipeline.RenderSceneView(settings, frame, width, height);
+            if (!submitted)
+            {
+                SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
+                _activeExport = null;
+                return;
+            }
+
+            var finished = !settings.PathTracingEnabled || pipeline.AccumulatedSamples >= settings.PathMaxAccumulatedSamples;
+            if (!finished) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(_activeExport.Path)!);
+            if (pipeline.SaveDisplayPng(_activeExport.Path))
+                SetStatus($"图片已导出：{_activeExport.Path}");
+            else
+                SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
+            _activeExport = null;
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("导出渲染任务失败", exception);
+            SetStatus($"导出失败：{exception.Message}");
+            _activeExport = null;
+        }
+    }
+
     private void DrawRenderViewOverlay(Vector2 origin, Vector2 size, ImDrawListPtr drawList)
     {
         _ = drawList;
@@ -1989,7 +2045,7 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SameLine();
-        var canExport = _pipeline?.CanSaveDisplayPng == true;
+        var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
         if (ImGui.SmallButton("导出 PNG"))
         {
@@ -2006,24 +2062,27 @@ DockId=0x6A3C3007,0
 
     private void ExportRenderPng()
     {
-        if (_pipeline is not { IsAvailable: true } pipeline)
+        if (_pipeline is not { IsAvailable: true })
         {
-            SetStatus("显卡渲染不可用，无法导出");
+            SetStatus("显卡渲染不可用，无法加入导出队列");
             return;
         }
 
         var projectPath = _project?.RootPath
             ?? AppPaths.DataDirectory;
-        var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}.png";
+        var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}-{++_exportSequence:000}.png";
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
-        if (pipeline.SaveDisplayPng(path))
-        {
-            SetStatus($"图片已导出：{path}");
-        }
-        else
-        {
-            SetStatus("导出失败：帧缓冲不可读");
-        }
+        var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
+            .CloneForExport();
+        _exportQueue.Enqueue(new ExportJob(path, exportSettings));
+        SetStatus($"已加入导出队列：{fileName}");
+    }
+
+    private sealed class ExportJob
+    {
+        internal ExportJob(string path, RenderSettings settings) { Path = path; Settings = settings; }
+        internal string Path { get; }
+        internal RenderSettings Settings { get; }
     }
 
     private void DrawInspector()
@@ -2735,6 +2794,36 @@ DockId=0x6A3C3007,0
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelStatusBar", flags);
+        var exportCount = _exportQueue.Count + (_activeExport is null ? 0 : 1);
+        if (exportCount > 0)
+        {
+            ImGui.SetCursorPosX(Math.Max(8F, display.X - 360F));
+            ImGui.TextDisabled($"导出队列 {exportCount}");
+            ImGui.SameLine();
+            var progress = _activeExport is null || _pipeline is null || _activeExport.Settings.PathMaxAccumulatedSamples <= 0
+                ? 0F
+                : Math.Clamp((float)_pipeline.AccumulatedSamples / _activeExport.Settings.PathMaxAccumulatedSamples, 0F, 1F);
+            ImGui.ProgressBar(progress, new Vector2(120F, 0F));
+            ImGui.SameLine();
+            if (ImGui.SmallButton(_exportQueueExpanded ? "收起" : "展开")) _exportQueueExpanded = !_exportQueueExpanded;
+            if (_exportQueueExpanded)
+            {
+                ImGui.OpenPopup("##ExportQueuePopup");
+                if (ImGui.BeginPopup("##ExportQueuePopup"))
+                {
+                    ImGui.TextDisabled("等待中的导出任务");
+                    foreach (var job in _exportQueue.ToArray())
+                    {
+                        ImGui.PushID(job.Path);
+                        ImGui.Text(Path.GetFileName(job.Path));
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton("取消")) _exportQueue = new Queue<ExportJob>(_exportQueue.Where(item => item != job));
+                        ImGui.PopID();
+                    }
+                    ImGui.EndPopup();
+                }
+            }
+        }
         ImGui.End();
     }
 

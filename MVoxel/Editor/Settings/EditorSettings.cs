@@ -63,6 +63,7 @@ public sealed class EditorSettingsDocument
     public RenderSettings ExportRenderSettings = new();
     public int UndoRepeatDelayMs = 350;
     public int UndoRepeatIntervalMs = 70;
+    public int ExportParallelism = 1;
 
     public static EditorSettingsDocument CreateDefault()
     {
@@ -87,6 +88,7 @@ public sealed class EditorSettingsDocument
         }
 
         FormatVersion = 2;
+        ExportParallelism = Math.Clamp(ExportParallelism, 1, 4);
         ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
             ? DefaultProjectRootPath
             : ProjectRootPath.Trim().Trim('"');

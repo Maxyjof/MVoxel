@@ -364,6 +364,9 @@ public sealed class RenderSettings
         return preview;
     }
 
+    /// <summary>创建导出任务使用的独立参数快照，避免用户继续编辑配置时改变排队任务。</summary>
+    internal RenderSettings CloneForExport() => (RenderSettings)MemberwiseClone();
+
     /// <summary>
     /// 由方位角与仰角推导的单位太阳方向
     /// </summary>

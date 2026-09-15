@@ -617,6 +617,13 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawEditorPerformanceSettings()
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "性能");
+        ImGui.SeparatorText("导出队列");
+        if (ImGui.SliderInt("同时执行的导出数", ref _editorSettings.ExportParallelism, 1, 4))
+        {
+            _editorSettings.Normalize();
+            SaveEditorSettings();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前 GPU 管线按单任务安全执行；该设置为未来多管线并行保留上限，不会阻塞编辑器输入。");
         if (ImGui.BeginTabBar("##EditorPerformanceTabs"))
         {
             if (ImGui.BeginTabItem("性能策略"))
