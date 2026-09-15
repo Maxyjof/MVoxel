@@ -1965,7 +1965,8 @@ DockId=0x6A3C3007,0
             var headerMin = ImGui.GetItemRectMin();
             var headerMax = ImGui.GetItemRectMax();
             var contentCursor = ImGui.GetCursorScreenPos();
-            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - 56F, headerMin.Y + 3F));
+            var resetComponent = false;
+            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - 62F, headerMin.Y + 3F));
             var isTransformComponent = SceneComponentTypes.IsTransform(component);
             ImGui.BeginDisabled(isTransformComponent);
             var enabled = component.Enabled;
@@ -1981,6 +1982,8 @@ DockId=0x6A3C3007,0
             if (ImGui.SmallButton("...##InspectorComponentMenu")) ImGui.OpenPopup("##InspectorComponentMenuPopup");
             if (ImGui.BeginPopup("##InspectorComponentMenuPopup"))
             {
+                if (ImGui.MenuItem("恢复默认")) resetComponent = true;
+                ImGui.Separator();
                 ImGui.BeginDisabled(isTransformComponent);
                 if (ImGui.MenuItem("移除组件")) removeComponentIndex = componentIndex;
                 ImGui.EndDisabled();
@@ -1992,6 +1995,7 @@ DockId=0x6A3C3007,0
                 ImGui.SetTooltip(definition is null
                     ? $"插件组件\n来源：{component.OwnerPluginId ?? "未知插件"}"
                     : $"组件分类：{definition.Category}");
+            if (resetComponent) ResetInspectorComponent(selectedObject, component);
             if (expanded)
             {
                 ImGui.Indent(8F);
@@ -2073,6 +2077,41 @@ DockId=0x6A3C3007,0
             }
     }
 
+    private void ResetInspectorComponent(SceneObject sceneObject, ComponentRecord component)
+    {
+        if (SceneComponentTypes.IsTransform(component))
+        {
+            if (sceneObject.Transform.Mode == TransformMode.Grid)
+                sceneObject.Transform.SetGrid(GridTransform.Identity);
+            else
+                sceneObject.Transform.SetFree(FreeTransform.Identity);
+            UpdateTransformMarker(sceneObject);
+        }
+        else if (SceneComponentTypes.IsCamera(component))
+        {
+            SceneComponentTypes.WriteCamera(component, CameraComponentData.Default);
+        }
+        else if (SceneComponentTypes.IsLight(component))
+        {
+            SceneComponentTypes.WriteLight(component, LightComponentData.Default);
+        }
+        else if (SceneComponentTypes.IsVoxelModel(component))
+        {
+            SceneComponentTypes.WriteVoxelModel(component, VoxelModelComponentData.Default);
+        }
+        else
+        {
+            var definition = _pluginRuntime?.Components.FirstOrDefault(item => item.Id == component.TypeId);
+            component.Data = definition is null || definition.DefaultData.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+                ? JsonSerializer.SerializeToElement(new { })
+                : definition.DefaultData.Clone();
+        }
+
+        MarkSceneDocumentDirty();
+        _pipeline?.ResetAccumulation();
+        SetStatus($"已恢复“{sceneObject.Name}”的{SceneComponentTypes.GetDisplayName(component)}组件默认值");
+    }
+
     private static void BeginInspectorField(string label)
     {
         var start = ImGui.GetCursorPosX();
@@ -2110,14 +2149,6 @@ DockId=0x6A3C3007,0
                     UpdateTransformMarker(selectedObject);
                     MarkSceneDocumentDirty();
                 }
-                if (ImGui.SmallButton("重置##TransformResetFree"))
-                {
-                    selectedObject.Transform.SetFree(FreeTransform.Identity);
-                    UpdateTransformMarker(selectedObject);
-                    MarkSceneDocumentDirty();
-                    _pipeline?.ResetAccumulation();
-                    SetStatus($"已重置“{selectedObject.Name}”的坐标组件");
-                }
             }
             else
             {
@@ -2135,14 +2166,6 @@ DockId=0x6A3C3007,0
                 ImGui.SameLine(0F, 6F);
                 if (ImGui.Button("Z +90°##TransformRotateZ", new Vector2(thirdWidth, 0F)))
                     RotateModel(selectedObject, OrthogonalRotation.AroundZ90);
-                if (ImGui.SmallButton("重置##TransformResetGrid"))
-                {
-                    selectedObject.Transform.SetGrid(GridTransform.Identity);
-                    UpdateTransformMarker(selectedObject);
-                    MarkSceneDocumentDirty();
-                    _pipeline?.ResetAccumulation();
-                    SetStatus($"已重置“{selectedObject.Name}”的坐标组件");
-                }
             }
             return;
         }
@@ -2181,14 +2204,7 @@ DockId=0x6A3C3007,0
             changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
             BeginInspectorField("远裁剪");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
-            var reset = ImGui.SmallButton("恢复默认##InspectorCameraReset");
-            if (reset)
-            {
-                SceneComponentTypes.WriteCamera(component, CameraComponentData.Default);
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-            }
-            else if (changed)
+            if (changed)
             {
                 SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip));
                 MarkSceneDocumentDirty();
@@ -2208,14 +2224,7 @@ DockId=0x6A3C3007,0
             changed |= ImGui.ColorEdit3("##InspectorLightColor", ref color, ImGuiColorEditFlags.Float);
             BeginInspectorField("阴影");
             changed |= ImGui.Checkbox("投射阴影##InspectorLightShadows", ref castShadows);
-            var reset = ImGui.SmallButton("恢复默认##InspectorLightReset");
-            if (reset)
-            {
-                SceneComponentTypes.WriteLight(component, LightComponentData.Default);
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-            }
-            else if (changed)
+            if (changed)
             {
                 SceneComponentTypes.WriteLight(component, new LightComponentData(
                     intensity, color.X, color.Y, color.Z, castShadows));
