@@ -389,6 +389,10 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_gpuRenderingDisabled || _renderSettings.Backend == RenderBackend.Cpu ||
             _pipeline is not { IsAvailable: true } pipeline) return false;
+        // 相机操作期间只显示轻量 CPU 预览，避免每个鼠标事件都提交一次路径追踪
+        // Compute，降低驱动 watchdog 触发 ErrorDeviceLost 的概率。
+        if (ImGui.IsMouseDragging(ImGuiMouseButton.Right) || ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
+            return false;
         try
         {
             pipeline.SyncWorld(_world);

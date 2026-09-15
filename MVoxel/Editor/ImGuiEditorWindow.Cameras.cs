@@ -223,8 +223,9 @@ internal sealed partial class ImGuiEditorWindow
         var orbiting = ImGui.IsMouseDragging(ImGuiMouseButton.Right);
         if (orbiting)
         {
-            var orientation = ViewportNavigationMath.Orbit(camera, io.MouseDelta);
-            WriteCameraTransform(cameraObject, camera.Position, orientation.Forward, orientation.Up);
+            var pivot = GetRenderOrbitPivot();
+            var orbit = ViewportNavigationMath.OrbitAroundPivot(camera, pivot, io.MouseDelta);
+            WriteCameraTransform(cameraObject, orbit.Position, orbit.Forward, orbit.Up);
             camera = ToSceneCamera(cameraObject);
         }
 
@@ -234,6 +235,19 @@ internal sealed partial class ImGuiEditorWindow
             var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
+    }
+
+    private Vector3 GetRenderOrbitPivot()
+    {
+        if (_world.TryGetBounds(out var min, out var max))
+        {
+            return new Vector3(
+                (float)((min.X + max.X + 1) * 0.5),
+                (float)((min.Y + max.Y + 1) * 0.5),
+                (float)((min.Z + max.Z + 1) * 0.5));
+        }
+
+        return Vector3.Zero;
     }
 
     /// <summary>

@@ -31,6 +31,29 @@ internal static class ViewportNavigationMath
     }
 
     /// <summary>
+    /// 围绕观察中心旋转相机，供场景窗口和渲染窗口共用。
+    /// </summary>
+    internal static (Vector3 Position, Vector3 Forward, Vector3 Up) OrbitAroundPivot(
+        SceneCamera camera, Vector3 pivot, Vector2 mouseDelta)
+    {
+        var offset = camera.Position - pivot;
+        var distance = MathF.Max(0.001F, offset.Length);
+        var yaw = MathF.Atan2(offset.X, offset.Z) + ViewportInputPolicy.OrbitYawDelta(mouseDelta.X);
+        var pitch = Math.Clamp(MathF.Asin(Math.Clamp(offset.Y / distance, -1F, 1F)) -
+            ViewportInputPolicy.OrbitPitchDelta(mouseDelta.Y), -1.55F, 1.55F);
+        var position = pivot + new Vector3(
+            MathF.Cos(pitch) * MathF.Sin(yaw),
+            MathF.Sin(pitch),
+            MathF.Cos(pitch) * MathF.Cos(yaw)) * distance;
+        var forward = Vector3.Normalize(pivot - position);
+        var right = Vector3.Cross(forward, Vector3.UnitY);
+        if (right.LengthSquared < 0.0001F) right = Vector3.UnitX;
+        right = Vector3.Normalize(right);
+        var up = Vector3.Normalize(Vector3.Cross(right, forward));
+        return (position, forward, up);
+    }
+
+    /// <summary>
     /// 根据中键拖拽量计算 Blender 风格的相机平移量
     /// </summary>
     /// <param name="camera">当前相机</param>
