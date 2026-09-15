@@ -2082,12 +2082,19 @@ DockId=0x6A3C3007,0
 
         if (SceneComponentTypes.IsVoxelModel(component))
         {
-            ImGui.Text("模型");
-            ImGui.SameLine(72F);
-            ImGui.Text(component.Data.TryGetProperty("model", out var model) ? model.GetString() ?? "未指定" : "未指定");
-            ImGui.Text("部件");
-            ImGui.SameLine(72F);
-            ImGui.Text(component.Data.TryGetProperty("part", out var part) ? part.GetString() ?? "模型" : "模型");
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            var model = data.Model;
+            var part = data.Part;
+            var changed = ImGui.InputText("模型##InspectorVoxelModel", ref model, 260) |
+                          ImGui.InputText("部件##InspectorVoxelPart", ref part, 128);
+            ImGui.TextDisabled($"体素数量  {data.VoxelCount:N0}");
+            ImGui.TextDisabled($"模板  {data.Template switch { "" => "未指定", _ => data.Template }}");
+            if (changed)
+            {
+                SceneComponentTypes.WriteVoxelModel(component,
+                    data with { Model = model, Part = part });
+                MarkSceneDocumentDirty();
+            }
             return;
         }
 

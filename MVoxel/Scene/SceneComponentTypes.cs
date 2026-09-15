@@ -53,6 +53,37 @@ public static class SceneComponentTypes
         Data = JsonSerializer.SerializeToElement(new { model, voxelCount, template, part }, JsonOptions),
     };
 
+    /// <summary>
+    /// 读取体素模型组件的资源引用信息
+    /// </summary>
+    public static VoxelModelComponentData ReadVoxelModel(ComponentRecord component)
+    {
+        if (!IsVoxelModel(component) || component.Data.ValueKind != JsonValueKind.Object)
+            return VoxelModelComponentData.Default;
+        var data = component.Data;
+        return new VoxelModelComponentData(
+            ReadString(data, "model"),
+            ReadString(data, "part", "模型"),
+            data.TryGetProperty("voxelCount", out var count) && count.TryGetInt32(out var voxelCount)
+                ? Math.Max(0, voxelCount)
+                : 0,
+            ReadString(data, "template"));
+    }
+
+    /// <summary>
+    /// 写回体素模型组件的资源引用信息
+    /// </summary>
+    public static void WriteVoxelModel(ComponentRecord component, VoxelModelComponentData data)
+    {
+        if (!IsVoxelModel(component)) throw new ArgumentException("组件记录不是体素模型组件", nameof(component));
+        component.Data = JsonSerializer.SerializeToElement(data with
+        {
+            Model = data.Model.Trim(),
+            Part = string.IsNullOrWhiteSpace(data.Part) ? "模型" : data.Part.Trim(),
+            VoxelCount = Math.Max(0, data.VoxelCount),
+        }, JsonOptions);
+    }
+
     public static ComponentRecord CreateLight(LightComponentData data) => new()
     {
         TypeId = Light,
@@ -168,6 +199,19 @@ public static class SceneComponentTypes
             ? value
             : fallback;
     }
+
+    private static string ReadString(JsonElement data, string name, string fallback = "") =>
+        data.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString() ?? fallback
+            : fallback;
+}
+
+/// <summary>
+/// 体素模型组件保存的资源引用信息
+/// </summary>
+public readonly record struct VoxelModelComponentData(string Model, string Part, int VoxelCount, string Template)
+{
+    public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }
 
 public sealed record SceneComponentDefinition(string TypeId, string DisplayName, string Category, bool BuiltIn);
