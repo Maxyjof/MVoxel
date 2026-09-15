@@ -152,7 +152,8 @@ public static class PluginManager
             ?? throw new InvalidDataException("插件清单为空");
         Validate(package);
         var destination = Path.Combine(AppPaths.PluginDirectory, package.Id);
-        if (string.Equals(Path.GetFullPath(destination), source, StringComparison.OrdinalIgnoreCase)) return package;
+        if (string.Equals(Path.GetFullPath(destination), source, StringComparison.OrdinalIgnoreCase))
+            return CreateInstalledPackage(package, source);
         if (Directory.Exists(destination)) Directory.Delete(destination, true);
         Directory.CreateDirectory(destination);
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
@@ -164,17 +165,7 @@ public static class PluginManager
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target, true);
         }
-        return new EditorPluginPackage
-        {
-            Id = package.Id,
-            Name = package.Name,
-            Version = package.Version,
-            Entry = package.Entry,
-            Source = "installed",
-            RootDirectory = destination,
-            Permissions = package.Permissions.ToList(),
-            Dependencies = package.Dependencies.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal),
-        };
+        return CreateInstalledPackage(package, destination);
     }
 
     /// <summary>
@@ -277,6 +268,24 @@ public static class PluginManager
         }
         return true;
     }
+
+    /// <summary>
+    /// 创建带有实际安装信息的插件清单
+    /// </summary>
+    /// <param name="package">原始插件清单</param>
+    /// <param name="rootDirectory">插件实际目录</param>
+    /// <returns>标准化后的插件清单</returns>
+    private static EditorPluginPackage CreateInstalledPackage(EditorPluginPackage package, string rootDirectory) => new()
+    {
+        Id = package.Id,
+        Name = package.Name,
+        Version = package.Version,
+        Entry = package.Entry,
+        Source = "installed",
+        RootDirectory = rootDirectory,
+        Permissions = package.Permissions.ToList(),
+        Dependencies = package.Dependencies.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal),
+    };
 
     /// <summary>
     /// 写入项目插件启停清单并同步锁文件
