@@ -257,7 +257,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 ImGui.SameLine();
                 ImGui.TextDisabled(EditorSettingsDocument.DefaultProjectRootPath);
-                ImGui.Checkbox("启用 GPU 诊断输出", ref _editorSettings.EnableGpuDiagnostics);
+                ImGui.Checkbox("启用显卡诊断输出", ref _editorSettings.EnableGpuDiagnostics);
                 ImGui.Checkbox("新项目优先使用硬件 RT", ref _editorSettings.UseHardwareRayTracing);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("只作为新项目渲染设置的初始值，默认关闭");
                 ImGui.EndTabItem();
@@ -366,18 +366,18 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SeparatorText("计算后端");
         var backend = (int)settings.Backend;
-        if (ImGui.Combo("计算后端", ref backend, "GPU（Vulkan）\0CPU\0", 2))
+        if (ImGui.Combo("计算后端", ref backend, "显卡计算\0CPU\0", 2))
             settings.Backend = (RenderBackend)Math.Clamp(backend, 0, 1);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip(settings.Backend == RenderBackend.Gpu
-            ? "优先使用 Vulkan GPU 计算"
-            : "使用 CPU 计算，适合调试或无可用 GPU 时使用");
+            ? "优先使用显卡计算"
+            : "使用 CPU 计算，适合调试或没有可用显卡时使用");
         var hardwareRayTracing = settings.UseHardwareRayTracing;
         if (settings.Backend == RenderBackend.Cpu) hardwareRayTracing = false;
         ImGui.BeginDisabled(settings.Backend == RenderBackend.Cpu);
         ImGui.Checkbox("启用硬件 RT", ref hardwareRayTracing);
         ImGui.EndDisabled();
         settings.UseHardwareRayTracing = hardwareRayTracing;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持，不可用时回退 Vulkan Compute");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持，不可用时回退显卡计算路径");
 
         ImGui.SeparatorText("光照与环境");
         ImGui.Checkbox("太阳平行光", ref settings.SunEnabled);
@@ -628,8 +628,8 @@ internal sealed partial class ImGuiEditorWindow
 
             if (ImGui.BeginTabItem("诊断"))
             {
-                ImGui.TextUnformatted("GPU 诊断");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("检查字体缺字、Vulkan 帧尺寸和绘制顶点数");
+                ImGui.TextUnformatted("显卡诊断");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("检查字体缺字、显卡帧尺寸和绘制顶点数");
                 ImGui.EndTabItem();
             }
 

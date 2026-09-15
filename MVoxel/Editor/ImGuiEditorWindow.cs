@@ -1893,9 +1893,9 @@ DockId=0x6A3C3007,0
             if (!navigating)
             {
                 ImGui.SetCursorScreenPos(origin + new Vector2(
-                    Math.Max(0F, (size.X - ImGui.CalcTextSize("GPU 路径追踪不可用").X) / 2F), size.Y / 2F));
+                    Math.Max(0F, (size.X - ImGui.CalcTextSize("显卡路径追踪不可用").X) / 2F), size.Y / 2F));
                 ImGui.TextDisabled(showVoxelWorld
-                    ? _pipelineStatus.Length > 0 ? "GPU 路径追踪不可用 · 当前显示 CPU 预览" : "GPU 路径追踪初始化中"
+                    ? _pipelineStatus.Length > 0 ? "显卡路径追踪不可用 · 当前显示 CPU 预览" : "显卡路径追踪初始化中"
                     : "体素世界已隐藏");
             }
         }
@@ -1920,8 +1920,8 @@ DockId=0x6A3C3007,0
         var backendName = _renderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
             ? "CPU 渲染预览"
             : pipeline?.UsingHardwareRayTracing == true
-                ? "Vulkan 硬件 RT"
-                : "Vulkan Compute 路径追踪";
+                ? "硬件光追"
+                : "显卡计算路径追踪";
         ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
         if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
         {
@@ -1943,7 +1943,7 @@ DockId=0x6A3C3007,0
         ImGui.EndDisabled();
         if (!canExport && ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("当前 Vulkan 显示结果尚未准备好");
+            ImGui.SetTooltip("当前显卡显示结果尚未准备好");
         }
         ImGui.SameLine();
         ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
@@ -1953,7 +1953,7 @@ DockId=0x6A3C3007,0
     {
         if (_pipeline is not { IsAvailable: true } pipeline)
         {
-            SetStatus("GPU 渲染不可用，无法导出");
+            SetStatus("显卡渲染不可用，无法导出");
             return;
         }
 
@@ -2542,7 +2542,7 @@ DockId=0x6A3C3007,0
         ImGui.SeparatorText("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        ImGui.SeparatorText("渲染设置（GPU 计算 · 实时生效）");
+        ImGui.SeparatorText("渲染设置（显卡计算 · 实时生效）");
         var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
         if (_renderSettings.ToJson() != before)

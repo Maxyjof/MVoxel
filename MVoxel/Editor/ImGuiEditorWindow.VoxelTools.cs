@@ -50,7 +50,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         _pipeline?.Dispose();
         _gpuRenderingDisabled = false;
-        _pipelineStatus = "Vulkan 体素管线正在初始化";
+        _pipelineStatus = "显卡体素管线正在初始化";
         try
         {
             _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
@@ -58,7 +58,7 @@ internal sealed partial class ImGuiEditorWindow
         catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
         {
             _pipeline = null;
-            _pipelineStatus = $"Vulkan Compute 管线初始化失败，当前使用 CPU 预览：{exception.Message}";
+            _pipelineStatus = $"显卡计算管线初始化失败，当前使用 CPU 预览：{exception.Message}";
             MVoxelLog.Error("Vulkan Compute 管线初始化失败，已切换 CPU 预览", exception);
         }
 
@@ -493,7 +493,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_gpuRenderingDisabled) return;
         _gpuRenderingDisabled = true;
-        _pipelineStatus = "Vulkan 设备不可用，当前使用 CPU 预览";
+        _pipelineStatus = "显卡设备不可用，当前使用 CPU 预览";
         MVoxelLog.Error("Vulkan 体素渲染失败，已切换 CPU 预览", exception);
         try
         {
@@ -832,8 +832,8 @@ internal sealed partial class ImGuiEditorWindow
         if (_pipeline is not { IsAvailable: true })
         {
             var message = _pipeline?.GpuWorksetUploaded == true
-                ? "GPU 体素工作集已上传，GPU 绘制管线仍在初始化，当前使用 CPU 预览。"
-                : "GPU 体素工作集尚未上传，当前使用 CPU 预览。";
+                ? "显卡体素工作集已上传，显卡绘制管线仍在初始化，当前使用 CPU 预览。"
+                : "显卡体素工作集尚未上传，当前使用 CPU 预览。";
             ImGui.TextColored(ToColor(EditorPalette.Accent), message);
             if (!string.IsNullOrEmpty(_pipelineStatus)) ImGui.TextWrapped(_pipelineStatus);
         }
