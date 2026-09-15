@@ -66,13 +66,13 @@ public sealed class JavaScriptPluginRuntime : IDisposable
             }
             try
             {
-                foreach (var item in ExecuteActivate(package, timeout))
+                var extensions = ExecuteActivate(package, timeout);
+                foreach (var item in extensions.Automations)
                 {
                     var automation = new PluginAutomation(item.Id, item.Name, package.Id);
                     _automations.Add(automation);
                     _automationOwners[item.Id] = package;
                 }
-                var extensions = ExecuteExtensions(package, timeout);
                 foreach (var item in extensions.Commands)
                 {
                     _commands.Add(new PluginCommand(item.Id, item.Name, package.Id));
@@ -168,12 +168,12 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         return document.RootElement.Clone();
     }
 
-    private static IReadOnlyList<PluginAutomationData> ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
+    private static PluginExtensionData ExecuteActivate(EditorPluginPackage package, TimeSpan timeout)
     {
         var entry = PluginManager.ResolveEntryPath(package);
         var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const a=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:()=>{},registerPanel:()=>{}};" +
-            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify(a));";
+            "const p=await import(m);const a=[],c=[],u=[];const h={registerAutomation:(id,name)=>a.push({id,name}),registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name})};" +
+            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({automations:a,commands:c,panels:u}));";
         var startInfo = new ProcessStartInfo
         {
             FileName = "node",
@@ -198,34 +198,10 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         var error = process.StandardError.ReadToEnd();
         if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "JavaScript 插件返回失败" : error.Trim());
         using var document = JsonDocument.Parse(output);
-        return document.RootElement.EnumerateArray()
-            .Select(item => new PluginAutomationData(
-                item.GetProperty("id").GetString() ?? string.Empty,
-                item.GetProperty("name").GetString() ?? string.Empty))
-            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name))
-            .ToList();
-    }
-
-    private static PluginExtensionData ExecuteExtensions(EditorPluginPackage package, TimeSpan timeout)
-    {
-        var entry = PluginManager.ResolveEntryPath(package);
-        var script = "const m=await import('node:url').then(x=>x.pathToFileURL(process.argv[1]).href);" +
-            "const p=await import(m);const c=[],u=[];const h={registerAutomation:()=>{},registerCommand:(id,name)=>c.push({id,name}),registerPanel:(id,name)=>u.push({id,name})};" +
-            "if(typeof p.activate==='function')await p.activate(h);process.stdout.write(JSON.stringify({commands:c,panels:u}));";
-        var startInfo = new ProcessStartInfo { FileName = "node", UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-        startInfo.ArgumentList.Add("--permission");
-        startInfo.ArgumentList.Add($"--allow-fs-read={package.RootDirectory}");
-        startInfo.ArgumentList.Add("--input-type=module");
-        startInfo.ArgumentList.Add("-e");
-        startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add(entry);
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 JavaScript 运行时");
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds)) { process.Kill(true); throw new TimeoutException("插件扩展注册超时"); }
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "插件扩展注册失败" : error.Trim());
-        using var document = JsonDocument.Parse(output);
-        return new PluginExtensionData(ReadExtensionItems(document.RootElement, "commands"), ReadExtensionItems(document.RootElement, "panels"));
+        return new PluginExtensionData(
+            ReadExtensionItems(document.RootElement, "automations"),
+            ReadExtensionItems(document.RootElement, "commands"),
+            ReadExtensionItems(document.RootElement, "panels"));
     }
 
     private static IReadOnlyList<PluginExtensionItem> ReadExtensionItems(JsonElement root, string property)
@@ -249,7 +225,6 @@ public sealed class JavaScriptPluginRuntime : IDisposable
         _commandOwners.Clear();
     }
 
-    private sealed record PluginAutomationData(string Id, string Name);
     private sealed record PluginExtensionItem(string Id, string Name);
-    private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels);
+    private sealed record PluginExtensionData(IReadOnlyList<PluginExtensionItem> Automations, IReadOnlyList<PluginExtensionItem> Commands, IReadOnlyList<PluginExtensionItem> Panels);
 }

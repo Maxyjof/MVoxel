@@ -431,9 +431,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void ExecutePluginCommand(string commandId)
     {
         if (_pluginRuntime is null) return;
-        using var payload = JsonDocument.Parse("{}");
-        _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10));
-        _statusText = $"已执行插件命令：{commandId}";
+        try
+        {
+            using var payload = JsonDocument.Parse("{}");
+            _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10));
+            _statusText = $"已执行插件命令：{commandId}";
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error($"插件命令执行失败：{commandId}", exception);
+            _statusText = $"插件命令执行失败：{commandId}";
+        }
     }
 
     private void RequestWelcomeWindow() => _showWelcomeRequested = true;
