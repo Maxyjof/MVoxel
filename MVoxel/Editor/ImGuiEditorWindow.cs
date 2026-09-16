@@ -125,6 +125,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private Queue<ExportJob> _exportQueue = new();
     private ExportJob? _activeExport;
     private bool _exportQueueExpanded;
+    private bool _cancelActiveExportRequested;
     private int _exportSequence;
     private readonly List<CpuPreviewSurfaceFace> _cpuPreviewSurfaceFaces = [];
     private VoxelWorld? _cpuPreviewWorld;
@@ -1943,13 +1944,18 @@ DockId=0x6A3C3007,0
         var camera = GetRenderViewCamera();
         var showVoxelWorld = IsVoxelWorldVisible();
         var exporting = _activeExport is not null || _exportQueue.Count > 0;
-        var gpuRendered = !exporting && showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
+        var gpuRendered = false;
         if (exporting && showVoxelWorld && _project is not null)
         {
             ProcessExportQueue(camera, size);
             if (_pipeline?.DisplayTextureId is { } exportTexture && exportTexture != IntPtr.Zero)
+            {
                 drawList.AddImage(exportTexture, origin, origin + size, Vector2.Zero, _pipeline.DisplayUvMax);
+                gpuRendered = true;
+            }
         }
+        if (!gpuRendered)
+            gpuRendered = showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
         {
             if (showVoxelWorld)
@@ -1983,6 +1989,15 @@ DockId=0x6A3C3007,0
     private void ProcessExportQueue(SceneCamera camera, Vector2 size)
     {
         if (_pipeline is not { IsAvailable: true } pipeline) return;
+        if (_cancelActiveExportRequested)
+        {
+            _cancelActiveExportRequested = false;
+            if (_activeExport is not null)
+            {
+                SetStatus($"已取消导出：{Path.GetFileName(_activeExport.Path)}");
+                _activeExport = null;
+            }
+        }
         if (_activeExport is null && _exportQueue.Count > 0)
         {
             _activeExport = _exportQueue.Dequeue();
@@ -2106,6 +2121,60 @@ DockId=0x6A3C3007,0
             ImGui.PopStyleVar();
         }
         ImGui.End();
+    }
+
+    private void DrawExportQueueWindow(Vector2 display)
+    {
+        var open = true;
+        ImGui.SetNextWindowPos(new Vector2(Math.Max(8F, display.X - 440F),
+            Math.Max(8F, display.Y - StatusHeight - 290F)), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420F, 270F), ImGuiCond.Always);
+        var flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
+        if (!ImGui.Begin("导出队列##ExportQueueWindow", ref open, flags))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextDisabled($"共 {_exportQueue.Count + (_activeExport is null ? 0 : 1)} 个任务");
+        ImGui.Separator();
+        if (_activeExport is { } active)
+        {
+            ImGui.TextUnformatted("正在导出");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("取消##取消当前导出")) _cancelActiveExportRequested = true;
+            ImGui.TextWrapped(Path.GetFileName(active.Path));
+            ImGui.ProgressBar(ExportProgress(active), new Vector2(-1F, 0F),
+                $"{ExportProgress(active) * 100F:0}%");
+        }
+        else
+        {
+            ImGui.TextDisabled("当前没有正在执行的任务");
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled($"等待中的任务（{_exportQueue.Count}）");
+        foreach (var job in _exportQueue.ToArray())
+        {
+            ImGui.PushID(job.Path);
+            ImGui.TextWrapped(Path.GetFileName(job.Path));
+            ImGui.SameLine();
+            ImGui.ProgressBar(0F, new Vector2(90F, 0F), "等待");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("取消"))
+                _exportQueue = new Queue<ExportJob>(_exportQueue.Where(item => item != job));
+            ImGui.PopID();
+        }
+        ImGui.End();
+        if (!open) _exportQueueExpanded = false;
+    }
+
+    private float ExportProgress(ExportJob job)
+    {
+        if (_pipeline is null) return 0F;
+        if (!job.Settings.PathTracingEnabled) return 1F;
+        if (job.Settings.PathMaxAccumulatedSamples <= 0) return 0F;
+        return Math.Clamp((float)_pipeline.AccumulatedSamples / job.Settings.PathMaxAccumulatedSamples, 0F, 1F);
     }
 
     /// <summary>
@@ -2848,25 +2917,10 @@ DockId=0x6A3C3007,0
             ImGui.ProgressBar(progress, new Vector2(120F, 0F));
             ImGui.SameLine();
             if (ImGui.SmallButton(_exportQueueExpanded ? "收起" : "展开")) _exportQueueExpanded = !_exportQueueExpanded;
-            if (_exportQueueExpanded)
-            {
-                ImGui.OpenPopup("##ExportQueuePopup");
-                if (ImGui.BeginPopup("##ExportQueuePopup"))
-                {
-                    ImGui.TextDisabled("等待中的导出任务");
-                    foreach (var job in _exportQueue.ToArray())
-                    {
-                        ImGui.PushID(job.Path);
-                        ImGui.Text(Path.GetFileName(job.Path));
-                        ImGui.SameLine();
-                        if (ImGui.SmallButton("取消")) _exportQueue = new Queue<ExportJob>(_exportQueue.Where(item => item != job));
-                        ImGui.PopID();
-                    }
-                    ImGui.EndPopup();
-                }
-            }
         }
         ImGui.End();
+        if (_exportQueueExpanded && exportCount > 0)
+            DrawExportQueueWindow(display);
     }
 
     private static float MenuHeight => ImGui.GetFrameHeight();
