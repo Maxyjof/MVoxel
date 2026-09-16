@@ -1353,7 +1353,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
             color = mix(vec3(luminance), color, max(values[52], 0.0));
             color = (color - 0.5) * max(values[54], 0.0) + 0.5;
-            color += values[55];
+            color *= max(values[55], 0.0);
             float angle = radians(values[53]);
             float cs = cos(angle);
             float sn = sin(angle);
