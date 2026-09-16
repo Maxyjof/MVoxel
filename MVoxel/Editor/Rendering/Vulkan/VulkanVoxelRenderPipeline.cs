@@ -476,21 +476,37 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             ClearAccumulation();
         }
 
-        UploadParameters(parameters);
-        _context.ExecuteImmediate(commandBuffer =>
+        // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
+        // 分块不会改变采样、反弹或输出分辨率，只改变命令提交粒度。
+        const int tileSize = 256;
+        for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
-            TransitionOutputToGeneral(commandBuffer);
-            if (pathMode)
+            var tileHeight = Math.Min(tileSize, heightPixels - tileY);
+            for (var tileX = 0; tileX < widthPixels; tileX += tileSize)
             {
-                TransitionAccumulationToGeneral(commandBuffer);
+                var tileWidth = Math.Min(tileSize, widthPixels - tileX);
+                parameters[VoxelRenderParameters.TileOffsetX] = tileX;
+                parameters[VoxelRenderParameters.TileOffsetY] = tileY;
+                UploadParameters(parameters);
+                _context.ExecuteImmediate(commandBuffer =>
+                {
+                    TransitionOutputToGeneral(commandBuffer);
+                    if (pathMode)
+                    {
+                        TransitionAccumulationToGeneral(commandBuffer);
+                    }
+                    api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                    DescriptorSet descriptorSet = _computeDescriptorSet;
+                    api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                        0, 1, in descriptorSet, 0, null);
+                    api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
+                        ((uint)tileHeight + 7U) / 8U, 1);
+                    TransitionOutputToShaderRead(commandBuffer);
+                });
             }
-            api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-            DescriptorSet descriptorSet = _computeDescriptorSet;
-            api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                0, 1, in descriptorSet, 0, null);
-            api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U, ((uint)heightPixels + 7U) / 8U, 1);
-            TransitionOutputToShaderRead(commandBuffer);
-        });
+        }
+        parameters[VoxelRenderParameters.TileOffsetX] = 0F;
+        parameters[VoxelRenderParameters.TileOffsetY] = 0F;
         if (pathMode)
         {
             AccumulatedSamples = Math.Min(settings.PathMaxAccumulatedSamples,
@@ -1235,7 +1251,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         void main()
         {
-            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
+                ivec2(int(values[101]), int(values[102]));
             int width = int(values[11]);
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
