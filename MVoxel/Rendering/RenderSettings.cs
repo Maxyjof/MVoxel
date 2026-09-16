@@ -359,6 +359,8 @@ public sealed class RenderSettings
         preview.PathSamplesPerFrame = 1;
         preview.MaxBounces = Math.Min(preview.MaxBounces, 2);
         preview.ShadowSamples = 1;
+        preview.ShadowSoftness = 0F;
+        preview.AmbientOcclusionEnabled = false;
         preview.PathDenoising = false;
         preview.DirectLightingMIS = false;
         return preview;
