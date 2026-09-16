@@ -24,6 +24,8 @@ internal sealed class ProjectAssetBrowser
     private string? _renamePath;
     private string _renameName = string.Empty;
     private string? _deletePath;
+    private bool _openRenameDialog;
+    private bool _openDeleteDialog;
 
     internal string SelectedAssetPath => _selectedAsset;
 
@@ -70,6 +72,16 @@ internal sealed class ProjectAssetBrowser
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
         DrawGrid(project, reportStatus);
+        if (_openRenameDialog)
+        {
+            ImGui.OpenPopup("##资源重命名");
+            _openRenameDialog = false;
+        }
+        if (_openDeleteDialog)
+        {
+            ImGui.OpenPopup("##资源删除确认");
+            _openDeleteDialog = false;
+        }
         DrawAssetDialogs(project, reportStatus, assetChanged);
         ImGui.EndChild();
 
@@ -208,12 +220,12 @@ internal sealed class ProjectAssetBrowser
                     {
                         _renamePath = entry.RelativePath;
                         _renameName = Path.GetFileName(entry.RelativePath);
-                        ImGui.OpenPopup("##资源重命名");
+                        _openRenameDialog = true;
                     }
                     if (ImGui.MenuItem("删除"))
                     {
                         _deletePath = entry.RelativePath;
-                        ImGui.OpenPopup("##资源删除确认");
+                        _openDeleteDialog = true;
                     }
                 }
                 if (ImGui.MenuItem("复制相对路径"))
