@@ -180,7 +180,8 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>主场景文档</returns>
     private Scene.SceneDocument LoadSceneDocument(ProjectHandle project)
     {
-        var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
+        var scenePath = Path.Combine(project.AssetsPath,
+            _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar));
         if (!File.Exists(scenePath))
         {
             _sceneValidationErrors = Array.Empty<string>();

@@ -21,6 +21,9 @@ internal sealed class ProjectAssetBrowser
     private bool _searchAll = true;
     private float _treeWidth = 216F;
     private float _tileSize = 76F;
+    private string? _renamePath;
+    private string _renameName = string.Empty;
+    private string? _deletePath;
 
     internal string SelectedAssetPath => _selectedAsset;
 
@@ -38,7 +41,7 @@ internal sealed class ProjectAssetBrowser
     /// </summary>
     /// <param name="project">当前项目或 null</param>
     /// <param name="reportStatus">向状态栏汇报的回调</param>
-    internal void Draw(ProjectHandle? project, Action<string> reportStatus)
+    internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -67,6 +70,7 @@ internal sealed class ProjectAssetBrowser
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
         DrawGrid(project, reportStatus);
+        DrawAssetDialogs(project, reportStatus, assetChanged);
         ImGui.EndChild();
 
         ImGui.Separator();
@@ -198,6 +202,20 @@ internal sealed class ProjectAssetBrowser
                 }
                 if (ImGui.MenuItem("在资源管理器中打开"))
                     RevealInExplorer(project, entry.RelativePath, reportStatus);
+                if (!entry.IsFolder)
+                {
+                    if (ImGui.MenuItem("重命名"))
+                    {
+                        _renamePath = entry.RelativePath;
+                        _renameName = Path.GetFileName(entry.RelativePath);
+                        ImGui.OpenPopup("##资源重命名");
+                    }
+                    if (ImGui.MenuItem("删除"))
+                    {
+                        _deletePath = entry.RelativePath;
+                        ImGui.OpenPopup("##资源删除确认");
+                    }
+                }
                 if (ImGui.MenuItem("复制相对路径"))
                 {
                     ImGui.SetClipboardText(entry.RelativePath);
@@ -234,6 +252,122 @@ internal sealed class ProjectAssetBrowser
             ImGui.PopID();
         }
     }
+
+    private void DrawAssetDialogs(ProjectHandle? project, Action<string> reportStatus,
+        Action<ProjectAssetChange> assetChanged)
+    {
+        if (project is null) return;
+
+        if (_renamePath is not null && ImGui.BeginPopupModal("##资源重命名", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.TextUnformatted("重命名文件");
+            ImGui.SetNextItemWidth(360F);
+            ImGui.InputText("##资源新名称", ref _renameName, 260);
+            var confirm = ImGui.Button("确定", new Vector2(110F, 0F));
+            ImGui.SameLine();
+            var cancel = ImGui.Button("取消", new Vector2(110F, 0F));
+            if (confirm)
+            {
+                var oldPath = _renamePath;
+                if (RenameFile(project, oldPath, _renameName, reportStatus, assetChanged))
+                    _selectedAsset = CombineRelative(Path.GetDirectoryName(oldPath), _renameName);
+                _renamePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            else if (cancel)
+            {
+                _renamePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.EndPopup();
+        }
+
+        if (_deletePath is not null && ImGui.BeginPopupModal("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.TextWrapped($"确定删除文件“{Path.GetFileName(_deletePath)}”吗？此操作不可撤回。");
+            var confirm = ImGui.Button("删除", new Vector2(110F, 0F));
+            ImGui.SameLine();
+            var cancel = ImGui.Button("取消", new Vector2(110F, 0F));
+            if (confirm)
+            {
+                var deletedPath = _deletePath;
+                if (DeleteFile(project, deletedPath, reportStatus, assetChanged))
+                    _selectedAsset = string.Empty;
+                _deletePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            else if (cancel)
+            {
+                _deletePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.EndPopup();
+        }
+    }
+
+    private static bool RenameFile(ProjectHandle project, string oldRelativePath, string newName,
+        Action<string> reportStatus, Action<ProjectAssetChange> assetChanged)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || Path.GetFileName(newName) != newName)
+        {
+            reportStatus("重命名失败：文件名不能为空且不能包含路径分隔符");
+            return false;
+        }
+
+        var oldPath = ResolveAssetPath(project, oldRelativePath);
+        var newRelativePath = CombineRelative(Path.GetDirectoryName(oldRelativePath), newName);
+        var newPath = ResolveAssetPath(project, newRelativePath);
+        if (oldPath is null || newPath is null || !File.Exists(oldPath))
+        {
+            reportStatus("重命名失败：文件不存在或路径无效");
+            return false;
+        }
+        if (File.Exists(newPath) || Directory.Exists(newPath))
+        {
+            reportStatus("重命名失败：目标名称已存在");
+            return false;
+        }
+
+        try
+        {
+            File.Move(oldPath, newPath);
+            reportStatus($"已重命名文件：{Path.GetFileName(oldRelativePath)} → {newName}");
+            assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            reportStatus($"重命名失败：{exception.Message}");
+            return false;
+        }
+    }
+
+    private static bool DeleteFile(ProjectHandle project, string relativePath, Action<string> reportStatus,
+        Action<ProjectAssetChange> assetChanged)
+    {
+        var path = ResolveAssetPath(project, relativePath);
+        if (path is null || !File.Exists(path))
+        {
+            reportStatus("删除失败：文件不存在或路径无效");
+            return false;
+        }
+
+        try
+        {
+            File.Delete(path);
+            reportStatus($"已删除文件：{Path.GetFileName(relativePath)}");
+            assetChanged(new ProjectAssetChange(relativePath, null));
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            reportStatus($"删除失败：{exception.Message}");
+            return false;
+        }
+    }
+
+    private static string CombineRelative(string? directory, string name) =>
+        string.IsNullOrWhiteSpace(directory) ? name : $"{directory.Replace('\\', '/')}/{name}";
 
     private List<ProjectAssetEntry> CollectEntries(ProjectHandle? project)
     {
@@ -368,6 +502,11 @@ internal enum ProjectAssetKind
 /// <param name="Kind">资产类型</param>
 /// <param name="IsFolder">是否为目录</param>
 internal sealed record ProjectAssetEntry(string RelativePath, string DisplayName, ProjectAssetKind Kind, bool IsFolder);
+
+/// <summary>
+/// 资产文件发生变化时通知编辑器刷新关联状态。
+/// </summary>
+internal sealed record ProjectAssetChange(string OldRelativePath, string? NewRelativePath);
 
 /// <summary>
 /// 资产目录扫描的唯一入口：所有枚举、搜索与分类都经过这里，

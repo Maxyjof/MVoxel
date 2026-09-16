@@ -58,6 +58,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
     private SceneDocument? _sceneDocument;
+    private string _activeSceneRelativePath = "Scenes/主场景.mvox";
     private StableId? _renderCameraId;
     private bool _applyPreset;
     private bool _editPanelLayout;
@@ -2746,7 +2747,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;
@@ -2754,6 +2755,48 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.End();
+    }
+
+    /// <summary>
+    /// 资产文件变更后的统一刷新入口。
+    /// </summary>
+    private void HandleAssetChanged(ProjectAssetChange change)
+    {
+        _assetPreviewPath = string.Empty;
+        if (_assetPreviewTextureId != 0)
+        {
+            _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
+            _assetPreviewTextureId = 0;
+        }
+
+        if (_project is null) return;
+        var oldPath = change.OldRelativePath.Replace('\\', '/');
+        var newPath = change.NewRelativePath?.Replace('\\', '/');
+        var activeScenePath = _activeSceneRelativePath;
+        var touchesScene = string.Equals(oldPath, activeScenePath, StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(newPath, activeScenePath, StringComparison.OrdinalIgnoreCase);
+        var touchesModel = oldPath.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
+                           oldPath.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase) ||
+                           newPath?.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) == true ||
+                           newPath?.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase) == true;
+        if (touchesScene)
+        {
+            if (string.Equals(oldPath, activeScenePath, StringComparison.OrdinalIgnoreCase) &&
+                newPath?.EndsWith(".mvox", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _activeSceneRelativePath = newPath;
+            }
+            _sceneDocument = LoadSceneDocument(_project);
+            _sceneDocumentDirty = false;
+            _selectedSceneObjectId = null;
+            _renderCameraId = null;
+        }
+        if (touchesScene || touchesModel)
+        {
+            LoadWorldForProject(_project);
+            _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
+        }
     }
 
     /// <summary>
@@ -3168,6 +3211,7 @@ DockId=0x6A3C3007,0
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
         _project = project;
+        _activeSceneRelativePath = "Scenes/主场景.mvox";
         _assetBrowser.Reset();
         RecentProjects.Record(project);
         LoadProjectSettings(project);
@@ -3207,6 +3251,7 @@ DockId=0x6A3C3007,0
         SaveProjectSettings();
         _project = null;
         _sceneDocument = null;
+        _activeSceneRelativePath = "Scenes/主场景.mvox";
         _sceneDocumentDirty = false;
         _renderCameraId = null;
         _assetBrowser.Reset();
