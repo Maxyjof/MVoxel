@@ -165,6 +165,8 @@ public sealed class EditorSettingsDocument
 public sealed class ProjectSettingsDocument
 {
     public int FormatVersion = 1;
+    /// <summary>内置模板渲染配置版本，用于把旧示例项目升级到当前效果配置。</summary>
+    public int RenderProfileVersion;
     public string TemplateId = "未指定";
     public int LodLevels = 4;
     public float[] LodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
@@ -293,6 +295,19 @@ public static class SettingsStore
                                    File.ReadAllText(project.ProjectSettingsPath), JsonOptions)
                                ?? ProjectSettingsDocument.CreateDefault();
                 document.Normalize();
+                if (document.RenderProfileVersion < 1 &&
+                    Enum.TryParse<MVoxel.Editor.Templates.ProjectTemplateId>(document.TemplateId, out var templateId) &&
+                    templateId != MVoxel.Editor.Templates.ProjectTemplateId.Empty)
+                {
+                    var recommended = MVoxel.Editor.Templates.ProjectTemplateCatalog.CreateRecommendedSettings(templateId);
+                    document.SceneRenderSettings = recommended.SceneRenderSettings;
+                    document.RenderSettings = recommended.RenderSettings;
+                    document.ExportRenderSettings = recommended.ExportRenderSettings;
+                    document.DefaultRenderPreset = recommended.DefaultRenderPreset;
+                    document.RenderProfileVersion = 1;
+                    document.Normalize();
+                    SaveProject(project, document);
+                }
                 return document;
             }
         }

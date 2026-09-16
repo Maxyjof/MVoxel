@@ -89,6 +89,8 @@ public sealed record ProjectTemplateDefinition(
 /// </summary>
 public static class ProjectTemplateCatalog
 {
+    /// <summary>返回当前模板的完整推荐配置，供模板创建和旧项目升级共用。</summary>
+    internal static ProjectSettingsDocument CreateRecommendedSettings(ProjectTemplateId id) => CreateSettings(id);
     /// <summary>
     /// 所有可选模板，顺序就是界面展示顺序
     /// </summary>
@@ -215,20 +217,116 @@ public static class ProjectTemplateCatalog
             case ProjectTemplateId.RayTracingStudio:
                 settings.DefaultRenderPreset = "光追工作室";
                 settings.RenderSettings.PathTracingEnabled = true;
-                settings.RenderSettings.PathMaxAccumulatedSamples = 512;
+                settings.RenderSettings.PathSamplesPerFrame = 2;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 768;
+                settings.RenderSettings.ShadowSoftness = .16F;
+                settings.RenderSettings.ShadowSamples = 6;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .92F;
+                settings.RenderSettings.AoPower = 1.35F;
+                settings.RenderSettings.SkyAmbient = .3F;
+                settings.RenderSettings.AmbientTint = .22F;
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.Exposure = .35F;
+                settings.RenderSettings.Vignette = .18F;
+                settings.RenderSettings.PathRoughness = .18F;
+                settings.RenderSettings.PathMetalness = .12F;
+                settings.RenderSettings.PathSpecularF0 = .055F;
+                settings.RenderSettings.RussianRouletteThreshold = .003F;
+                settings.RenderSettings.RadianceClamp = 24F;
                 settings.RenderSettings.MaxBounces = 8;
                 settings.RenderSettings.PathDenoising = true;
+                settings.RenderSettings.PathDenoiseStrength = .32F;
                 settings.RenderSettings.EmissiveIntensity = 18F;
                 settings.RenderSettings.TransmissiveAbsorption = .35F;
+                settings.RenderSettings.DirectLightingMIS = true;
+                break;
+            case ProjectTemplateId.Showcase:
+                settings.DefaultRenderPreset = "基础展示";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathSamplesPerFrame = 2;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 384;
+                settings.RenderSettings.ShadowSoftness = .08F;
+                settings.RenderSettings.ShadowSamples = 4;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .78F;
+                settings.RenderSettings.AoPower = 1.15F;
+                settings.RenderSettings.SkyAmbient = .48F;
+                settings.RenderSettings.Tone = ToneCurve.Reinhard;
+                settings.RenderSettings.Exposure = .15F;
+                settings.RenderSettings.PathDenoising = true;
+                settings.RenderSettings.PathDenoiseStrength = .24F;
+                settings.RenderSettings.EmissiveIntensity = 14F;
+                settings.RenderSettings.TransmissiveAbsorption = .6F;
+                break;
+            case ProjectTemplateId.MaterialLab:
+                settings.DefaultRenderPreset = "材质实验";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathSamplesPerFrame = 2;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 512;
+                settings.RenderSettings.ShadowSoftness = .04F;
+                settings.RenderSettings.ShadowSamples = 4;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .88F;
+                settings.RenderSettings.AoPower = 1.25F;
+                settings.RenderSettings.SkyAmbient = .36F;
+                settings.RenderSettings.AmbientTint = .12F;
+                settings.RenderSettings.PathRoughness = .3F;
+                settings.RenderSettings.PathMetalness = .28F;
+                settings.RenderSettings.PathSpecularF0 = .08F;
+                settings.RenderSettings.TransmissiveAbsorption = .42F;
+                settings.RenderSettings.EmissiveIntensity = 22F;
+                settings.RenderSettings.PathDenoiseStrength = .26F;
                 break;
             case ProjectTemplateId.PaletteWorkshop:
                 settings.DefaultRenderPreset = "调色板材质展示";
                 settings.RenderSettings.PathMaxAccumulatedSamples = 256;
+                settings.RenderSettings.PaletteShading = true;
+                settings.RenderSettings.Saturation = 1.12F;
+                settings.RenderSettings.ColorContrast = 1.08F;
+                settings.RenderSettings.Brightness = 1.02F;
+                settings.RenderSettings.HueShiftDegrees = 6F;
+                settings.RenderSettings.Tone = ToneCurve.Linear;
                 break;
             case ProjectTemplateId.ProceduralTerrain:
                 settings.LodLevels = 5;
                 settings.DefaultRenderPreset = "程序化地形";
                 settings.RenderSettings.GroundFade = 180F;
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 384;
+                settings.RenderSettings.ShadowSoftness = .1F;
+                settings.RenderSettings.ShadowSamples = 5;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .9F;
+                settings.RenderSettings.SkyAmbient = .52F;
+                settings.RenderSettings.Tone = ToneCurve.Filmic;
+                settings.RenderSettings.Exposure = -.15F;
+                settings.RenderSettings.PathDenoiseStrength = .25F;
+                break;
+            case ProjectTemplateId.Architecture:
+                settings.DefaultRenderPreset = "建筑光照";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 448;
+                settings.RenderSettings.ShadowSoftness = .07F;
+                settings.RenderSettings.ShadowSamples = 5;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .95F;
+                settings.RenderSettings.AoPower = 1.4F;
+                settings.RenderSettings.PathRoughness = .24F;
+                settings.RenderSettings.PathMetalness = .08F;
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.PathDenoiseStrength = .27F;
+                break;
+            case ProjectTemplateId.CameraGallery:
+                settings.DefaultRenderPreset = "多相机景深";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 384;
+                settings.RenderSettings.CameraFovDegrees = 42F;
+                settings.RenderSettings.DepthOfField = true;
+                settings.RenderSettings.ApertureRadius = .06F;
+                settings.RenderSettings.FocusDistance = 24F;
+                settings.RenderSettings.Tone = ToneCurve.Reinhard;
+                settings.RenderSettings.PathDenoiseStrength = .3F;
                 break;
             case ProjectTemplateId.LargeWorld:
                 settings.LodLevels = 8;
@@ -236,10 +334,6 @@ public static class ProjectTemplateCatalog
                 settings.DefaultRenderPreset = "超大型场景性能验证";
                 settings.RenderSettings.ResolutionScale = .65F;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 64;
-                break;
-            case ProjectTemplateId.CameraGallery:
-                settings.DefaultRenderPreset = "多相机构图";
-                settings.RenderSettings.PathMaxAccumulatedSamples = 256;
                 break;
             case ProjectTemplateId.RenderingGallery:
                 settings.LodLevels = 6;
@@ -268,9 +362,27 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.ApertureRadius = .045F;
                 settings.RenderSettings.FocusDistance = 36F;
                 settings.RenderSettings.SceneBackgroundColor = new Vector3(.02F, .025F, .05F);
+                settings.RenderSettings.Saturation = 1.08F;
+                settings.RenderSettings.ColorContrast = 1.12F;
+                settings.RenderSettings.Brightness = 1.02F;
+                settings.RenderSettings.HueShiftDegrees = -3F;
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.Exposure = .2F;
+                settings.RenderSettings.WhiteBalance = 5600F;
+                settings.RenderSettings.Vignette = .22F;
+                settings.RenderSettings.Dither = true;
+                settings.RenderSettings.PathSamplesPerFrame = 2;
+                settings.RenderSettings.PathRoughness = .2F;
+                settings.RenderSettings.PathMetalness = .15F;
+                settings.RenderSettings.PathSpecularF0 = .06F;
+                settings.RenderSettings.RussianRouletteThreshold = .003F;
+                settings.RenderSettings.RadianceClamp = 28F;
+                settings.RenderSettings.DirectLightingMIS = true;
+                settings.RenderSettings.CameraFovDegrees = 48F;
                 break;
         }
 
+        settings.RenderProfileVersion = 1;
         settings.Normalize();
         return settings;
     }
