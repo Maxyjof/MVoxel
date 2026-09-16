@@ -13,7 +13,7 @@ public sealed class VoxelRenderParameters
     /// <summary>
     /// 参数块总槽数（float 个数），SSBO 按此大小上传
     /// </summary>
-    public const int SlotCount = 103;
+    public const int SlotCount = 104;
 
     // 相机基向量与逐帧标量
     /// <summary>相机位置 X</summary>
@@ -83,7 +83,7 @@ public sealed class VoxelRenderParameters
     /// <summary>场景背景色的线性 RGB 分量</summary>
     public const int SceneBackgroundR = 98, SceneBackgroundG = 99, SceneBackgroundB = 100;
     /// <summary>Compute 分块起点，避免单次 GPU 调度时间过长</summary>
-    public const int TileOffsetX = 101, TileOffsetY = 102;
+    public const int TileOffsetX = 101, TileOffsetY = 102, DenoisePass = 103;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -297,6 +297,7 @@ public sealed class VoxelRenderParameters
         parameters[SceneBackgroundR] = settings.SceneBackgroundColor.X;
         parameters[SceneBackgroundG] = settings.SceneBackgroundColor.Y;
         parameters[SceneBackgroundB] = settings.SceneBackgroundColor.Z;
+        parameters[DenoisePass] = 0F;
 
         for (var index = 0; index < parameters.Length; index++)
         {

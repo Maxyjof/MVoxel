@@ -505,8 +505,30 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 });
             }
         }
+
+        // 降噪必须在整帧累积完成后执行。独立的第二阶段读取稳定的累积图像，
+        // 避免在采样阶段读写邻居造成竞态。
+        if (pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F)
+        {
+            parameters[VoxelRenderParameters.TileOffsetX] = 0F;
+            parameters[VoxelRenderParameters.TileOffsetY] = 0F;
+            parameters[VoxelRenderParameters.DenoisePass] = 1F;
+            UploadParameters(parameters);
+            _context.ExecuteImmediate(commandBuffer =>
+            {
+                TransitionOutputToGeneral(commandBuffer);
+                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                DescriptorSet descriptorSet = _computeDescriptorSet;
+                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                    0, 1, in descriptorSet, 0, null);
+                api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
+                    ((uint)heightPixels + 7U) / 8U, 1);
+                TransitionOutputToShaderRead(commandBuffer);
+            });
+        }
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
+        parameters[VoxelRenderParameters.DenoisePass] = 0F;
         if (pathMode)
         {
             AccumulatedSamples = Math.Min(settings.PathMaxAccumulatedSamples,
@@ -1256,6 +1278,32 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             int width = int(values[11]);
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
+
+            if (values[103] > 0.5)
+            {
+                float strength = clamp(values[93], 0.0, 1.0);
+                vec3 center = imageLoad(accumulationImage, pixel).rgb;
+                vec3 filtered = vec3(0.0);
+                float weightSum = 0.0;
+                float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
+                for (int oy = -1; oy <= 1; oy++)
+                {
+                    for (int ox = -1; ox <= 1; ox++)
+                    {
+                        ivec2 samplePixel = clamp(pixel + ivec2(ox, oy), ivec2(0), ivec2(width - 1, height - 1));
+                        vec3 neighbor = imageLoad(accumulationImage, samplePixel).rgb;
+                        float spatial = (ox == 0 && oy == 0) ? 4.0 : ((ox == 0 || oy == 0) ? 2.0 : 1.0);
+                        float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
+                        float edge = exp(-abs(neighborLuma - centerLuma) * 8.0);
+                        float weight = spatial * mix(0.0, edge, strength);
+                        filtered += neighbor * weight;
+                        weightSum += weight;
+                    }
+                }
+                vec3 color = weightSum > 0.0 ? filtered / weightSum : center;
+                imageStore(outputImage, pixel, vec4(clamp(mix(center, color, strength), 0.0, 1.0), 1.0));
+                return;
+            }
 
             bool pathMode = values[86] > 0.5;
             int samples = pathMode ? max(int(values[78]), 1) : 1;
