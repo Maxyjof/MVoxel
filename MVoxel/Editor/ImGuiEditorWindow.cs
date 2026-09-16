@@ -121,6 +121,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _gpuRenderingDisabled;
     private long _lastRenderGpuSubmitMs;
     private bool _renderViewNeedsInitialRender = true;
+    private bool _renderViewWasFocused;
     private Vector2 _lastRenderViewportSize;
     private Queue<ExportJob> _exportQueue = new();
     private ExportJob? _activeExport;
@@ -1063,10 +1064,12 @@ DockId=0x6A3C3007,0
         else
         {
             _centerTab = 1;
-            if (_requestedCenterTab == 1 || ImGui.IsWindowAppearing())
+            var renderViewFocused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
+            if (renderViewFocused && !_renderViewWasFocused)
             {
                 _renderViewNeedsInitialRender = true;
             }
+            _renderViewWasFocused = renderViewFocused;
             DrawRenderView();
         }
         ImGui.End();

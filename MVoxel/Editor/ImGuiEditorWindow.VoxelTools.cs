@@ -142,6 +142,8 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
+        _lastRenderGpuSubmitMs = 0;
+        _renderViewNeedsInitialRender = true;
         FrameCameraOnWorld();
     }
 
@@ -470,7 +472,8 @@ internal sealed partial class ImGuiEditorWindow
             var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
-            var firstSubmit = _renderViewNeedsInitialRender || pipeline.DisplayTextureId == IntPtr.Zero;
+            var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
+                              pipeline.DisplayTextureId == IntPtr.Zero;
             var wantTrace = (firstSubmit || _settingsTogglePath) &&
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
