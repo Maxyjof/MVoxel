@@ -478,9 +478,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
         // 分块不会改变采样、反弹或输出分辨率，只改变命令提交粒度。
-        // 高级光照可能在一次像素中产生多条 AO/软阴影射线。64 像素固定分块
-        // 将单次提交控制在驱动看门狗安全范围内，同时不改变最终分辨率和样本数。
-        const int tileSize = 64;
+        // 高级光照可能在一次像素中产生多条 AO/软阴影射线。128 像素固定分块
+        // 在安全范围内减少同步提交次数，不改变最终分辨率和样本数。
+        const int tileSize = 128;
         for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
             var tileHeight = Math.Min(tileSize, heightPixels - tileY);
@@ -1301,7 +1301,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float opacity = clamp(hitColor.a, 0.0, 1.0);
                     throughput *= mix(vec3(1.0), hitColor.rgb, opacity)
                         * exp(-max(values[81], 0.0) * (1.0 - opacity));
-                    rayOrigin = hitPoint - hitNormal * 0.002;
+                    // 透射光沿原方向离开表面，不能沿法线反向退回，否则会反复命中
+                    // 同一半透明体素，形成黑色竖块并显著放大路径追踪开销。
+                    rayOrigin = hitPoint + rayDirection * 0.01;
                     continue;
                 }
 
