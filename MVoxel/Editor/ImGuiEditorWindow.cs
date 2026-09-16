@@ -120,6 +120,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
     private long _lastRenderGpuSubmitMs;
+    private bool _renderViewNeedsInitialRender = true;
     private Vector2 _lastRenderViewportSize;
     private Queue<ExportJob> _exportQueue = new();
     private ExportJob? _activeExport;
@@ -1061,6 +1062,10 @@ DockId=0x6A3C3007,0
         else
         {
             _centerTab = 1;
+            if (_requestedCenterTab == 1 || ImGui.IsWindowAppearing())
+            {
+                _renderViewNeedsInitialRender = true;
+            }
             DrawRenderView();
         }
         ImGui.End();

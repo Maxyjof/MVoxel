@@ -470,7 +470,7 @@ internal sealed partial class ImGuiEditorWindow
             var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
-            var firstSubmit = pipeline.DisplayTextureId == IntPtr.Zero;
+            var firstSubmit = _renderViewNeedsInitialRender || pipeline.DisplayTextureId == IntPtr.Zero;
             var wantTrace = (firstSubmit || _settingsTogglePath) &&
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
@@ -489,6 +489,10 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             _lastRenderGpuSubmitMs = nowMs;
+            if (wantTrace)
+            {
+                _renderViewNeedsInitialRender = false;
+            }
 
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                 Vector2.Zero, pipeline.DisplayUvMax);
