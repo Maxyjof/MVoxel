@@ -1116,6 +1116,27 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags) && distance < maxDistance;
         }
 
+        float AmbientOcclusion(vec3 hitPoint, vec3 normal, inout uint state)
+        {
+            if (values[59] <= 0.5) return 1.0;
+            vec3 tangent = normalize(abs(normal.y) < 0.9 ? cross(normal, vec3(0.0, 1.0, 0.0))
+                : cross(normal, vec3(1.0, 0.0, 0.0)));
+            vec3 bitangent = cross(normal, tangent);
+            float blocked = 0.0;
+            const int sampleCount = 4;
+            for (int index = 0; index < sampleCount; index++)
+            {
+                float angle = 6.28318530718 * (float(index) + Random(state)) / float(sampleCount);
+                float radius = mix(0.25, 2.0, Random(state));
+                vec3 direction = normalize(normal * 0.65 + tangent * cos(angle) * radius
+                    + bitangent * sin(angle) * radius);
+                if (TraceShadow(hitPoint + normal * 0.003, direction, radius)) blocked += 1.0;
+            }
+            float visibility = 1.0 - blocked / float(sampleCount);
+            return pow(clamp(visibility, 0.0, 1.0), max(values[61], 0.05))
+                * values[60] + (1.0 - values[60]);
+        }
+
         uint Hash(uint value)
         {
             value ^= value >> 16;
@@ -1249,6 +1270,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if ((hitFlags & 2u) != 0u)
                     radiance += throughput * hitColor.rgb * values[80];
 
+                throughput *= AmbientOcclusion(hitPoint, hitNormal, state);
+
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
                 vec3 lightDirection = normalize(-sunDirection);
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
@@ -1258,17 +1281,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 float metalness = clamp(values[74], 0.0, 1.0);
                 vec3 diffuseDirection = CosineHemisphere(hitNormal, state);
                 vec3 reflectedDirection = reflect(rayDirection, hitNormal);
-                rayDirection = normalize(mix(diffuseDirection, reflectedDirection, metalness));
-                throughput *= mix(hitColor.rgb, vec3(1.0), metalness);
+                float specularWeight = clamp(metalness + (1.0 - metalness) * (1.0 - values[73]) * 0.18, 0.0, 1.0);
+                rayDirection = normalize(mix(diffuseDirection, reflectedDirection, specularWeight));
+                throughput *= mix(hitColor.rgb, vec3(values[75]), metalness);
                 rayOrigin = hitPoint + hitNormal * 0.002;
                 if (bounce >= 2)
                 {
-                    float survival = clamp(max(max(throughput.r, throughput.g), throughput.b), 0.05, 0.98);
+                    float survival = clamp(max(max(throughput.r, throughput.g), throughput.b),
+                        max(values[76], 0.001), 0.98);
                     if (Random(state) > survival) break;
                     throughput /= survival;
                 }
             }
-            return radiance;
+            return min(radiance, vec3(max(values[77], 0.001)));
         }
 
         vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height);
@@ -1350,18 +1375,21 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         {
             color *= exp2(values[65]);
             color *= vec3(values[68], values[69], values[70]);
-            float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-            color = mix(vec3(luminance), color, max(values[52], 0.0));
-            color = (color - 0.5) * max(values[54], 0.0) + 0.5;
-            color *= max(values[55], 0.0);
-            float angle = radians(values[53]);
-            float cs = cos(angle);
-            float sn = sin(angle);
-            mat3 hue = mat3(
-                0.213 + cs * 0.787 - sn * 0.213, 0.715 - cs * 0.715 - sn * 0.715, 0.072 - cs * 0.072 + sn * 0.928,
-                0.213 - cs * 0.213 + sn * 0.143, 0.715 + cs * 0.285 + sn * 0.140, 0.072 - cs * 0.072 - sn * 0.283,
-                0.213 - cs * 0.213 - sn * 0.787, 0.715 - cs * 0.715 + sn * 0.715, 0.072 + cs * 0.928 + sn * 0.072);
-            color = hue * color;
+            if (values[56] > 0.5)
+            {
+                float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+                color = mix(vec3(luminance), color, max(values[52], 0.0));
+                color = (color - 0.5) * max(values[54], 0.0) + 0.5;
+                color *= max(values[55], 0.0);
+                float angle = radians(values[53]);
+                float cs = cos(angle);
+                float sn = sin(angle);
+                mat3 hue = mat3(
+                    0.213 + cs * 0.787 - sn * 0.213, 0.715 - cs * 0.715 - sn * 0.715, 0.072 - cs * 0.072 + sn * 0.928,
+                    0.213 - cs * 0.213 + sn * 0.143, 0.715 + cs * 0.285 + sn * 0.140, 0.072 - cs * 0.072 - sn * 0.283,
+                    0.213 - cs * 0.213 - sn * 0.787, 0.715 - cs * 0.715 + sn * 0.715, 0.072 + cs * 0.928 + sn * 0.072);
+                color = hue * color;
+            }
             if (values[67] > 0.0)
             {
                 vec2 uv = (vec2(pixel) + 0.5) / vec2(width, height) * 2.0 - 1.0;
