@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -484,37 +485,67 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
         UploadParameters(parameters);
-        _context.ExecuteImmediate(commandBuffer =>
+        var tiles = new List<(int X, int Y, int Width, int Height)>();
+        for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
-        TransitionOutputToGeneral(commandBuffer);
-        if (pathMode)
-        {
-            TransitionAccumulationToGeneral(commandBuffer);
-        }
-        Span<int> tileOffset = stackalloc int[2];
-        fixed (int* tileOffsetPointer = tileOffset)
-        {
-            for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
+            var tileHeight = Math.Min(tileSize, heightPixels - tileY);
+            for (var tileX = 0; tileX < widthPixels; tileX += tileSize)
             {
-                var tileHeight = Math.Min(tileSize, heightPixels - tileY);
-                for (var tileX = 0; tileX < widthPixels; tileX += tileSize)
-                {
-                    var tileWidth = Math.Min(tileSize, widthPixels - tileX);
-                    tileOffset[0] = tileX;
-                    tileOffset[1] = tileY;
-                    api.CmdPushConstants(commandBuffer, _computePipelineLayout, ShaderStageFlags.ComputeBit,
-                        0, (uint)(sizeof(int) * tileOffset.Length), tileOffsetPointer);
-                    api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                    DescriptorSet descriptorSet = _computeDescriptorSet;
-                    api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                        0, 1, in descriptorSet, 0, null);
-                    api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
-                        ((uint)tileHeight + 7U) / 8U, 1);
-                }
+                tiles.Add((tileX, tileY, Math.Min(tileSize, widthPixels - tileX), tileHeight));
             }
         }
-        TransitionOutputToShaderRead(commandBuffer);
-        });
+
+        // 每次提交最多处理 2 个分块。单次提交过大时，Windows TDR 会把驱动判定为无响应；
+        // 每块单独提交又会被 QueueWaitIdle 拖慢。两个 128 像素分块是稳定性与吞吐的折中。
+        const int maxTilesPerSubmission = 2;
+        var batchCount = (tiles.Count + maxTilesPerSubmission - 1) / maxTilesPerSubmission;
+        var dispatchTimer = Stopwatch.StartNew();
+        for (var batchStart = 0; batchStart < tiles.Count; batchStart += maxTilesPerSubmission)
+        {
+            var batchEnd = Math.Min(batchStart + maxTilesPerSubmission, tiles.Count);
+            var firstBatch = batchStart == 0;
+            var lastBatch = batchEnd == tiles.Count;
+            _context.ExecuteImmediate(commandBuffer =>
+            {
+                if (firstBatch)
+                {
+                    TransitionOutputToGeneral(commandBuffer);
+                    if (pathMode)
+                    {
+                        TransitionAccumulationToGeneral(commandBuffer);
+                    }
+                }
+
+                Span<int> tileOffset = stackalloc int[2];
+                fixed (int* tileOffsetPointer = tileOffset)
+                {
+                    for (var tileIndex = batchStart; tileIndex < batchEnd; tileIndex++)
+                    {
+                        var tile = tiles[tileIndex];
+                        tileOffset[0] = tile.X;
+                        tileOffset[1] = tile.Y;
+                        api.CmdPushConstants(commandBuffer, _computePipelineLayout, ShaderStageFlags.ComputeBit,
+                            0, (uint)(sizeof(int) * tileOffset.Length), tileOffsetPointer);
+                        api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                        DescriptorSet descriptorSet = _computeDescriptorSet;
+                        api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                            0, 1, in descriptorSet, 0, null);
+                        api.CmdDispatch(commandBuffer, ((uint)tile.Width + 7U) / 8U,
+                            ((uint)tile.Height + 7U) / 8U, 1);
+                    }
+                }
+
+                if (lastBatch)
+                {
+                    TransitionOutputToShaderRead(commandBuffer);
+                }
+            });
+        }
+        dispatchTimer.Stop();
+        if (batchCount > 1)
+        {
+            MVoxelLog.Info($"Vulkan Compute 分块完成：{widthPixels}x{heightPixels}，分块={tiles.Count}，提交={batchCount}，耗时={dispatchTimer.Elapsed.TotalMilliseconds:F1}ms，路径追踪={pathMode}");
+        }
 
         // 降噪必须在整帧累积完成后执行。独立的第二阶段读取稳定的累积图像，
         // 避免在采样阶段读写邻居造成竞态。
