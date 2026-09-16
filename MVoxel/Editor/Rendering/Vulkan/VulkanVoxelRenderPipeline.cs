@@ -1,5 +1,4 @@
 using System.Numerics;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -482,69 +481,31 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         // 高级光照可能在一次像素中产生多条 AO/软阴影射线。128 像素固定分块
         // 在安全范围内减少同步提交次数，不改变最终分辨率和样本数。
         const int tileSize = 128;
-        parameters[VoxelRenderParameters.TileOffsetX] = 0F;
-        parameters[VoxelRenderParameters.TileOffsetY] = 0F;
-        UploadParameters(parameters);
-        var tiles = new List<(int X, int Y, int Width, int Height)>();
         for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
             var tileHeight = Math.Min(tileSize, heightPixels - tileY);
             for (var tileX = 0; tileX < widthPixels; tileX += tileSize)
             {
-                tiles.Add((tileX, tileY, Math.Min(tileSize, widthPixels - tileX), tileHeight));
-            }
-        }
-
-        // 每次提交最多处理 2 个分块。单次提交过大时，Windows TDR 会把驱动判定为无响应；
-        // 每块单独提交又会被 QueueWaitIdle 拖慢。两个 128 像素分块是稳定性与吞吐的折中。
-        const int maxTilesPerSubmission = 2;
-        var batchCount = (tiles.Count + maxTilesPerSubmission - 1) / maxTilesPerSubmission;
-        var dispatchTimer = Stopwatch.StartNew();
-        for (var batchStart = 0; batchStart < tiles.Count; batchStart += maxTilesPerSubmission)
-        {
-            var batchEnd = Math.Min(batchStart + maxTilesPerSubmission, tiles.Count);
-            var firstBatch = batchStart == 0;
-            var lastBatch = batchEnd == tiles.Count;
-            _context.ExecuteImmediate(commandBuffer =>
-            {
-                if (firstBatch)
+                var tileWidth = Math.Min(tileSize, widthPixels - tileX);
+                parameters[VoxelRenderParameters.TileOffsetX] = tileX;
+                parameters[VoxelRenderParameters.TileOffsetY] = tileY;
+                UploadParameters(parameters);
+                _context.ExecuteImmediate(commandBuffer =>
                 {
                     TransitionOutputToGeneral(commandBuffer);
                     if (pathMode)
                     {
                         TransitionAccumulationToGeneral(commandBuffer);
                     }
-                }
-
-                Span<int> tileOffset = stackalloc int[2];
-                fixed (int* tileOffsetPointer = tileOffset)
-                {
-                    for (var tileIndex = batchStart; tileIndex < batchEnd; tileIndex++)
-                    {
-                        var tile = tiles[tileIndex];
-                        tileOffset[0] = tile.X;
-                        tileOffset[1] = tile.Y;
-                        api.CmdPushConstants(commandBuffer, _computePipelineLayout, ShaderStageFlags.ComputeBit,
-                            0, (uint)(sizeof(int) * tileOffset.Length), tileOffsetPointer);
-                        api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                        DescriptorSet descriptorSet = _computeDescriptorSet;
-                        api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                            0, 1, in descriptorSet, 0, null);
-                        api.CmdDispatch(commandBuffer, ((uint)tile.Width + 7U) / 8U,
-                            ((uint)tile.Height + 7U) / 8U, 1);
-                    }
-                }
-
-                if (lastBatch)
-                {
+                    api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                    DescriptorSet descriptorSet = _computeDescriptorSet;
+                    api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                        0, 1, in descriptorSet, 0, null);
+                    api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
+                        ((uint)tileHeight + 7U) / 8U, 1);
                     TransitionOutputToShaderRead(commandBuffer);
-                }
-            });
-        }
-        dispatchTimer.Stop();
-        if (batchCount > 1)
-        {
-            MVoxelLog.Info($"Vulkan Compute 分块完成：{widthPixels}x{heightPixels}，分块={tiles.Count}，提交={batchCount}，耗时={dispatchTimer.Elapsed.TotalMilliseconds:F1}ms，路径追踪={pathMode}");
+                });
+            }
         }
 
         // 降噪必须在整帧累积完成后执行。独立的第二阶段读取稳定的累积图像，
@@ -557,12 +518,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             UploadParameters(parameters);
             _context.ExecuteImmediate(commandBuffer =>
             {
-                Span<int> zeroOffset = stackalloc int[2];
-                fixed (int* zeroOffsetPointer = zeroOffset)
-                {
-                    api.CmdPushConstants(commandBuffer, _computePipelineLayout, ShaderStageFlags.ComputeBit,
-                        0, (uint)(sizeof(int) * zeroOffset.Length), zeroOffsetPointer);
-                }
                 TransitionOutputToGeneral(commandBuffer);
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
                 DescriptorSet descriptorSet = _computeDescriptorSet;
@@ -742,7 +697,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         var sourceStage = _outputIsShaderReadOnly ? PipelineStageFlags.FragmentShaderBit : PipelineStageFlags.TopOfPipeBit;
         api.CmdPipelineBarrier(commandBuffer, sourceStage, PipelineStageFlags.ComputeShaderBit,
             0, 0, null, 0, null, 1, in barrier);
-        _outputIsShaderReadOnly = false;
     }
 
     /// <summary>
@@ -893,14 +847,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private PipelineLayout CreateComputePipelineLayout()
     {
         var descriptorLayout = _computeDescriptorLayout;
-        PushConstantRange pushRange = new(ShaderStageFlags.ComputeBit, 0, (uint)(sizeof(int) * 2));
         PipelineLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.PipelineLayoutCreateInfo,
             SetLayoutCount = 1,
-            PSetLayouts = &descriptorLayout,
-            PushConstantRangeCount = 1,
-            PPushConstantRanges = &pushRange
+            PSetLayouts = &descriptorLayout
         };
         PipelineLayout layout = default;
         Check(_api!.CreatePipelineLayout(_device, &createInfo, null, &layout), "创建体素 Compute 管线布局");
@@ -1072,8 +1023,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         };
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
-
-        layout(push_constant) uniform TilePush { ivec2 offset; } tile;
 
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
@@ -1387,7 +1336,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         void main()
         {
-            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) + tile.offset;
+            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
+                ivec2(int(values[101]), int(values[102]));
             int width = int(values[11]);
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
