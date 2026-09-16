@@ -478,7 +478,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
         // 分块不会改变采样、反弹或输出分辨率，只改变命令提交粒度。
-        const int tileSize = 256;
+        // 高级光照可能在一次像素中产生多条 AO/软阴影射线。64 像素固定分块
+        // 将单次提交控制在驱动看门狗安全范围内，同时不改变最终分辨率和样本数。
+        const int tileSize = 64;
         for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
             var tileHeight = Math.Min(tileSize, heightPixels - tileY);
