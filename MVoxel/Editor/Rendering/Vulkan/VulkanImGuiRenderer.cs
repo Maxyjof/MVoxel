@@ -126,6 +126,9 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
             return;
         }
 
+        // ImGui 的上一帧命令可能仍在采样这张图。释放描述符和图像前等待
+        // 当前设备完成，避免资源切换时出现 Vulkan use-after-free/设备丢失。
+        _api.DeviceWaitIdle(_device);
         var descriptorSet = texture.TextureSet;
         _api.FreeDescriptorSets(_device, _descriptorPool, 1, in descriptorSet);
         if (texture.OwnsImage)

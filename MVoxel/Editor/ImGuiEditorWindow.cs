@@ -2448,42 +2448,53 @@ DockId=0x6A3C3007,0
 
     private bool TryDrawSelectedPngInspector()
     {
-        var relativePath = _assetBrowser.SelectedAssetPath;
-        if (_project is null || !relativePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) return false;
-        var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        if (!File.Exists(path)) return false;
-
-        if (!string.Equals(_assetPreviewPath, path, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
-            _assetPreviewTextureId = 0;
-            _assetPreviewPath = path;
-            if (AppBranding.TryLoadPngPixels(path, out var pixels, out _assetPreviewWidth, out _assetPreviewHeight) && _imguiRenderer is not null)
+            var relativePath = _assetBrowser.SelectedAssetPath;
+            if (_project is null || !relativePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) return false;
+            var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!File.Exists(path)) return false;
+
+            if (!string.Equals(_assetPreviewPath, path, StringComparison.OrdinalIgnoreCase))
             {
-                _assetPreviewTextureId = _imguiRenderer.RegisterTexture(pixels, _assetPreviewWidth, _assetPreviewHeight);
+                if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
+                _assetPreviewTextureId = 0;
+                _assetPreviewPath = path;
+                if (AppBranding.TryLoadPngPixels(path, out var pixels, out _assetPreviewWidth, out _assetPreviewHeight) && _imguiRenderer is not null)
+                {
+                    _assetPreviewTextureId = _imguiRenderer.RegisterTexture(pixels, _assetPreviewWidth, _assetPreviewHeight);
+                }
             }
-        }
 
-        ImGui.Text("PNG 图像");
-        ImGui.Separator();
-        ImGui.TextWrapped(Path.GetFileName(path));
-        var info = new FileInfo(path);
-        ImGui.TextDisabled($"尺寸  {_assetPreviewWidth} × {_assetPreviewHeight}");
-        ImGui.TextDisabled($"大小  {info.Length / 1024F:0.0} KB");
-        ImGui.TextDisabled("格式  PNG");
-        ImGui.Spacing();
-        if (_assetPreviewTextureId != 0)
-        {
-            var available = ImGui.GetContentRegionAvail().X;
-            var width = Math.Min(available, Math.Max(1F, _assetPreviewWidth));
-            var height = width * _assetPreviewHeight / Math.Max(1F, _assetPreviewWidth);
-            ImGui.Image(_assetPreviewTextureId, new Vector2(width, height));
+            ImGui.Text("PNG 图像");
+            ImGui.Separator();
+            ImGui.TextWrapped(Path.GetFileName(path));
+            var info = new FileInfo(path);
+            ImGui.TextDisabled($"尺寸  {_assetPreviewWidth} × {_assetPreviewHeight}");
+            ImGui.TextDisabled($"大小  {info.Length / 1024F:0.0} KB");
+            ImGui.TextDisabled("格式  PNG");
+            ImGui.Spacing();
+            if (_assetPreviewTextureId != 0)
+            {
+                var available = ImGui.GetContentRegionAvail().X;
+                var width = Math.Min(available, Math.Max(1F, _assetPreviewWidth));
+                var height = width * _assetPreviewHeight / Math.Max(1F, _assetPreviewWidth);
+                ImGui.Image(_assetPreviewTextureId, new Vector2(width, height));
+            }
+            else
+            {
+                ImGui.TextDisabled("无法读取此 PNG 图像");
+            }
+            return true;
         }
-        else
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
         {
+            _assetPreviewPath = string.Empty;
+            _assetPreviewTextureId = 0;
+            SetStatus($"PNG 预览失败：{exception.Message}");
             ImGui.TextDisabled("无法读取此 PNG 图像");
+            return true;
         }
-        return true;
     }
 
     private void ResetInspectorComponent(SceneObject sceneObject, ComponentRecord component)
