@@ -1116,6 +1116,27 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags) && distance < maxDistance;
         }
 
+        float Random(inout uint state);
+
+        bool TraceSoftShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
+        {
+            int sampleCount = clamp(int(values[32]), 1, 8);
+            if (values[31] <= 0.0001 || sampleCount == 1)
+                return TraceShadow(rayOrigin, rayDirection, maxDistance);
+            vec3 tangent = normalize(abs(rayDirection.y) < 0.9 ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
+                : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
+            vec3 bitangent = cross(rayDirection, tangent);
+            for (int index = 0; index < sampleCount; index++)
+            {
+                float angle = 6.28318530718 * (float(index) + Random(state)) / float(sampleCount);
+                float radius = values[31] * sqrt(Random(state));
+                vec3 sampleDirection = normalize(rayDirection + tangent * cos(angle) * radius
+                    + bitangent * sin(angle) * radius);
+                if (TraceShadow(rayOrigin, sampleDirection, maxDistance)) return true;
+            }
+            return false;
+        }
+
         float AmbientOcclusion(vec3 hitPoint, vec3 normal, inout uint state)
         {
             if (values[59] <= 0.5) return 1.0;
@@ -1167,7 +1188,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         {
             vec3 skyTop = vec3(values[40], values[41], values[42]);
             vec3 skyHorizon = vec3(values[44], values[45], values[46]);
-            return mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
+            vec3 sky = mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
+            return sky * max(values[43], 0.0) + vec3(values[47] * 0.08, values[47] * 0.06, values[47] * 0.03);
         }
 
         vec3 LinearToDisplay(vec3 value)
@@ -1272,10 +1294,20 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 throughput *= AmbientOcclusion(hitPoint, hitNormal, state);
 
+                if ((hitFlags & 1u) != 0u)
+                {
+                    float opacity = clamp(hitColor.a, 0.0, 1.0);
+                    throughput *= mix(vec3(1.0), hitColor.rgb, opacity)
+                        * exp(-max(values[81], 0.0) * (1.0 - opacity));
+                    rayOrigin = hitPoint - hitNormal * 0.002;
+                    continue;
+                }
+
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
                 vec3 lightDirection = normalize(-sunDirection);
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
-                if (lightAmount > 0.0 && !TraceShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0))
+                if (values[85] > 0.5 && lightAmount > 0.0 &&
+                    !TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state))
                     radiance += throughput * hitColor.rgb * lightAmount * values[27];
 
                 float metalness = clamp(values[74], 0.0, 1.0);
@@ -1306,7 +1338,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
 
-            if (values[103] > 0.5)
+            if (values[103] > 0.5 && values[92] > 0.5)
             {
                 float strength = clamp(values[93], 0.0, 1.0);
                 vec3 center = imageLoad(accumulationImage, pixel).rgb;
@@ -1349,10 +1381,23 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (sampleIndex >= samples) break;
                 vec2 jitter = pathMode ? vec2(Random(state), Random(state)) - 0.5 : vec2(0.0);
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
-            vec3 direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
-                + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
+                vec3 sampleOrigin = origin;
+                if (pathMode && values[87] > 0.0)
+                    focalPixels = float(height) / (2.0 * tan(radians(clamp(values[87], 20.0, 120.0)) * 0.5));
+                vec3 direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
+                    + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
+                if (pathMode && values[84] > 0.5 && values[82] > 0.0)
+                {
+                    float radius = sqrt(Random(state)) * values[82];
+                    float angle = 6.28318530718 * Random(state);
+                    vec2 lens = vec2(cos(angle), sin(angle)) * radius;
+                    vec3 focusPoint = sampleOrigin + direction * max(values[83], 0.01);
+                    vec3 lensOrigin = sampleOrigin + right * lens.x + up * lens.y;
+                    sampleOrigin = lensOrigin;
+                    direction = normalize(focusPoint - lensOrigin);
+                }
                 bool sampleSurfaceHit = false;
-                sampleColor += TracePath(origin, direction, state, pathMode, sampleSurfaceHit);
+                sampleColor += TracePath(sampleOrigin, direction, state, pathMode, sampleSurfaceHit);
                 primarySurfaceHit = primarySurfaceHit || sampleSurfaceHit;
             }
             sampleColor /= float(samples);
@@ -1396,8 +1441,22 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
             color = max(color, vec3(0.0));
+            if (values[64] > 0.5)
+            {
+                if (int(values[64]) == 1)
+                    color = color / (vec3(1.0) + color);
+                else if (int(values[64]) == 2)
+                    color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
+                else
+                    color = clamp((color * (color * 0.6 + 0.2)) / (color * (color * 0.6 + 0.5) + 0.06), 0.0, 1.0);
+            }
             float gamma = max(values[66], 0.01);
             color = pow(color, vec3(1.0 / gamma));
+            if (values[71] > 0.5)
+            {
+                float noise = fract(sin(dot(vec2(pixel), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+                color += noise / 255.0;
+            }
             return clamp(color, 0.0, 1.0);
         }
         """;
