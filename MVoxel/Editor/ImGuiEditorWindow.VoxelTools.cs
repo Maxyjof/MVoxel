@@ -458,7 +458,10 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
-                             ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+                             ImGui.IsMouseDragging(ImGuiMouseButton.Middle) ||
+                             // 调整渲染配置时也必须使用轻量预览，否则每个滑块事件
+                             // 都会同步等待完整路径追踪，造成控件看起来无法点击。
+                             ImGui.IsAnyItemActive();
             // 交互时保留上一帧 GPU 结果，限制同步提交频率，避免每个鼠标事件都阻塞队列。
             // 这不是后端降级：下一次提交仍使用当前相机和同一条 Vulkan Compute 管线。
             var nowMs = Environment.TickCount64;
