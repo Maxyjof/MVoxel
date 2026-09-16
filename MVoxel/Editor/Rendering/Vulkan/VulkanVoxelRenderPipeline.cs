@@ -1271,6 +1271,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return radiance;
         }
 
+        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height);
+
         void main()
         {
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
@@ -1301,7 +1303,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     }
                 }
                 vec3 color = weightSum > 0.0 ? filtered / weightSum : center;
-                imageStore(outputImage, pixel, vec4(clamp(mix(center, color, strength), 0.0, 1.0), 1.0));
+                imageStore(outputImage, pixel, vec4(PostProcess(clamp(mix(center, color, strength), 0.0, 1.0), pixel, width, height), 1.0));
                 return;
             }
 
@@ -1341,7 +1343,34 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
             }
             float outputAlpha = pathMode || primarySurfaceHit ? 1.0 : 0.0;
-            imageStore(outputImage, pixel, vec4(clamp(color, 0.0, 1.0), outputAlpha));
+            imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), outputAlpha));
+        }
+
+        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height)
+        {
+            color *= exp2(values[65]);
+            color *= vec3(values[68], values[69], values[70]);
+            float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            color = mix(vec3(luminance), color, max(values[52], 0.0));
+            color = (color - 0.5) * max(values[54], 0.0) + 0.5;
+            color += values[55];
+            float angle = radians(values[53]);
+            float cs = cos(angle);
+            float sn = sin(angle);
+            mat3 hue = mat3(
+                0.213 + cs * 0.787 - sn * 0.213, 0.715 - cs * 0.715 - sn * 0.715, 0.072 - cs * 0.072 + sn * 0.928,
+                0.213 - cs * 0.213 + sn * 0.143, 0.715 + cs * 0.285 + sn * 0.140, 0.072 - cs * 0.072 - sn * 0.283,
+                0.213 - cs * 0.213 - sn * 0.787, 0.715 - cs * 0.715 + sn * 0.715, 0.072 + cs * 0.928 + sn * 0.072);
+            color = hue * color;
+            if (values[67] > 0.0)
+            {
+                vec2 uv = (vec2(pixel) + 0.5) / vec2(width, height) * 2.0 - 1.0;
+                color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
+            }
+            color = max(color, vec3(0.0));
+            float gamma = max(values[66], 0.01);
+            color = pow(color, vec3(1.0 / gamma));
+            return clamp(color, 0.0, 1.0);
         }
         """;
 
