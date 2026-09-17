@@ -3331,6 +3331,7 @@ DockId=0x6A3C3007,0
         _renderCameraId = null;
         _assetBrowser.Reset();
         _world = new VoxelWorld();
+        _layerOwnership.Clear();
         _voxelHistory.Clear();
         _selectedVoxel = null;
         _selectedSceneObjectId = null;

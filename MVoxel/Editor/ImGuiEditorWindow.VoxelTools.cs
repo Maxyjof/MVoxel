@@ -277,6 +277,12 @@ internal sealed partial class ImGuiEditorWindow
         return Math.Clamp((count + divisor - 1) / divisor, 32_768, 250_000);
     }
 
+    /// <summary>
+    /// 分层体素的所有权表：对象 ID 到该对象拥有的体素坐标集合，
+    /// 保存时据此把主世界与分层文件各自写回，互不吞并
+    /// </summary>
+    private readonly Dictionary<StableId, HashSet<VoxelCoord64>> _layerOwnership = new();
+
     private bool SaveWorldToProject(ProjectHandle project)
     {
         try
@@ -284,20 +290,52 @@ internal sealed partial class ImGuiEditorWindow
             var modelAssetPath = ResolveCurrentWorldAssetPath(project);
             var modelPath = Path.Combine(project.RootPath, modelAssetPath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(modelPath)!);
-            if (_world.OccupiedVoxelCount > 0)
+            // 分层模式下 _world 是合并态：主世界文件只写非分层体素，
+            // 各分层对象按所有权分别写回自己的文件，分层在保存后依然成立
+            var primaryVoxelCount = _world.OccupiedVoxelCount;
+            if (_layerOwnership.Count == 0)
             {
-                LargeWorldFormat.Write(modelPath, _world);
+                if (_world.OccupiedVoxelCount > 0)
+                {
+                    LargeWorldFormat.Write(modelPath, _world);
+                }
+                else if (File.Exists(modelPath))
+                {
+                    File.Delete(modelPath);
+                }
             }
-            else if (File.Exists(modelPath))
+            else
             {
-                File.Delete(modelPath);
+                var ownedUnion = new HashSet<VoxelCoord64>();
+                foreach (var owned in _layerOwnership.Values)
+                {
+                    ownedUnion.UnionWith(owned);
+                }
+
+                var terrainOnly = new VoxelWorld();
+                foreach (var item in _world.EnumerateOccupied())
+                {
+                    if (!ownedUnion.Contains(item.Coordinate))
+                    {
+                        terrainOnly.Set(item.Coordinate, item.Value);
+                    }
+                }
+
+                primaryVoxelCount = terrainOnly.OccupiedVoxelCount;
+                if (primaryVoxelCount > 0)
+                {
+                    LargeWorldFormat.Write(modelPath, terrainOnly);
+                }
+                else if (File.Exists(modelPath))
+                {
+                    File.Delete(modelPath);
+                }
+
+                SaveOwnedLayers(project);
             }
 
             var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
             var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
-            // 保存时 _world 是合并态：主世界文件已包含全部分层体素，
-            // 因此移除其余模型组件，避免下次打开时把分层文件再叠加一遍
-            var removedLayers = ConsolidateSecondaryModelObjects(document, modelAssetPath);
             var graph = new Scene.SceneGraph(document);
             var modelObject = document.Objects.FirstOrDefault(item =>
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
@@ -313,7 +351,7 @@ internal sealed partial class ImGuiEditorWindow
                     Data = JsonSerializer.SerializeToElement(new
                     {
                         model = modelAssetPath,
-                        voxelCount = _world.OccupiedVoxelCount,
+                        voxelCount = primaryVoxelCount,
                         part = "场景模型",
                     }),
                 });
@@ -323,23 +361,65 @@ internal sealed partial class ImGuiEditorWindow
                 modelComponent.Data = JsonSerializer.SerializeToElement(new
                 {
                     model = modelAssetPath,
-                    voxelCount = _world.OccupiedVoxelCount,
+                    voxelCount = primaryVoxelCount,
                     part = "场景模型",
                 });
             }
             _sceneDocument = document;
             Scene.SceneSerializer.Save(scenePath, document);
-            if (removedLayers > 0)
-            {
-                MVoxelLog.Info($"已把 {removedLayers} 个分层对象合并保存进主世界文件");
-            }
-
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             SetStatus($"保存失败：{exception.Message}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 把每个分层对象当前拥有的体素写回它引用的模型文件，并同步组件里的体素数
+    /// </summary>
+    private void SaveOwnedLayers(ProjectHandle project)
+    {
+        if (_sceneDocument is null)
+        {
+            return;
+        }
+
+        foreach (var sceneObject in _sceneDocument.Objects)
+        {
+            if (!_layerOwnership.TryGetValue(sceneObject.Id, out var owned))
+            {
+                continue;
+            }
+
+            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is null)
+            {
+                _layerOwnership.Remove(sceneObject.Id);
+                continue;
+            }
+
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            var layerPath = Path.GetFullPath(
+                Path.Combine(project.RootPath, data.Model.Replace('/', Path.DirectorySeparatorChar)));
+            Directory.CreateDirectory(Path.GetDirectoryName(layerPath)!);
+            var layerWorld = new VoxelWorld();
+            foreach (var coordinate in owned)
+            {
+                if (_world.TryGet(coordinate, out var value))
+                {
+                    layerWorld.Set(coordinate, value);
+                }
+            }
+
+            LargeWorldFormat.Write(layerPath, layerWorld);
+            component.Data = JsonSerializer.SerializeToElement(new
+            {
+                model = data.Model,
+                voxelCount = layerWorld.OccupiedVoxelCount,
+                part = string.IsNullOrWhiteSpace(data.Part) ? "分层对象" : data.Part,
+            });
         }
     }
 
@@ -414,8 +494,20 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             _world = LargeWorldFormat.Read(absolute);
-            UpdateSceneModelReference("Assets/" + relativePath.Replace('\\', '/'));
+            var primaryAssetPath = "Assets/" + relativePath.Replace('\\', '/');
+            UpdateSceneModelReference(primaryAssetPath);
+            // 切换世界是新的工作上下文：清空分层所有权，并移除旧世界遗留的分层引用
+            _layerOwnership.Clear();
+            var removedLayers = _sceneDocument is null
+                ? 0
+                : ConsolidateSecondaryModelObjects(_sceneDocument, primaryAssetPath);
             _sceneDocumentDirty = false;
+            if (_sceneDocument is not null)
+            {
+                Scene.SceneSerializer.Save(
+                    Path.Combine(_project.AssetsPath, "Scenes", "主场景.mvox"), _sceneDocument);
+            }
+
             _voxelHistory.Clear();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
@@ -456,11 +548,15 @@ internal sealed partial class ImGuiEditorWindow
 
                 try
                 {
-                    foreach (var item in LargeWorldFormat.Read(absolute).EnumerateOccupied())
+                    var layerWorld = LargeWorldFormat.Read(absolute);
+                    var owned = new HashSet<VoxelCoord64>();
+                    foreach (var item in layerWorld.EnumerateOccupied())
                     {
                         _world.Set(item.Coordinate, item.Value);
+                        owned.Add(item.Coordinate);
                     }
 
+                    _layerOwnership[sceneObject.Id] = owned;
                     mergedCount++;
                 }
                 catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
@@ -474,7 +570,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 移除主世界之外模型对象上的模型组件，使保存后的场景不再重复引用分层文件
+    /// 移除主世界之外模型对象上的模型组件，供切换世界时清理旧上下文的分层引用
     /// </summary>
     /// <param name="document">待整理的场景文档</param>
     /// <param name="primaryAssetPath">主世界资产的相对路径</param>

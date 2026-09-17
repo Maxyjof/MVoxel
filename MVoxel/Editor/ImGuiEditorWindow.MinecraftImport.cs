@@ -499,6 +499,7 @@ internal partial class ImGuiEditorWindow
             Directory.CreateDirectory(worldsDirectory);
             var terrainFile = $"{baseName}_{_mcSelMinChunkX}_{_mcSelMinChunkZ}.mvmodel";
             LargeWorldFormat.Write(Path.Combine(worldsDirectory, terrainFile), result.Terrain);
+            _layerOwnership.Clear();
             var document = _sceneDocument ??= new SceneDocument { Name = "主场景" };
             for (var index = document.Objects.Count - 1; index >= 0; index--)
             {
@@ -520,6 +521,9 @@ internal partial class ImGuiEditorWindow
                 var layerObject = graph.Add(layer.Name, transform: TransformComponent.FromGrid(GridTransform.Identity));
                 AddMcModelComponent(layerObject, "Assets/Worlds/" + layerFile, layer.World.OccupiedVoxelCount,
                     "树木分层");
+                // 树分层的体素归属各自对象：保存时主世界只写地形，各树分别写回自己的文件
+                _layerOwnership[layerObject.Id] = new HashSet<VoxelCoord64>(
+                    layer.World.EnumerateOccupied().Select(item => item.Coordinate));
             }
 
             _sceneDocument = document;
