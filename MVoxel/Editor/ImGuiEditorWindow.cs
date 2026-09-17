@@ -2217,8 +2217,7 @@ DockId=0x6A3C3007,0
                 visible, DrawVisibilityIcon);
             if (visibilityClicked)
             {
-                selectedObject.Visible = visible;
-                selectedObject.Visible = !selectedObject.Visible;
+                selectedObject.Visible = !visible;
                 MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
                 _accumulationSignature = string.Empty;

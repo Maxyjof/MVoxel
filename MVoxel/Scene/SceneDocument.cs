@@ -292,8 +292,8 @@ public static class SceneSerializer
         var scene = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options);
         if (scene is null) throw new InvalidDataException($"Invalid scene: {path}");
 
-        // 旧场景可能缺少组件列表、重复保存坐标组件或把坐标组件标记为停用。
-        // 加载时统一恢复对象不变量，同时不触碰其他内置和插件组件记录。
+        // 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
+        // 保证内存中的场景图始终可被渲染与层级面板安全访问。
         scene.Objects ??= new List<SceneObject>();
         scene.Objects.RemoveAll(sceneObject => sceneObject is null);
         foreach (var sceneObject in scene.Objects)
