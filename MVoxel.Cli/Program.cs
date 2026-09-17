@@ -87,8 +87,10 @@ internal static class Program
         Console.WriteLine("      请求运行中的编辑器保存当前项目");
         Console.WriteLine("  --close-editor-project [--discard]");
         Console.WriteLine("      请求运行中的编辑器关闭当前项目；有未保存修改时需显式丢弃");
-        Console.WriteLine("  --install-plugin <插件目录>");
-        Console.WriteLine("      安装编辑器级 JavaScript 插件");
+        Console.WriteLine("  --install-plugin <插件目录或 .mvplugin 包>");
+        Console.WriteLine("      安装编辑器级 JavaScript/Lua 插件，分发包安装前逐文件校验 sha256");
+        Console.WriteLine("  --pack-plugin <插件目录> <输出 .mvplugin>");
+        Console.WriteLine("      把插件目录打包为带校验清单的 .mvplugin 分发包");
         Console.WriteLine("  --reload-plugins");
         Console.WriteLine("      请求运行中的编辑器重载插件");
         Console.WriteLine("  --set-plugin-enabled <插件 ID> <true|false>");
@@ -208,8 +210,16 @@ internal static class Program
             }
             case "--install-plugin" when args.Length == 2:
             {
-                var package = PluginManager.InstallFromDirectory(args[1]);
+                var package = args[1].EndsWith(".mvplugin", StringComparison.OrdinalIgnoreCase)
+                    ? PluginManager.InstallFromPackage(args[1])
+                    : PluginManager.InstallFromDirectory(args[1]);
                 Console.WriteLine($"已安装插件：{package.Id} {package.Version}");
+                return 0;
+            }
+            case "--pack-plugin" when args.Length == 3:
+            {
+                var output = PluginManager.PackPlugin(args[1], args[2]);
+                Console.WriteLine($"已打包分发包：{output}");
                 return 0;
             }
             case "--reload-plugins" when args.Length == 1:

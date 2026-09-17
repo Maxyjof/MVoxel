@@ -3301,6 +3301,7 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project);
+        TryRestoreRecovery(project);
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = _sceneValidationErrors.Count == 0
             ? $"已打开项目：{project.Manifest.Name}"
@@ -3412,6 +3413,7 @@ DockId=0x6A3C3007,0
         {
             _sceneDocumentDirty = false;
             _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+            RecoveryStore.Clear(_project.RootPath);
             SetStatus(automatic
                 ? $"项目已自动保存：{_project.Manifest.Name}"
                 : $"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
@@ -3425,12 +3427,52 @@ DockId=0x6A3C3007,0
 
         try
         {
-            SaveProject(automatic: true);
+            // 自动保存只写恢复区快照，不触碰用户的正式保存文件
+            if (_world.OccupiedVoxelCount > 0)
+            {
+                Voxels.LargeWorldFormat.Write(RecoveryStore.WorldFilePath(_project.RootPath), _world);
+            }
+
+            RecoveryStore.Write(_project.RootPath,
+                Scene.SceneSerializer.ToJson(_sceneDocument ?? new Scene.SceneDocument { Name = "主场景" }),
+                worldModelSource: null);
+            _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+            SetStatus("已保存快照到恢复区（正式保存后自动清理）");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            MVoxelLog.Error("自动保存项目失败", exception);
+            MVoxelLog.Error("自动保存恢复区快照失败", exception);
             SetStatus($"自动保存失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 打开项目后尝试套用恢复区快照，存在即视为比正式保存更新的工作，载入并标记为未保存
+    /// </summary>
+    private void TryRestoreRecovery(ProjectHandle project)
+    {
+        if (!RecoveryStore.TryLoad(project.RootPath, out var snapshot) || snapshot is null) return;
+        try
+        {
+            var restored = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
+            if (File.Exists(snapshot.WorldModelPath))
+            {
+                _world = Voxels.LargeWorldFormat.Read(snapshot.WorldModelPath);
+                _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
+                FrameCameraOnWorld();
+            }
+
+            _sceneDocument = restored;
+            _voxelHistory.Clear();
+            MarkSceneDocumentDirty();
+            SetStatus($"已从恢复区还原未保存工作（{snapshot.SavedAt.ToLocalTime():MM-dd HH:mm}），确认无误后请正式保存");
+            MVoxelLog.Info($"已套用恢复区快照：{project.Manifest.Name}，保存于 {snapshot.SavedAt:O}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            MVoxelLog.Error("恢复区快照套用失败，已按正式保存内容打开", exception);
+            SetStatus($"恢复区快照不可用，已打开正式保存内容：{exception.Message}");
+            RecoveryStore.Clear(project.RootPath);
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Numerics;
 using MVoxel.Core;
@@ -288,7 +289,18 @@ public static class SceneSerializer
     public static void Save(string path, SceneDocument scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        AtomicFile.WriteText(path, JsonSerializer.Serialize(scene, Options));
+        AtomicFile.WriteText(path, ToJson(scene));
+    }
+
+    /// <summary>
+    /// 序列化为 JSON 文本，供恢复区快照与诊断使用
+    /// </summary>
+    /// <param name="scene">要序列化的文档</param>
+    /// <returns>JSON 文本</returns>
+    public static string ToJson(SceneDocument scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        return JsonSerializer.Serialize(scene, Options);
     }
 
     /// <summary>复制场景对象，供编辑器命令历史保存精确的前后状态。</summary>
@@ -309,14 +321,29 @@ public static class SceneSerializer
     }
 
     /// <summary>
-    /// 读取场景文档
+    /// 当前写入的场景格式版本
+    /// </summary>
+    public const int CurrentFormatVersion = 1;
+
+    /// <summary>
+    /// 读取场景文档：先校验并升级格式版本，再反序列化并恢复对象不变量
     /// </summary>
     /// <param name="path">.mvox 文件路径</param>
     /// <returns>解析后的文档</returns>
     public static SceneDocument Load(string path)
     {
-        var scene = JsonSerializer.Deserialize<SceneDocument>(File.ReadAllText(path), Options);
-        if (scene is null) throw new InvalidDataException($"Invalid scene: {path}");
+        return LoadFromJson(Migrate(File.ReadAllText(path), path));
+    }
+
+    /// <summary>
+    /// 从已升级版本的 JSON 文本读取场景文档并恢复对象不变量
+    /// </summary>
+    /// <param name="json">场景 JSON 文本</param>
+    /// <returns>解析后的文档</returns>
+    public static SceneDocument LoadFromJson(string json)
+    {
+        var scene = JsonSerializer.Deserialize<SceneDocument>(json, Options);
+        if (scene is null) throw new InvalidDataException("场景 JSON 不是合法文档");
 
         // 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
         // 保证内存中的场景图始终可被渲染与层级面板安全访问。
@@ -336,6 +363,36 @@ public static class SceneSerializer
         }
 
         return scene;
+    }
+
+    /// <summary>
+    /// 执行版本迁移链：无 formatVersion 字段的历史文件视为 v0 并补章为 v1，
+    /// 高于当前支持的版本拒绝加载；后续每次格式演进在此追加逐级升级步骤
+    /// </summary>
+    /// <param name="json">原始文件文本</param>
+    /// <param name="path">文件路径，用于诊断信息</param>
+    /// <returns>升级到当前版本后的 JSON 文本</returns>
+    private static string Migrate(string json, string path)
+    {
+        using var document = JsonDocument.Parse(json);
+        var version = 0;
+        if (document.RootElement.ValueKind == JsonValueKind.Object &&
+            document.RootElement.TryGetProperty("formatVersion", out var versionElement) &&
+            versionElement.TryGetInt32(out var parsed))
+        {
+            version = parsed;
+        }
+
+        if (version > CurrentFormatVersion)
+        {
+            throw new InvalidDataException(
+                $"场景 {path} 的格式版本 {version} 新于当前支持的 {CurrentFormatVersion}，请升级 MVoxel");
+        }
+
+        if (version != 0) return json;
+        var root = JsonNode.Parse(json)?.AsObject() ?? throw new InvalidDataException($"场景 {path} 不是合法 JSON 对象");
+        root["formatVersion"] = 1;
+        return root.ToJsonString(Options);
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MVoxel.Core;
@@ -199,6 +200,93 @@ public static class PluginManager
         {
             if (Directory.Exists(staging)) Directory.Delete(staging, true);
         }
+    }
+
+    /// <summary>
+    /// 分发包内的逐文件校验清单名
+    /// </summary>
+    public const string ChecksumsFileName = "checksums.json";
+
+    /// <summary>
+    /// 把插件目录打包为 .mvplugin 分发包：zip 内含全部插件文件与逐文件 sha256 清单
+    /// </summary>
+    /// <param name="sourceDirectory">包含 package.json 的插件目录</param>
+    /// <param name="outputFile">输出的 .mvplugin 文件路径</param>
+    /// <returns>输出文件路径</returns>
+    public static string PackPlugin(string sourceDirectory, string outputFile)
+    {
+        var source = Path.GetFullPath(sourceDirectory);
+        if (!File.Exists(Path.Combine(source, "package.json")))
+            throw new FileNotFoundException("插件目录缺少 package.json", source);
+        var output = Path.GetFullPath(outputFile);
+        var directory = Path.GetDirectoryName(output)
+            ?? throw new ArgumentException("输出路径必须包含目录", nameof(outputFile));
+        Directory.CreateDirectory(directory);
+        if (File.Exists(output)) File.Delete(output);
+
+        var checksums = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        using (var archive = System.IO.Compression.ZipFile.Open(output, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            {
+                if (Path.GetFileName(file) == ChecksumsFileName) continue;
+                var relative = Path.GetRelativePath(source, file).Replace('\\', '/');
+                archive.CreateEntryFromFile(file, relative);
+                checksums[relative] = ComputeSha256(file);
+            }
+
+            var manifest = archive.CreateEntry(ChecksumsFileName);
+            using var stream = manifest.Open();
+            using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8);
+            writer.Write(JsonSerializer.Serialize(checksums, JsonOptions));
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// 安装 .mvplugin 分发包：先解包并逐文件校验 sha256，任何不一致都拒绝安装，
+    /// 校验通过后复用目录安装流程
+    /// </summary>
+    /// <param name="packageFile">.mvplugin 文件路径</param>
+    /// <returns>安装后的插件清单</returns>
+    public static EditorPluginPackage InstallFromPackage(string packageFile)
+    {
+        var full = Path.GetFullPath(packageFile);
+        if (!File.Exists(full)) throw new FileNotFoundException("插件分发包不存在", full);
+        var staging = Path.Combine(Path.GetTempPath(), "MVoxel", "plugin-install-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            System.IO.Compression.ZipFile.ExtractToDirectory(full, staging);
+            var checksumsPath = Path.Combine(staging, ChecksumsFileName);
+            if (!File.Exists(checksumsPath)) throw new InvalidDataException("插件分发包缺少校验清单");
+            var checksums = JsonSerializer.Deserialize<Dictionary<string, string>>(
+                File.ReadAllText(checksumsPath), JsonOptions)
+                ?? throw new InvalidDataException("插件校验清单为空");
+            foreach (var (relative, expected) in checksums)
+            {
+                var file = Path.GetFullPath(Path.Combine(staging, relative.Replace('/', Path.DirectorySeparatorChar)));
+                if (!file.StartsWith(staging + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("插件分发包包含越界路径");
+                if (!File.Exists(file) || !string.Equals(ComputeSha256(file), expected, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"插件文件校验失败：{relative}");
+            }
+
+            return InstallFromDirectory(staging);
+        }
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+        }
+    }
+
+    /// <summary>
+    /// 计算文件的 sha256 十六进制串
+    /// </summary>
+    private static string ComputeSha256(string file)
+    {
+        using var stream = File.OpenRead(file);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
     }
 
     /// <summary>

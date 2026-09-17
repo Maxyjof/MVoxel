@@ -25,6 +25,9 @@ internal enum EditorTool
     Draw,
     Erase,
     Pick,
+    Line,
+    Box,
+    Fill,
 }
 
 /// <summary>
@@ -45,6 +48,12 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleDither;
     private bool _settingsToggleHueCycle;
     private bool _brushPreviewErase;
+    private VoxelCoord64? _toolDragAnchor;
+    private VoxelCoord64? _toolDragCurrent;
+    private bool _toolDragErase;
+    private IReadOnlyList<VoxelCoord64>? _pendingFloodCells;
+    private VoxelValue _pendingFloodValue;
+    private bool _pendingFloodOpen;
 
     private void InitializeVoxelPipeline()
     {
@@ -863,6 +872,19 @@ internal sealed partial class ImGuiEditorWindow
             _editorSettings.McMode);
         var rightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, shiftPressed, capsLockMode,
             _editorSettings.McMode);
+        if (_activeTool is EditorTool.Line or EditorTool.Box &&
+            HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
+        {
+            return;
+        }
+
+        if (_activeTool == EditorTool.Fill &&
+            HandleFillToolInput(mouse, origin, size, camera, leftAction, rightAction))
+        {
+            _brushPreview = null;
+            return;
+        }
+
         var handled = false;
         handled |= ApplyMouseVoxelAction(leftAction, ImGuiMouseButton.Left, mouse, origin, size, camera);
         handled |= ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
@@ -917,11 +939,28 @@ internal sealed partial class ImGuiEditorWindow
     private void CommitStroke(IReadOnlyList<VoxelCoord64> cells, bool erase)
     {
         if (cells.Count == 0) return;
+        CommitCells(erase ? "擦除体素" : "绘制体素", cells, CurrentBrushValue(erase));
+    }
+
+    /// <summary>
+    /// 按当前调色板与发光开关计算笔刷值
+    /// </summary>
+    private VoxelValue CurrentBrushValue(bool erase)
+    {
+        if (erase) return default;
         var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
         var flags = (byte)((_brushEmissive ? VoxelFlags.Emissive : VoxelFlags.None) |
                            (paletteColor.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
-        var value = erase ? default : new VoxelValue(paletteColor, Flags: flags);
-        var command = new VoxelStrokeCommand(erase ? "擦除体素" : "绘制体素", _world, cells, value);
+        return new VoxelValue(paletteColor, Flags: flags);
+    }
+
+    /// <summary>
+    /// 提交一组格子为一次可撤销事务并同步 GPU 工作集
+    /// </summary>
+    private void CommitCells(string name, IReadOnlyList<VoxelCoord64> cells, VoxelValue value)
+    {
+        if (cells.Count == 0) return;
+        var command = new VoxelStrokeCommand(name, _world, cells, value);
         _voxelHistory.Execute(command);
         if (command.ChangedCellCount == 0)
         {
@@ -933,6 +972,105 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
     }
+
+    /// <summary>
+    /// 直线与长方体工具的拖动状态机：按下取锚点，拖动更新终点预览，松开一次性提交
+    /// </summary>
+    private bool HandleDragShapeToolInput(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera,
+        ViewportMouseAction leftAction, ViewportMouseAction rightAction)
+    {
+        var place = leftAction == ViewportMouseAction.Place;
+        var destroy = !place && rightAction == ViewportMouseAction.Destroy;
+        if (!place && !destroy)
+        {
+            return false;
+        }
+
+        var button = place ? ImGuiMouseButton.Left : ImGuiMouseButton.Right;
+        var ioState = ImGui.GetIO();
+        if (ioState.MouseClicked[(int)button])
+        {
+            var hit = PickVoxel(mouse, origin, size, camera);
+            if (hit is null)
+            {
+                return true;
+            }
+
+            var cell = destroy ? hit.Value.Coordinate : hit.Value.Coordinate + hit.Value.Normal;
+            _toolDragAnchor = cell;
+            _toolDragCurrent = cell;
+            _toolDragErase = destroy;
+            _brushPreview = null;
+        }
+        else if (ImGui.IsMouseDown(button) && _toolDragAnchor is not null)
+        {
+            var hit = PickVoxel(mouse, origin, size, camera);
+            if (hit is not null)
+            {
+                _toolDragCurrent = _toolDragErase ? hit.Value.Coordinate : hit.Value.Coordinate + hit.Value.Normal;
+            }
+        }
+        else if (ioState.MouseReleased[(int)button] && _toolDragAnchor is { } anchor)
+        {
+            var to = _toolDragCurrent ?? anchor;
+            var cells = _activeTool == EditorTool.Line
+                ? VoxelEditingTools.LineCells(anchor, to)
+                : VoxelEditingTools.BoxCells(anchor, to, hollow: false);
+            CommitCells(_activeTool == EditorTool.Line
+                ? (_toolDragErase ? "擦除直线" : "绘制直线")
+                : (_toolDragErase ? "擦除长方体" : "绘制长方体"), cells, CurrentBrushValue(_toolDragErase));
+            _toolDragAnchor = null;
+            _toolDragCurrent = null;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 洪水填充：点击起点格扩散同值连通域，命中预算上限时进入二次确认弹窗
+    /// </summary>
+    private bool HandleFillToolInput(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera,
+        ViewportMouseAction leftAction, ViewportMouseAction rightAction)
+    {
+        var place = leftAction == ViewportMouseAction.Place;
+        var destroy = !place && rightAction == ViewportMouseAction.Destroy;
+        if (!place && !destroy)
+        {
+            return false;
+        }
+
+        if (!ImGui.IsMouseClicked(place ? ImGuiMouseButton.Left : ImGuiMouseButton.Right))
+        {
+            return true;
+        }
+
+        var hit = PickVoxel(mouse, origin, size, camera);
+        if (hit is null)
+        {
+            SetStatus("填充需要点中已有体素");
+            return true;
+        }
+
+        var cells = VoxelEditingTools.FloodFillCells(_world, hit.Value.Coordinate, MaximumFloodCells, out var truncated);
+        var value = CurrentBrushValue(destroy);
+        if (truncated)
+        {
+            _pendingFloodCells = cells;
+            _pendingFloodValue = value;
+            _pendingFloodOpen = true;
+            SetStatus($"填充区域达到 {MaximumFloodCells:N0} 格上限，等待二次确认");
+            return true;
+        }
+
+        CommitCells(destroy ? "擦除填充" : "洪水填充", cells, value);
+        SetStatus($"填充 {cells.Count:N0} 格");
+        return true;
+    }
+
+    /// <summary>
+    /// 单次洪水填充的最大格子数
+    /// </summary>
+    private const int MaximumFloodCells = 2_000_000;
 
     private void HandleVoxelShortcuts()
     {
@@ -1032,10 +1170,37 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawVoxelBrushPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
+        if (_selectedVoxel is { } selected)
+        {
+            DrawCellWireframe(drawList, origin, size, camera, selected.Coordinate, 0.56F,
+                ToPackedColor(Color.FromArgb(255, 255, 200, 60)), 2.2F);
+        }
+
+        if (_toolDragAnchor is { } anchor)
+        {
+            if (DrawCellWireframe(drawList, origin, size, camera, anchor, 0.52F,
+                    ToPackedColor(Color.FromArgb(235, 93, 187, 255)), 1.6F))
+            {
+                var to = _toolDragCurrent ?? anchor;
+                DrawCellWireframe(drawList, origin, size, camera, to, 0.52F,
+                    ToPackedColor(Color.FromArgb(235, 93, 187, 255)), 1.6F);
+            }
+        }
+
         if (_brushPreview is not { } hit) return;
         var cell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
+        DrawCellWireframe(drawList, origin, size, camera, cell, 0.52F,
+            ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
+                _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255)), 1.6F);
+    }
+
+    /// <summary>
+    /// 把一个格子画成线框立方体，全部角点都在相机后方时返回 false
+    /// </summary>
+    private static bool DrawCellWireframe(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        VoxelCoord64 cell, float half, uint color, float thickness)
+    {
         var center = new Vector3((float)cell.X + 0.5F, (float)cell.Y + 0.5F, (float)cell.Z + 0.5F);
-        var half = 0.52F;
         var corners = new[]
         {
             center + new Vector3(-half, -half, -half), center + new Vector3(half, -half, -half),
@@ -1046,18 +1211,18 @@ internal sealed partial class ImGuiEditorWindow
         var points = new Vector2[8];
         for (var index = 0; index < corners.Length; index++)
         {
-            if (!SceneProjection.Project(corners[index], origin, size, camera, out points[index], out _)) return;
+            if (!SceneProjection.Project(corners[index], origin, size, camera, out points[index], out _)) return false;
         }
 
-        var outline = ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
-            _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255));
         foreach (var (start, end) in new[]
                  {
                      (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
                  })
         {
-            drawList.AddLine(points[start], points[end], outline, 1.6F);
+            drawList.AddLine(points[start], points[end], color, thickness);
         }
+
+        return true;
     }
 
     // 工具栏和色板
@@ -1072,14 +1237,62 @@ internal sealed partial class ImGuiEditorWindow
         ToolButton("绘制", EditorTool.Draw);
         ImGui.SameLine();
         ToolButton("擦除", EditorTool.Erase);
+        ImGui.SameLine();
+        ToolButton("直线", EditorTool.Line);
+        ImGui.SameLine();
+        ToolButton("长方体", EditorTool.Box);
+        ImGui.SameLine();
+        ToolButton("填充", EditorTool.Fill);
+        DrawFloodConfirmModal();
         if (previousTool == _activeTool) return;
         SetStatus(_activeTool switch
         {
             EditorTool.Camera => "视口工具：左键放置 · 右键环绕 · Shift+左键破坏 · 中键平移",
             EditorTool.Pick => "选择工具：点击体素查看坐标与颜色（可取色）",
             EditorTool.Draw => "绘制工具：左键放置 · Shift+左键破坏",
+            EditorTool.Line => "直线工具：按下取起点，拖动到终点松开，一次可撤销",
+            EditorTool.Box => "长方体工具：按下取一个角，拖到对角松开",
+            EditorTool.Fill => "填充工具：点击体素替换其同值连通域，超上限需确认",
             _ => "擦除工具：Shift+左键破坏",
         });
+    }
+
+    /// <summary>
+    /// 洪水填充命中预算上限后的二次确认弹窗，确认应用截断结果或放弃
+    /// </summary>
+    private void DrawFloodConfirmModal()
+    {
+        if (_pendingFloodCells is null) return;
+        if (_pendingFloodOpen)
+        {
+            ImGui.OpenPopup("洪水填充达到上限##flood_confirm");
+            _pendingFloodOpen = false;
+        }
+
+        var cellCount = _pendingFloodCells.Count;
+        ImGui.SetNextWindowSize(new Vector2(420F, 0F));
+        if (ImGui.BeginPopupModal("洪水填充达到上限##flood_confirm", ref _pendingFloodOpen,
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.Text($"填充区域达到 {MaximumFloodCells:N0} 格安全上限，结果已被截断。");
+            ImGui.Text($"已收集 {cellCount:N0} 格，是否应用截断结果？");
+            if (ImGui.Button("应用截断结果"))
+            {
+                CommitCells("洪水填充（截断）", _pendingFloodCells, _pendingFloodValue);
+                _pendingFloodCells = null;
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button("取消"))
+            {
+                _pendingFloodCells = null;
+                SetStatus("已取消本次填充，未改动任何体素");
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.EndPopup();
+        }
     }
 
     private void ToolButton(string label, EditorTool tool)

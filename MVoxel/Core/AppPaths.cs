@@ -36,6 +36,11 @@ public static class AppPaths
     public static string LogFilePath => Path.Combine(DataDirectory, "log");
 
     /// <summary>
+    /// 自动保存恢复区根目录，按项目派生子目录
+    /// </summary>
+    public static string RecoveryDirectory => Path.Combine(DataDirectory, "Recovery");
+
+    /// <summary>
     /// 已关闭日志文件
     /// </summary>
     public static string OldLogFilePath => Path.Combine(DataDirectory, "old_log");
