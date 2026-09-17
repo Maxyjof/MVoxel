@@ -2834,7 +2834,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;

@@ -43,7 +43,8 @@ internal sealed class ProjectAssetBrowser
     /// </summary>
     /// <param name="project">当前项目或 null</param>
     /// <param name="reportStatus">向状态栏汇报的回调</param>
-    internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged)
+    internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
+        Action<string>? openWorldRequest = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -748,7 +749,7 @@ internal static class ProjectAssetCatalog
     {
         "Scenes" => "场景",
         "Prefabs" => "预制件",
-        "VoxelModels" => "内部数据",
+        "Worlds" => "世界",
         "Materials" => "材质",
         "Palettes" => "调色板",
         "Environments" => "环境",

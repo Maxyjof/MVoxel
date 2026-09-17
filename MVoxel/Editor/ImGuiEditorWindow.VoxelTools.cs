@@ -105,11 +105,11 @@ internal sealed partial class ImGuiEditorWindow
         var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
         var hasModelReference = HasModelReference(_sceneDocument);
         var largeWorldPath = referencedLargeWorldPath ??
-            (!hasModelReference && referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "VoxelModels"))
-                ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "VoxelModels"), "*.mvworld")
+            (!hasModelReference && referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "Worlds"))
+                ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "Worlds"), "*.mvworld")
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                 : null);
-        var modelPath = referencedNativePath ?? Path.Combine(project.AssetsPath, "VoxelModels", "主场景.mvmodel");
+        var modelPath = referencedNativePath ?? Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
         try
         {
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
@@ -272,27 +272,18 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
-        var modelPath = Path.Combine(project.AssetsPath, "VoxelModels", "主场景.mvmodel");
         try
         {
-            var modelDirectory = Path.Combine(project.AssetsPath, "VoxelModels");
-            var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
-            var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
-            var hasModelReference = HasModelReference(_sceneDocument);
-            var largeWorldPath = referencedLargeWorldPath ??
-                (!hasModelReference && referencedNativePath is null && Directory.Exists(modelDirectory)
-                    ? Directory.EnumerateFiles(modelDirectory, "*.mvworld")
-                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-                    : null);
-            var modelAssetPath = "Assets/VoxelModels/主场景.mvmodel";
-            if (largeWorldPath is not null && File.Exists(largeWorldPath))
-            {
-                LargeWorldFormat.Write(largeWorldPath, _world);
-                modelAssetPath = $"Assets/VoxelModels/{Path.GetFileName(largeWorldPath)}";
-            }
-            else if (_world.OccupiedVoxelCount > 0)
+            var modelAssetPath = ResolveCurrentWorldAssetPath(project);
+            var modelPath = Path.Combine(project.RootPath, modelAssetPath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(modelPath)!);
+            if (_world.OccupiedVoxelCount > 0)
             {
                 LargeWorldFormat.Write(modelPath, _world);
+            }
+            else if (File.Exists(modelPath))
+            {
+                File.Delete(modelPath);
             }
 
             var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
@@ -334,6 +325,93 @@ internal sealed partial class ImGuiEditorWindow
         {
             SetStatus($"保存失败：{exception.Message}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 解析当前工作世界对应的资产相对路径，场景模型组件引用优先，缺失时回退到 Worlds/主世界.mvmodel
+    /// </summary>
+    private string ResolveCurrentWorldAssetPath(ProjectHandle project)
+    {
+        var referenced = FindReferencedModelPath(project, _sceneDocument, ".mvworld")
+            ?? FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
+        return referenced is not null ? ToAssetRelativePath(project, referenced) : "Assets/Worlds/主世界.mvmodel";
+    }
+
+    /// <summary>
+    /// 把绝对模型路径换算成 Assets 打头的资产相对路径，供场景模型组件引用
+    /// </summary>
+    private static string ToAssetRelativePath(ProjectHandle project, string absolutePath)
+    {
+        var relative = Path.GetRelativePath(project.AssetsPath, absolutePath).Replace('\\', '/');
+        return "Assets/" + relative;
+    }
+
+    /// <summary>
+    /// 把场景中的模型组件引用指向指定世界资产，保证保存与重新打开都作用于同一文件
+    /// </summary>
+    private void UpdateSceneModelReference(string assetRelativePath)
+    {
+        var document = _sceneDocument ??= new Scene.SceneDocument { Name = "主场景" };
+        var graph = new Scene.SceneGraph(document);
+        var modelObject = document.Objects.FirstOrDefault(item =>
+            item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        modelObject ??= graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
+        var modelComponent = modelObject.Components.FirstOrDefault(component =>
+            SceneComponentTypes.IsVoxelModel(component));
+        var data = new
+        {
+            model = assetRelativePath,
+            voxelCount = _world.OccupiedVoxelCount,
+            part = "场景模型",
+        };
+        if (modelComponent is null)
+        {
+            modelObject.Components.Add(new Scene.ComponentRecord
+            {
+                TypeId = SceneComponentTypes.VoxelModel,
+                SchemaVersion = 1,
+                Data = JsonSerializer.SerializeToElement(data),
+            });
+        }
+        else
+        {
+            modelComponent.Data = JsonSerializer.SerializeToElement(data);
+        }
+
+        _sceneDocument = document;
+    }
+
+    /// <summary>
+    /// 打开资产浏览器中指定的世界文件作为当前工作世界，导入与双击均走此入口
+    /// </summary>
+    private void OpenWorldAsset(string relativePath)
+    {
+        if (_project is null) return;
+        var absolute = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(absolute))
+        {
+            SetStatus($"世界文件不存在：{relativePath}");
+            return;
+        }
+
+        if (_sceneDocumentDirty) SaveProject();
+        try
+        {
+            _world = LargeWorldFormat.Read(absolute);
+            UpdateSceneModelReference("Assets/" + relativePath.Replace('\\', '/'));
+            _sceneDocumentDirty = false;
+            _voxelHistory.Clear();
+            _selectedVoxel = null;
+            _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
+            _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
+            FrameCameraOnWorld();
+            SetStatus($"已打开世界：{Path.GetFileName(relativePath)}（{_world.OccupiedVoxelCount:N0} 体素）");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+        {
+            SetStatus($"打开世界失败：{exception.Message}");
         }
     }
 

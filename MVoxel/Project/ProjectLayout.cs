@@ -143,7 +143,7 @@ public static class ProjectLayout
     {
         "Scenes",
         "Prefabs",
-        "VoxelModels",
+        "Worlds",
         "Materials",
         "Palettes",
         "Environments",
