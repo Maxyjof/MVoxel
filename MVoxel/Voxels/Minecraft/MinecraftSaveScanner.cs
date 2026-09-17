@@ -144,7 +144,8 @@ public static class MinecraftSaveScanner
             minecraftVersion = versionName;
         }
 
-        var (minBlockY, maxBlockY) = dataVersion >= 2860 ? (-64, 319) : (0, 255);
+        // 21w37a（DataVersion 2832）起世界高度扩展为 -64 到 319，之前为 0 到 255
+        var (minBlockY, maxBlockY) = dataVersion >= 2832 ? (-64, 319) : (0, 255);
 
         var regionDirectory = Path.Combine(savePath, dimension.RegionDirectory);
         long minChunkX = 0;

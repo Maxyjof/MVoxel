@@ -102,7 +102,7 @@ public static class McWorldImporter
     {
         foreach (var section in chunk.Sections)
         {
-            if (IsAirOnlySection(section))
+            if (section.Y < -16 || section.Y > 1023 || IsAirOnlySection(section))
             {
                 continue;
             }
@@ -119,13 +119,8 @@ public static class McWorldImporter
                             continue;
                         }
 
-                        var worldY = section.BaseY + y - yBase;
-                        if (worldY < 0)
-                        {
-                            continue;
-                        }
-
-                        var coordinate = new VoxelCoord64(blockOriginX + x, worldY, blockOriginZ + z);
+                        var coordinate = new VoxelCoord64(
+                            blockOriginX + x, section.BaseY + y - yBase, blockOriginZ + z);
                         var flags = VoxelFlags.None;
                         if (MinecraftBlockColors.IsTranslucent(name)) flags |= VoxelFlags.Translucent;
                         if (MinecraftBlockColors.IsEmissive(name)) flags |= VoxelFlags.Emissive;

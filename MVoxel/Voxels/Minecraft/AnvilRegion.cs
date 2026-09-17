@@ -339,7 +339,7 @@ public sealed class AnvilSection
 
     internal static AnvilSection FromNbt(NbtCompound section)
     {
-        var y = section.TryGetByte("Y", out var yByte) ? yByte : section.GetInt("Y");
+        var y = section.TryGetByte("Y", out var yByte) ? (sbyte)yByte : section.GetInt("Y");
         IReadOnlyList<string> palette;
         long[]? data = null;
         if (section.TryGetCompound("block_states", out var blockStates))
