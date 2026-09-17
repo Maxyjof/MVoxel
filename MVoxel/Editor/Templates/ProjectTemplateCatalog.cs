@@ -6,6 +6,7 @@ using MVoxel.Project;
 using MVoxel.Rendering;
 using MVoxel.Scene;
 using MVoxel.Voxels;
+using MVoxel.Voxels.Minecraft;
 
 namespace MVoxel.Editor.Templates;
 
@@ -53,6 +54,11 @@ public enum ProjectTemplateId
     /// 展示程序化起伏地形和分层材质
     /// </summary>
     ProceduralTerrain,
+
+    /// <summary>
+    /// 展示 Minecraft 风格的分层世界：地形世界与每棵树各自独立文件
+    /// </summary>
+    MinecraftValley,
 
     /// <summary>
     /// 展示墙体、拱门、立柱和模块化建筑
@@ -104,6 +110,7 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.LodPlayground, "LOD 练习场", "从近到远排列不同复杂度的建筑组，方便调试 LOD", "LOD · 场景性能 · 批量对象"),
         new(ProjectTemplateId.RayTracingStudio, "光追工作室", "发光面、玻璃屏、彩色材质和暗室布光", "路径追踪 · 直接光 · 透明"),
         new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "由高度函数生成的分层山谷、平台和水面", "程序化 · 地形 · 大量体素"),
+        new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "草地湖畔、八棵独立橡树、发光灯笼和花丛，树与地形分层存放", "MC 风格 · 分层结构 · 水面 · 发光"),
         new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
         new(ProjectTemplateId.CameraGallery, "多相机构图室", "同一体素场景配置三个相机，演示渲染视图切换和相机对象联动", "相机 · 构图 · 渲染视图"),
         new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "三轴 1024 格的稀疏建筑群、塔楼和高空连桥性能验证", "大世界 · LOD · 建筑 · 性能压力"),
@@ -133,7 +140,23 @@ public static class ProjectTemplateCatalog
         if (id != ProjectTemplateId.Empty)
         {
             var modelPath = Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
-            if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
+            if (id == ProjectTemplateId.MinecraftValley)
+            {
+                var terrain = BuildMinecraftValleyTerrain();
+                LargeWorldFormat.Write(modelPath, terrain);
+                var trees = BuildMinecraftValleyTrees();
+                var layerParts = new List<(string Name, string ModelAssetPath, int VoxelCount)>();
+                for (var index = 0; index < trees.Count; index++)
+                {
+                    var treeFile = $"Minecraft山谷_树{index + 1}.mvmodel";
+                    LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", treeFile), trees[index]);
+                    layerParts.Add(($"树 {index + 1}", "Assets/Worlds/" + treeFile, trees[index].OccupiedVoxelCount));
+                }
+
+                WriteScene(project, Get(id), terrain.OccupiedVoxelCount,
+                    "Assets/Worlds/主世界.mvmodel", layerParts: layerParts);
+            }
+            else if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
                 var largeFileName = id == ProjectTemplateId.LargeWorld ? "超大型场景.mvworld" : "渲染体验馆.mvworld";
                 var largePath = Path.Combine(project.AssetsPath, "Worlds", largeFileName);
@@ -183,6 +206,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.LodPlayground => BuildLodPlayground(),
             ProjectTemplateId.RayTracingStudio => BuildRayTracingStudio(),
             ProjectTemplateId.ProceduralTerrain => BuildProceduralTerrain(),
+            ProjectTemplateId.MinecraftValley => BuildMinecraftValleyTerrain(),
             ProjectTemplateId.Architecture => BuildArchitecture(),
             ProjectTemplateId.CameraGallery => BuildCameraGallery(),
             ProjectTemplateId.LargeWorld => LargeWorldFormat.BuildDemoWorld(),
@@ -207,6 +231,21 @@ public static class ProjectTemplateCatalog
                 settings.LodDistances = [48F, 96F, 192F, 384F, 768F, 1536F, 3072F, 6144F];
                 settings.DefaultRenderPreset = "大世界稀疏预览";
                 settings.RenderSettings.GroundFade = 240F;
+                break;
+            case ProjectTemplateId.MinecraftValley:
+                settings.DefaultRenderPreset = "Minecraft 山谷";
+                settings.RenderSettings.SunElevationDegrees = 34F;
+                settings.RenderSettings.SunAzimuthDegrees = 128F;
+                settings.RenderSettings.ShadowSoftness = .1F;
+                settings.RenderSettings.ShadowSamples = 4;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .82F;
+                settings.RenderSettings.AoPower = 1.2F;
+                settings.RenderSettings.SkyAmbient = .5F;
+                settings.RenderSettings.EmissiveIntensity = 12F;
+                settings.RenderSettings.TransmissiveAbsorption = .3F;
+                settings.RenderSettings.Tone = ToneCurve.Reinhard;
+                settings.RenderSettings.Exposure = .12F;
                 break;
             case ProjectTemplateId.LodPlayground:
                 settings.LodLevels = 6;
@@ -394,7 +433,8 @@ public static class ProjectTemplateCatalog
     /// <param name="template">模板定义</param>
     /// <param name="voxelCount">体素数量</param>
     private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
-        string modelAssetPath = "Assets/Worlds/主世界.mvmodel", int cameraCount = 1)
+        string modelAssetPath = "Assets/Worlds/主世界.mvmodel", int cameraCount = 1,
+        IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount)>? layerParts = null)
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
@@ -404,6 +444,17 @@ public static class ProjectTemplateCatalog
                 transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
             modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
                 modelAssetPath, voxelCount, template.Id.ToString(), part));
+        }
+
+        if (layerParts is not null)
+        {
+            foreach (var (name, assetPath, count) in layerParts)
+            {
+                var layerObject = graph.Add(name,
+                    transform: TransformComponent.FromGrid(GridTransform.Identity));
+                layerObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
+                    assetPath, count, template.Id.ToString(), "分层对象"));
+            }
         }
 
         var lightObject = graph.Add("主光照", transform: TransformComponent.FromFree(new FreeTransform(
@@ -445,6 +496,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.LodPlayground => [("LOD 建筑组", "建筑组", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.RayTracingStudio => [("光追展示台", "展示台", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.ProceduralTerrain => [("程序化地形", "地形", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.MinecraftValley => [("地形", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.Architecture => [("模块化建筑", "建筑", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.CameraGallery => [("多相机构图场景", "场景", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LargeWorld => [("超大型建筑群", "建筑群", new VoxelCoord64(0, 0, 0))],
@@ -614,6 +666,156 @@ public static class ProjectTemplateCatalog
         }
 
         return world;
+    }
+
+    /// <summary>
+    /// 山谷湖面的水面高度
+    /// </summary>
+    private const int ValleyWaterLevel = 4;
+
+    /// <summary>
+    /// 山谷地形在指定平面坐标的高度，含湖盆下陷
+    /// </summary>
+    private static int ValleyHeightAt(int x, int z)
+    {
+        var baseHeight = 5.5F +
+                         MathF.Sin(x * .09F) * 2.6F +
+                         MathF.Cos(z * .085F) * 2.2F +
+                         MathF.Sin((x * .6F + z) * .06F) * 2.8F;
+        var basinX = x + 14;
+        var basinZ = z - 10;
+        var basin = 3.6F * MathF.Exp(-(basinX * basinX + basinZ * basinZ) / 620F);
+        return Math.Clamp((int)MathF.Round(baseHeight - basin), 1, 13);
+    }
+
+    /// <summary>
+    /// 取色表中的方块颜色并按方块特性附加半透明或发光标记
+    /// </summary>
+    private static VoxelValue MinecraftBlock(string name)
+    {
+        var flags = VoxelFlags.None;
+        if (MinecraftBlockColors.IsTranslucent(name)) flags |= VoxelFlags.Translucent;
+        if (MinecraftBlockColors.IsEmissive(name)) flags |= VoxelFlags.Emissive;
+        return new VoxelValue(MinecraftBlockColors.ColorOf(name), 0, flags);
+    }
+
+    /// <summary>
+    /// 构建 Minecraft 山谷的地形世界：草坡、沙岸湖盆、水层、发光灯笼小径与花丛
+    /// </summary>
+    /// <returns>地形世界，树不包含在内</returns>
+    private static VoxelWorld BuildMinecraftValleyTerrain()
+    {
+        var world = new VoxelWorld();
+        var grass = MinecraftBlock("minecraft:grass_block");
+        var dirt = MinecraftBlock("minecraft:dirt");
+        var stone = MinecraftBlock("minecraft:stone");
+        var sand = MinecraftBlock("minecraft:sand");
+        var water = MinecraftBlock("minecraft:water");
+        var gravel = MinecraftBlock("minecraft:gravel");
+        var glowstone = MinecraftBlock("minecraft:glowstone");
+        var poppy = MinecraftBlock("minecraft:poppy");
+        var dandelion = MinecraftBlock("minecraft:dandelion");
+        for (var x = -48; x <= 48; x++)
+        for (var z = -48; z <= 48; z++)
+        {
+            var height = ValleyHeightAt(x, z);
+            var underWater = height <= ValleyWaterLevel;
+            for (var y = 0; y < height; y++)
+            {
+                VoxelValue value;
+                if (underWater) value = y >= height - 1 ? sand : y >= height - 3 ? gravel : stone;
+                else if (height == ValleyWaterLevel + 1) value = y == height - 1 ? sand : y >= height - 3 ? dirt : stone;
+                else value = y == height - 1 ? grass : y >= height - 3 ? dirt : stone;
+                world.Set(new VoxelCoord64(x, y, z), value);
+            }
+
+            if (underWater)
+            {
+                for (var y = height; y <= ValleyWaterLevel; y++)
+                {
+                    world.Set(new VoxelCoord64(x, y, z), water);
+                }
+            }
+            else
+            {
+                var scatter = (x * 7919) ^ (z * 104729);
+                if (height > ValleyWaterLevel + 1 && (scatter & 63) == 5)
+                {
+                    world.Set(new VoxelCoord64(x, height, z), (scatter & 64) == 0 ? poppy : dandelion);
+                }
+            }
+        }
+
+        foreach (var (postX, postZ) in new[] { (-6, 14), (0, 5), (-20, 1), (9, 15), (-11, 22) })
+        {
+            var height = ValleyHeightAt(postX, postZ);
+            if (height <= ValleyWaterLevel + 1) continue;
+            var oakLog = MinecraftBlock("minecraft:oak_log");
+            world.Set(new VoxelCoord64(postX, height, postZ), oakLog);
+            world.Set(new VoxelCoord64(postX, height + 1, postZ), oakLog);
+            world.Set(new VoxelCoord64(postX, height + 2, postZ), glowstone);
+        }
+
+        return world;
+    }
+
+    /// <summary>
+    /// 构建山谷里的橡树，每棵树是独立的体素世界，坐标与地形同一空间
+    /// </summary>
+    /// <returns>最多八棵橡树的世界列表，只落在离水有距离的草地上</returns>
+    private static List<VoxelWorld> BuildMinecraftValleyTrees()
+    {
+        var trunk = MinecraftBlock("minecraft:oak_log");
+        var leaves = MinecraftBlock("minecraft:oak_leaves");
+        var chosen = new List<(int X, int Z)>();
+        for (var z = -44; z <= 44 && chosen.Count < 8; z++)
+        for (var x = -44; x <= 44 && chosen.Count < 8; x++)
+        {
+            if (ValleyHeightAt(x, z) < 7) continue;
+            var candidate = (X: x, Z: z);
+            if (chosen.Any(item => Math.Abs(item.X - candidate.X) + Math.Abs(item.Z - candidate.Z) < 15))
+            {
+                continue;
+            }
+
+            chosen.Add(candidate);
+        }
+
+        var trees = new List<VoxelWorld>();
+        for (var index = 0; index < chosen.Count; index++)
+        {
+            var (treeX, treeZ) = chosen[index];
+            var ground = ValleyHeightAt(treeX, treeZ);
+            var trunkHeight = 4 + (index & 1);
+            var tree = new VoxelWorld();
+            for (var y = ground; y < ground + trunkHeight; y++)
+            {
+                tree.Set(new VoxelCoord64(treeX, y, treeZ), trunk);
+            }
+
+            var canopyBase = ground + trunkHeight - 1;
+            for (var y = canopyBase; y <= canopyBase + 1; y++)
+            for (var dx = -2; dx <= 2; dx++)
+            for (var dz = -2; dz <= 2; dz++)
+            {
+                if (Math.Abs(dx) == 2 && Math.Abs(dz) == 2 && y == canopyBase) continue;
+                var coordinate = new VoxelCoord64(treeX + dx, y, treeZ + dz);
+                if (!tree.TryGet(coordinate, out _)) tree.Set(coordinate, leaves);
+            }
+
+            for (var y = canopyBase + 2; y <= canopyBase + 3; y++)
+            for (var dx = -1; dx <= 1; dx++)
+            for (var dz = -1; dz <= 1; dz++)
+            {
+                if (y == canopyBase + 3 && Math.Abs(dx) + Math.Abs(dz) > 1) continue;
+                var coordinate = new VoxelCoord64(treeX + dx, y, treeZ + dz);
+                if (!tree.TryGet(coordinate, out _)) tree.Set(coordinate, leaves);
+            }
+
+            trees.Add(tree);
+        }
+
+        return trees;
     }
 
     /// <summary>

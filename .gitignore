@@ -65,3 +65,4 @@ coverage-report/
 
 # Local scratch used by capture harness runs
 .scratch/
+.workbuddy/
