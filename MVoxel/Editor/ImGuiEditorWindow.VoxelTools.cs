@@ -139,6 +139,13 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"模型读取失败，已载入示范场景：{exception.Message}");
         }
 
+        var primaryPath = largeWorldPath is not null && File.Exists(largeWorldPath) ? largeWorldPath : modelPath;
+        var mergedLayers = MergeSceneModelWorlds(project, primaryPath);
+        if (mergedLayers > 0)
+        {
+            SetStatus($"{_statusText}，已合并 {mergedLayers} 个分层对象");
+        }
+
         _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
@@ -288,6 +295,9 @@ internal sealed partial class ImGuiEditorWindow
 
             var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
             var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
+            // 保存时 _world 是合并态：主世界文件已包含全部分层体素，
+            // 因此移除其余模型组件，避免下次打开时把分层文件再叠加一遍
+            var removedLayers = ConsolidateSecondaryModelObjects(document, modelAssetPath);
             var graph = new Scene.SceneGraph(document);
             var modelObject = document.Objects.FirstOrDefault(item =>
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
@@ -319,6 +329,11 @@ internal sealed partial class ImGuiEditorWindow
             }
             _sceneDocument = document;
             Scene.SceneSerializer.Save(scenePath, document);
+            if (removedLayers > 0)
+            {
+                MVoxelLog.Info($"已把 {removedLayers} 个分层对象合并保存进主世界文件");
+            }
+
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -413,6 +428,80 @@ internal sealed partial class ImGuiEditorWindow
         {
             SetStatus($"打开世界失败：{exception.Message}");
         }
+    }
+
+    /// <summary>
+    /// 把场景中其他模型组件引用的世界合并进当前世界，分层对象由此获得可见体素
+    /// </summary>
+    /// <param name="project">项目句柄</param>
+    /// <param name="primaryPath">主世界文件绝对路径，与它相同的引用不再合并</param>
+    /// <returns>成功合并的对象数量</returns>
+    private int MergeSceneModelWorlds(ProjectHandle project, string primaryPath)
+    {
+        if (_sceneDocument is null) return 0;
+        var mergedCount = 0;
+        foreach (var sceneObject in _sceneDocument.Objects)
+        {
+            foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
+            {
+                var model = SceneComponentTypes.ReadVoxelModel(component).Model;
+                if (string.IsNullOrWhiteSpace(model)) continue;
+                var absolute = Path.GetFullPath(
+                    Path.Combine(project.RootPath, model.Replace('/', Path.DirectorySeparatorChar)));
+                if (string.Equals(absolute, primaryPath, StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(absolute))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    foreach (var item in LargeWorldFormat.Read(absolute).EnumerateOccupied())
+                    {
+                        _world.Set(item.Coordinate, item.Value);
+                    }
+
+                    mergedCount++;
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+                {
+                    MVoxelLog.Warn($"分层对象读取失败，已跳过：{sceneObject.Name}");
+                }
+            }
+        }
+
+        return mergedCount;
+    }
+
+    /// <summary>
+    /// 移除主世界之外模型对象上的模型组件，使保存后的场景不再重复引用分层文件
+    /// </summary>
+    /// <param name="document">待整理的场景文档</param>
+    /// <param name="primaryAssetPath">主世界资产的相对路径</param>
+    /// <returns>移除的模型组件数量</returns>
+    private static int ConsolidateSecondaryModelObjects(Scene.SceneDocument document, string primaryAssetPath)
+    {
+        var removed = 0;
+        for (var objectIndex = document.Objects.Count - 1; objectIndex >= 0; objectIndex--)
+        {
+            var sceneObject = document.Objects[objectIndex];
+            for (var componentIndex = sceneObject.Components.Count - 1; componentIndex >= 0; componentIndex--)
+            {
+                var component = sceneObject.Components[componentIndex];
+                if (!SceneComponentTypes.IsVoxelModel(component)) continue;
+                var model = SceneComponentTypes.ReadVoxelModel(component).Model;
+                if (string.Equals(model, primaryAssetPath, StringComparison.OrdinalIgnoreCase)) continue;
+                sceneObject.Components.RemoveAt(componentIndex);
+                removed++;
+            }
+
+            if (sceneObject.Components.Count == 0)
+            {
+                document.Objects.RemoveAt(objectIndex);
+            }
+        }
+
+        return removed;
     }
 
     // GPU 视口

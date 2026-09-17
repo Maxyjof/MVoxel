@@ -764,7 +764,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("导入"))
             {
                 ImGui.TextUnformatted("导入与导出格式");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前支持 .vox 和 .palette 格式");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入 Minecraft 存档、读写 .palette");
                 ImGui.EndTabItem();
             }
 
