@@ -238,6 +238,15 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.invokeCommand", arguments.RootElement), JsonOptions));
                 return 0;
             }
+            case "--mc-model" when args.Length == 7:
+            {
+                var info = MinecraftSaveScanner.Inspect(args[1], "overworld");
+                var result = McWorldImporter.ConvertRange(info,
+                    long.Parse(args[2]), long.Parse(args[3]), long.Parse(args[4]), long.Parse(args[5]));
+                LargeWorldFormat.Write(args[6], result.Terrain);
+                Console.WriteLine($"已写出 {result.Terrain.OccupiedVoxelCount:N0} 体素到 {args[6]}");
+                return 0;
+            }
             case "--mc-bench" when args.Length is >= 6 and <= 7:
                 return RunMcBench(args);
             default:

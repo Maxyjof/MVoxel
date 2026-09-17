@@ -101,37 +101,120 @@ public sealed class VoxelGpuWorkset
             CheckedExtent(minimum.X, maximum.X, nameof(minimum)),
             CheckedExtent(minimum.Y, maximum.Y, nameof(minimum)),
             CheckedExtent(minimum.Z, maximum.Z, nameof(minimum)));
-        var occupiedCount = world.OccupiedVoxelCount;
+
+        // 区块按 (Z, Y, X) 的列顺序排好后，每个区块内部按键升序遍历就是全局 Z、Y、X 稳定序，
+        // 因此只需区块内的小排序与前缀和定位，不再对全体体素做全局排序
+        var chunks = world.SnapshotChunks();
+        chunks.Sort(static (left, right) =>
+        {
+            var byZ = left.Coordinate.Z.CompareTo(right.Coordinate.Z);
+            if (byZ != 0) return byZ;
+            var byY = left.Coordinate.Y.CompareTo(right.Coordinate.Y);
+            return byY != 0 ? byY : left.Coordinate.X.CompareTo(right.Coordinate.X);
+        });
+
+        var chunkCount = chunks.Count;
+        var starts = new long[chunkCount + 1];
+        for (var index = 0; index < chunkCount; index++)
+        {
+            starts[index + 1] = starts[index] + chunks[index].Chunk.OccupiedCount;
+        }
+
+        var occupiedCount = checked((int)starts[chunkCount]);
         var sampleStride = maximumCells > 0 && occupiedCount > maximumCells
             ? (occupiedCount + maximumCells - 1) / maximumCells
             : 1;
-        var cells = new List<VoxelGpuCell>(Math.Min(occupiedCount, maximumCells > 0 ? maximumCells : occupiedCount));
-        var emissiveCount = 0;
-        var sourceIndex = 0;
-        foreach (var (coordinate, value) in world.EnumerateOccupied())
+        var cellCount = sampleStride == 1
+            ? occupiedCount
+            : CountSampled(starts, chunkCount, sampleStride);
+        var cells = new VoxelGpuCell[cellCount];
+        var writeStarts = new int[chunkCount + 1];
+        if (sampleStride == 1)
         {
-            if (sourceIndex++ % sampleStride != 0)
+            for (var index = 0; index <= chunkCount; index++)
             {
-                continue;
+                writeStarts[index] = (int)starts[index];
             }
-
-            var cell = new VoxelGpuCell(
-                checked((int)(coordinate.X - minimum.X)),
-                checked((int)(coordinate.Y - minimum.Y)),
-                checked((int)(coordinate.Z - minimum.Z)),
-                value);
-            cells.Add(cell);
-            if (VoxelFlags.Has(value.Flags, VoxelFlags.Emissive)) emissiveCount++;
+        }
+        else
+        {
+            for (var index = 0; index < chunkCount; index++)
+            {
+                writeStarts[index + 1] = writeStarts[index] +
+                    CountSampledInChunk(starts[index], starts[index + 1], sampleStride);
+            }
         }
 
-        cells.Sort(static (left, right) =>
+        var emissiveTotals = new int[chunkCount];
+        System.Threading.Tasks.Parallel.For(0, chunkCount,
+            new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            },
+            chunkIndex =>
+            {
+                var (coordinate, chunk) = chunks[chunkIndex];
+                var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
+                var pairIndex = 0;
+                foreach (var pair in chunk.Snapshot)
+                {
+                    pairs[pairIndex++] = (pair.Key, pair.Value);
+                }
+
+                Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+                var emissive = 0;
+                var write = writeStarts[chunkIndex];
+                for (var localIndex = 0; localIndex < pairs.Length; localIndex++)
+                {
+                    if (sampleStride != 1)
+                    {
+                        var global = starts[chunkIndex] + localIndex;
+                        if (global % sampleStride != 0)
+                        {
+                            continue;
+                        }
+                    }
+
+                    var (key, value) = pairs[localIndex];
+                    var local = SparseVoxelChunk.FromIndex(key);
+                    var cell = new VoxelGpuCell(
+                        (int)(coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X),
+                        (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y),
+                        (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z),
+                        value);
+                    cells[write++] = cell;
+                    if (VoxelFlags.Has(value.Flags, VoxelFlags.Emissive)) emissive++;
+                }
+
+                emissiveTotals[chunkIndex] = emissive;
+            });
+
+        var emissiveCount = 0;
+        foreach (var emissive in emissiveTotals) emissiveCount += emissive;
+        return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
+    }
+
+    /// <summary>
+    /// 统计全局编号落在采样点上的体素总数
+    /// </summary>
+    private static int CountSampled(long[] starts, int chunkCount, int sampleStride)
+    {
+        var total = 0;
+        for (var index = 0; index < chunkCount; index++)
         {
-            var result = left.Z.CompareTo(right.Z);
-            if (result != 0) return result;
-            result = left.Y.CompareTo(right.Y);
-            return result != 0 ? result : left.X.CompareTo(right.X);
-        });
-        return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells.ToArray(), emissiveCount);
+            total += CountSampledInChunk(starts[index], starts[index + 1], sampleStride);
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// 统计全局编号区间 [from, to) 内命中采样步数的条数
+    /// </summary>
+    private static int CountSampledInChunk(long from, long to, int sampleStride)
+    {
+        var firstHit = from + ((sampleStride - from % sampleStride) % sampleStride);
+        return firstHit >= to ? 0 : (int)((to - 1 - firstHit) / sampleStride) + 1;
     }
 
     /// <summary>

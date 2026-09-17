@@ -156,6 +156,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal void ExecuteImmediate(Action<CommandBuffer> recordCommands)
     {
         ArgumentNullException.ThrowIfNull(recordCommands);
+        var submitWatch = System.Diagnostics.Stopwatch.StartNew();
         _api.ResetCommandBuffer(_commandBuffer, 0);
         CommandBufferBeginInfo beginInfo = new() { SType = StructureType.CommandBufferBeginInfo };
         Check(_api.BeginCommandBuffer(_commandBuffer, in beginInfo), "开始 Vulkan 初始化命令");
@@ -170,7 +171,69 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         };
         Check(_api.QueueSubmit(_queue, 1, in submitInfo, default), "提交 Vulkan 初始化命令");
         Check(_api.QueueWaitIdle(_queue), "等待 Vulkan 初始化命令");
+        ImmediateSubmitCount += 1;
+        ImmediateSubmitMs += submitWatch.Elapsed.TotalMilliseconds;
     }
+
+    /// <summary>
+    /// 获取同步提交的累计次数，供性能台架量化分块同步开销
+    /// </summary>
+    internal long ImmediateSubmitCount { get; private set; }
+
+    /// <summary>
+    /// 获取同步提交含等待的累计毫秒
+    /// </summary>
+    internal double ImmediateSubmitMs { get; private set; }
+
+    /// <summary>
+    /// 清零同步提交统计，供分阶段测量使用
+    /// </summary>
+    internal void ResetImmediateStats()
+    {
+        ImmediateSubmitCount = 0;
+        ImmediateSubmitMs = 0;
+    }
+
+    /// <summary>
+    /// 异步提交一条命令缓冲并绑定栅栏，不等待完成，执行顺序由队列提交顺序保证
+    /// </summary>
+    /// <param name="commandBuffer">已录制的命令缓冲</param>
+    /// <param name="fence">完成栅栏</param>
+    internal void SubmitAsync(CommandBuffer commandBuffer, Fence fence)
+    {
+        CommandBuffer local = commandBuffer;
+        SubmitInfo submitInfo = new()
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &local,
+        };
+        Check(_api.QueueSubmit(_queue, 1, in submitInfo, fence), "异步提交分块计算命令");
+        AsyncSubmitCount += 1;
+    }
+
+    /// <summary>
+    /// 等待并复位一个栅栏，用于环形槽位复用前的回收
+    /// </summary>
+    /// <param name="fence">目标栅栏</param>
+    internal void WaitAndResetFence(Fence fence)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Fence local = fence;
+        Check(_api.WaitForFences(_device, 1, in local, true, ulong.MaxValue), "等待分块计算栅栏");
+        Check(_api.ResetFences(_device, 1, in local), "复位分块计算栅栏");
+        FenceWaitMs += watch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// 获取异步分块提交的累计次数
+    /// </summary>
+    internal long AsyncSubmitCount { get; private set; }
+
+    /// <summary>
+    /// 获取栅栏等待的累计毫秒
+    /// </summary>
+    internal double FenceWaitMs { get; private set; }
 
     /// <summary>
     /// 以 Vulkan 命令提交一帧纯色清屏

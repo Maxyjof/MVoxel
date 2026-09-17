@@ -12,7 +12,7 @@ public sealed class VoxelGpuBvh
     /// </summary>
     public const int PackedNodeSize = 48;
 
-    private VoxelGpuBvh(VoxelGpuCell[] orderedCells, byte[] nodeBytes, int nodeCount)
+    private VoxelGpuBvh(IReadOnlyList<VoxelGpuCell> orderedCells, byte[] nodeBytes, int nodeCount)
     {
         OrderedCells = orderedCells;
         NodeBytes = nodeBytes;
@@ -47,20 +47,171 @@ public sealed class VoxelGpuBvh
             return new VoxelGpuBvh([], [], 0);
         }
 
-        var nodes = new List<BvhNode>(Math.Max(1, workset.Cells.Count / 4));
-        var orderedIndices = new List<int>(workset.Cells.Count);
-        var indices = Enumerable.Range(0, workset.Cells.Count).ToArray();
-        var useInputOrder = workset.Cells.Count >= 100_000;
-        BuildNode(workset.Cells, indices, 0, indices.Length, nodes, orderedIndices, !useInputOrder);
+        var cells = workset.Cells;
+        if (cells.Count >= 100_000)
+        {
+            return BuildOrderedFast(cells);
+        }
+
+        var nodes = new List<BvhNode>(Math.Max(1, cells.Count / 4));
+        var orderedIndices = new List<int>(cells.Count);
+        var indices = Enumerable.Range(0, cells.Count).ToArray();
+        BuildNode(cells, indices, 0, indices.Length, nodes, orderedIndices, true);
 
         var orderedCells = new VoxelGpuCell[orderedIndices.Count];
         for (var index = 0; index < orderedIndices.Count; index++)
         {
-            orderedCells[index] = workset.Cells[orderedIndices[index]];
+            orderedCells[index] = cells[orderedIndices[index]];
         }
 
+        return new VoxelGpuBvh(orderedCells, SerializeNodes(nodes, nodes.Count), nodes.Count);
+    }
+
+    /// <summary>
+    /// 大工作集快速构建：树形与旧输入序路径逐节点一致（对半切分、8 条叶），
+    /// 但先做纯算术结构确定节点编号，叶界并行扫描，内部界自底向上合并，
+    /// 消除旧实现里每个节点重新全区间求界的 O(N log N) 串行扫描
+    /// </summary>
+    private static VoxelGpuBvh BuildOrderedFast(IReadOnlyList<VoxelGpuCell> cells)
+    {
+        var nodeTotal = CountStructure(cells.Count);
+        var left = new int[nodeTotal];
+        var right = new int[nodeTotal];
+        var start = new int[nodeTotal];
+        var leafCount = new int[nodeTotal];
+        var minX = new int[nodeTotal];
+        var minY = new int[nodeTotal];
+        var minZ = new int[nodeTotal];
+        var maxX = new int[nodeTotal];
+        var maxY = new int[nodeTotal];
+        var maxZ = new int[nodeTotal];
+        var next = 0;
+        BuildStructure(cells.Count, 0, cells.Count, left, right, start, leafCount, ref next);
+
+        System.Threading.Tasks.Parallel.For(0, next, FastBuildOptions, index =>
+        {
+            if (left[index] >= 0)
+            {
+                return;
+            }
+
+            var first = cells[start[index]];
+            var nodeMinX = first.X;
+            var nodeMinY = first.Y;
+            var nodeMinZ = first.Z;
+            var nodeMaxX = first.X;
+            var nodeMaxY = first.Y;
+            var nodeMaxZ = first.Z;
+            for (var offset = 1; offset < leafCount[index]; offset++)
+            {
+                var cell = cells[start[index] + offset];
+                nodeMinX = Math.Min(nodeMinX, cell.X);
+                nodeMinY = Math.Min(nodeMinY, cell.Y);
+                nodeMinZ = Math.Min(nodeMinZ, cell.Z);
+                nodeMaxX = Math.Max(nodeMaxX, cell.X);
+                nodeMaxY = Math.Max(nodeMaxY, cell.Y);
+                nodeMaxZ = Math.Max(nodeMaxZ, cell.Z);
+            }
+
+            minX[index] = nodeMinX;
+            minY[index] = nodeMinY;
+            minZ[index] = nodeMinZ;
+            maxX[index] = nodeMaxX;
+            maxY[index] = nodeMaxY;
+            maxZ[index] = nodeMaxZ;
+        });
+
+        // 前序编号保证子节点编号大于父节点，倒序遍历即可自底向上合并包围盒
+        for (var index = next - 1; index >= 0; index--)
+        {
+            if (left[index] < 0)
+            {
+                continue;
+            }
+
+            var leftChild = left[index];
+            var rightChild = right[index];
+            minX[index] = Math.Min(minX[leftChild], minX[rightChild]);
+            minY[index] = Math.Min(minY[leftChild], minY[rightChild]);
+            minZ[index] = Math.Min(minZ[leftChild], minZ[rightChild]);
+            maxX[index] = Math.Max(maxX[leftChild], maxX[rightChild]);
+            maxY[index] = Math.Max(maxY[leftChild], maxY[rightChild]);
+            maxZ[index] = Math.Max(maxZ[leftChild], maxZ[rightChild]);
+        }
+
+        var nodeBytes = new byte[checked(next * PackedNodeSize)];
+        System.Threading.Tasks.Parallel.For(0, next, FastBuildOptions, index =>
+        {
+            var offset = index * PackedNodeSize;
+            Write(nodeBytes, offset + 0, minX[index]);
+            Write(nodeBytes, offset + 4, minY[index]);
+            Write(nodeBytes, offset + 8, minZ[index]);
+            Write(nodeBytes, offset + 12, 0);
+            Write(nodeBytes, offset + 16, maxX[index] + 1);
+            Write(nodeBytes, offset + 20, maxY[index] + 1);
+            Write(nodeBytes, offset + 24, maxZ[index] + 1);
+            Write(nodeBytes, offset + 28, 0);
+            Write(nodeBytes, offset + 32, left[index]);
+            Write(nodeBytes, offset + 36, right[index]);
+            Write(nodeBytes, offset + 40, start[index]);
+            Write(nodeBytes, offset + 44, leafCount[index]);
+        });
+
+        return new VoxelGpuBvh(cells, nodeBytes, next);
+    }
+
+    /// <summary>
+    /// 快速并行构建使用的线程预算
+    /// </summary>
+    private static readonly System.Threading.Tasks.ParallelOptions FastBuildOptions = new()
+    {
+        MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+    };
+
+    /// <summary>
+    /// 递归统计树节点总数，与实际结构遍历使用相同的切分规则
+    /// </summary>
+    private static int CountStructure(int count)
+    {
+        if (count <= 8)
+        {
+            return 1;
+        }
+
+        return 1 + CountStructure(count / 2) + CountStructure(count - count / 2);
+    }
+
+    /// <summary>
+    /// 纯算术结构遍历，按前序分配节点编号并登记叶区间，规则与旧输入序路径一致
+    /// </summary>
+    private static int BuildStructure(int total, int start2, int count, int[] left, int[] right,
+        int[] start, int[] leafCount, ref int next)
+    {
+        var nodeIndex = next++;
+        if (count <= 8)
+        {
+            left[nodeIndex] = -1;
+            right[nodeIndex] = -1;
+            start[nodeIndex] = start2;
+            leafCount[nodeIndex] = count;
+            return nodeIndex;
+        }
+
+        var middle = count / 2;
+        var leftChild = BuildStructure(total, start2, middle, left, right, start, leafCount, ref next);
+        var rightChild = BuildStructure(total, start2 + middle, count - middle, left, right, start, leafCount, ref next);
+        left[nodeIndex] = leftChild;
+        right[nodeIndex] = rightChild;
+        return nodeIndex;
+    }
+
+    /// <summary>
+    /// 把节点列表序列化为 std430 字节流，供小场景路径使用
+    /// </summary>
+    private static byte[] SerializeNodes(List<BvhNode> nodes, int nodeCount)
+    {
         var nodeBytes = new byte[checked(nodes.Count * PackedNodeSize)];
-        for (var index = 0; index < nodes.Count; index++)
+        for (var index = 0; index < nodeCount; index++)
         {
             var node = nodes[index];
             var offset = index * PackedNodeSize;
@@ -78,7 +229,7 @@ public sealed class VoxelGpuBvh
             Write(nodeBytes, offset + 44, node.Count);
         }
 
-        return new VoxelGpuBvh(orderedCells, nodeBytes, nodes.Count);
+        return nodeBytes;
     }
 
     /// <summary>

@@ -35,13 +35,23 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private DeviceMemory _bvhMemory;
     private ulong _bvhBufferCapacity;
     private int _bvhNodeCount;
-    private VkBuffer _parameterBuffer;
-    private DeviceMemory _parameterMemory;
     private DescriptorSetLayout _computeDescriptorLayout;
     private DescriptorPool _computeDescriptorPool;
-    private DescriptorSet _computeDescriptorSet;
     private PipelineLayout _computePipelineLayout;
     private Pipeline _computePipeline;
+
+    // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
+    // 分块一提交就走，槽位复用时才等自己的栅栏，GPU 分块之间不再被 CPU 等待打断
+    private const int TileRingDepth = 3;
+    private readonly VkBuffer[] _ringParameterBuffers = new VkBuffer[TileRingDepth];
+    private readonly DeviceMemory[] _ringParameterMemory = new DeviceMemory[TileRingDepth];
+    private readonly DescriptorSet[] _ringSets = new DescriptorSet[TileRingDepth];
+    private readonly CommandBuffer[] _ringCommands = new CommandBuffer[TileRingDepth];
+    private readonly Fence[] _ringFences = new Fence[TileRingDepth];
+    private readonly bool[] _ringInFlight = new bool[TileRingDepth];
+    private CommandPool _ringCommandPool;
+    private int _ringNext;
+
     private Image _outputImage;
     private DeviceMemory _outputMemory;
     private ImageView _outputView;
@@ -152,8 +162,20 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal string? ShaderLog => _workset.IsEmpty
         ? "Vulkan 体素工作集为空，等待场景数据"
         : IsAvailable
-            ? $"Vulkan GPU BVH 路径追踪已就绪，工作集 {_workset.Cells.Count:N0} 个体素，节点 {_bvhNodeCount:N0} 个"
+            ? $"Vulkan GPU BVH 路径追踪已就绪，工作集 {_workset.Cells.Count:N0} 个体素，节点 {_bvhNodeCount:N0} 个" +
+              (LastSyncWasBudgeted ? "，场景超出显存预算已采样显示" : null)
             : $"已同步 {_workset.Cells.Count:N0} 个体素，等待 Vulkan Compute 资源初始化";
+
+    /// <summary>
+    /// 完整工作集允许的最大体素数：约 384MB 打包记录加同量级 BVH，
+    /// 超过上限的渲染视图请求自动降级为采样，避免超大场景必然的内存耗尽或设备丢失
+    /// </summary>
+    internal const int MaxFullWorksetCells = 8_000_000;
+
+    /// <summary>
+    /// 获取最近一次同步是否因超出显存预算而被采样降级
+    /// </summary>
+    internal bool LastSyncWasBudgeted { get; private set; }
 
     /// <summary>
     /// 同步稀疏体素世界到 Vulkan 工作集
@@ -167,7 +189,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
+        var requestedFull = maximumCells == 0 && world.OccupiedVoxelCount > MaxFullWorksetCells;
+        if (requestedFull)
+        {
+            maximumCells = MaxFullWorksetCells;
+            MVoxelLog.Warn($"渲染工作集超出显存预算：世界 {world.OccupiedVoxelCount:N0} 体素，已采样降级到 {MaxFullWorksetCells:N0} 体素");
+        }
+
+        LastSyncWasBudgeted = requestedFull;
+        var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var next = VoxelGpuWorkset.Build(world, maximumCells);
+        SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        SyncPackMs = 0;
+        SyncUploadMs = 0;
         if (_context is not null && !next.IsEmpty)
         {
             UploadWorkset(next);
@@ -182,6 +216,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         _workset = next;
         _worksetMaximumCells = maximumCells;
+        SyncTotalCells = next.Cells.Count;
         ResetAccumulation();
     }
 
@@ -189,6 +224,36 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 获取当前同步完成的体素工作集
     /// </summary>
     internal VoxelGpuWorkset Workset => _workset;
+
+    /// <summary>
+    /// 获取最近一次同步中工作集构建耗时毫秒
+    /// </summary>
+    internal double SyncWorksetBuildMs { get; private set; }
+
+    /// <summary>
+    /// 获取最近一次同步中 BVH 构建耗时毫秒
+    /// </summary>
+    internal double SyncBvhBuildMs { get; private set; }
+
+    /// <summary>
+    /// 获取最近一次同步中体素打包耗时毫秒
+    /// </summary>
+    internal double SyncPackMs { get; private set; }
+
+    /// <summary>
+    /// 获取最近一次同步中显存上传耗时毫秒
+    /// </summary>
+    internal double SyncUploadMs { get; private set; }
+
+    /// <summary>
+    /// 获取最近一次同步的工作集体素数
+    /// </summary>
+    internal int SyncTotalCells { get; private set; }
+
+    /// <summary>
+    /// 获取体素与 BVH 显存缓冲的容量字节数
+    /// </summary>
+    internal (ulong VoxelBytes, ulong BvhBytes) GpuBufferCapacity => (_voxelBufferCapacity, _bvhBufferCapacity);
 
     /// <summary>
     /// 重置渐进渲染累积
@@ -385,11 +450,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (_computePipelineLayout.Handle != 0) api.DestroyPipelineLayout(_device, _computePipelineLayout, null);
             if (_computeDescriptorPool.Handle != 0) api.DestroyDescriptorPool(_device, _computeDescriptorPool, null);
             if (_computeDescriptorLayout.Handle != 0) api.DestroyDescriptorSetLayout(_device, _computeDescriptorLayout, null);
-            if (_parameterBuffer.Handle != 0)
+            for (var slot = 0; slot < TileRingDepth; slot++)
             {
-                api.DestroyBuffer(_device, _parameterBuffer, null);
-                api.FreeMemory(_device, _parameterMemory, null);
+                if (_ringFences[slot].Handle != 0) api.DestroyFence(_device, _ringFences[slot], null);
+                if (_ringParameterBuffers[slot].Handle != 0)
+                {
+                    api.DestroyBuffer(_device, _ringParameterBuffers[slot], null);
+                    api.FreeMemory(_device, _ringParameterMemory[slot], null);
+                }
             }
+
+            if (_ringCommandPool.Handle != 0) api.DestroyCommandPool(_device, _ringCommandPool, null);
 
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
@@ -405,11 +476,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         {
             _computeDescriptorLayout = CreateComputeDescriptorLayout();
             _computeDescriptorPool = CreateComputeDescriptorPool();
-            _computeDescriptorSet = AllocateComputeDescriptorSet();
-            (_parameterBuffer, _parameterMemory) = CreateBuffer(
-                (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)),
-                BufferUsageFlags.StorageBufferBit,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            AllocateComputeDescriptorSets();
+            var parameterBytes = (ulong)(VoxelRenderParameters.SlotCount * sizeof(float));
+            for (var slot = 0; slot < TileRingDepth; slot++)
+            {
+                (_ringParameterBuffers[slot], _ringParameterMemory[slot]) = CreateBuffer(
+                    parameterBytes,
+                    BufferUsageFlags.StorageBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            }
+
+            CreateRingCommands();
 
             var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
             var shaderModule = CreateShaderModule(words);
@@ -478,8 +555,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
         // 分块不会改变采样、反弹或输出分辨率，只改变命令提交粒度。
-        // 高级光照可能在一次像素中产生多条 AO/软阴影射线。128 像素固定分块
-        // 在安全范围内减少同步提交次数，不改变最终分辨率和样本数。
+        // 每个分块仍是独立一次提交，单块 GPU 时长不变；提交走环形队列，
+        // CPU 录完即走，只有环满需要复用槽位时才等待对应栅栏。
         const int tileSize = 128;
         for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
@@ -489,22 +566,23 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 var tileWidth = Math.Min(tileSize, widthPixels - tileX);
                 parameters[VoxelRenderParameters.TileOffsetX] = tileX;
                 parameters[VoxelRenderParameters.TileOffsetY] = tileY;
-                UploadParameters(parameters);
-                _context.ExecuteImmediate(commandBuffer =>
+                var slot = AcquireRingSlot();
+                UploadParameters(slot, parameters);
+                var commandBuffer = _ringCommands[slot];
+                TransitionOutputToGeneral(commandBuffer);
+                if (pathMode)
                 {
-                    TransitionOutputToGeneral(commandBuffer);
-                    if (pathMode)
-                    {
-                        TransitionAccumulationToGeneral(commandBuffer);
-                    }
-                    api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                    DescriptorSet descriptorSet = _computeDescriptorSet;
-                    api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                        0, 1, in descriptorSet, 0, null);
-                    api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
-                        ((uint)tileHeight + 7U) / 8U, 1);
-                    TransitionOutputToShaderRead(commandBuffer);
-                });
+                    TransitionAccumulationToGeneral(commandBuffer);
+                }
+
+                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                var descriptorSet = _ringSets[slot];
+                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                    0, 1, in descriptorSet, 0, null);
+                api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
+                    ((uint)tileHeight + 7U) / 8U, 1);
+                TransitionOutputToShaderRead(commandBuffer);
+                CommitRingSlot(slot);
             }
         }
 
@@ -515,18 +593,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             parameters[VoxelRenderParameters.TileOffsetX] = 0F;
             parameters[VoxelRenderParameters.TileOffsetY] = 0F;
             parameters[VoxelRenderParameters.DenoisePass] = 1F;
-            UploadParameters(parameters);
-            _context.ExecuteImmediate(commandBuffer =>
-            {
-                TransitionOutputToGeneral(commandBuffer);
-                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                DescriptorSet descriptorSet = _computeDescriptorSet;
-                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                    0, 1, in descriptorSet, 0, null);
-                api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
-                    ((uint)heightPixels + 7U) / 8U, 1);
-                TransitionOutputToShaderRead(commandBuffer);
-            });
+            var slot = AcquireRingSlot();
+            UploadParameters(slot, parameters);
+            var commandBuffer = _ringCommands[slot];
+            TransitionOutputToGeneral(commandBuffer);
+            api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+            var descriptorSet = _ringSets[slot];
+            api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                0, 1, in descriptorSet, 0, null);
+            api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
+                ((uint)heightPixels + 7U) / 8U, 1);
+            TransitionOutputToShaderRead(commandBuffer);
+            CommitRingSlot(slot);
         }
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
@@ -543,7 +621,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 清零渐进路径追踪的 GPU 累积图像
+    /// 清零渐进路径追踪的 GPU 累积图像，作为环形队列中的第一条命令保证顺序
     /// </summary>
     private void ClearAccumulation()
     {
@@ -552,27 +630,27 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
-        _context.ExecuteImmediate(commandBuffer =>
+        var slot = AcquireRingSlot();
+        var commandBuffer = _ringCommands[slot];
+        ImageMemoryBarrier barrier = new()
         {
-            ImageMemoryBarrier barrier = new()
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                OldLayout = _accumulationInitialized ? ImageLayout.General : ImageLayout.Undefined,
-                NewLayout = ImageLayout.General,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = _accumulationImage,
-                SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
-                SrcAccessMask = _accumulationInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit : 0,
-                DstAccessMask = AccessFlags.TransferWriteBit
-            };
-            api.CmdPipelineBarrier(commandBuffer,
-                _accumulationInitialized ? PipelineStageFlags.ComputeShaderBit : PipelineStageFlags.TopOfPipeBit,
-                PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in barrier);
-            ClearColorValue clear = new(0F, 0F, 0F, 0F);
-            var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
-            api.CmdClearColorImage(commandBuffer, _accumulationImage, ImageLayout.General, in clear, 1, in range);
-        });
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = _accumulationInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _accumulationImage,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+            SrcAccessMask = _accumulationInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit : 0,
+            DstAccessMask = AccessFlags.TransferWriteBit
+        };
+        api.CmdPipelineBarrier(commandBuffer,
+            _accumulationInitialized ? PipelineStageFlags.ComputeShaderBit : PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in barrier);
+        ClearColorValue clear = new(0F, 0F, 0F, 0F);
+        var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
+        api.CmdClearColorImage(commandBuffer, _accumulationImage, ImageLayout.General, in clear, 1, in range);
+        CommitRingSlot(slot);
         _accumulationInitialized = true;
     }
 
@@ -756,12 +834,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 更新 Compute 参数 Storage Buffer
     /// </summary>
     /// <param name="parameters">渲染参数块</param>
-    private void UploadParameters(float[] parameters)
+    private void UploadParameters(int slot, float[] parameters)
     {
         var api = _api!;
         void* mapped = null;
         var byteCount = checked((ulong)(parameters.Length * sizeof(float)));
-        Check(api.MapMemory(_device, _parameterMemory, 0, byteCount, 0, &mapped), "映射体素 Compute 参数缓冲");
+        Check(api.MapMemory(_device, _ringParameterMemory[slot], 0, byteCount, 0, &mapped), "映射体素 Compute 参数缓冲");
         try
         {
             fixed (float* source = parameters)
@@ -771,8 +849,38 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
         finally
         {
-            api.UnmapMemory(_device, _parameterMemory);
+            api.UnmapMemory(_device, _ringParameterMemory[slot]);
         }
+    }
+
+    /// <summary>
+    /// 领取一个环形槽位并让其命令缓冲进入录制状态，槽位仍在使用时先等它的栅栏
+    /// </summary>
+    private int AcquireRingSlot()
+    {
+        var slot = _ringNext;
+        _ringNext = (_ringNext + 1) % TileRingDepth;
+        if (_ringInFlight[slot])
+        {
+            _context!.WaitAndResetFence(_ringFences[slot]);
+        }
+
+        _ringInFlight[slot] = true;
+        var api = _api!;
+        api.ResetCommandBuffer(_ringCommands[slot], 0);
+        CommandBufferBeginInfo begin = new() { SType = StructureType.CommandBufferBeginInfo };
+        Check(api.BeginCommandBuffer(_ringCommands[slot], in begin), "录制体素分块计算命令");
+        return slot;
+    }
+
+    /// <summary>
+    /// 结束槽位录制并异步提交，不等待 GPU 完成
+    /// </summary>
+    private void CommitRingSlot(int slot)
+    {
+        var commandBuffer = _ringCommands[slot];
+        Check(_api!.EndCommandBuffer(commandBuffer), "结束体素分块计算命令");
+        _context!.SubmitAsync(commandBuffer, _ringFences[slot]);
     }
 
     /// <summary>
@@ -806,13 +914,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 3),
-            new(DescriptorType.StorageImage, 2)
+            new(DescriptorType.StorageBuffer, 3 * TileRingDepth),
+            new(DescriptorType.StorageImage, 2 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
-            MaxSets = 1,
+            MaxSets = TileRingDepth,
             PoolSizeCount = 2,
             PPoolSizes = sizes
         };
@@ -825,19 +933,58 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 分配 Compute 描述符集
     /// </summary>
     /// <returns>Compute 描述符集</returns>
-    private DescriptorSet AllocateComputeDescriptorSet()
+    private void AllocateComputeDescriptorSets()
     {
-        var descriptorLayout = _computeDescriptorLayout;
+        var api = _api!;
+        var layouts = stackalloc DescriptorSetLayout[TileRingDepth];
+        for (var slot = 0; slot < TileRingDepth; slot++)
+        {
+            layouts[slot] = _computeDescriptorLayout;
+        }
+
         DescriptorSetAllocateInfo allocateInfo = new()
         {
             SType = StructureType.DescriptorSetAllocateInfo,
             DescriptorPool = _computeDescriptorPool,
-            DescriptorSetCount = 1,
-            PSetLayouts = &descriptorLayout
+            DescriptorSetCount = TileRingDepth,
+            PSetLayouts = layouts,
         };
-        DescriptorSet set = default;
-        Check(_api!.AllocateDescriptorSets(_device, &allocateInfo, &set), "分配体素 Compute 描述符集");
-        return set;
+        fixed (DescriptorSet* sets = _ringSets)
+        {
+            Check(api.AllocateDescriptorSets(_device, &allocateInfo, sets), "分配体素 Compute 描述符集环");
+        }
+    }
+
+    /// <summary>
+    /// 创建环形队列使用的命令池、命令缓冲与栅栏
+    /// </summary>
+    private void CreateRingCommands()
+    {
+        var api = _api!;
+        CommandPoolCreateInfo poolInfo = new()
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            Flags = CommandPoolCreateFlags.ResetCommandBufferBit,
+            QueueFamilyIndex = _context!.QueueFamilyIndex,
+        };
+        Check(api.CreateCommandPool(_device, &poolInfo, null, out _ringCommandPool), "创建分块命令池");
+        CommandBufferAllocateInfo allocateInfo = new()
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = _ringCommandPool,
+            Level = CommandBufferLevel.Primary,
+            CommandBufferCount = TileRingDepth,
+        };
+        fixed (CommandBuffer* buffers = _ringCommands)
+        {
+            Check(api.AllocateCommandBuffers(_device, &allocateInfo, buffers), "分配分块命令缓冲");
+        }
+
+        for (var slot = 0; slot < TileRingDepth; slot++)
+        {
+            FenceCreateInfo fenceInfo = new() { SType = StructureType.FenceCreateInfo };
+            Check(api.CreateFence(_device, &fenceInfo, null, out _ringFences[slot]), "创建分块栅栏");
+        }
     }
 
     /// <summary>
@@ -868,55 +1015,60 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         DescriptorBufferInfo voxelInfo = new(_voxelBuffer, 0, _voxelBufferCapacity);
         DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
-        DescriptorBufferInfo parameterInfo = new(_parameterBuffer, 0, (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[5];
-        writes[0] = new()
+        for (var slot = 0; slot < TileRingDepth; slot++)
         {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _computeDescriptorSet,
-            DstBinding = 0,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &voxelInfo
-        };
-        writes[1] = new()
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _computeDescriptorSet,
-            DstBinding = 1,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &bvhInfo
-        };
-        writes[2] = new()
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _computeDescriptorSet,
-            DstBinding = 2,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &imageInfo
-        };
-        writes[3] = new()
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _computeDescriptorSet,
-            DstBinding = 3,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageBuffer,
-            PBufferInfo = &parameterInfo
-        };
-        writes[4] = new()
-        {
-            SType = StructureType.WriteDescriptorSet,
-            DstSet = _computeDescriptorSet,
-            DstBinding = 4,
-            DescriptorCount = 1,
-            DescriptorType = DescriptorType.StorageImage,
-            PImageInfo = &accumulationInfo
-        };
-        _api!.UpdateDescriptorSets(_device, 5, writes, 0, null);
+            if (_ringSets[slot].Handle == 0) return;
+            DescriptorBufferInfo parameterInfo = new(_ringParameterBuffers[slot], 0,
+                (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[5];
+            writes[0] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 0,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &voxelInfo
+            };
+            writes[1] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 1,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &bvhInfo
+            };
+            writes[2] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 2,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageImage,
+                PImageInfo = &imageInfo
+            };
+            writes[3] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 3,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &parameterInfo
+            };
+            writes[4] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 4,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageImage,
+                PImageInfo = &accumulationInfo
+            };
+            _api!.UpdateDescriptorSets(_device, 5, writes, 0, null);
+        }
     }
 
     /// <summary>
@@ -1484,7 +1636,32 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private static byte[] PackCells(IReadOnlyList<VoxelGpuCell> cells)
     {
         var bytes = new byte[checked(cells.Count * PackedCellSize)];
-        for (var index = 0; index < cells.Count; index++)
+        if (cells.Count < 100_000)
+        {
+            PackCellRange(cells, bytes, 0, cells.Count);
+            return bytes;
+        }
+
+        var rangeSize = Math.Max(655_360, cells.Count / 64);
+        System.Threading.Tasks.Parallel.For(0, (cells.Count + rangeSize - 1) / rangeSize,
+            new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            },
+            rangeIndex =>
+            {
+                var from = rangeIndex * rangeSize;
+                PackCellRange(cells, bytes, from, Math.Min(from + rangeSize, cells.Count));
+            });
+        return bytes;
+    }
+
+    /// <summary>
+    /// 打包指定区间的体素记录
+    /// </summary>
+    private static void PackCellRange(IReadOnlyList<VoxelGpuCell> cells, byte[] bytes, int from, int to)
+    {
+        for (var index = from; index < to; index++)
         {
             var cell = cells[index];
             var offset = index * PackedCellSize;
@@ -1507,8 +1684,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             var metadata = (uint)materialSlot | ((uint)cell.Value.Flags << 16);
             MemoryMarshal.Write(bytes.AsSpan(offset + 32, 4), in metadata);
         }
-
-        return bytes;
     }
 
     /// <summary>
@@ -1522,8 +1697,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
+        var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var bvh = VoxelGpuBvh.Build(workset);
+        SyncBvhBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
         var bytes = PackCells(bvh.OrderedCells);
+        SyncPackMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
         var required = checked((ulong)Math.Max(bytes.Length, PackedCellSize));
         if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < required)
         {
@@ -1609,6 +1789,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         _bvhNodeCount = bvh.NodeCount;
         UpdateComputeDescriptors();
+        SyncUploadMs = phaseWatch.Elapsed.TotalMilliseconds;
     }
 
     /// <summary>

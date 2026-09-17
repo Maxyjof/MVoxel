@@ -54,6 +54,7 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+            _pipelineStatus = string.Empty;
         }
         catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
         {
