@@ -54,6 +54,7 @@ internal sealed class ImGuiWelcomeContent
     private string _errorText = string.Empty;
     private int _pathMode;
     private ProjectTemplateId _selectedTemplate = ProjectTemplateId.Empty;
+    private string _templateAutoName = string.Empty;
     private int _closeRequested;
     private int _closeAllowed;
 
@@ -277,6 +278,7 @@ internal sealed class ImGuiWelcomeContent
     {
         _pathMode = mode;
         if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
+        _templateAutoName = string.Empty;
         _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
         if (mode == 2)
         {
@@ -472,13 +474,44 @@ internal sealed class ImGuiWelcomeContent
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedTemplate;
-                if (ImGui.Selectable(template.Name, isSelected)) _selectedTemplate = template.Id;
+                if (ImGui.Selectable(template.Name, isSelected))
+                {
+                    _selectedTemplate = template.Id;
+                    _pathText = ApplyTemplateProjectName(_pathText, _templateAutoName, template.Name, out var autoName);
+                    if (autoName is not null) _templateAutoName = autoName;
+                }
+
                 if (isSelected) ImGui.SetItemDefaultFocus();
             }
 
             ImGui.EndCombo();
         }
 
+    }
+
+    /// <summary>
+    /// 选择模板后同步项目名：路径末段仍是默认名“新项目”或上一次模板自动名时，
+    /// 替换为所选模板名；用户手动改过的名字保持不变，空模板不参与自动命名
+    /// </summary>
+    /// <param name="pathText">当前项目路径文本</param>
+    /// <param name="templateAutoName">上一次由模板自动填入的名字</param>
+    /// <param name="templateName">所选模板显示名</param>
+    /// <param name="newAutoName">新的自动名，未发生替换时为 null</param>
+    /// <returns>替换后的路径文本</returns>
+    internal static string ApplyTemplateProjectName(string pathText, string templateAutoName,
+        string templateName, out string? newAutoName)
+    {
+        newAutoName = null;
+        if (string.IsNullOrWhiteSpace(pathText)) return pathText;
+        var separatorIndex = pathText.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar });
+        var folder = separatorIndex < 0 ? pathText : pathText[(separatorIndex + 1)..];
+        if (folder != "新项目" && folder != templateAutoName) return pathText;
+        if (templateName == "无 · 空项目") return pathText;
+        var safeName = new string(templateName.Where(character =>
+            !Path.GetInvalidFileNameChars().Contains(character)).ToArray()).Trim();
+        if (safeName.Length == 0) return pathText;
+        newAutoName = safeName;
+        return separatorIndex < 0 ? safeName : pathText[..(separatorIndex + 1)] + safeName;
     }
 
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;
