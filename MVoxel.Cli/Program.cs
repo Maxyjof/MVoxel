@@ -5,6 +5,8 @@ using MVoxel.Core;
 using MVoxel.Editor.Templates;
 using MVoxel.Project;
 using MVoxel.Scene;
+using MVoxel.Voxels;
+using MVoxel.Voxels.Minecraft;
 
 namespace MVoxel.Cli;
 
@@ -65,6 +67,8 @@ internal static class Program
         Console.WriteLine("      创建项目并生成指定示例模板");
         Console.WriteLine("  --list-templates");
         Console.WriteLine("      列出可用项目模板");
+        Console.WriteLine("  --mc-bench <存档目录> <最小区块X> <最小区块Z> <最大区块X> <最大区块Z> [次数]");
+        Console.WriteLine("      Minecraft 导入选区分段性能基准");
         Console.WriteLine("  --list-plugins <项目目录>");
         Console.WriteLine("      输出已安装插件和项目启用状态");
         Console.WriteLine("  --plugin-diagnostics <项目目录>");
@@ -234,10 +238,90 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.invokeCommand", arguments.RootElement), JsonOptions));
                 return 0;
             }
+            case "--mc-bench" when args.Length is >= 6 and <= 7:
+                return RunMcBench(args);
             default:
                 PrintHelp();
                 return 2;
         }
+    }
+
+    /// <summary>
+    /// Minecraft 导入选区性能基准：分段计时范围转换、模型写入与编辑器应用侧的合并重建，用于并行化改动的 A/B 对照
+    /// </summary>
+    /// <param name="args">参数：存档目录、最小与最大区块坐标，及可选重复次数</param>
+    /// <returns>进程退出码</returns>
+    private static int RunMcBench(string[] args)
+    {
+        var savePath = args[1];
+        var minChunkX = long.Parse(args[2]);
+        var minChunkZ = long.Parse(args[3]);
+        var maxChunkX = long.Parse(args[4]);
+        var maxChunkZ = long.Parse(args[5]);
+        var runs = args.Length == 7 ? int.Parse(args[6]) : 1;
+        var info = MinecraftSaveScanner.Inspect(savePath, "overworld");
+        var width = maxChunkX - minChunkX + 1;
+        var depth = maxChunkZ - minChunkZ + 1;
+        Console.WriteLine($"存档：{info.LevelName}  版本：{info.MinecraftVersion}  DataVersion {info.DataVersion}");
+        Console.WriteLine($"选区：{width}×{depth} = {width * depth} 区块，Y {info.MinBlockY}..{info.MaxBlockY}");
+        var outputDirectory = Path.Combine(Path.GetTempPath(), "MVoxel", "mc-bench");
+        Directory.CreateDirectory(outputDirectory);
+        for (var run = 1; run <= runs; run++)
+        {
+            var allocatedBefore = GC.GetTotalAllocatedBytes(true);
+            var totalWatch = System.Diagnostics.Stopwatch.StartNew();
+            var result = McWorldImporter.ConvertRange(info, minChunkX, minChunkZ, maxChunkX, maxChunkZ);
+            var convertMs = totalWatch.Elapsed.TotalMilliseconds;
+
+            totalWatch.Restart();
+            var writtenFiles = new List<string>();
+            var terrainFile = Path.Combine(outputDirectory, $"bench_{run}_terrain.mvmodel");
+            LargeWorldFormat.Write(terrainFile, result.Terrain);
+            writtenFiles.Add(terrainFile);
+            for (var index = 0; index < result.Layers.Count; index++)
+            {
+                var layerFile = Path.Combine(outputDirectory, $"bench_{run}_tree{index + 1}.mvmodel");
+                LargeWorldFormat.Write(layerFile, result.Layers[index].World);
+                writtenFiles.Add(layerFile);
+            }
+
+            var writeMs = totalWatch.Elapsed.TotalMilliseconds;
+
+            totalWatch.Restart();
+            // 与编辑器应用策略一致：树体素直接回填地形对象，不再整世界复制重建
+            foreach (var layer in result.Layers)
+            {
+                foreach (var item in layer.World.EnumerateOccupied())
+                {
+                    result.Terrain.Set(item.Coordinate, item.Value);
+                }
+            }
+
+            var rebuildMs = totalWatch.Elapsed.TotalMilliseconds;
+
+            totalWatch.Restart();
+            var ownershipTotal = 0;
+            foreach (var layer in result.Layers)
+            {
+                ownershipTotal += new HashSet<VoxelCoord64>(
+                    layer.World.EnumerateOccupied().Select(item => item.Coordinate)).Count;
+            }
+
+            var ownershipMs = totalWatch.Elapsed.TotalMilliseconds;
+            foreach (var written in writtenFiles)
+            {
+                File.Delete(written);
+            }
+
+            var allocatedMb = (GC.GetTotalAllocatedBytes(true) - allocatedBefore) / 1048576.0;
+            Console.WriteLine($"run {run}：转换 {convertMs:F0}ms" +
+                              string.Concat(result.Timings.Select(timings => $"｜{timings.Name} {timings.Milliseconds:F0}ms")) +
+                              $"｜写模型 {writeMs:F0}ms｜回填树体素 {rebuildMs:F0}ms｜分层归属 {ownershipMs:F0}ms");
+            Console.WriteLine($"　体素 {result.Terrain.OccupiedVoxelCount:N0}，" +
+                              $"树 {result.Layers.Count}，归属 {ownershipTotal:N0}，分配 {allocatedMb:N0} MB");
+        }
+
+        return 0;
     }
 
     /// <summary>

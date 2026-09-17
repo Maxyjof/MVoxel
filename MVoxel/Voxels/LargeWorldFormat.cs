@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using MVoxel.Core;
 
 namespace MVoxel.Voxels;
@@ -11,6 +12,16 @@ public static class LargeWorldFormat
     private const uint Magic = 0x3158564D;
     private const int Version = 2;
     private const int RecordSize = 13;
+
+    /// <summary>
+    /// 记录数上限：整个文件长度必须落进 int 范围
+    /// </summary>
+    private const int MaximumVoxelRecords = (int.MaxValue - 24) / RecordSize;
+
+    /// <summary>
+    /// 低于该记录数时串行填充，避免小文件付线程调度成本
+    /// </summary>
+    private const int ParallelWriteThreshold = 500_000;
 
     /// <summary>
     /// 超大型模板的 X 轴尺寸
@@ -58,7 +69,8 @@ public static class LargeWorldFormat
     }
 
     /// <summary>
-    /// 将稀疏世界保存为大世界模型文件
+    /// 将稀疏世界保存为大世界模型文件；记录按区块连续排布，
+    /// 大世界的各区块并行填充到互不相交的缓冲区间，小世界串行填充
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="world">待保存的稀疏世界</param>
@@ -76,18 +88,73 @@ public static class LargeWorldFormat
         ValidateDimensions(width, height, depth);
         var count = world.OccupiedVoxelCount;
         var bytes = new byte[checked(24 + count * RecordSize)];
-        using var stream = new MemoryStream(bytes, writable: true);
-        using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        WriteHeader(writer, width, depth, height, count);
-        foreach (var (coordinate, value) in world.EnumerateOccupied())
+        using (var stream = new MemoryStream(bytes, writable: true))
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
         {
-            WriteVoxel(writer,
-                checked((int)(coordinate.X - minimum.X)),
-                checked((int)(coordinate.Y - minimum.Y)),
-                checked((int)(coordinate.Z - minimum.Z)), value);
+            WriteHeader(writer, width, depth, height, count);
+        }
+
+        var chunks = world.SnapshotChunks();
+        var offsets = new long[chunks.Count + 1];
+        for (var index = 0; index < chunks.Count; index++)
+        {
+            offsets[index + 1] = offsets[index] + chunks[index].Chunk.OccupiedCount;
+        }
+
+        if (offsets[chunks.Count] != count)
+        {
+            throw new InvalidOperationException("写模型期间世界被并发修改，区块记录数不一致");
+        }
+
+        if (count < ParallelWriteThreshold)
+        {
+            for (var index = 0; index < chunks.Count; index++)
+            {
+                FillChunkRecords(bytes, (int)(24 + offsets[index] * RecordSize), chunks[index], minimum);
+            }
+        }
+        else
+        {
+            System.Threading.Tasks.Parallel.For(0, chunks.Count,
+                new System.Threading.Tasks.ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+                },
+                index => FillChunkRecords(bytes, (int)(24 + offsets[index] * RecordSize), chunks[index], minimum));
         }
 
         AtomicFile.WriteBytes(path, bytes);
+    }
+
+    /// <summary>
+    /// 把一个稀疏区块的全部体素记录写进缓冲区指定区间
+    /// </summary>
+    /// <param name="bytes">文件字节缓冲</param>
+    /// <param name="offset">本区块首记录的字节偏移</param>
+    /// <param name="entry">区块坐标与稀疏区块</param>
+    /// <param name="minimum">世界包围盒最小角</param>
+    private static void FillChunkRecords(byte[] bytes, int offset,
+        (ChunkCoord64 Coordinate, SparseVoxelChunk Chunk) entry, VoxelCoord64 minimum)
+    {
+        var slot = offset;
+        foreach (var (index, value) in entry.Chunk.Snapshot)
+        {
+            var local = SparseVoxelChunk.FromIndex(index);
+            var record = bytes.AsSpan(slot, RecordSize);
+            BinaryPrimitives.WriteUInt16LittleEndian(record,
+                checked((ushort)(entry.Coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X)));
+            BinaryPrimitives.WriteUInt16LittleEndian(record[2..],
+                checked((ushort)(entry.Coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y)));
+            BinaryPrimitives.WriteUInt16LittleEndian(record[4..],
+                checked((ushort)(entry.Coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z)));
+            record[6] = value.Color.R;
+            record[7] = value.Color.G;
+            record[8] = value.Color.B;
+            record[9] = value.Color.A;
+            BinaryPrimitives.WriteUInt16LittleEndian(record[10..], value.MaterialSlot);
+            record[12] = value.Flags;
+            slot += RecordSize;
+        }
     }
 
     /// <summary>
@@ -133,7 +200,7 @@ public static class LargeWorldFormat
         var count = reader.ReadInt32();
         ValidateDimensions(width, height, depth);
         var expectedLength = checked(24L + count * RecordSize);
-        if (count < 0 || count > 32_000_000 || expectedLength != bytes.Length)
+        if (count < 0 || count > MaximumVoxelRecords || expectedLength != bytes.Length)
         {
             throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
         }

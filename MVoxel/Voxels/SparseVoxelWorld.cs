@@ -338,6 +338,33 @@ public sealed class VoxelWorld
     }
 
     /// <summary>
+    /// 物化当前区块表快照，供序列化层按区块并行填充记录
+    /// </summary>
+    /// <returns>区块坐标与稀疏区块的列表</returns>
+    internal List<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)> SnapshotChunks()
+    {
+        var list = new List<(ChunkCoord64, SparseVoxelChunk)>(_chunks.Count);
+        foreach (var (coordinate, chunk) in _chunks)
+        {
+            list.Add((coordinate, chunk));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 收养一个外部构建好的稀疏区块，键必须尚未存在于世界中，
+    /// 供导入器把并行解析的分组结果整体并入，避免逐体素全局锁合并
+    /// </summary>
+    /// <param name="coordinate">区块坐标</param>
+    /// <param name="chunk">构建完成的稀疏区块</param>
+    internal void AdoptChunk(ChunkCoord64 coordinate, SparseVoxelChunk chunk)
+    {
+        _chunks.Add(coordinate, chunk);
+        ContentVersion += chunk.OccupiedCount;
+    }
+
+    /// <summary>
     /// 读取世界坐标处的体素
     /// </summary>
     /// <param name="coordinate">世界整数坐标</param>

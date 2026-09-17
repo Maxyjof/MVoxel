@@ -39,7 +39,43 @@ internal partial class ImGuiEditorWindow
     private volatile bool _mcImportDone;
     private string _mcImportProgress = string.Empty;
     private string? _mcImportError;
-    private McImportResult? _mcImportResult;
+    private PreparedMcImport? _mcImportPrepared;
+
+    /// <summary>
+    /// 后台线程完成转换、文件写入与回填后的可应用导入结果
+    /// </summary>
+    private sealed class PreparedMcImport
+    {
+        /// <summary>
+        /// 已回填树体素的地形世界，直接用作场景工作世界
+        /// </summary>
+        public required McImportResult Result { get; init; }
+
+        /// <summary>
+        /// 存档显示名，用于状态栏
+        /// </summary>
+        public required string LevelName { get; init; }
+
+        /// <summary>
+        /// 地形模型文件名
+        /// </summary>
+        public required string TerrainFileName { get; init; }
+
+        /// <summary>
+        /// 回填树体素之前的地形规模，与地形模型文件记录数一致
+        /// </summary>
+        public required int TerrainVoxelCount { get; init; }
+
+        /// <summary>
+        /// 与分层一一对应的树模型文件名
+        /// </summary>
+        public required string[] LayerFileNames { get; init; }
+
+        /// <summary>
+        /// 与分层一一对应的树体素归属集合
+        /// </summary>
+        public required HashSet<VoxelCoord64>[] LayerOwnership { get; init; }
+    }
 
     /// <summary>
     /// 弹出文件夹选择并初始化导入向导，存档非法时在状态栏说明原因
@@ -98,7 +134,7 @@ internal partial class ImGuiEditorWindow
         _mcImportBusy = false;
         _mcImportDone = false;
         _mcImportError = null;
-        _mcImportResult = null;
+        _mcImportPrepared = null;
         _mcImportProgress = string.Empty;
         var info = _mcImportInfo;
         var viewWidth = info.MaxChunkX - info.MinChunkX + 1;
@@ -288,11 +324,11 @@ internal partial class ImGuiEditorWindow
             {
                 ImGui.TextColored(new Vector4(1F, .4F, .35F, 1F), $"导入失败：{error}");
             }
-            else if (_mcImportResult is { } result)
+            else if (_mcImportPrepared is { } prepared)
             {
                 _mcImportDone = false;
                 _mcImportBusy = false;
-                ApplyImportResult(info, result);
+                ApplyImportResult(prepared);
                 return;
             }
         }
@@ -446,28 +482,68 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 在后台线程执行范围转换，结果由每帧绘制时回收
+    /// 在后台线程执行范围转换、模型写入与树体素回填，结果由每帧绘制时回收，UI 线程不再承担任何重活
     /// </summary>
     private void StartMcImport()
     {
-        if (_mcImportBusy || !_mcSelValid || _mcImportInfo is not { } info)
+        if (_mcImportBusy || !_mcSelValid || _mcImportInfo is not { } info || _project is not { } project)
         {
             return;
         }
 
         var (minChunkX, minChunkZ) = (_mcSelMinChunkX, _mcSelMinChunkZ);
         var (maxChunkX, maxChunkZ) = (_mcSelMaxChunkX, _mcSelMaxChunkZ);
+        var worldsDirectory = Path.Combine(project.AssetsPath, "Worlds");
         _mcImportBusy = true;
         _mcImportDone = false;
         _mcImportError = null;
-        _mcImportResult = null;
+        _mcImportPrepared = null;
         _mcImportProgress = "准备导入…";
         Task.Run(() =>
         {
             try
             {
-                _mcImportResult = McWorldImporter.ConvertRange(info, minChunkX, minChunkZ, maxChunkX, maxChunkZ,
+                var result = McWorldImporter.ConvertRange(info, minChunkX, minChunkZ, maxChunkX, maxChunkZ,
                     progress => _mcImportProgress = progress);
+                Directory.CreateDirectory(worldsDirectory);
+                var baseName = SanitizeFileName(
+                    string.IsNullOrWhiteSpace(info.LevelName) ? "Minecraft地图" : info.LevelName);
+                _mcImportProgress = "正在写入地形模型…";
+                var terrainFileName = $"{baseName}_{minChunkX}_{minChunkZ}.mvmodel";
+                LargeWorldFormat.Write(Path.Combine(worldsDirectory, terrainFileName), result.Terrain);
+                var layerFileNames = new string[result.Layers.Count];
+                var layerOwnership = new HashSet<VoxelCoord64>[result.Layers.Count];
+                for (var index = 0; index < result.Layers.Count; index++)
+                {
+                    var layer = result.Layers[index];
+                    _mcImportProgress = $"正在写入树分层 {index + 1}/{result.Layers.Count}…";
+                    layerFileNames[index] = $"{baseName}_树{index + 1}.mvmodel";
+                    LargeWorldFormat.Write(Path.Combine(worldsDirectory, layerFileNames[index]), layer.World);
+                    // 树分层的体素归属各自对象：保存时主世界只写地形，各树分别写回自己的文件
+                    layerOwnership[index] = new HashSet<VoxelCoord64>(
+                        layer.World.EnumerateOccupied().Select(item => item.Coordinate));
+                }
+
+                _mcImportProgress = "正在合并工作世界…";
+                var terrainVoxelCount = result.Terrain.OccupiedVoxelCount;
+                // 树体量远小于地形，直接回填进地形对象使其成为完整工作世界，免去整世界复制
+                foreach (var layer in result.Layers)
+                {
+                    foreach (var item in layer.World.EnumerateOccupied())
+                    {
+                        result.Terrain.Set(item.Coordinate, item.Value);
+                    }
+                }
+
+                _mcImportPrepared = new PreparedMcImport
+                {
+                    Result = result,
+                    LevelName = info.LevelName,
+                    TerrainFileName = terrainFileName,
+                    TerrainVoxelCount = terrainVoxelCount,
+                    LayerFileNames = layerFileNames,
+                    LayerOwnership = layerOwnership,
+                };
             }
             catch (Exception exception)
             {
@@ -481,9 +557,9 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 把转换结果写入世界文件、重建场景层级并合并为当前工作世界
+    /// 把后台准备好的导入结果挂进场景层级并设为主世界，此处只做轻量的场景与渲染状态更新
     /// </summary>
-    private void ApplyImportResult(MinecraftSaveInfo info, McImportResult result)
+    private void ApplyImportResult(PreparedMcImport prepared)
     {
         if (_project is null)
         {
@@ -491,14 +567,9 @@ internal partial class ImGuiEditorWindow
             return;
         }
 
+        var result = prepared.Result;
         try
         {
-            var baseName = SanitizeFileName(
-                string.IsNullOrWhiteSpace(info.LevelName) ? "Minecraft地图" : info.LevelName);
-            var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
-            Directory.CreateDirectory(worldsDirectory);
-            var terrainFile = $"{baseName}_{_mcSelMinChunkX}_{_mcSelMinChunkZ}.mvmodel";
-            LargeWorldFormat.Write(Path.Combine(worldsDirectory, terrainFile), result.Terrain);
             _layerOwnership.Clear();
             var document = _sceneDocument ??= new SceneDocument { Name = "主场景" };
             for (var index = document.Objects.Count - 1; index >= 0; index--)
@@ -511,37 +582,20 @@ internal partial class ImGuiEditorWindow
 
             var graph = new SceneGraph(document);
             var terrainObject = graph.Add("地形", transform: TransformComponent.FromGrid(GridTransform.Identity));
-            AddMcModelComponent(terrainObject, "Assets/Worlds/" + terrainFile, result.Terrain.OccupiedVoxelCount,
-                "地形");
+            AddMcModelComponent(terrainObject, "Assets/Worlds/" + prepared.TerrainFileName,
+                prepared.TerrainVoxelCount, "地形");
             for (var index = 0; index < result.Layers.Count; index++)
             {
                 var layer = result.Layers[index];
-                var layerFile = $"{baseName}_树{index + 1}.mvmodel";
-                LargeWorldFormat.Write(Path.Combine(worldsDirectory, layerFile), layer.World);
                 var layerObject = graph.Add(layer.Name, transform: TransformComponent.FromGrid(GridTransform.Identity));
-                AddMcModelComponent(layerObject, "Assets/Worlds/" + layerFile, layer.World.OccupiedVoxelCount,
-                    "树木分层");
-                // 树分层的体素归属各自对象：保存时主世界只写地形，各树分别写回自己的文件
-                _layerOwnership[layerObject.Id] = new HashSet<VoxelCoord64>(
-                    layer.World.EnumerateOccupied().Select(item => item.Coordinate));
+                AddMcModelComponent(layerObject, "Assets/Worlds/" + prepared.LayerFileNames[index],
+                    layer.World.OccupiedVoxelCount, "树木分层");
+                _layerOwnership[layerObject.Id] = prepared.LayerOwnership[index];
             }
 
             _sceneDocument = document;
-            var merged = new VoxelWorld();
-            foreach (var item in result.Terrain.EnumerateOccupied())
-            {
-                merged.Set(item.Coordinate, item.Value);
-            }
-
-            foreach (var layer in result.Layers)
-            {
-                foreach (var item in layer.World.EnumerateOccupied())
-                {
-                    merged.Set(item.Coordinate, item.Value);
-                }
-            }
-
-            _world = merged;
+            // 地形对象已在后台完成树体素回填，直接就是完整工作世界，免去整世界复制
+            _world = result.Terrain;
             _voxelHistory.Clear();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
@@ -549,7 +603,7 @@ internal partial class ImGuiEditorWindow
             _accumulationSignature = string.Empty;
             FrameCameraOnWorld();
             MarkSceneDocumentDirty();
-            SetStatus($"已导入 {info.LevelName}：地形 {result.Terrain.OccupiedVoxelCount:N0} 体素，" +
+            SetStatus($"已导入 {prepared.LevelName}：地形 {prepared.TerrainVoxelCount:N0} 体素，" +
                       $"拆出 {result.Layers.Count} 个树分层");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
