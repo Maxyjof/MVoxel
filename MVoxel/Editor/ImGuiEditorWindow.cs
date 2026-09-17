@@ -953,6 +953,13 @@ DockId=0x6A3C3007,0
             _selectedVoxel = null;
         }
 
+        if (ImGui.BeginPopupContextItem($"##SceneObjectRowMenu_{sceneObject.Id}"))
+        {
+            _selectedSceneObjectId = sceneObject.Id;
+            DrawSceneObjectContextMenu(sceneObject);
+            ImGui.EndPopup();
+        }
+
         if (children.Length > 0 && expanded)
         {
             foreach (var child in children)
@@ -2248,6 +2255,7 @@ DockId=0x6A3C3007,0
         ImGui.EndChild();
         ImGui.PopStyleColor(2);
         ImGui.Dummy(new Vector2(0F, 6F));
+        DrawPrefabInspectorSection(selectedObject);
 
         var removeComponentIndex = -1;
         if (_inspectorExpansionObjectId != selectedObject.Id)
@@ -2837,7 +2845,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;

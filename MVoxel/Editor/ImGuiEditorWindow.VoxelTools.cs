@@ -532,6 +532,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_sceneDocument is null) return 0;
         var mergedCount = 0;
+        var mergedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var sceneObject in _sceneDocument.Objects)
         {
             foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
@@ -541,7 +542,7 @@ internal sealed partial class ImGuiEditorWindow
                 var absolute = Path.GetFullPath(
                     Path.Combine(project.RootPath, model.Replace('/', Path.DirectorySeparatorChar)));
                 if (string.Equals(absolute, primaryPath, StringComparison.OrdinalIgnoreCase) ||
-                    !File.Exists(absolute))
+                    !File.Exists(absolute) || !mergedPaths.Add(absolute))
                 {
                     continue;
                 }

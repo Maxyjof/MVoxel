@@ -72,6 +72,32 @@ public sealed class SceneObject
     /// </summary>
     public List<ComponentRecord> Components { get; set; } =
     [SceneComponentTypes.CreateTransform(TransformComponent.FromFree(FreeTransform.Identity))];
+
+    /// <summary>
+    /// 预制体实例标记，null 表示普通对象；子对象为 null，仅实例根携带链接表
+    /// </summary>
+    public PrefabInstanceData? Prefab { get; set; }
+}
+
+/// <summary>
+/// 预制体实例的链接信息：记录来源资产、资产内根对象与子树的对象对应关系
+/// </summary>
+public sealed class PrefabInstanceData
+{
+    /// <summary>
+    /// 来源预制体资产路径，形如 Assets/Prefabs/名称.prefab
+    /// </summary>
+    public string AssetPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 资产内的根对象 ID
+    /// </summary>
+    public StableId SourceId { get; set; }
+
+    /// <summary>
+    /// 实例对象 ID 到资产内来源对象 ID 的对应表，覆盖整棵实例子树
+    /// </summary>
+    public Dictionary<string, string> Links { get; set; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -315,7 +341,7 @@ public static class SceneSerializer
     /// <summary>
     /// 以四个分量保存 System.Numerics 四元数，避免默认序列化丢失旋转数据
     /// </summary>
-    private sealed class QuaternionJsonConverter : JsonConverter<Quaternion>
+    internal sealed class QuaternionJsonConverter : JsonConverter<Quaternion>
     {
         /// <summary>
         /// 读取四元数对象，缺少分量时使用单位旋转

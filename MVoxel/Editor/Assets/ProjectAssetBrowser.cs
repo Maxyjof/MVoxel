@@ -43,8 +43,11 @@ internal sealed class ProjectAssetBrowser
     /// </summary>
     /// <param name="project">当前项目或 null</param>
     /// <param name="reportStatus">向状态栏汇报的回调</param>
+    /// <param name="assetChanged">资产文件变更回调</param>
+    /// <param name="openWorldRequest">把体素文件打开为当前世界的回调</param>
+    /// <param name="instantiatePrefabRequest">把预制体文件实例化到场景的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
-        Action<string>? openWorldRequest = null)
+        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -72,7 +75,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus);
+        DrawGrid(project, reportStatus, openWorldRequest, instantiatePrefabRequest);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -161,7 +164,8 @@ internal sealed class ProjectAssetBrowser
         ImGui.TreePop();
     }
 
-    private void DrawGrid(ProjectHandle? project, Action<string> reportStatus)
+    private void DrawGrid(ProjectHandle? project, Action<string> reportStatus,
+        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null)
     {
         var entries = CollectEntries(project);
         if (entries.Count == 0)
@@ -197,6 +201,16 @@ internal sealed class ProjectAssetBrowser
                 _selectedAsset = string.Empty;
                 reportStatus($"已打开文件夹：{entry.DisplayName}");
             }
+            else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
+                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            {
+                openWorldRequest?.Invoke(entry.RelativePath);
+            }
+            else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Prefab &&
+                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            {
+                instantiatePrefabRequest?.Invoke(entry.RelativePath);
+            }
 
             if (ImGui.BeginPopupContextItem("##资源右键菜单"))
             {
@@ -212,6 +226,18 @@ internal sealed class ProjectAssetBrowser
                     {
                         OpenWithShell(project, entry.RelativePath, reportStatus);
                     }
+                }
+
+                if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
+                    ImGui.MenuItem("打开为世界"))
+                {
+                    openWorldRequest?.Invoke(entry.RelativePath);
+                }
+
+                if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Prefab &&
+                    ImGui.MenuItem("实例化到场景"))
+                {
+                    instantiatePrefabRequest?.Invoke(entry.RelativePath);
                 }
                 if (ImGui.MenuItem("在资源管理器中打开"))
                     RevealInExplorer(project, entry.RelativePath, reportStatus);
