@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using MVoxel.Core;
 
 namespace MVoxel.Voxels.Minecraft;
@@ -68,38 +69,71 @@ public static class McWorldImporter
         var vegetation = new HashSet<VoxelCoord64>();
         var logs = new HashSet<VoxelCoord64>();
         using var regions = new RegionCache(info.RootPath, info.Dimension.RegionDirectory);
-        var totalChunks = widthX * widthZ;
-        var processed = 0;
+        var chunkCoords = new List<(long X, long Z)>();
         for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
+        for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
         {
-            for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
-            {
-                processed++;
-                if (processed % 16 == 1)
-                {
-                    progress?.Invoke($"已解析 {processed}/{totalChunks} 区块");
-                }
-
-                var root = regions.ReadChunk(chunkX, chunkZ);
-                if (root is null)
-                {
-                    continue;
-                }
-
-                CollectChunkBlocks(AnvilChunk.FromNbt(root),
-                    originX + (chunkX << 4), originZ + (chunkZ << 4), yBase, full, vegetation, logs);
-            }
+            chunkCoords.Add((chunkX, chunkZ));
         }
+
+        // 区块解析在多核上并行：本地收集后逐区块合并，内存只保留单个区块的缓冲，
+        // 合并对世界加锁串行执行，吞吐瓶颈在解析端
+        var mergeGate = new object();
+        var processed = 0;
+        Parallel.ForEach(chunkCoords,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16) },
+            chunkCoord =>
+            {
+                var root = regions.ReadChunk(chunkCoord.X, chunkCoord.Z);
+                if (root is not null)
+                {
+                    var chunkBlocks = CollectChunkBlocks(AnvilChunk.FromNbt(root),
+                        originX + (chunkCoord.X << 4), originZ + (chunkCoord.Z << 4), yBase);
+                    lock (mergeGate)
+                    {
+                        foreach (var (coordinate, value) in chunkBlocks.Blocks)
+                        {
+                            full.Set(coordinate, value);
+                        }
+
+                        vegetation.UnionWith(chunkBlocks.Vegetation);
+                        logs.UnionWith(chunkBlocks.Logs);
+                    }
+                }
+
+                var done = Interlocked.Increment(ref processed);
+                if (done % 64 == 1)
+                {
+                    progress?.Invoke($"已解析 {done}/{chunkCoords.Count} 区块");
+                }
+            });
 
         return new McImportResult(full, SplitTrees(full, vegetation, logs));
     }
 
     /// <summary>
-    /// 把一个区块内全部非空气方块写入世界，并登记植被坐标
+    /// 单个区块的本地解析结果，等待合并进世界
     /// </summary>
-    private static void CollectChunkBlocks(AnvilChunk chunk, long blockOriginX, long blockOriginZ, int yBase,
-        VoxelWorld world, HashSet<VoxelCoord64> vegetation, HashSet<VoxelCoord64> logs)
+    private sealed record ChunkBlocks(
+        List<(VoxelCoord64 Coordinate, VoxelValue Value)> Blocks,
+        HashSet<VoxelCoord64> Vegetation,
+        HashSet<VoxelCoord64> Logs);
+
+    /// <summary>
+    /// 一个方块的映射结果缓存：颜色值与植被判定，按方块名复用
+    /// </summary>
+    private readonly record struct BlockMapping(VoxelValue Value, bool Vegetation, bool Log);
+
+    /// <summary>
+    /// 解析一个区块内全部非空气方块，在本地收集后由调用方合并；
+    /// 方块名到颜色与特性的映射按区块缓存，同一方块名只查一次色表
+    /// </summary>
+    private static ChunkBlocks CollectChunkBlocks(AnvilChunk chunk, long blockOriginX, long blockOriginZ, int yBase)
     {
+        var blocks = new List<(VoxelCoord64, VoxelValue)>();
+        var vegetation = new HashSet<VoxelCoord64>();
+        var logs = new HashSet<VoxelCoord64>();
+        var mappings = new Dictionary<string, BlockMapping>(StringComparer.Ordinal);
         foreach (var section in chunk.Sections)
         {
             if (section.Y < -16 || section.Y > 1023 || IsAirOnlySection(section))
@@ -119,16 +153,26 @@ public static class McWorldImporter
                             continue;
                         }
 
+                        if (!mappings.TryGetValue(name, out var mapping))
+                        {
+                            var flags = VoxelFlags.None;
+                            if (MinecraftBlockColors.IsTranslucent(name)) flags |= VoxelFlags.Translucent;
+                            if (MinecraftBlockColors.IsEmissive(name)) flags |= VoxelFlags.Emissive;
+                            var isVegetation = IsVegetationName(name);
+                            mapping = new BlockMapping(
+                                new VoxelValue(MinecraftBlockColors.ColorOf(name), 0, flags),
+                                isVegetation,
+                                isVegetation && name.Contains("_log", StringComparison.Ordinal));
+                            mappings[name] = mapping;
+                        }
+
                         var coordinate = new VoxelCoord64(
                             blockOriginX + x, section.BaseY + y - yBase, blockOriginZ + z);
-                        var flags = VoxelFlags.None;
-                        if (MinecraftBlockColors.IsTranslucent(name)) flags |= VoxelFlags.Translucent;
-                        if (MinecraftBlockColors.IsEmissive(name)) flags |= VoxelFlags.Emissive;
-                        world.Set(coordinate, new VoxelValue(MinecraftBlockColors.ColorOf(name), 0, flags));
-                        if (IsVegetationName(name))
+                        blocks.Add((coordinate, mapping.Value));
+                        if (mapping.Vegetation)
                         {
                             vegetation.Add(coordinate);
-                            if (name.Contains("_log", StringComparison.Ordinal))
+                            if (mapping.Log)
                             {
                                 logs.Add(coordinate);
                             }
@@ -137,6 +181,8 @@ public static class McWorldImporter
                 }
             }
         }
+
+        return new ChunkBlocks(blocks, vegetation, logs);
     }
 
     /// <summary>
@@ -239,12 +285,13 @@ public static class McWorldImporter
     }
 
     /// <summary>
-    /// region 文件缓存：按需打开所属 r.X.Z.mca，供区块读取复用
+    /// region 文件缓存：按需打开所属 r.X.Z.mca，供区块读取复用，可被多线程并发访问
     /// </summary>
     private sealed class RegionCache : IDisposable
     {
         private readonly string _regionDirectory;
-        private readonly Dictionary<(int X, int Z), AnvilRegionFile> _regions = new();
+        private readonly ConcurrentDictionary<(int X, int Z), AnvilRegionFile?> _regions = new();
+        private readonly object _openGate = new();
 
         public RegionCache(string saveRootPath, string regionDirectory)
         {
@@ -260,17 +307,18 @@ public static class McWorldImporter
             var regionZ = FloorDiv(chunkZ, 32);
             if (!_regions.TryGetValue((regionX, regionZ), out var region))
             {
-                var path = Path.Combine(_regionDirectory, $"r.{regionX}.{regionZ}.mca");
-                if (!File.Exists(path))
+                lock (_openGate)
                 {
-                    return null;
+                    if (!_regions.TryGetValue((regionX, regionZ), out region))
+                    {
+                        var path = Path.Combine(_regionDirectory, $"r.{regionX}.{regionZ}.mca");
+                        region = File.Exists(path) ? AnvilRegionFile.Open(path) : null;
+                        _regions[(regionX, regionZ)] = region;
+                    }
                 }
-
-                region = AnvilRegionFile.Open(path);
-                _regions.Add((regionX, regionZ), region);
             }
 
-            return region.ReadChunk((int)(chunkX - regionX * 32), (int)(chunkZ - regionZ * 32));
+            return region?.ReadChunk((int)(chunkX - regionX * 32), (int)(chunkZ - regionZ * 32));
         }
 
         /// <summary>
@@ -280,7 +328,7 @@ public static class McWorldImporter
         {
             foreach (var region in _regions.Values)
             {
-                region.Dispose();
+                region?.Dispose();
             }
 
             _regions.Clear();
