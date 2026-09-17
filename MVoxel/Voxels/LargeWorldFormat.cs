@@ -87,13 +87,6 @@ public static class LargeWorldFormat
         var depth = checked((int)(maximum.Z - minimum.Z + 1));
         ValidateDimensions(width, height, depth);
         var count = world.OccupiedVoxelCount;
-        var bytes = new byte[checked(24 + count * RecordSize)];
-        using (var stream = new MemoryStream(bytes, writable: true))
-        using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
-        {
-            WriteHeader(writer, width, depth, height, count);
-        }
-
         var chunks = world.SnapshotChunks();
         var offsets = new long[chunks.Count + 1];
         for (var index = 0; index < chunks.Count; index++)
@@ -108,39 +101,174 @@ public static class LargeWorldFormat
 
         if (count < ParallelWriteThreshold)
         {
+            var bytes = new byte[checked(24 + count * RecordSize)];
+            using (var stream = new MemoryStream(bytes, writable: true))
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
+            {
+                WriteHeader(writer, width, depth, height, count);
+            }
+
             for (var index = 0; index < chunks.Count; index++)
             {
-                FillChunkRecords(bytes, (int)(24 + offsets[index] * RecordSize), chunks[index], minimum);
+                SerializeChunkRecords(bytes.AsSpan((int)(24 + offsets[index] * RecordSize)), chunks[index], minimum);
             }
-        }
-        else
-        {
-            System.Threading.Tasks.Parallel.For(0, chunks.Count,
-                new System.Threading.Tasks.ParallelOptions
-                {
-                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
-                },
-                index => FillChunkRecords(bytes, (int)(24 + offsets[index] * RecordSize), chunks[index], minimum));
+
+            AtomicFile.WriteBytes(path, bytes);
+            return;
         }
 
-        AtomicFile.WriteBytes(path, bytes);
+        WriteStreaming(path, width, depth, height, count, chunks, offsets, minimum);
     }
 
     /// <summary>
-    /// 把一个稀疏区块的全部体素记录写进缓冲区指定区间
+    /// 大世界流式写入：预分配定长临时文件，各区块用池化缓冲序列化后并行定点写入自己的区间，
+    /// 记录 FNV-1a 区哈希；强制刷盘后整文件回读重算哈希，逐区一致才原子替换目标，
+    /// 峰值内存只有一个区块的缓冲规模，不再要求整份文件驻留内存
     /// </summary>
-    /// <param name="bytes">文件字节缓冲</param>
-    /// <param name="offset">本区块首记录的字节偏移</param>
+    private static void WriteStreaming(string path, int width, int depth, int height, int count,
+        List<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)> chunks, long[] offsets, VoxelCoord64 minimum)
+    {
+        var temporaryPath = AtomicFile.BeginTemporary(path);
+        try
+        {
+            var options = new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            };
+            var writeGate = new object();
+            var writtenHashes = new long[chunks.Count];
+            var header = new byte[24];
+            using (var headerStream = new MemoryStream(header, writable: true))
+            using (var headerWriter = new BinaryWriter(headerStream, System.Text.Encoding.ASCII, leaveOpen: true))
+            {
+                WriteHeader(headerWriter, width, depth, height, count);
+            }
+
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
+                       FileShare.Read, bufferSize: 1 << 20))
+            {
+                stream.SetLength(24L + count * RecordSize);
+                stream.Write(header, 0, header.Length);
+                System.Threading.Tasks.Parallel.For(0, chunks.Count, options, index =>
+                {
+                    var byteLength = (int)((offsets[index + 1] - offsets[index]) * RecordSize);
+                    if (byteLength == 0)
+                    {
+                        return;
+                    }
+
+                    var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(byteLength);
+                    try
+                    {
+                        var span = buffer.AsSpan(0, byteLength);
+                        SerializeChunkRecords(span, chunks[index], minimum);
+                        writtenHashes[index] = HashRegion(span);
+                        lock (writeGate)
+                        {
+                            stream.Seek(24 + offsets[index] * RecordSize, SeekOrigin.Begin);
+                            stream.Write(buffer, 0, byteLength);
+                        }
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                    }
+                });
+                stream.Flush(flushToDisk: true);
+            }
+
+            // 回读按文件顺序单流进行，区块区间天然连续，读完一区立刻比对哈希，尽早失败
+            var maximumRegion = 0;
+            for (var index = 0; index < chunks.Count; index++)
+            {
+                maximumRegion = Math.Max(maximumRegion, (int)((offsets[index + 1] - offsets[index]) * RecordSize));
+            }
+
+            var verifyBuffer = new byte[maximumRegion];
+            using (var stream = new FileStream(temporaryPath, FileMode.Open, FileAccess.Read,
+                       FileShare.Read, bufferSize: 1 << 20))
+            {
+                var headerCheck = new byte[24];
+                ReadFully(stream, headerCheck, headerCheck.Length);
+                if (!headerCheck.AsSpan().SequenceEqual(header))
+                {
+                    throw new IOException("大世界模型文件头回读校验失败");
+                }
+
+                for (var index = 0; index < chunks.Count; index++)
+                {
+                    var byteLength = (int)((offsets[index + 1] - offsets[index]) * RecordSize);
+                    if (byteLength == 0)
+                    {
+                        continue;
+                    }
+
+                    ReadFully(stream, verifyBuffer, byteLength);
+                    if (HashRegion(verifyBuffer.AsSpan(0, byteLength)) != writtenHashes[index])
+                    {
+                        throw new IOException($"大世界模型区块 {index} 回读校验失败");
+                    }
+                }
+            }
+
+            AtomicFile.CommitTemporary(temporaryPath, path);
+        }
+        catch
+        {
+            AtomicFile.DiscardTemporary(temporaryPath);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 从流读满指定长度，短读循环补齐，提前遇到文件末尾视为损坏
+    /// </summary>
+    private static void ReadFully(Stream stream, byte[] buffer, int count)
+    {
+        var read = 0;
+        while (read < count)
+        {
+            var got = stream.Read(buffer, read, count - read);
+            if (got <= 0)
+            {
+                throw new InvalidDataException("大世界模型文件在记录结束前截断");
+            }
+
+            read += got;
+        }
+    }
+
+    /// <summary>
+    /// 对一个区块的连续记录区间求 FNV-1a 哈希，用于写回一致性校验
+    /// </summary>
+    private static long HashRegion(ReadOnlySpan<byte> data)
+    {
+        const ulong Offset = 14695981039346656037UL;
+        const ulong Prime = 1099511628211UL;
+        var hash = Offset;
+        foreach (var byteValue in data)
+        {
+            hash ^= byteValue;
+            hash *= Prime;
+        }
+
+        return (long)hash;
+    }
+
+    /// <summary>
+    /// 把一个稀疏区块的全部体素记录序列化进目标区间，返回写入字节数
+    /// </summary>
+    /// <param name="target">本区块记录的目标区间</param>
     /// <param name="entry">区块坐标与稀疏区块</param>
     /// <param name="minimum">世界包围盒最小角</param>
-    private static void FillChunkRecords(byte[] bytes, int offset,
+    private static int SerializeChunkRecords(Span<byte> target,
         (ChunkCoord64 Coordinate, SparseVoxelChunk Chunk) entry, VoxelCoord64 minimum)
     {
-        var slot = offset;
+        var slot = 0;
         foreach (var (index, value) in entry.Chunk.Snapshot)
         {
             var local = SparseVoxelChunk.FromIndex(index);
-            var record = bytes.AsSpan(slot, RecordSize);
+            var record = target.Slice(slot, RecordSize);
             BinaryPrimitives.WriteUInt16LittleEndian(record,
                 checked((ushort)(entry.Coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X)));
             BinaryPrimitives.WriteUInt16LittleEndian(record[2..],
@@ -155,16 +283,86 @@ public static class LargeWorldFormat
             record[12] = value.Flags;
             slot += RecordSize;
         }
+
+        return slot;
     }
 
     /// <summary>
-    /// 读取大世界模型文件
+    /// 读取大世界模型文件：校验文件头与长度后按固定窗口流式解析记录，
+    /// 不把整份文件载入内存
     /// </summary>
     /// <param name="path">模型文件路径</param>
     /// <returns>读取出的稀疏世界</returns>
     public static VoxelWorld Read(string path)
     {
-        return Read(File.ReadAllBytes(path));
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, bufferSize: 1 << 20, FileOptions.SequentialScan);
+        var header = new byte[24];
+        ReadFully(stream, header, header.Length);
+        var (width, depth, height, count) = ValidateHeader(header, stream.Length);
+        var world = new VoxelWorld();
+        var buffer = new byte[RecordSize * 65536];
+        var remaining = count;
+        while (remaining > 0)
+        {
+            var records = (int)Math.Min(remaining, buffer.Length / RecordSize);
+            var bytes = records * RecordSize;
+            ReadFully(stream, buffer, bytes);
+            for (var record = 0; record < records; record++)
+            {
+                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, default, world);
+            }
+
+            remaining -= records;
+        }
+
+        return world;
+    }
+
+    /// <summary>
+    /// 校验大世界模型文件头：签名、版本、尺寸与记录数和文件长度的一致性
+    /// </summary>
+    private static (int Width, int Depth, int Height, int Count) ValidateHeader(ReadOnlySpan<byte> header, long fileLength)
+    {
+        if (BinaryPrimitives.ReadUInt32LittleEndian(header) != Magic ||
+            BinaryPrimitives.ReadInt32LittleEndian(header[4..]) != Version)
+        {
+            throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
+        }
+
+        var width = BinaryPrimitives.ReadInt32LittleEndian(header[8..]);
+        var depth = BinaryPrimitives.ReadInt32LittleEndian(header[12..]);
+        var height = BinaryPrimitives.ReadInt32LittleEndian(header[16..]);
+        var count = BinaryPrimitives.ReadInt32LittleEndian(header[20..]);
+        ValidateDimensions(width, height, depth);
+        if (count < 0 || count > MaximumVoxelRecords || 24L + count * RecordSize != fileLength)
+        {
+            throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
+        }
+
+        return (width, depth, height, count);
+    }
+
+    /// <summary>
+    /// 解析一条 13 字节体素记录并写入世界，越界或空体素视为损坏
+    /// </summary>
+    private static void ParseRecord(ReadOnlySpan<byte> record, int width, int height, int depth,
+        VoxelCoord64 origin, VoxelWorld world)
+    {
+        var x = BinaryPrimitives.ReadUInt16LittleEndian(record);
+        var y = BinaryPrimitives.ReadUInt16LittleEndian(record[2..]);
+        var z = BinaryPrimitives.ReadUInt16LittleEndian(record[4..]);
+        var value = new VoxelValue(
+            new Rgba32(record[6], record[7], record[8], record[9]),
+            BinaryPrimitives.ReadUInt16LittleEndian(record[10..]),
+            record[12]);
+        if (x >= width || y >= height || z >= depth || value.IsEmpty)
+        {
+            throw new InvalidDataException("大世界模型包含越界或空体素记录");
+        }
+
+        world.Set(origin + new VoxelCoord64(x, y, z), value);
     }
 
     /// <summary>
@@ -181,44 +379,11 @@ public static class LargeWorldFormat
             throw new InvalidDataException("大世界模型文件头不完整");
         }
 
-        using var stream = new MemoryStream(bytes, writable: false);
-        using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        if (reader.ReadUInt32() != Magic)
-        {
-            throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
-        }
-
-        var version = reader.ReadInt32();
-        if (version != Version)
-        {
-            throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
-        }
-
-        var width = reader.ReadInt32();
-        var depth = reader.ReadInt32();
-        var height = reader.ReadInt32();
-        var count = reader.ReadInt32();
-        ValidateDimensions(width, height, depth);
-        var expectedLength = checked(24L + count * RecordSize);
-        if (count < 0 || count > MaximumVoxelRecords || expectedLength != bytes.Length)
-        {
-            throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
-        }
-
+        var (width, depth, height, count) = ValidateHeader(bytes, bytes.Length);
         var world = new VoxelWorld();
         for (var index = 0; index < count; index++)
         {
-            var x = reader.ReadUInt16();
-            var y = reader.ReadUInt16();
-            var z = reader.ReadUInt16();
-            var value = new VoxelValue(new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()),
-                reader.ReadUInt16(), reader.ReadByte());
-            if (x >= width || y >= height || z >= depth || value.IsEmpty)
-            {
-                throw new InvalidDataException("大世界模型包含越界或空体素记录");
-            }
-
-            world.Set(origin + new VoxelCoord64(x, y, z), value);
+            ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, origin, world);
         }
 
         return world;

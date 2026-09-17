@@ -31,9 +31,7 @@ public static class AtomicFile
         Directory.CreateDirectory(directory);
 
         // 临时文件与目标同目录，保证最后的 Move/Replace 发生在同一卷内
-        var temporaryPath = Path.Combine(
-            directory,
-            $".{Path.GetFileName(absolutePath)}.{Guid.NewGuid():N}.tmp");
+        var temporaryPath = NewTemporaryPath(absolutePath);
 
         try
         {
@@ -43,10 +41,7 @@ public static class AtomicFile
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            DiscardTemporary(temporaryPath);
         }
     }
 
@@ -66,9 +61,7 @@ public static class AtomicFile
             ?? throw new ArgumentException("The path must include a directory.", nameof(path));
         Directory.CreateDirectory(directory);
 
-        var temporaryPath = Path.Combine(
-            directory,
-            $".{Path.GetFileName(absolutePath)}.{Guid.NewGuid():N}.tmp");
+        var temporaryPath = NewTemporaryPath(absolutePath);
 
         try
         {
@@ -78,11 +71,69 @@ public static class AtomicFile
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            DiscardTemporary(temporaryPath);
         }
+    }
+
+    /// <summary>
+    /// 为超大文件开一条流式原子写入通道：返回与目标同卷的临时文件路径，
+    /// 调用方自行写入并做回读校验后交 <see cref="CommitTemporary"/> 替换目标；
+    /// 中途放弃用 <see cref="DiscardTemporary"/> 清理，目标文件全程保持原样
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <returns>临时文件路径</returns>
+    public static string BeginTemporary(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var absolutePath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(absolutePath)
+            ?? throw new ArgumentException("The path must include a directory.", nameof(path));
+        Directory.CreateDirectory(directory);
+        return NewTemporaryPath(absolutePath);
+    }
+
+    /// <summary>
+    /// 把已完成写入与校验的临时文件替换为目标，语义与整字节原子写入一致
+    /// </summary>
+    /// <param name="temporaryPath">流式写入完成的临时文件</param>
+    /// <param name="path">最终目标</param>
+    /// <param name="backupExtension">备份后缀或 null 表示不保留备份</param>
+    public static void CommitTemporary(string temporaryPath, string path, string? backupExtension = ".bak")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        try
+        {
+            ReplaceTarget(temporaryPath, Path.GetFullPath(path), backupExtension);
+        }
+        finally
+        {
+            DiscardTemporary(temporaryPath);
+        }
+    }
+
+    /// <summary>
+    /// 删除尚未提交的临时文件，文件不存在时静默返回
+    /// </summary>
+    /// <param name="temporaryPath">临时文件路径</param>
+    public static void DiscardTemporary(string temporaryPath)
+    {
+        if (File.Exists(temporaryPath))
+        {
+            File.Delete(temporaryPath);
+        }
+    }
+
+    /// <summary>
+    /// 生成与目标同目录同卷的临时文件路径
+    /// </summary>
+    /// <param name="absoluteTargetPath">已规范化的目标绝对路径</param>
+    /// <returns>临时文件路径</returns>
+    private static string NewTemporaryPath(string absoluteTargetPath)
+    {
+        return Path.Combine(
+            Path.GetDirectoryName(absoluteTargetPath)!,
+            $".{Path.GetFileName(absoluteTargetPath)}.{Guid.NewGuid():N}.tmp");
     }
 
     /// <summary>
