@@ -428,6 +428,10 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("辐射度截断", ref settings.RadianceClamp, 1F, 200F, "%.1f");
         ImGui.Checkbox("快速降噪", ref settings.PathDenoising);
         SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
+        ImGui.Checkbox("Bloom 辉光", ref settings.BloomEnabled);
+        SliderFloat("辉光强度", ref settings.BloomIntensity, 0F, 2F, "%.2f");
+        SliderFloat("辉光阈值", ref settings.BloomThreshold, 0F, 8F, "%.2f");
+        SliderFloat("辉光半径", ref settings.BloomRadius, 1F, 64F, "%.0f px");
         SliderFloat("材质粗糙度", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
         SliderFloat("材质金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
         SliderFloat("介电反射率 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");

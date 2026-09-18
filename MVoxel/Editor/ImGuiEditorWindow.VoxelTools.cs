@@ -705,6 +705,8 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
             .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither).Append(',').Append(settings.PathDenoising)
             .Append(',').Append(settings.PathDenoiseStrength)
+            .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
+            .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
             .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
             .Append(',').Append(settings.SceneBackgroundColor.Z);
         if (GetActiveRenderCameraObject() is null)

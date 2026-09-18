@@ -335,6 +335,26 @@ public sealed class RenderSettings
     public float PathDenoiseStrength = 0.22F;
 
     /// <summary>
+    /// 是否启用渲染视图的 Bloom 辉光，仅作用于路径追踪 HDR 累积
+    /// </summary>
+    public bool BloomEnabled = true;
+
+    /// <summary>
+    /// Bloom 强度，过曝亮部按此倍率叠加回画面
+    /// </summary>
+    public float BloomIntensity = 0.35F;
+
+    /// <summary>
+    /// Bloom 亮度阈值，低于该亮度的像素不参与辉光，1.0 表示只溢出到 HDR 的高光
+    /// </summary>
+    public float BloomThreshold = 1.0F;
+
+    /// <summary>
+    /// Bloom 采样半径（像素），控制辉光扩散范围
+    /// </summary>
+    public float BloomRadius = 12F;
+
+    /// <summary>
     /// 薄透镜光圈半径
     /// </summary>
     public float ApertureRadius = 0.08F;
@@ -363,6 +383,7 @@ public sealed class RenderSettings
         preview.AmbientOcclusionEnabled = false;
         preview.PathDenoising = false;
         preview.DirectLightingMIS = false;
+        preview.BloomEnabled = false;
         return preview;
     }
 
@@ -429,6 +450,9 @@ public sealed class RenderSettings
         EmissiveIntensity = Math.Clamp(EmissiveIntensity, 0F, 64F);
         TransmissiveAbsorption = Math.Clamp(TransmissiveAbsorption, 0F, 8F);
         PathDenoiseStrength = Math.Clamp(PathDenoiseStrength, 0F, 1F);
+        BloomIntensity = Math.Clamp(BloomIntensity, 0F, 2F);
+        BloomThreshold = Math.Clamp(BloomThreshold, 0F, 8F);
+        BloomRadius = Math.Clamp(BloomRadius, 1F, 64F);
         ApertureRadius = Math.Clamp(ApertureRadius, 0F, 1F);
         FocusDistance = Math.Clamp(FocusDistance, 1F, 512F);
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
@@ -532,6 +556,9 @@ public sealed class RenderSettings
         EmissiveIntensity = Safe(EmissiveIntensity, 12F);
         TransmissiveAbsorption = Safe(TransmissiveAbsorption, 1F);
         PathDenoiseStrength = Safe(PathDenoiseStrength, 0.22F);
+        BloomIntensity = Safe(BloomIntensity, 0.35F);
+        BloomThreshold = Safe(BloomThreshold, 1F);
+        BloomRadius = Safe(BloomRadius, 12F);
         ApertureRadius = Safe(ApertureRadius, 0.08F);
         FocusDistance = Safe(FocusDistance, 18F);
         CameraFovDegrees = Safe(CameraFovDegrees, 50F);

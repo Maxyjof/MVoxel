@@ -73,7 +73,8 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 - [x] HDR 累积缓冲（RGBA16F）、PNG 导出队列
 - [x] 材质资产 `.material`、64 槽材质表 GPU 上传、检查器材质编辑面板、资源浏览器右键新建材质
 - [x] HDRI 环境贴图（Radiance .hdr 解码、经纬图上传、天空与背景按环境采样）
-- [ ] Bloom、EXR 输出、OIDN
+- [x] Bloom 辉光（HDR 累积宽核亮部提取，与降噪合成同通道）
+- [ ] EXR 输出、OIDN
 - [ ] GPU Brick 驻留与 Chunk 级增量上传
 
 ### 预制体

@@ -722,25 +722,39 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
         }
 
-        // 降噪必须在整帧累积完成后执行。独立的第二阶段读取稳定的累积图像，
-        // 避免在采样阶段读写邻居造成竞态。
-        if (pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F)
+        // 收尾通道必须在整帧累积完成后执行。独立的最终通道读取稳定的累积图像，
+        // 避免在采样阶段读写邻居造成竞态。Bloom 合成通道在降噪开启时一并完成降噪。
+        bool bloomActive = pathMode && settings.BloomEnabled && settings.BloomIntensity > 0F;
+        if (bloomActive || (pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F))
         {
-            parameters[VoxelRenderParameters.TileOffsetX] = 0F;
-            parameters[VoxelRenderParameters.TileOffsetY] = 0F;
-            parameters[VoxelRenderParameters.DenoisePass] = 1F;
-            var slot = AcquireRingSlot();
-            UploadParameters(slot, parameters);
-            var commandBuffer = _ringCommands[slot];
-            TransitionOutputToGeneral(commandBuffer);
-            api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-            var descriptorSet = _ringSets[slot];
-            api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                0, 1, in descriptorSet, 0, null);
-            api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
-                ((uint)heightPixels + 7U) / 8U, 1);
-            TransitionOutputToShaderRead(commandBuffer);
-            CommitRingSlot(slot);
+            void DispatchFinalPass(int modeSlot, float modeValue)
+            {
+                parameters[VoxelRenderParameters.TileOffsetX] = 0F;
+                parameters[VoxelRenderParameters.TileOffsetY] = 0F;
+                parameters[modeSlot] = modeValue;
+                var slot = AcquireRingSlot();
+                UploadParameters(slot, parameters);
+                var commandBuffer = _ringCommands[slot];
+                TransitionOutputToGeneral(commandBuffer);
+                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+                var descriptorSet = _ringSets[slot];
+                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+                    0, 1, in descriptorSet, 0, null);
+                api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
+                    ((uint)heightPixels + 7U) / 8U, 1);
+                TransitionOutputToShaderRead(commandBuffer);
+                CommitRingSlot(slot);
+                parameters[modeSlot] = 0F;
+            }
+
+            if (bloomActive)
+            {
+                DispatchFinalPass(VoxelRenderParameters.BloomPass, 1F);
+            }
+            else
+            {
+                DispatchFinalPass(VoxelRenderParameters.DenoisePass, 1F);
+            }
         }
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
@@ -1791,6 +1805,54 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height);
 
+        vec3 DenoiseAt(ivec2 pixel, int width, int height)
+        {
+            float strength = clamp(values[93], 0.0, 1.0);
+            vec3 center = imageLoad(accumulationImage, pixel).rgb;
+            vec3 filtered = vec3(0.0);
+            float weightSum = 0.0;
+            float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                for (int ox = -1; ox <= 1; ox++)
+                {
+                    ivec2 samplePixel = clamp(pixel + ivec2(ox, oy), ivec2(0), ivec2(width - 1, height - 1));
+                    vec3 neighbor = imageLoad(accumulationImage, samplePixel).rgb;
+                    float spatial = (ox == 0 && oy == 0) ? 4.0 : ((ox == 0 || oy == 0) ? 2.0 : 1.0);
+                    float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
+                    float edge = exp(-abs(neighborLuma - centerLuma) * 8.0);
+                    float weight = spatial * mix(0.0, edge, strength);
+                    filtered += neighbor * weight;
+                    weightSum += weight;
+                }
+            }
+            vec3 color = weightSum > 0.0 ? filtered / weightSum : center;
+            return mix(center, color, strength);
+        }
+
+        vec3 BloomGather(ivec2 pixel, int width, int height)
+        {
+            float radius = max(values[112], 1.0);
+            float threshold = max(values[111], 0.0);
+            vec3 sum = vec3(0.0);
+            float weightSum = 0.0;
+            for (int tap = 0; tap < 32; tap++)
+            {
+                float t = (float(tap) + 0.5) / 32.0;
+                float angle = float(tap) * 2.39996323;
+                float diskRadius = sqrt(t) * radius;
+                ivec2 samplePixel = clamp(pixel + ivec2(int(cos(angle) * diskRadius),
+                    int(sin(angle) * diskRadius)), ivec2(0), ivec2(width - 1, height - 1));
+                vec3 sampleColor = imageLoad(accumulationImage, samplePixel).rgb;
+                float luminance = dot(sampleColor, vec3(0.2126, 0.7152, 0.0722));
+                float over = max(luminance - threshold, 0.0) / max(luminance, 1e-4);
+                float weight = 1.0 - t * 0.6;
+                sum += sampleColor * over * weight;
+                weightSum += weight;
+            }
+            return sum / max(weightSum, 1e-4);
+        }
+
         void main()
         {
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
@@ -1801,27 +1863,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
             if (values[103] > 0.5 && values[92] > 0.5)
             {
-                float strength = clamp(values[93], 0.0, 1.0);
-                vec3 center = imageLoad(accumulationImage, pixel).rgb;
-                vec3 filtered = vec3(0.0);
-                float weightSum = 0.0;
-                float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
-                for (int oy = -1; oy <= 1; oy++)
-                {
-                    for (int ox = -1; ox <= 1; ox++)
-                    {
-                        ivec2 samplePixel = clamp(pixel + ivec2(ox, oy), ivec2(0), ivec2(width - 1, height - 1));
-                        vec3 neighbor = imageLoad(accumulationImage, samplePixel).rgb;
-                        float spatial = (ox == 0 && oy == 0) ? 4.0 : ((ox == 0 || oy == 0) ? 2.0 : 1.0);
-                        float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
-                        float edge = exp(-abs(neighborLuma - centerLuma) * 8.0);
-                        float weight = spatial * mix(0.0, edge, strength);
-                        filtered += neighbor * weight;
-                        weightSum += weight;
-                    }
-                }
-                vec3 color = weightSum > 0.0 ? filtered / weightSum : center;
-                imageStore(outputImage, pixel, vec4(PostProcess(clamp(mix(center, color, strength), 0.0, 1.0), pixel, width, height), 1.0));
+                vec3 color = DenoiseAt(pixel, width, height);
+                imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
+                return;
+            }
+
+            // Bloom 合成通道：以（可选降噪后的）HDR 累积为基色，叠加过曝亮部的宽核辉光再统一色调映射
+            if (values[108] > 0.5)
+            {
+                vec3 base = values[92] > 0.5 ? DenoiseAt(pixel, width, height)
+                    : imageLoad(accumulationImage, pixel).rgb;
+                vec3 color = base + BloomGather(pixel, width, height) * clamp(values[110], 0.0, 2.0);
+                imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
                 return;
             }
 

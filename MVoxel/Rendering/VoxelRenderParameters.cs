@@ -13,7 +13,7 @@ public sealed class VoxelRenderParameters
     /// <summary>
     /// 参数块总槽数（float 个数），SSBO 按此大小上传
     /// </summary>
-    public const int SlotCount = 108;
+    public const int SlotCount = 113;
 
     // 相机基向量与逐帧标量
     /// <summary>相机位置 X</summary>
@@ -86,6 +86,8 @@ public sealed class VoxelRenderParameters
     public const int TileOffsetX = 101, TileOffsetY = 102, DenoisePass = 103;
     /// <summary>环境贴图开关、经纬图宽高与强度</summary>
     public const int EnvEnabled = 104, EnvWidth = 105, EnvHeight = 106, EnvIntensity = 107;
+    /// <summary>Bloom 通道标记（0 主通道，1 辉光合成）、开关、强度、阈值与半径</summary>
+    public const int BloomPass = 108, BloomEnabled = 109, BloomIntensity = 110, BloomThreshold = 111, BloomRadius = 112;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -126,6 +128,9 @@ public sealed class VoxelRenderParameters
             ("P_TILE_OFFSET_X", TileOffsetX), ("P_TILE_OFFSET_Y", TileOffsetY),
             ("P_ENV_ENABLED", EnvEnabled), ("P_ENV_WIDTH", EnvWidth),
             ("P_ENV_HEIGHT", EnvHeight), ("P_ENV_INTENSITY", EnvIntensity),
+            ("P_BLOOM_PASS", BloomPass), ("P_BLOOM_ENABLED", BloomEnabled),
+            ("P_BLOOM_INTENSITY", BloomIntensity), ("P_BLOOM_THRESHOLD", BloomThreshold),
+            ("P_BLOOM_RADIUS", BloomRadius),
         };
 
         var builder = new StringBuilder();
@@ -302,6 +307,11 @@ public sealed class VoxelRenderParameters
         parameters[SceneBackgroundG] = settings.SceneBackgroundColor.Y;
         parameters[SceneBackgroundB] = settings.SceneBackgroundColor.Z;
         parameters[DenoisePass] = 0F;
+        parameters[BloomPass] = 0F;
+        parameters[BloomEnabled] = settings.BloomEnabled ? 1F : 0F;
+        parameters[BloomIntensity] = settings.BloomIntensity;
+        parameters[BloomThreshold] = settings.BloomThreshold;
+        parameters[BloomRadius] = settings.BloomRadius;
 
         for (var index = 0; index < parameters.Length; index++)
         {
