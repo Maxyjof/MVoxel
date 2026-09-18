@@ -22,6 +22,15 @@ internal sealed class ProjectAssetBrowser
     private float _treeWidth = 216F;
     private float _tileSize = 76F;
     private string? _renamePath;
+
+    /// <summary>待移动资产的相对路径</summary>
+    private string? _movePath;
+
+    /// <summary>移动对话框中的目标文件夹（相对 Assets）</summary>
+    private string _moveTargetFolder = string.Empty;
+
+    /// <summary>移动对话框是否打开</summary>
+    private bool _openMoveDialog;
     private string _renameName = string.Empty;
     private string? _deletePath;
     private bool _openRenameDialog;
@@ -49,7 +58,8 @@ internal sealed class ProjectAssetBrowser
     /// <param name="exportVoxRequest">把体素世界导出为 .vox 的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
-        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null)
+        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
+        Func<string, int>? countReferences = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -77,7 +87,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest);
+        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, countReferences);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -88,7 +98,7 @@ internal sealed class ProjectAssetBrowser
             ImGui.OpenPopup("##资源删除确认");
             _openDeleteDialog = false;
         }
-        DrawAssetDialogs(project, reportStatus, assetChanged);
+        DrawAssetDialogs(project, reportStatus, assetChanged, countReferences);
         ImGui.EndChild();
 
         ImGui.Separator();
@@ -168,7 +178,8 @@ internal sealed class ProjectAssetBrowser
 
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
-        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null)
+        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
+        Func<string, int>? countReferences = null)
     {
         var entries = CollectEntries(project);
         if (entries.Count == 0)
@@ -283,6 +294,12 @@ internal sealed class ProjectAssetBrowser
                         _renameName = Path.GetFileName(entry.RelativePath);
                         _openRenameDialog = true;
                     }
+                    if (ImGui.MenuItem("移动到文件夹…"))
+                    {
+                        _movePath = entry.RelativePath;
+                        _moveTargetFolder = Path.GetDirectoryName(entry.RelativePath)?.Replace('\\', '/') ?? string.Empty;
+                        _openMoveDialog = true;
+                    }
                     if (ImGui.MenuItem("删除"))
                     {
                         _deletePath = entry.RelativePath;
@@ -327,7 +344,7 @@ internal sealed class ProjectAssetBrowser
     }
 
     private void DrawAssetDialogs(ProjectHandle? project, Action<string> reportStatus,
-        Action<ProjectAssetChange> assetChanged)
+        Action<ProjectAssetChange> assetChanged, Func<string, int>? countReferences)
     {
         if (project is null) return;
 
@@ -355,9 +372,44 @@ internal sealed class ProjectAssetBrowser
             ImGui.EndPopup();
         }
 
+        if (_movePath is not null && ImGui.BeginPopupModal("##资源移动", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.TextUnformatted("移动文件到 Assets 下的目标文件夹");
+            ImGui.SetNextItemWidth(360F);
+            ImGui.InputText("##资源目标文件夹", ref _moveTargetFolder, 260);
+            var moveConfirm = ImGui.Button("确定", new Vector2(110F, 0F));
+            ImGui.SameLine();
+            var moveCancel = ImGui.Button("取消", new Vector2(110F, 0F));
+            if (moveConfirm)
+            {
+                var moveOldPath = _movePath;
+                var targetFolder = _moveTargetFolder.Trim().Replace('\\', '/').Trim('/');
+                var moveNewPath = CombineRelative(targetFolder, Path.GetFileName(moveOldPath));
+                if (MoveFile(project, moveOldPath, moveNewPath, reportStatus, assetChanged))
+                {
+                    _selectedAsset = moveNewPath;
+                }
+
+                _movePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            else if (moveCancel)
+            {
+                _movePath = null;
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.EndPopup();
+        }
+
         if (_deletePath is not null && ImGui.BeginPopupModal("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
         {
+            var referenceCount = countReferences?.Invoke(_deletePath) ?? 0;
             ImGui.TextWrapped($"确定删除文件“{Path.GetFileName(_deletePath)}”吗？此操作不可撤回。");
+            if (referenceCount > 0)
+            {
+                ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F),
+                    $"警告：该资产正被 {referenceCount} 个场景对象引用，删除后将出现断链。");
+            }
             var confirm = ImGui.Button("删除", new Vector2(110F, 0F));
             ImGui.SameLine();
             var cancel = ImGui.Button("取消", new Vector2(110F, 0F));
@@ -375,6 +427,41 @@ internal sealed class ProjectAssetBrowser
                 ImGui.CloseCurrentPopup();
             }
             ImGui.EndPopup();
+        }
+    }
+
+    /// <summary>
+    /// 把资产移动到 Assets 下的另一目录：目标存在即拒绝，移动后由资产变更回调驱动引用跟随
+    /// </summary>
+    private static bool MoveFile(ProjectHandle project, string oldRelativePath, string newRelativePath,
+        Action<string> reportStatus, Action<ProjectAssetChange> assetChanged)
+    {
+        var oldPath = ResolveAssetPath(project, oldRelativePath);
+        var newPath = ResolveAssetPath(project, newRelativePath);
+        if (oldPath is null || newPath is null || !File.Exists(oldPath))
+        {
+            reportStatus("移动失败：文件不存在或路径无效");
+            return false;
+        }
+
+        if (File.Exists(newPath) || Directory.Exists(newPath))
+        {
+            reportStatus("移动失败：目标位置已存在同名文件");
+            return false;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            File.Move(oldPath, newPath);
+            reportStatus($"已移动：{oldRelativePath} → {newRelativePath}");
+            assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            reportStatus($"移动失败：{exception.Message}");
+            return false;
         }
     }
 

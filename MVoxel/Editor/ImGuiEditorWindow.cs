@@ -3053,7 +3053,8 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
+            path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;
@@ -3078,6 +3079,32 @@ DockId=0x6A3C3007,0
         if (_project is null) return;
         var oldPath = change.OldRelativePath.Replace('\\', '/');
         var newPath = change.NewRelativePath?.Replace('\\', '/');
+        // 引用自动跟随：移动或重命名资产时，场景对象与预制体资产内的引用一并改写
+        var updatedReferences = 0;
+        if (newPath is not null)
+        {
+            if (_sceneDocument is not null)
+            {
+                updatedReferences += AssetReferences.UpdateReferences(_sceneDocument, oldPath, newPath);
+                if (updatedReferences > 0 && _activeSceneRelativePath is { } scenePath)
+                {
+                    try
+                    {
+                        SceneSerializer.Save(Path.Combine(_project.AssetsPath, scenePath.Replace('/', Path.DirectorySeparatorChar)), _sceneDocument);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        SetStatus($"引用更新已生效但场景保存失败：{exception.Message}");
+                    }
+                }
+            }
+
+            updatedReferences += AssetReferences.UpdatePrefabReferences(
+                Path.Combine(_project.AssetsPath, "Prefabs"), oldPath, newPath);
+            SetStatus(updatedReferences > 0
+                ? $"已跟随更新 {updatedReferences} 处对 {oldPath} 的引用"
+                : $"移动完成；未发现对 {oldPath} 的引用，请检查外部引用是否断链");
+        }
         var activeScenePath = _activeSceneRelativePath;
         var touchesScene = string.Equals(oldPath, activeScenePath, StringComparison.OrdinalIgnoreCase) ||
                            string.Equals(newPath, activeScenePath, StringComparison.OrdinalIgnoreCase);
