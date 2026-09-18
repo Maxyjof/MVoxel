@@ -281,6 +281,61 @@ internal partial class ImGuiEditorWindow
             ApplySelectedPrefabToAsset();
         }
 
+        // 覆盖检测：相对来源资产展示差异并支持单项还原
+        if (TryGetSelectedPrefabInstance(out _, out var asset, out _))
+        {
+            var overrides = PrefabOverrides.Compute(_sceneDocument!, selectedObject, asset);
+            if (overrides.Count == 0)
+            {
+                ImGui.TextDisabled("与预制体资产一致，无覆盖");
+            }
+            else
+            {
+                if (overrides.Any(item => item.Kind == PrefabOverrides.Kind.SourceDrift))
+                {
+                    ImGui.TextColored(new Vector4(1F, 0.6F, 0.25F, 1F), "来源资产已更新，实例尚未同步");
+                }
+
+                if (ImGui.CollapsingHeader($"实例覆盖（{overrides.Count}）"))
+                {
+                    foreach (var item in overrides)
+                    {
+                        ImGui.BulletText($"{item.ObjectName}：{LabelOf(item.Kind)}　{item.Detail}");
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton($"还原此项##{item.ObjectId.Value}"))
+                        {
+                            if (PrefabOverrides.RevertObject(_sceneDocument!, selectedObject, asset, item.ObjectId))
+                            {
+                                MarkSceneDocumentDirty();
+                                SetStatus($"已还原对象：{item.ObjectName}");
+                            }
+                            else
+                            {
+                                SetStatus($"还原失败：{item.ObjectName}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         ImGui.Separator();
     }
+
+    /// <summary>
+    /// 覆盖类型的中文标签
+    /// </summary>
+    private static string LabelOf(PrefabOverrides.Kind kind) => kind switch
+    {
+        PrefabOverrides.Kind.Renamed => "重命名",
+        PrefabOverrides.Kind.Transform => "变换",
+        PrefabOverrides.Kind.Layer => "图层",
+        PrefabOverrides.Kind.Visibility => "可见性",
+        PrefabOverrides.Kind.Lock => "锁定",
+        PrefabOverrides.Kind.Component => "组件",
+        PrefabOverrides.Kind.Added => "新增对象",
+        PrefabOverrides.Kind.Missing => "缺失对象",
+        PrefabOverrides.Kind.SourceDrift => "来源漂移",
+        _ => kind.ToString(),
+    };
 }

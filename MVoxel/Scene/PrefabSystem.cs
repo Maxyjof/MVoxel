@@ -239,6 +239,7 @@ public static class PrefabSystem
                 Visible = source.Visible,
                 Locked = source.Locked,
                 Transform = CloneTransform(source.Transform),
+                Components = [],
             };
             foreach (var component in source.Components)
             {
@@ -301,6 +302,15 @@ public static class PrefabSystem
             }
         }
 
+        // 实例根的链接表覆盖整棵子树，与从场景创建实例时的语义一致
+        if (newRoot?.Prefab is not null)
+        {
+            foreach (var source in asset.Objects)
+            {
+                newRoot.Prefab.Links[map[source.Id].Id.Value.ToString()] = source.Id.Value.ToString();
+            }
+        }
+
         return newRoot ?? throw new InvalidDataException("预制体资产缺少根对象");
     }
 
@@ -342,7 +352,7 @@ public static class PrefabSystem
     /// <summary>
     /// 从场景文档移除子树对象，可选择保留根
     /// </summary>
-    private static void RemoveSubtree(SceneDocument document, SceneObject root, bool keepRoot)
+    internal static void RemoveSubtree(SceneDocument document, SceneObject root, bool keepRoot)
     {
         var doomed = CollectSubtree(document, root).Select(item => item.Id).ToHashSet();
         if (keepRoot)
