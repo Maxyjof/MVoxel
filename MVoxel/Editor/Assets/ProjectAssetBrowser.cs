@@ -1,7 +1,9 @@
 using System.Drawing;
 using System.Diagnostics;
 using ImGuiNET;
+using MVoxel.Editor.Assets;
 using MVoxel.Project;
+using MVoxel.Scene;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
 
@@ -22,6 +24,12 @@ internal sealed class ProjectAssetBrowser
     private float _treeWidth = 216F;
     private float _tileSize = 76F;
     private string? _renamePath;
+
+    /// <summary>体素世界缩略图缓存；由编辑器窗口在管线初始化后注入</summary>
+    internal ThumbnailCache? Thumbnails { get; set; }
+
+    /// <summary>项目级反向依赖映射缓存；资产变更或项目切换后失效</summary>
+    private IReadOnlyDictionary<string, IReadOnlyList<string>>? _referencedBy;
 
     /// <summary>待移动资产的相对路径</summary>
     private string? _movePath;
@@ -45,6 +53,7 @@ internal sealed class ProjectAssetBrowser
     {
         _selectedFolder = string.Empty;
         _selectedAsset = string.Empty;
+        _referencedBy = null;
     }
 
     /// <summary>
@@ -67,6 +76,13 @@ internal sealed class ProjectAssetBrowser
             Reset();
         }
 
+        // 任何资产变更都使项目级依赖映射失效，删除确认据此重新扫描
+        Action<ProjectAssetChange> trackedChange = item =>
+        {
+            _referencedBy = null;
+            assetChanged(item);
+        };
+
         DrawToolbar(project);
         ImGui.Separator();
 
@@ -88,7 +104,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, exportQubicleRequest, countReferences);
+        DrawGrid(project, reportStatus, trackedChange, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, exportQubicleRequest, countReferences);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -99,7 +115,7 @@ internal sealed class ProjectAssetBrowser
             ImGui.OpenPopup("##资源删除确认");
             _openDeleteDialog = false;
         }
-        DrawAssetDialogs(project, reportStatus, assetChanged, countReferences);
+        DrawAssetDialogs(project, reportStatus, trackedChange, countReferences);
         ImGui.EndChild();
 
         ImGui.Separator();
@@ -342,7 +358,20 @@ internal sealed class ProjectAssetBrowser
 
             var iconSize = Math.Min(_tileSize, tileWidth - 24F);
             var iconMin = new Vector2(min.X + (tileWidth - iconSize) / 2F, min.Y + 7F);
-            AssetIconPainter.Draw(draw, entry.Kind, iconMin, iconSize, selected);
+            var thumbnail = entry.Kind == ProjectAssetKind.VoxelModel
+                ? Thumbnails?.GetOrRender(project, entry.RelativePath)
+                : null;
+            if (thumbnail is nint textureId)
+            {
+                draw.AddImage(textureId, iconMin, iconMin + new Vector2(iconSize, iconSize));
+                draw.AddRect(iconMin, iconMin + new Vector2(iconSize, iconSize),
+                    ToPackedColor(Color.FromArgb(220, 12, 18, 25)), 3F, ImDrawFlags.None, 1F);
+            }
+            else
+            {
+                AssetIconPainter.Draw(draw, entry.Kind, iconMin, iconSize, selected);
+            }
+
             DrawCenteredText(draw, entry.DisplayName, min.X, tileWidth, iconMin.Y + iconSize + 4F, EditorPalette.Text);
             DrawCenteredText(draw, ProjectAssetCatalog.KindLabel(entry.Kind), min.X, tileWidth,
                 iconMin.Y + iconSize + ImGui.GetTextLineHeight() + 5F, EditorPalette.MutedText);
@@ -411,11 +440,20 @@ internal sealed class ProjectAssetBrowser
         if (_deletePath is not null && ImGui.BeginPopupModal("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
         {
             var referenceCount = countReferences?.Invoke(_deletePath) ?? 0;
+            var referencingFiles = GetReferencingFiles(project, _deletePath);
             ImGui.TextWrapped($"确定删除文件“{Path.GetFileName(_deletePath)}”吗？此操作不可撤回。");
             if (referenceCount > 0)
             {
                 ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F),
                     $"警告：该资产正被 {referenceCount} 个场景对象引用，删除后将出现断链。");
+            }
+
+            if (referencingFiles.Count > 0)
+            {
+                ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F),
+                    $"警告：{string.Join("、", referencingFiles.Take(4))}" +
+                    (referencingFiles.Count > 4 ? $" 等 {referencingFiles.Count} 个项目文件" : "") +
+                    "引用了该资产，删除后将出现断链。");
             }
             var confirm = ImGui.Button("删除", new Vector2(110F, 0F));
             ImGui.SameLine();
@@ -538,6 +576,24 @@ internal sealed class ProjectAssetBrowser
 
     private static string CombineRelative(string? directory, string name) =>
         string.IsNullOrWhiteSpace(directory) ? name : $"{directory.Replace('\\', '/')}/{name}";
+
+    /// <summary>
+    /// 查询资产被项目内哪些场景/预制体文件引用；依赖映射按需扫描并缓存
+    /// </summary>
+    private IReadOnlyList<string> GetReferencingFiles(ProjectHandle? project, string relativePath)
+    {
+        if (project is null)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (_referencedBy is null)
+        {
+            _referencedBy = AssetDependencies.ScanReferencedBy(project.AssetsPath);
+        }
+
+        return AssetDependencies.ReferencingFiles(_referencedBy, relativePath);
+    }
 
     private List<ProjectAssetEntry> CollectEntries(ProjectHandle? project)
     {

@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using ImGuiNET;
+using MVoxel.Editor.Assets;
 using MVoxel.Project;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -39,6 +40,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
     private readonly ProjectAssetBrowser _assetBrowser = new();
+
+    /// <summary>体素世界缩略图缓存；随 ImGui 渲染器创建与销毁</summary>
+    private ThumbnailCache? _thumbnailCache;
     private nint _assetPreviewTextureId;
     private string _assetPreviewPath = string.Empty;
     private int _assetPreviewWidth;
@@ -184,6 +188,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
+        _thumbnailCache = new ThumbnailCache(_imguiRenderer);
+        _assetBrowser.Thumbnails = _thumbnailCache;
         LoadEditorSettings();
         EditorPalette.ApplyTheme(_editorSettings.Theme);
         ConfigureImGui();
@@ -323,6 +329,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         ShutdownVoxelPipeline();
         if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
         _assetPreviewTextureId = 0;
+        _assetBrowser.Thumbnails = null;
+        _thumbnailCache?.Dispose();
+        _thumbnailCache = null;
         _imguiRenderer?.Dispose();
         _imguiRenderer = null;
         _controller?.Dispose();
