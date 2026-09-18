@@ -754,6 +754,82 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 图层管理界面：新增、重命名、上移下移与删除，显示每层占用对象数；
+    /// 第 0 层为默认层不可删除，上限 32 层与相机遮罩位宽一致
+    /// </summary>
+    private void DrawLayerManager()
+    {
+        if (_sceneDocument is not { } document)
+        {
+            ImGui.TextDisabled("打开项目后即可管理当前场景的图层。");
+            return;
+        }
+
+        ImGui.TextUnformatted("场景图层");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("对象在检查器的图层下拉中归属图层；相机组件按图层遮罩决定渲染哪些对象。");
+        var usage = document.LayerUsageCounts();
+        for (var layerIndex = 0; layerIndex < document.LayerNames.Count; layerIndex++)
+        {
+            ImGui.PushID($"LayerRow{layerIndex}");
+            var name = document.LayerNames[layerIndex];
+            ImGui.SetNextItemWidth(160F);
+            if (ImGui.InputText("##名", ref name, 32) && name.Trim().Length > 0 &&
+                document.RenameLayer(layerIndex, name))
+            {
+                MarkSceneDocumentDirty();
+            }
+
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{usage[layerIndex]} 个对象");
+            ImGui.SameLine();
+            ImGui.BeginDisabled(layerIndex == 0);
+            if (ImGui.SmallButton("↑") && document.MoveLayer(layerIndex, -1))
+            {
+                MarkSceneDocumentDirty();
+            }
+
+            ImGui.SameLine(0F, 4F);
+            if (ImGui.SmallButton("↓") && document.MoveLayer(layerIndex, 1))
+            {
+                MarkSceneDocumentDirty();
+            }
+
+            ImGui.SameLine(0F, 4F);
+            if (ImGui.SmallButton("删除") && document.RemoveLayer(layerIndex))
+            {
+                MarkSceneDocumentDirty();
+            }
+
+            ImGui.EndDisabled();
+            if (layerIndex == 0 && ImGui.IsItemHovered())
+                ImGui.SetTooltip("默认层不可删除；删除图层时该层对象回到默认层。");
+            ImGui.PopID();
+        }
+
+        var newLayerName = _newLayerName;
+        ImGui.SetNextItemWidth(160F);
+        ImGui.InputText("##新图层名", ref _newLayerName, 32);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("新增图层"))
+        {
+            if (document.AddLayer(_newLayerName) >= 0)
+            {
+                _newLayerName = string.Empty;
+                MarkSceneDocumentDirty();
+            }
+            else
+            {
+                SetStatus("新增图层失败：名称为空、重复或已达 32 层上限");
+            }
+        }
+
+        _ = newLayerName;
+    }
+
+    private string _newLayerName = string.Empty;
+
     private void DrawProjectAssetSettings()
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "资产");
@@ -770,6 +846,12 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.TextUnformatted("导入与导出格式");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入网格模型与 Minecraft 存档、读写 .palette");
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("图层"))
+            {
+                DrawLayerManager();
                 ImGui.EndTabItem();
             }
 

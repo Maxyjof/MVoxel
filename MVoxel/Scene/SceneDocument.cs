@@ -31,6 +31,134 @@ public sealed class SceneDocument
     /// 场景内全部对象，父子关系由每个对象的 ParentId 表达
     /// </summary>
     public List<SceneObject> Objects { get; set; } = new();
+
+    /// <summary>
+    /// 图层名列表，索引即图层号；第 0 层为默认层不可删除，上限 32 层与遮罩位宽一致
+    /// </summary>
+    public List<string> LayerNames { get; set; } = ["默认"];
+
+    /// <summary>
+    /// 图层总数上限
+    /// </summary>
+    public const int MaximumLayerCount = 32;
+
+    /// <summary>
+    /// 新增图层
+    /// </summary>
+    /// <param name="name">图层名，空白或重名会被拒绝</param>
+    /// <returns>新图层的索引，失败返回 -1</returns>
+    public int AddLayer(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0 || LayerNames.Count >= MaximumLayerCount ||
+            LayerNames.Any(item => string.Equals(item, trimmed, StringComparison.Ordinal)))
+        {
+            return -1;
+        }
+
+        LayerNames.Add(trimmed);
+        return LayerNames.Count - 1;
+    }
+
+    /// <summary>
+    /// 重命名图层
+    /// </summary>
+    /// <param name="index">图层索引</param>
+    /// <param name="name">新名称，空白或与其他层重名会被拒绝</param>
+    /// <returns>是否成功</returns>
+    public bool RenameLayer(int index, string name)
+    {
+        var trimmed = name.Trim();
+        if (index < 0 || index >= LayerNames.Count || trimmed.Length == 0 ||
+            LayerNames.Where((_, other) => other != index)
+                .Any(item => string.Equals(item, trimmed, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        LayerNames[index] = trimmed;
+        return true;
+    }
+
+    /// <summary>
+    /// 移动图层顺序，对象引用的是索引，移动时同步迁移对象的图层归属
+    /// </summary>
+    /// <param name="index">待移动图层</param>
+    /// <param name="delta">位移，-1 上移、1 下移</param>
+    /// <returns>是否成功</returns>
+    public bool MoveLayer(int index, int delta)
+    {
+        var target = index + delta;
+        if (index <= 0 || index >= LayerNames.Count || target < 1 || target >= LayerNames.Count)
+        {
+            return false;
+        }
+
+        var name = LayerNames[index];
+        LayerNames.RemoveAt(index);
+        LayerNames.Insert(target, name);
+        foreach (var sceneObject in Objects)
+        {
+            if (sceneObject.LayerIndex == index)
+            {
+                sceneObject.LayerIndex = target;
+            }
+            else if (delta < 0 && sceneObject.LayerIndex == index - 1)
+            {
+                sceneObject.LayerIndex = index;
+            }
+            else if (delta > 0 && sceneObject.LayerIndex == index + 1)
+            {
+                sceneObject.LayerIndex = index;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 删除图层，第 0 层不可删除；该层上的对象回到第 0 层，其后图层索引整体前移
+    /// </summary>
+    /// <param name="index">待删除图层</param>
+    /// <returns>是否成功</returns>
+    public bool RemoveLayer(int index)
+    {
+        if (index <= 0 || index >= LayerNames.Count)
+        {
+            return false;
+        }
+
+        LayerNames.RemoveAt(index);
+        foreach (var sceneObject in Objects)
+        {
+            if (sceneObject.LayerIndex == index)
+            {
+                sceneObject.LayerIndex = 0;
+            }
+            else if (sceneObject.LayerIndex > index)
+            {
+                sceneObject.LayerIndex--;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 统计每个图层上的对象数量，供图层管理界面显示占用
+    /// </summary>
+    /// <returns>与 LayerNames 等长的计数数组</returns>
+    public int[] LayerUsageCounts()
+    {
+        var counts = new int[LayerNames.Count];
+        foreach (var sceneObject in Objects)
+        {
+            var layer = Math.Clamp(sceneObject.LayerIndex, 0, counts.Length - 1);
+            counts[layer]++;
+        }
+
+        return counts;
+    }
 }
 
 /// <summary>
@@ -62,6 +190,11 @@ public sealed class SceneObject
     /// 是否锁定（防止误选误编辑）
     /// </summary>
     public bool Locked { get; set; }
+
+    /// <summary>
+    /// 所属图层索引，指向场景 LayerNames；相机按遮罩决定渲染哪些图层
+    /// </summary>
+    public int LayerIndex { get; set; }
 
     /// <summary>
     /// 对象的变换组件，体素模型默认格变换
@@ -349,8 +482,27 @@ public static class SceneSerializer
         // 保证内存中的场景图始终可被渲染与层级面板安全访问。
         scene.Objects ??= new List<SceneObject>();
         scene.Objects.RemoveAll(sceneObject => sceneObject is null);
+        // 图层不变量：缺失补默认、超上限截断、名称去空白；对象图层索引夹取
+        scene.LayerNames ??= new List<string>();
+        while (scene.LayerNames.Count == 0)
+        {
+            scene.LayerNames.Add("默认");
+        }
+
+        if (scene.LayerNames.Count > SceneDocument.MaximumLayerCount)
+        {
+            scene.LayerNames.RemoveRange(SceneDocument.MaximumLayerCount,
+                scene.LayerNames.Count - SceneDocument.MaximumLayerCount);
+        }
+
+        for (var nameIndex = 0; nameIndex < scene.LayerNames.Count; nameIndex++)
+        {
+            var layerName = (scene.LayerNames[nameIndex] ?? string.Empty).Trim();
+            scene.LayerNames[nameIndex] = layerName.Length == 0 ? $"图层 {nameIndex}" : layerName;
+        }
         foreach (var sceneObject in scene.Objects)
         {
+            sceneObject.LayerIndex = Math.Clamp(sceneObject.LayerIndex, 0, scene.LayerNames.Count - 1);
             sceneObject.Transform ??= TransformComponent.FromFree(FreeTransform.Identity);
             sceneObject.Components ??= new List<ComponentRecord>();
             sceneObject.Components.RemoveAll(component => component is null || SceneComponentTypes.IsTransform(component));

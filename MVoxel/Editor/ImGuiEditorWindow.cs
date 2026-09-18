@@ -50,6 +50,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private ProjectHandle? _project;
     private bool _showHierarchy = true;
     private string _hierarchySearch = string.Empty;
+
+    /// <summary>层级面板的图层过滤，-1 表示全部图层</summary>
+    private int _hierarchyLayerFilter = -1;
     private readonly HashSet<string> _expandedInspectorComponents = new(StringComparer.Ordinal);
     private StableId? _inspectorExpansionObjectId;
     private bool _showProjectAssets = true;
@@ -839,6 +842,32 @@ DockId=0x6A3C3007,0
         ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
         ImGui.SetNextItemWidth(Math.Max(100F, ImGui.GetContentRegionAvail().X - 4F));
         ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(96F);
+        var filterLayers = _sceneDocument?.LayerNames ?? ["默认"];
+        if (_hierarchyLayerFilter >= filterLayers.Count)
+        {
+            _hierarchyLayerFilter = -1;
+        }
+
+        if (ImGui.BeginCombo("##层级图层过滤", _hierarchyLayerFilter < 0 ? "全部图层" : filterLayers[_hierarchyLayerFilter]))
+        {
+            if (ImGui.Selectable("全部图层", _hierarchyLayerFilter < 0))
+            {
+                _hierarchyLayerFilter = -1;
+            }
+
+            for (var layerIndex = 0; layerIndex < filterLayers.Count; layerIndex++)
+            {
+                if (ImGui.Selectable($"{layerIndex + 1}. {filterLayers[layerIndex]}", _hierarchyLayerFilter == layerIndex))
+                {
+                    _hierarchyLayerFilter = layerIndex;
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
         ImGui.Separator();
         if (_project is null)
         {
@@ -871,8 +900,10 @@ DockId=0x6A3C3007,0
 
     private bool MatchesHierarchySearch(SceneObject sceneObject, IReadOnlyList<SceneObject> objects)
     {
-        if (string.IsNullOrWhiteSpace(_hierarchySearch) ||
-            sceneObject.Name.Contains(_hierarchySearch.Trim(), StringComparison.CurrentCultureIgnoreCase))
+        var searchMatched = string.IsNullOrWhiteSpace(_hierarchySearch) ||
+            sceneObject.Name.Contains(_hierarchySearch.Trim(), StringComparison.CurrentCultureIgnoreCase);
+        var layerMatched = _hierarchyLayerFilter < 0 || sceneObject.LayerIndex == _hierarchyLayerFilter;
+        if (searchMatched && layerMatched)
             return true;
         return objects.Where(item => item.ParentId == sceneObject.Id)
             .Any(child => MatchesHierarchySearch(child, objects));
@@ -2223,7 +2254,7 @@ DockId=0x6A3C3007,0
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
         ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
         ImGui.PushStyleColor(ImGuiCol.Border, ToColor(EditorPalette.Border));
-        if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, 46F), ImGuiChildFlags.Borders))
+        if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, 70F), ImGuiChildFlags.Borders))
         {
             var visible = selectedObject.Visible;
             var visibilityClicked = DrawHierarchyIconButton("##InspectorObjectVisibility", "对象可见", "对象隐藏",
@@ -2254,6 +2285,27 @@ DockId=0x6A3C3007,0
                 if (selectedObject.Locked) _selectedSceneObjectId = null;
             }
             if (_sceneDocumentDirty && ImGui.IsItemHovered()) ImGui.SetTooltip("当前场景有未保存修改");
+            ImGui.SameLine();
+            var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
+            var currentLayer = Math.Clamp(selectedObject.LayerIndex, 0, layerNames.Count - 1);
+            ImGui.SetNextItemWidth(Math.Min(220F, ImGui.GetContentRegionAvail().X));
+            if (ImGui.BeginCombo("##InspectorObjectLayer", $"图层：{layerNames[currentLayer]}"))
+            {
+                for (var layerIndex = 0; layerIndex < layerNames.Count; layerIndex++)
+                {
+                    if (ImGui.Selectable($"{layerIndex + 1}. {layerNames[layerIndex]}", layerIndex == currentLayer))
+                    {
+                        selectedObject.LayerIndex = layerIndex;
+                        MarkSceneDocumentDirty();
+                        _pipeline?.ResetAccumulation();
+                        _accumulationSignature = string.Empty;
+                    }
+                }
+
+                ImGui.EndCombo();
+            }
+
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；渲染窗口中相机的图层遮罩决定本对象是否被该相机渲染");
         }
         ImGui.EndChild();
         ImGui.PopStyleColor(2);
@@ -2679,9 +2731,56 @@ DockId=0x6A3C3007,0
             changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
             BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
+            var mask = data.CullingMask;
+            var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
+            var visibleCount = 0;
+            for (var layerIndex = 0; layerIndex < layerNames.Count; layerIndex++)
+            {
+                if ((mask & (1u << layerIndex)) != 0)
+                {
+                    visibleCount++;
+                }
+            }
+
+            BeginInspectorField("渲染图层", "相机只渲染勾选图层里的对象，其余图层对本相机不可见。");
+            if (ImGui.BeginCombo($"##InspectorCameraLayers", $"{visibleCount}/{layerNames.Count} 可见"))
+            {
+                if (ImGui.Selectable("全选"))
+                {
+                    var all = 0u;
+                    for (var layerIndex = 0; layerIndex < Math.Min(layerNames.Count, SceneDocument.MaximumLayerCount); layerIndex++)
+                    {
+                        all |= 1u << layerIndex;
+                    }
+
+                    changed |= all != mask;
+                    mask = all;
+                }
+
+                if (ImGui.Selectable("全不选"))
+                {
+                    changed |= mask != 0u;
+                    mask = 0u;
+                }
+
+                ImGui.Separator();
+                for (var layerIndex = 0; layerIndex < layerNames.Count; layerIndex++)
+                {
+                    var bit = 1u << layerIndex;
+                    var on = (mask & bit) != 0;
+                    if (ImGui.Checkbox($"{layerNames[layerIndex]}##InspectorCameraLayer{layerIndex}", ref on))
+                    {
+                        mask = on ? mask | bit : mask & ~bit;
+                        changed = true;
+                    }
+                }
+
+                ImGui.EndCombo();
+            }
+
             if (changed)
             {
-                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip));
+                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask));
                 MarkSceneDocumentDirty();
             }
             return;

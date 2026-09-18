@@ -77,6 +77,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private bool _disposed;
     private bool _usingHardwareRayTracing;
     private int _worksetMaximumCells;
+    private VoxelWorld? _lastSyncSource;
     private VoxelLodSettings? _activeLod;
     private System.Numerics.Vector3? _lodCamera;
     private long _worksetLodSignature;
@@ -208,8 +209,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         var lodSignature = LodGroupSignature();
-        if (world.ContentVersion == _workset.SourceVersion && maximumCells == _worksetMaximumCells &&
-            lodSignature == _worksetLodSignature)
+        // 引用一致 + 版本一致才跳过：渲染世界按图层遮罩重组后是新实例，
+        // 必须靠引用差异触发重建，仅比版本号会让两次不同遮罩的组成撞车
+        if (ReferenceEquals(_lastSyncSource, world) && world.ContentVersion == _workset.SourceVersion &&
+            maximumCells == _worksetMaximumCells && lodSignature == _worksetLodSignature)
         {
             return;
         }
@@ -240,6 +243,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _workset = next;
+        _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
         SyncTotalCells = next.Cells.Count;

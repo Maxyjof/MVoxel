@@ -147,10 +147,20 @@ public static class SceneComponentTypes
         }
 
         var data = component.Data;
+        var mask = uint.MaxValue;
+        if (data.TryGetProperty("cullingMask", out var maskElement) && maskElement.ValueKind == JsonValueKind.Number)
+        {
+            var raw = maskElement.GetInt64();
+            if (raw is >= 0 and <= uint.MaxValue)
+            {
+                mask = (uint)raw;
+            }
+        }
+
         return new CameraComponentData(
             ReadFloat(data, "fieldOfViewDegrees", CameraComponentData.Default.FieldOfViewDegrees),
             ReadFloat(data, "nearClip", CameraComponentData.Default.NearClip),
-            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip)).Normalize();
+            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask).Normalize();
     }
 
     /// <summary>
@@ -248,12 +258,13 @@ public readonly record struct LightComponentData(
 public readonly record struct CameraComponentData(
     float FieldOfViewDegrees,
     float NearClip,
-    float FarClip)
+    float FarClip,
+    uint CullingMask)
 {
     /// <summary>
-    /// 默认相机摄影参数
+    /// 默认相机摄影参数：全图层遮罩
     /// </summary>
-    public static CameraComponentData Default => new(50F, 0.05F, 100000F);
+    public static CameraComponentData Default => new(50F, 0.05F, 100000F, uint.MaxValue);
 
     /// <summary>
     /// 将摄影参数限制到渲染管线支持的范围
@@ -265,6 +276,6 @@ public readonly record struct CameraComponentData(
         var far = Math.Clamp(float.IsFinite(FarClip) ? FarClip : Default.FarClip, near + 0.001F, 100_000_000F);
         var fov = Math.Clamp(float.IsFinite(FieldOfViewDegrees) ? FieldOfViewDegrees : Default.FieldOfViewDegrees,
             20F, 120F);
-        return new CameraComponentData(fov, near, far);
+        return new CameraComponentData(fov, near, far, CullingMask);
     }
 }

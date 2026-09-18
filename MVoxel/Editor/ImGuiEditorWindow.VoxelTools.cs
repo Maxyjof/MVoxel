@@ -156,7 +156,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"{_statusText}，已合并 {mergedLayers} 个分层对象");
         }
 
-        _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
+        _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         _lastRenderGpuSubmitMs = 0;
@@ -288,10 +288,84 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 当前渲染图层遮罩对应的渲染世界：按对象可见性与图层过滤合并态工作世界，
+    /// 结果按（内容版本、可见性/图层状态、遮罩）缓存，状态不变时零开销复用
+    /// </summary>
+    /// <param name="cullingMask">相机图层遮罩</param>
+    /// <returns>可同步到 GPU 的渲染世界</returns>
+    private VoxelWorld GetRenderWorld(uint cullingMask)
+    {
+        if (_sceneDocument is null)
+        {
+            return _world;
+        }
+
+        var signature = RenderStateSignature();
+        if (_composedRenderWorld is { } cached && _composedSignature == signature && _composedMask == cullingMask)
+        {
+            return cached;
+        }
+
+        var primaryId = GetVoxelWorldObject()?.Id ?? default;
+        var composed = Scene.RenderWorldComposer.Compose(_world, primaryId, _sceneDocument.Objects,
+            _layerOwnership, cullingMask);
+        _composedRenderWorld = composed;
+        _composedSignature = signature;
+        _composedMask = cullingMask;
+        return composed;
+    }
+
+    /// <summary>
+    /// 渲染状态指纹：工作世界版本、全部对象的可见性与图层、分层所有权规模
+    /// </summary>
+    private long RenderStateSignature()
+    {
+        unchecked
+        {
+            var hash = (long)_world.ContentVersion * 397;
+            foreach (var sceneObject in _sceneDocument?.Objects ?? [])
+            {
+                hash = hash * 31 + (sceneObject.Visible ? 7 : 3);
+                hash = hash * 31 + sceneObject.LayerIndex;
+            }
+
+            foreach (var owned in _layerOwnership.Values)
+            {
+                hash = hash * 31 + owned.Count;
+            }
+
+            return hash;
+        }
+    }
+
+    /// <summary>
+    /// 当前渲染视口选中相机的图层遮罩；未绑定相机对象时渲染全部图层
+    /// </summary>
+    private uint GetActiveRenderCullingMask()
+    {
+        if (GetActiveRenderCameraObject() is not { } cameraObject || _sceneDocument is null)
+        {
+            return uint.MaxValue;
+        }
+
+        var component = cameraObject.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
+        return component is null ? uint.MaxValue : SceneComponentTypes.ReadCamera(component).CullingMask;
+    }
+
+    /// <summary>
     /// 分层体素的所有权表：对象 ID 到该对象拥有的体素坐标集合，
     /// 保存时据此把主世界与分层文件各自写回，互不吞并
     /// </summary>
     private readonly Dictionary<StableId, HashSet<VoxelCoord64>> _layerOwnership = new();
+
+    /// <summary>按图层遮罩组成的渲染世界缓存</summary>
+    private VoxelWorld? _composedRenderWorld;
+
+    /// <summary>缓存对应的渲染状态指纹</summary>
+    private long _composedSignature;
+
+    /// <summary>缓存对应的图层遮罩</summary>
+    private uint _composedMask;
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
@@ -520,7 +594,7 @@ internal sealed partial class ImGuiEditorWindow
 
             _voxelHistory.Clear();
             _selectedVoxel = null;
-            _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
+            _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
             FrameCameraOnWorld();
@@ -649,7 +723,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(_world, GetSceneGpuCellBudget(), _renderSettings.SceneLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            pipeline.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget(), _renderSettings.SceneLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
@@ -742,7 +816,7 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(_world, 0, _renderSettings.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, _renderSettings.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
             // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
