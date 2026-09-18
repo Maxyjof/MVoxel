@@ -1072,6 +1072,123 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private const int MaximumFloodCells = 2_000_000;
 
+    /// <summary>
+    /// 重新加载项目 Materials 目录并上传材质槽表到 GPU
+    /// </summary>
+    private void ReloadMaterialTable()
+    {
+        if (_project is null) return;
+        try
+        {
+            var materials = Project.MaterialAsset.LoadFromProject(_project);
+            _pipeline?.SetMaterialTable(Project.MaterialAsset.PackTable(materials));
+            if (materials.Count > 0)
+                MVoxelLog.Info($"已加载 {materials.Count} 个材质槽定义");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            MVoxelLog.Error("材质表加载失败", exception);
+            SetStatus($"材质表加载失败：{exception.Message}");
+        }
+    }
+
+    private Project.MaterialAsset? _editingMaterial;
+    private string _editingMaterialPath = string.Empty;
+
+    /// <summary>
+    /// 选中 .material 资产时在检查器绘制材质编辑面板，保存后即时重载 GPU 材质表
+    /// </summary>
+    private bool TryDrawSelectedMaterialInspector()
+    {
+        var relativePath = _assetBrowser.SelectedAssetPath;
+        if (_project is null || !relativePath.EndsWith(".material", StringComparison.OrdinalIgnoreCase)) return false;
+        var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(path)) return false;
+
+        if (!string.Equals(_editingMaterialPath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                _editingMaterial = Project.MaterialAsset.Load(path);
+                _editingMaterialPath = path;
+            }
+            catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException or InvalidDataException)
+            {
+                SetStatus($"材质文件读取失败：{exception.Message}");
+                return true;
+            }
+        }
+
+        var material = _editingMaterial!;
+        ImGui.Text("材质");
+        ImGui.Separator();
+        ImGui.TextWrapped(Path.GetFileName(path));
+        var name = material.Name;
+        if (ImGui.InputText("名称", ref name, 48)) material.Name = name;
+        var slot = material.Slot;
+        if (ImGui.InputInt("槽位", ref slot)) material.Slot = Math.Clamp(slot, 0, Project.MaterialAsset.TableSlots - 1);
+
+        DrawFollowableSlider("粗糙度", "粗糙度##mat", 0.01F, 1F, material.Roughness, value => material.Roughness = value);
+        DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);
+        DrawFollowableSlider("发光倍率", "发光倍率##mat", 0F, 32F, material.EmissiveScale, value => material.EmissiveScale = value);
+        DrawFollowableSlider("吸收步长", "吸收步长##mat", 0F, 8F, material.AbsorptionStep, value => material.AbsorptionStep = value);
+
+        var absorption = material.AbsorptionColor ?? new Rgba32(0, 0, 0);
+        var absorptionColor = new System.Numerics.Vector3(absorption.R / 255F, absorption.G / 255F, absorption.B / 255F);
+        var followAbsorption = material.AbsorptionColor is null;
+        if (ImGui.Checkbox("吸收色跟随体素基础色", ref followAbsorption))
+            material.AbsorptionColor = followAbsorption ? null : absorption;
+        if (!followAbsorption && ImGui.ColorEdit3("吸收色", ref absorptionColor))
+            material.AbsorptionColor = new Rgba32(
+                (byte)Math.Round(Math.Clamp(absorptionColor.X, 0F, 1F) * 255F),
+                (byte)Math.Round(Math.Clamp(absorptionColor.Y, 0F, 1F) * 255F),
+                (byte)Math.Round(Math.Clamp(absorptionColor.Z, 0F, 1F) * 255F));
+
+        ImGui.Spacing();
+        if (ImGui.Button("保存材质", new Vector2(120F, 30F)))
+        {
+            try
+            {
+                material.Save(path);
+                ReloadMaterialTable();
+                SetStatus($"材质已保存并生效：{material.Name}（槽位 {material.Slot}）");
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                SetStatus($"材质保存失败：{exception.Message}");
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("重新读取"))
+        {
+            _editingMaterial = null;
+            _editingMaterialPath = string.Empty;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 绘制带“跟随全局”开关的浮点滑条
+    /// </summary>
+    private static void DrawFollowableSlider(string followLabel, string sliderLabel, float minimum, float maximum,
+        float? current, Action<float> apply)
+    {
+        var follow = current is null;
+        if (ImGui.Checkbox(followLabel + "跟随全局##follow", ref follow))
+        {
+            if (!follow) apply(Math.Clamp(current ?? (minimum + maximum) * 0.5F, minimum, maximum));
+            else apply(float.NaN);
+        }
+        // apply(float.NaN) 由 Normalize 的 ClampOrFollow 转回跟随全局
+        if (!follow)
+        {
+            var value = current ?? (minimum + maximum) * 0.5F;
+            if (ImGui.SliderFloat(sliderLabel, ref value, minimum, maximum)) apply(value);
+        }
+    }
+
     private void HandleVoxelShortcuts()
     {
         var io = ImGui.GetIO();
