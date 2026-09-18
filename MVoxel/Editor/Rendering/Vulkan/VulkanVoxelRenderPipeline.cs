@@ -42,6 +42,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private VkBuffer _materialTableBuffer;
     private DeviceMemory _materialTableMemory;
     private float[] _materialTable = [];
+    private VkBuffer _environmentBuffer;
+    private DeviceMemory _environmentMemory;
+    private int _environmentWidth;
+    private int _environmentHeight;
+    private const int EnvironmentCapacity = 256 * 256;
 
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
     // 分块一提交就走，槽位复用时才等自己的栅栏，GPU 分块之间不再被 CPU 等待打断
@@ -262,6 +267,70 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         _materialTable = table;
     }
+
+    /// <summary>
+    /// 上传线性 RGB 环境经纬图到固定容量缓冲；宽高为 0 表示关闭环境贴图
+    /// </summary>
+    /// <param name="linearRgb">每像素 3 个 float 的线性 RGB 数据</param>
+    /// <param name="width">经纬图宽度</param>
+    /// <param name="height">经纬图高度</param>
+    /// <param name="intensity">环境强度</param>
+    internal void SetEnvironment(float[] linearRgb, int width, int height, float intensity = 1F)
+    {
+        ArgumentNullException.ThrowIfNull(linearRgb);
+        if (width == 0 || height == 0)
+        {
+            _environmentWidth = 0;
+            _environmentHeight = 0;
+            return;
+        }
+
+        if (width * height > EnvironmentCapacity)
+            throw new ArgumentException($"环境图 {width}×{height} 超出容量 {EnvironmentCapacity} 像素", nameof(width));
+        if (linearRgb.Length < width * height * 3)
+            throw new ArgumentException("环境图像素数据长度不足", nameof(linearRgb));
+        if (_context is null || _api is not { } api || _environmentBuffer.Handle == 0)
+        {
+            _environmentWidth = width;
+            _environmentHeight = height;
+            return;
+        }
+
+        var packed = new float[width * height * 4];
+        for (var pixel = 0; pixel < width * height; pixel++)
+        {
+            packed[pixel * 4] = linearRgb[pixel * 3];
+            packed[pixel * 4 + 1] = linearRgb[pixel * 3 + 1];
+            packed[pixel * 4 + 2] = linearRgb[pixel * 3 + 2];
+        }
+
+        void* mapped = null;
+        var byteCount = (ulong)(packed.Length * sizeof(float));
+        Check(api.MapMemory(_device, _environmentMemory, 0, byteCount, 0, &mapped), "映射环境贴图缓冲");
+        try
+        {
+            fixed (float* source = packed)
+            {
+                System.Buffer.MemoryCopy(source, mapped, (long)byteCount, (long)byteCount);
+            }
+        }
+        finally
+        {
+            api.UnmapMemory(_device, _environmentMemory);
+        }
+
+        _environmentWidth = width;
+        _environmentHeight = height;
+        _environmentIntensity = Math.Clamp(intensity, 0F, 16F);
+        ResetAccumulation();
+    }
+
+    private float _environmentIntensity = 1F;
+
+    /// <summary>
+    /// 获取当前环境贴图是否启用
+    /// </summary>
+    internal bool HasEnvironment => _environmentWidth > 0 && _environmentHeight > 0;
 
     /// <summary>
     /// 获取最近一次同步中工作集构建耗时毫秒
@@ -505,6 +574,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 api.FreeMemory(_device, _materialTableMemory, null);
             }
 
+            if (_environmentBuffer.Handle != 0)
+            {
+                api.DestroyBuffer(_device, _environmentBuffer, null);
+                api.FreeMemory(_device, _environmentMemory, null);
+            }
+
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
         }
@@ -539,6 +614,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     BufferUsageFlags.StorageBufferBit,
                     MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
                 SetMaterialTable(MVoxel.Project.MaterialAsset.PackTable([]));
+                (_environmentBuffer, _environmentMemory) = CreateBuffer(
+                    (ulong)(EnvironmentCapacity * 4 * sizeof(float)),
+                    BufferUsageFlags.StorageBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
             }
 
             var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
@@ -596,6 +675,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
         parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
+        parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
+        parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
+        parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
+        parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
         if (!pathMode && ParametersEqualForDisplay(parameters))
         {
             return true;
@@ -942,17 +1025,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[6];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[7];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[3] = new(3, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[4] = new(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[5] = new(5, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[6] = new(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 6,
+            BindingCount = 7,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -968,7 +1052,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 4 * TileRingDepth),
+            new(DescriptorType.StorageBuffer, 5 * TileRingDepth),
             new(DescriptorType.StorageImage, 2 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
@@ -1077,7 +1161,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
             DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0,
                 (ulong)(MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float)));
-            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[6];
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[7];
             writes[0] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -1132,7 +1216,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &materialTableInfo
             };
-            _api!.UpdateDescriptorSets(_device, 6, writes, 0, null);
+            DescriptorBufferInfo environmentInfo = new(_environmentBuffer, 0,
+                (ulong)(EnvironmentCapacity * 4 * sizeof(float)));
+            writes[6] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 6,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &environmentInfo
+            };
+            _api!.UpdateDescriptorSets(_device, 7, writes, 0, null);
         }
     }
 
@@ -1250,6 +1345,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         layout(set = 0, binding = 5, std430) readonly buffer MaterialTable
         {
             MaterialSlotData materialSlots[];
+        };
+
+        layout(set = 0, binding = 6, std430) readonly buffer EnvironmentMap
+        {
+            vec4 envTexels[];
         };
 
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
@@ -1420,6 +1520,29 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         vec3 Sky(vec3 rayDirection)
         {
+            if (values[104] > 0.5)
+            {
+                int envWidth = int(values[105]);
+                int envHeight = int(values[106]);
+                float u = atan(rayDirection.x, -rayDirection.z) / 6.28318530718 + 0.5;
+                float v = acos(clamp(rayDirection.y, -1.0, 1.0)) / 3.14159265359;
+                float fx = u * float(envWidth) - 0.5;
+                float fy = v * float(envHeight) - 0.5;
+                int x0 = int(floor(fx));
+                int y0 = int(floor(fy));
+                vec2 blend = vec2(fx - float(x0), fy - float(y0));
+                int x0w = ((x0 % envWidth) + envWidth) % envWidth;
+                int x1w = ((x0 + 1) % envWidth + envWidth) % envWidth;
+                int y0c = clamp(y0, 0, envHeight - 1);
+                int y1c = clamp(y0 + 1, 0, envHeight - 1);
+                vec3 c00 = envTexels[y0c * envWidth + x0w].rgb;
+                vec3 c10 = envTexels[y0c * envWidth + x1w].rgb;
+                vec3 c01 = envTexels[y1c * envWidth + x0w].rgb;
+                vec3 c11 = envTexels[y1c * envWidth + x1w].rgb;
+                vec3 sampled = mix(mix(c00, c10, blend.x), mix(c01, c11, blend.x), blend.y);
+                return sampled * max(values[107], 0.0);
+            }
+
             vec3 skyTop = vec3(values[40], values[41], values[42]);
             vec3 skyHorizon = vec3(values[44], values[45], values[46]);
             vec3 sky = mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));

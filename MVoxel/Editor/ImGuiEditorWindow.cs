@@ -2195,7 +2195,8 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawInspectorProperties()
     {
-        if (_selectedSceneObjectId is null && (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector()))
+        if (_selectedSceneObjectId is null &&
+            (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector() || TryDrawSelectedEnvironmentInspector()))
         {
             return;
         }

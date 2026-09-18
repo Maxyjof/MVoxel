@@ -1170,6 +1170,44 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 选中 .hdr 环境资产时在检查器提供设为/清除环境贴图操作
+    /// </summary>
+    private bool TryDrawSelectedEnvironmentInspector()
+    {
+        var relativePath = _assetBrowser.SelectedAssetPath;
+        if (_project is null || !relativePath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)) return false;
+        var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(path)) return false;
+
+        ImGui.Text("环境贴图");
+        ImGui.Separator();
+        ImGui.TextWrapped(Path.GetFileName(path));
+        ImGui.TextDisabled($"大小  {new FileInfo(path).Length / 1024F:0.0} KB");
+        if (ImGui.Button("设为环境贴图", new Vector2(150F, 30F)))
+        {
+            try
+            {
+                var pixels = Voxels.RadianceImage.Decode(path, out var envWidth, out var envHeight);
+                _pipeline?.SetEnvironment(pixels, envWidth, envHeight);
+                SetStatus($"环境贴图已生效：{envWidth}×{envHeight}");
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
+            {
+                SetStatus($"环境贴图加载失败：{exception.Message}");
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("清除环境贴图", new Vector2(120F, 30F)))
+        {
+            _pipeline?.SetEnvironment([], 0, 0);
+            SetStatus("已恢复程序化天空");
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 绘制带“跟随全局”开关的浮点滑条
     /// </summary>
     private static void DrawFollowableSlider(string followLabel, string sliderLabel, float minimum, float maximum,
