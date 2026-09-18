@@ -77,6 +77,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private bool _disposed;
     private bool _usingHardwareRayTracing;
     private int _worksetMaximumCells;
+    private VoxelLodSettings? _activeLod;
+    private System.Numerics.Vector3? _lodCamera;
+    private long _worksetLodSignature;
 
     /// <summary>
     /// 创建体素 Vulkan 资源边界
@@ -189,10 +192,24 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 同步稀疏体素世界到 Vulkan 工作集
     /// </summary>
     /// <param name="world">体素世界</param>
-    internal void SyncWorld(VoxelWorld world, int maximumCells = 0)
+    internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null)
     {
         ArgumentNullException.ThrowIfNull(world);
-        if (world.ContentVersion == _workset.SourceVersion && maximumCells == _worksetMaximumCells)
+        // 编辑类同步不带相机与 LOD：沿用上一次的活动配置，避免笔刷提交把 LOD 分档重置
+        if (lod is not null)
+        {
+            _activeLod = lod;
+        }
+
+        if (camera.HasValue)
+        {
+            _lodCamera = camera;
+        }
+
+        var lodSignature = LodGroupSignature();
+        if (world.ContentVersion == _workset.SourceVersion && maximumCells == _worksetMaximumCells &&
+            lodSignature == _worksetLodSignature)
         {
             return;
         }
@@ -206,7 +223,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         LastSyncWasBudgeted = requestedFull;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var next = VoxelGpuWorkset.Build(world, maximumCells);
+        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera);
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         SyncPackMs = 0;
         SyncUploadMs = 0;
@@ -224,9 +241,39 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         _workset = next;
         _worksetMaximumCells = maximumCells;
+        _worksetLodSignature = lodSignature;
         SyncTotalCells = next.Cells.Count;
         ResetAccumulation();
     }
+
+    /// <summary>
+    /// LOD 分组指纹：相机按 16 格量化（跨区块界才变）与活动 LOD 配置的组合哈希，
+    /// 未启用 LOD 时恒为 0，保证不启用时行为与旧版一致
+    /// </summary>
+    private long LodGroupSignature()
+    {
+        if (_activeLod is not { Enabled: true } || _lodCamera is not { } camera)
+        {
+            return 0;
+        }
+
+        var lod = _activeLod;
+        lod.ClampAll();
+        unchecked
+        {
+            var hash = (long)HashCameraAxis(camera.X) * 31 + HashCameraAxis(camera.Y);
+            hash = hash * 31 + HashCameraAxis(camera.Z);
+            hash = hash * 131 + lod.LevelCount;
+            foreach (var distance in lod.Distances)
+            {
+                hash = hash * 131 + distance.GetHashCode();
+            }
+
+            return hash;
+        }
+    }
+
+    private static int HashCameraAxis(float value) => (int)MathF.Floor(value / 16F);
 
     /// <summary>
     /// 获取当前同步完成的体素工作集
@@ -1422,7 +1469,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
-            out ivec3 hitCell, bool ignoreTranslucent)
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent)
         {
             int stack[64];
             int stackSize = 1;
@@ -1433,6 +1480,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             hitFlags = 0u;
             hitSlot = 0u;
             hitCell = ivec3(0);
+            hitExtent = ivec3(1);
             int voxelCount = int(values[94]);
             int nodeCount = int(values[95]);
             vec3 regionOrigin = vec3(values[16], values[17], values[18]);
@@ -1450,8 +1498,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     for (int index = node.links.z; index < endIndex; index++)
                     {
                         VoxelCell cell = cells[index];
+                        // position.w 打包盒体三维格数（各 8 位，0 兼容为 1），
+                        // 贪心合并与 LOD 大块都以一个盒图元表达
+                        ivec3 packedExtent = ivec3(
+                            max(cell.position.w & 0xFF, 1),
+                            max((cell.position.w >> 8) & 0xFF, 1),
+                            max((cell.position.w >> 16) & 0xFF, 1));
                         vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
-                        vec3 voxelMax = voxelMin + vec3(1.0);
+                        vec3 voxelMax = voxelMin + vec3(packedExtent);
                         float distance;
                         vec3 normal;
                         if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
@@ -1464,6 +1518,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitFlags = cell.metadata.x >> 16;
                             hitSlot = cell.metadata.x & 0xFFFFu;
                             hitCell = cell.position.xyz;
+                            hitExtent = packedExtent;
                         }
                     }
                 }
@@ -1487,7 +1542,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             uint flags;
             uint slot;
             ivec3 cell;
-            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, cell, true) && distance < maxDistance;
+            ivec3 cellExtent;
+            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, cell, cellExtent, true) && distance < maxDistance;
         }
 
         float Random(inout uint state);
@@ -1646,7 +1702,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 uint hitFlags;
                 uint hitSlot;
                 ivec3 hitCell;
-                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, false))
+                ivec3 hitExtent;
+                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false))
                 {
                     float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
@@ -1698,17 +1755,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (bounce == 0) primarySurfaceHit = true;
                 if (!pathMode)
                 {
-                    vec3 localPoint = clamp(fract(hitPoint), vec3(0.0), vec3(1.0));
+                    // 描边距离按命中盒体的局部坐标计算：合并大块只在块边缘描边，
+                    // 块内部不再出现单位体素网格线
+                    vec3 outlineBoxMin = vec3(values[16], values[17], values[18]) + vec3(hitCell);
+                    vec3 outlineExtent = vec3(hitExtent);
+                    vec3 localPoint = clamp(hitPoint - outlineBoxMin, vec3(0.0), outlineExtent);
+                    vec3 remainPoint = outlineExtent - localPoint;
                     float edgeDistance;
                     if (abs(hitNormal.x) > 0.5)
-                        edgeDistance = min(min(localPoint.y, 1.0 - localPoint.y),
-                            min(localPoint.z, 1.0 - localPoint.z));
+                        edgeDistance = min(min(localPoint.y, remainPoint.y), min(localPoint.z, remainPoint.z));
                     else if (abs(hitNormal.y) > 0.5)
-                        edgeDistance = min(min(localPoint.x, 1.0 - localPoint.x),
-                            min(localPoint.z, 1.0 - localPoint.z));
+                        edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.z, remainPoint.z));
                     else
-                        edgeDistance = min(min(localPoint.x, 1.0 - localPoint.x),
-                            min(localPoint.y, 1.0 - localPoint.y));
+                        edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.y, remainPoint.y));
                     float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
                     float outlineAmount = values[57] > 0.5
                         ? 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance)
@@ -1784,7 +1843,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
-                    float topPlane = values[17] + float(hitCell.y) + 1.0;
+                    float topPlane = values[17] + float(hitCell.y) + float(hitExtent.y);
                     vec3 slabEntry = backfaceHit ? rayOrigin : hitPoint;
                     // 柱底：垂直向下探测第一段不透明面（跳过全部半透明）。起点必须落在
                     // 水格中心而非水面平面上：起点恰在边界平面时 fromInside 判定随 fp
@@ -1797,9 +1856,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     uint probeFlags;
                     uint probeSlot;
                     ivec3 probeCell;
-                    vec3 probeOrigin = vec3(slabEntry.x, values[17] + float(hitCell.y) + 0.5, slabEntry.z);
+                    ivec3 probeExtent;
+                    vec3 probeOrigin = vec3(slabEntry.x, values[17] + float(hitCell.y) + float(hitExtent.y) * 0.5, slabEntry.z);
                     if (TraceClosest(probeOrigin, vec3(0.0, -1.0, 0.0),
-                        probeDistance, probeNormal, probeColor, probeFlags, probeSlot, probeCell, true))
+                        probeDistance, probeNormal, probeColor, probeFlags, probeSlot, probeCell, probeExtent, true))
                         bottomPlane = probeOrigin.y - probeDistance;
                     if (bottomPlane >= slabEntry.y) bottomPlane = values[17] + float(hitCell.y);
                     // 视线方向第一段不透明面（湖底或岸壁）给出水段的另一侧边界
@@ -1809,10 +1869,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     uint forwardFlags;
                     uint forwardSlot;
                     ivec3 forwardCell;
+                    ivec3 forwardExtent;
                     float tForward = 3.4e38;
                     bool forwardHit = false;
                     if (TraceClosest(slabEntry + rayDirection * 0.001, rayDirection,
-                        forwardDistance, forwardNormal, forwardColor, forwardFlags, forwardSlot, forwardCell, true))
+                        forwardDistance, forwardNormal, forwardColor, forwardFlags, forwardSlot, forwardCell, forwardExtent, true))
                     {
                         tForward = forwardDistance + 0.001;
                         forwardHit = true;
@@ -2138,9 +2199,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             var green = cell.Value.Color.G / 255F;
             var blue = cell.Value.Color.B / 255F;
             var alpha = cell.Value.Color.A / 255F;
+            var extent = cell.ExtentX | (cell.ExtentY << 8) | (cell.ExtentZ << 16);
             MemoryMarshal.Write(bytes.AsSpan(offset + 0, 4), in x);
             MemoryMarshal.Write(bytes.AsSpan(offset + 4, 4), in y);
             MemoryMarshal.Write(bytes.AsSpan(offset + 8, 4), in z);
+            MemoryMarshal.Write(bytes.AsSpan(offset + 12, 4), in extent);
             MemoryMarshal.Write(bytes.AsSpan(offset + 16, 4), in red);
             MemoryMarshal.Write(bytes.AsSpan(offset + 20, 4), in green);
             MemoryMarshal.Write(bytes.AsSpan(offset + 24, 4), in blue);

@@ -345,6 +345,16 @@ public sealed class RenderSettings
     public bool SceneShading = true;
 
     /// <summary>
+    /// 场景窗口距离 LOD 配置，默认关闭
+    /// </summary>
+    public VoxelLodSettings SceneLod = new();
+
+    /// <summary>
+    /// 渲染窗口距离 LOD 配置，默认关闭
+    /// </summary>
+    public VoxelLodSettings RenderLod = new();
+
+    /// <summary>
     /// Bloom 强度，过曝亮部按此倍率叠加回画面
     /// </summary>
     public float BloomIntensity = 0.35F;
@@ -388,11 +398,19 @@ public sealed class RenderSettings
         preview.AmbientOcclusionEnabled = false;
         preview.DirectLightingMIS = false;
         preview.BloomEnabled = false;
+        preview.SceneLod = SceneLod.Clone();
+        preview.RenderLod = RenderLod.Clone();
         return preview;
     }
 
     /// <summary>创建导出任务使用的独立参数快照，避免用户继续编辑配置时改变排队任务。</summary>
-    internal RenderSettings CloneForExport() => (RenderSettings)MemberwiseClone();
+    internal RenderSettings CloneForExport()
+    {
+        var clone = (RenderSettings)MemberwiseClone();
+        clone.SceneLod = SceneLod.Clone();
+        clone.RenderLod = RenderLod.Clone();
+        return clone;
+    }
 
     /// <summary>
     /// 由方位角与仰角推导的单位太阳方向
@@ -461,6 +479,8 @@ public sealed class RenderSettings
         FocusDistance = Math.Clamp(FocusDistance, 1F, 512F);
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
         Backend = Enum.IsDefined(Backend) ? Backend : RenderBackend.Gpu;
+        (SceneLod ??= new VoxelLodSettings()).ClampAll();
+        (RenderLod ??= new VoxelLodSettings()).ClampAll();
     }
 
     /// <summary>

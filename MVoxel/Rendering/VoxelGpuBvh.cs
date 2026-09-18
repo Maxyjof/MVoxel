@@ -99,18 +99,18 @@ public sealed class VoxelGpuBvh
             var nodeMinX = first.X;
             var nodeMinY = first.Y;
             var nodeMinZ = first.Z;
-            var nodeMaxX = first.X;
-            var nodeMaxY = first.Y;
-            var nodeMaxZ = first.Z;
+            var nodeMaxX = first.X + first.ExtentX - 1;
+            var nodeMaxY = first.Y + first.ExtentY - 1;
+            var nodeMaxZ = first.Z + first.ExtentZ - 1;
             for (var offset = 1; offset < leafCount[index]; offset++)
             {
                 var cell = cells[start[index] + offset];
                 nodeMinX = Math.Min(nodeMinX, cell.X);
                 nodeMinY = Math.Min(nodeMinY, cell.Y);
                 nodeMinZ = Math.Min(nodeMinZ, cell.Z);
-                nodeMaxX = Math.Max(nodeMaxX, cell.X);
-                nodeMaxY = Math.Max(nodeMaxY, cell.Y);
-                nodeMaxZ = Math.Max(nodeMaxZ, cell.Z);
+                nodeMaxX = Math.Max(nodeMaxX, cell.X + cell.ExtentX - 1);
+                nodeMaxY = Math.Max(nodeMaxY, cell.Y + cell.ExtentY - 1);
+                nodeMaxZ = Math.Max(nodeMaxZ, cell.Z + cell.ExtentZ - 1);
             }
 
             minX[index] = nodeMinX;
@@ -280,18 +280,21 @@ public sealed class VoxelGpuBvh
         out int minX, out int minY, out int minZ, out int maxX, out int maxY, out int maxZ)
     {
         var first = cells[indices[start]];
-        minX = maxX = first.X;
-        minY = maxY = first.Y;
-        minZ = maxZ = first.Z;
+        minX = first.X;
+        minY = first.Y;
+        minZ = first.Z;
+        maxX = first.X + first.ExtentX - 1;
+        maxY = first.Y + first.ExtentY - 1;
+        maxZ = first.Z + first.ExtentZ - 1;
         for (var index = 1; index < count; index++)
         {
             var cell = cells[indices[start + index]];
             minX = Math.Min(minX, cell.X);
             minY = Math.Min(minY, cell.Y);
             minZ = Math.Min(minZ, cell.Z);
-            maxX = Math.Max(maxX, cell.X);
-            maxY = Math.Max(maxY, cell.Y);
-            maxZ = Math.Max(maxZ, cell.Z);
+            maxX = Math.Max(maxX, cell.X + cell.ExtentX - 1);
+            maxY = Math.Max(maxY, cell.Y + cell.ExtentY - 1);
+            maxZ = Math.Max(maxZ, cell.Z + cell.ExtentZ - 1);
         }
     }
 

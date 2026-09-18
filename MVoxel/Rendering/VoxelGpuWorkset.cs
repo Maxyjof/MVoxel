@@ -4,13 +4,18 @@ using MVoxel.Voxels;
 namespace MVoxel.Rendering;
 
 /// <summary>
-/// GPU 工作集中的单个体素
+/// GPU 工作集中的单个图元：一个同值盒体。默认 1³ 即原始体素；
+/// 贪心合并把相邻同值体素并成更大的盒，距离 LOD 用 2^k 大块近似远处区块
 /// </summary>
-/// <param name="X">相对于工作集原点的 X 坐标</param>
-/// <param name="Y">相对于工作集原点的 Y 坐标</param>
-/// <param name="Z">相对于工作集原点的 Z 坐标</param>
+/// <param name="X">相对于工作集原点的 X 坐标（盒体最小角）</param>
+/// <param name="Y">相对于工作集原点的 Y 坐标（盒体最小角）</param>
+/// <param name="Z">相对于工作集原点的 Z 坐标（盒体最小角）</param>
 /// <param name="Value">体素材质与颜色</param>
-public readonly record struct VoxelGpuCell(int X, int Y, int Z, VoxelValue Value);
+/// <param name="ExtentX">盒体 X 方向格数，至少 1</param>
+/// <param name="ExtentY">盒体 Y 方向格数，至少 1</param>
+/// <param name="ExtentZ">盒体 Z 方向格数，至少 1</param>
+public readonly record struct VoxelGpuCell(
+    int X, int Y, int Z, VoxelValue Value, int ExtentX = 1, int ExtentY = 1, int ExtentZ = 1);
 
 /// <summary>
 /// 从稀疏世界生成的确定性 GPU 工作集快照
@@ -87,7 +92,8 @@ public sealed class VoxelGpuWorkset
     /// <returns>可直接上传到 GPU 的确定性快照</returns>
     /// <exception cref="ArgumentNullException">世界为空时抛出</exception>
     /// <exception cref="InvalidDataException">包围盒尺寸超出 GPU 局部坐标范围时抛出</exception>
-    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0)
+    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0,
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null)
     {
         ArgumentNullException.ThrowIfNull(world);
         if (!world.TryGetBounds(out var minimum, out var maximum))
@@ -103,7 +109,7 @@ public sealed class VoxelGpuWorkset
             CheckedExtent(minimum.Z, maximum.Z, nameof(minimum)));
 
         // 区块按 (Z, Y, X) 的列顺序排好后，每个区块内部按键升序遍历就是全局 Z、Y、X 稳定序，
-        // 因此只需区块内的小排序与前缀和定位，不再对全体体素做全局排序
+        // 因此只需区块内的小排序，不再对全体体素做全局排序
         var chunks = world.SnapshotChunks();
         chunks.Sort(static (left, right) =>
         {
@@ -114,38 +120,8 @@ public sealed class VoxelGpuWorkset
         });
 
         var chunkCount = chunks.Count;
-        var starts = new long[chunkCount + 1];
-        for (var index = 0; index < chunkCount; index++)
-        {
-            starts[index + 1] = starts[index] + chunks[index].Chunk.OccupiedCount;
-        }
-
-        var occupiedCount = checked((int)starts[chunkCount]);
-        var sampleStride = maximumCells > 0 && occupiedCount > maximumCells
-            ? (occupiedCount + maximumCells - 1) / maximumCells
-            : 1;
-        var cellCount = sampleStride == 1
-            ? occupiedCount
-            : CountSampled(starts, chunkCount, sampleStride);
-        var cells = new VoxelGpuCell[cellCount];
-        var writeStarts = new int[chunkCount + 1];
-        if (sampleStride == 1)
-        {
-            for (var index = 0; index <= chunkCount; index++)
-            {
-                writeStarts[index] = (int)starts[index];
-            }
-        }
-        else
-        {
-            for (var index = 0; index < chunkCount; index++)
-            {
-                writeStarts[index + 1] = writeStarts[index] +
-                    CountSampledInChunk(starts[index], starts[index + 1], sampleStride);
-            }
-        }
-
-        var emissiveTotals = new int[chunkCount];
+        var lodActive = lod is { Enabled: true } && cameraPosition.HasValue;
+        var perChunk = new List<VoxelGpuCell>[chunkCount];
         System.Threading.Tasks.Parallel.For(0, chunkCount,
             new System.Threading.Tasks.ParallelOptions
             {
@@ -162,59 +138,178 @@ public sealed class VoxelGpuWorkset
                 }
 
                 Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
-                var emissive = 0;
-                var write = writeStarts[chunkIndex];
-                for (var localIndex = 0; localIndex < pairs.Length; localIndex++)
+                var level = 0;
+                if (lodActive)
                 {
-                    if (sampleStride != 1)
-                    {
-                        var global = starts[chunkIndex] + localIndex;
-                        if (global % sampleStride != 0)
-                        {
-                            continue;
-                        }
-                    }
-
-                    var (key, value) = pairs[localIndex];
-                    var local = SparseVoxelChunk.FromIndex(key);
-                    var cell = new VoxelGpuCell(
-                        (int)(coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X),
-                        (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y),
-                        (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z),
-                        value);
-                    cells[write++] = cell;
-                    if (VoxelFlags.Has(value.Flags, VoxelFlags.Emissive)) emissive++;
+                    level = lod!.LevelFor(ChunkDistance(cameraPosition!.Value, coordinate, minimum));
                 }
 
-                emissiveTotals[chunkIndex] = emissive;
+                var list = new List<VoxelGpuCell>(pairs.Length);
+                if (level == 0)
+                {
+                    GreedyMergeChunk(pairs, coordinate, minimum, list);
+                }
+                else
+                {
+                    CoarsenChunk(pairs, coordinate, minimum, level, list);
+                }
+
+                perChunk[chunkIndex] = list;
             });
 
+        var total = 0;
+        foreach (var list in perChunk) total += list.Count;
+        var sampleStride = maximumCells > 0 && total > maximumCells
+            ? (total + maximumCells - 1) / maximumCells
+            : 1;
+        var cells = new VoxelGpuCell[sampleStride == 1 ? total : (total + sampleStride - 1) / sampleStride];
         var emissiveCount = 0;
-        foreach (var emissive in emissiveTotals) emissiveCount += emissive;
+        var write = 0;
+        var serial = 0;
+        foreach (var list in perChunk)
+        {
+            foreach (var cell in list)
+            {
+                if (sampleStride == 1 || serial++ % sampleStride == 0)
+                {
+                    cells[write++] = cell;
+                    if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissiveCount++;
+                }
+            }
+        }
+
         return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
     }
 
     /// <summary>
-    /// 统计全局编号落在采样点上的体素总数
+    /// 相机到区块世界 AABB 的最短距离（格）。区块覆盖世界坐标
+    /// [coordinate*32, coordinate*32+31]，相机坐标已是世界系
     /// </summary>
-    private static int CountSampled(long[] starts, int chunkCount, int sampleStride)
+    private static float ChunkDistance(System.Numerics.Vector3 camera, ChunkCoord64 coordinate, VoxelCoord64 minimum)
     {
-        var total = 0;
-        for (var index = 0; index < chunkCount; index++)
-        {
-            total += CountSampledInChunk(starts[index], starts[index + 1], sampleStride);
-        }
-
-        return total;
+        _ = minimum;
+        var sum = 0F;
+        var lowX = coordinate.X * VoxelWorld.ChunkSize;
+        var lowY = coordinate.Y * VoxelWorld.ChunkSize;
+        var lowZ = coordinate.Z * VoxelWorld.ChunkSize;
+        var highX = lowX + VoxelWorld.ChunkSize - 1;
+        var highY = lowY + VoxelWorld.ChunkSize - 1;
+        var highZ = lowZ + VoxelWorld.ChunkSize - 1;
+        var dx = camera.X < lowX ? (float)(lowX - camera.X) : camera.X > highX ? (float)(camera.X - highX) : 0F;
+        var dy = camera.Y < lowY ? (float)(lowY - camera.Y) : camera.Y > highY ? (float)(camera.Y - highY) : 0F;
+        var dz = camera.Z < lowZ ? (float)(lowZ - camera.Z) : camera.Z > highZ ? (float)(camera.Z - highZ) : 0F;
+        sum = dx * dx + dy * dy + dz * dz;
+        return MathF.Sqrt(sum);
     }
 
     /// <summary>
-    /// 统计全局编号区间 [from, to) 内命中采样步数的条数
+    /// 区块内贪心盒体合并：按 Z、Y、X 稳定序取种子，先沿 X 扩同值游程，
+    /// 再沿 Y 扩成板、沿 Z 扩成块；合并盒严格同值且互不重叠，
+    /// 最近命中结果与逐格表示逐像素一致
     /// </summary>
-    private static int CountSampledInChunk(long from, long to, int sampleStride)
+    private static void GreedyMergeChunk((int Key, VoxelValue Value)[] pairs, ChunkCoord64 coordinate,
+        VoxelCoord64 minimum, List<VoxelGpuCell> output)
     {
-        var firstHit = from + ((sampleStride - from % sampleStride) % sampleStride);
-        return firstHit >= to ? 0 : (int)((to - 1 - firstHit) / sampleStride) + 1;
+        var lookup = new Dictionary<int, VoxelValue>(pairs.Length);
+        foreach (var (key, value) in pairs)
+        {
+            lookup[key] = value;
+        }
+
+        var visited = new bool[VoxelWorld.ChunkVolume];
+        foreach (var (key, value) in pairs)
+        {
+            if (visited[key])
+            {
+                continue;
+            }
+
+            var origin = SparseVoxelChunk.FromIndex(key);
+            var extentX = 1;
+            while (origin.X + extentX < VoxelWorld.ChunkSize && TryUnvisited(lookup, visited,
+                       SparseVoxelChunk.ToIndex(new LocalCoord(origin.X + extentX, origin.Y, origin.Z)), value))
+            {
+                extentX++;
+            }
+
+            var extentY = 1;
+            ExpandPlate:
+            while (origin.Y + extentY < VoxelWorld.ChunkSize)
+            {
+                for (var dx = 0; dx < extentX; dx++)
+                {
+                    if (!TryUnvisited(lookup, visited, SparseVoxelChunk.ToIndex(
+                            new LocalCoord(origin.X + dx, origin.Y + extentY, origin.Z)), value))
+                    {
+                        break ExpandPlate;
+                    }
+                }
+
+                extentY++;
+            }
+
+            var extentZ = 1;
+            ExpandBlock:
+            while (origin.Z + extentZ < VoxelWorld.ChunkSize)
+            {
+                for (var dy = 0; dy < extentY; dy++)
+                for (var dx = 0; dx < extentX; dx++)
+                {
+                    if (!TryUnvisited(lookup, visited, SparseVoxelChunk.ToIndex(
+                            new LocalCoord(origin.X + dx, origin.Y + dy, origin.Z + extentZ)), value))
+                    {
+                        break ExpandBlock;
+                    }
+                }
+
+                extentZ++;
+            }
+
+            for (var z = 0; z < extentZ; z++)
+            for (var y = 0; y < extentY; y++)
+            for (var x = 0; x < extentX; x++)
+            {
+                visited[SparseVoxelChunk.ToIndex(new LocalCoord(origin.X + x, origin.Y + y, origin.Z + z))] = true;
+            }
+
+            output.Add(new VoxelGpuCell(
+                (int)(coordinate.X * VoxelWorld.ChunkSize + origin.X - minimum.X),
+                (int)(coordinate.Y * VoxelWorld.ChunkSize + origin.Y - minimum.Y),
+                (int)(coordinate.Z * VoxelWorld.ChunkSize + origin.Z - minimum.Z),
+                value, extentX, extentY, extentZ));
+        }
+    }
+
+    /// <summary>
+    /// 判断某局部格是否未访问且与种子同值
+    /// </summary>
+    private static bool TryUnvisited(Dictionary<int, VoxelValue> lookup, bool[] visited, int key, VoxelValue expected) =>
+        !visited[key] && lookup.TryGetValue(key, out var value) && value == expected;
+
+    /// <summary>
+    /// 距离 LOD 粗化：区块按 2^level 网格分桶，每桶取稳定序首个体素的值发射一个 2^k 大块
+    /// </summary>
+    private static void CoarsenChunk((int Key, VoxelValue Value)[] pairs, ChunkCoord64 coordinate,
+        VoxelCoord64 minimum, int level, List<VoxelGpuCell> output)
+    {
+        var blockSize = Math.Min(1 << level, VoxelWorld.ChunkSize);
+        var seen = new HashSet<int>();
+        foreach (var (key, value) in pairs)
+        {
+            var local = SparseVoxelChunk.FromIndex(key);
+            var blockKey = (local.Z / blockSize * (VoxelWorld.ChunkSize / blockSize) + local.Y / blockSize)
+                * (VoxelWorld.ChunkSize / blockSize) + local.X / blockSize;
+            if (!seen.Add(blockKey))
+            {
+                continue;
+            }
+
+            output.Add(new VoxelGpuCell(
+                (int)(coordinate.X * VoxelWorld.ChunkSize + local.X / blockSize * blockSize - minimum.X),
+                (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y / blockSize * blockSize - minimum.Y),
+                (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z / blockSize * blockSize - minimum.Z),
+                value, blockSize, blockSize, blockSize));
+        }
     }
 
     /// <summary>

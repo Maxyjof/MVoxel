@@ -290,13 +290,16 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         for (var cellIndex = 0; cellIndex < workset.Cells.Count; cellIndex++)
         {
             var cell = workset.Cells[cellIndex];
-            var x = cell.X;
-            var y = cell.Y;
-            var z = cell.Z;
+            var x = (float)cell.X;
+            var y = (float)cell.Y;
+            var z = (float)cell.Z;
+            var ex = (float)cell.ExtentX;
+            var ey = (float)cell.ExtentY;
+            var ez = (float)cell.ExtentZ;
             var points = new[]
             {
-                x, y, z, x + 1, y, z, x + 1, y + 1, z, x, y + 1, z,
-                x, y, z + 1, x + 1, y, z + 1, x + 1, y + 1, z + 1, x, y + 1, z + 1,
+                x, y, z, x + ex, y, z, x + ex, y + ey, z, x, y + ey, z,
+                x, y, z + ez, x + ex, y, z + ez, x + ex, y + ey, z + ez, x, y + ey, z + ez,
             };
             for (var pointIndex = 0; pointIndex < points.Length; pointIndex++) vertices[vertexOffset++] = points[pointIndex];
             var baseVertex = (uint)(cellIndex * VerticesPerVoxel);
@@ -331,7 +334,8 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         MemoryMarshal.Write(destination[0..4], cell.X);
         MemoryMarshal.Write(destination[4..8], cell.Y);
         MemoryMarshal.Write(destination[8..12], cell.Z);
-        MemoryMarshal.Write(destination[12..16], 0);
+        var extent = cell.ExtentX | (cell.ExtentY << 8) | (cell.ExtentZ << 16);
+        MemoryMarshal.Write(destination[12..16], extent);
         destination[16] = cell.Value.Color.R;
         destination[17] = cell.Value.Color.G;
         destination[18] = cell.Value.Color.B;

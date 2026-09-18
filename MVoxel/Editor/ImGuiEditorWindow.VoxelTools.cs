@@ -649,7 +649,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(_world, GetSceneGpuCellBudget());
+            pipeline.SyncWorld(_world, GetSceneGpuCellBudget(), _renderSettings.SceneLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
@@ -708,6 +708,10 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
             .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
             .Append(',').Append(settings.SceneShading)
+            .Append(",lod:").Append(settings.SceneLod.Enabled).Append(';').Append(settings.SceneLod.LevelCount)
+            .Append(':').Append(string.Join(",", settings.SceneLod.Distances))
+            .Append("|rlod:").Append(settings.RenderLod.Enabled).Append(';').Append(settings.RenderLod.LevelCount)
+            .Append(':').Append(string.Join(",", settings.RenderLod.Distances))
             .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
             .Append(',').Append(settings.SceneBackgroundColor.Z);
         if (GetActiveRenderCameraObject() is null)
@@ -738,7 +742,7 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(_world);
+            pipeline.SyncWorld(_world, 0, _renderSettings.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
             // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
@@ -1735,6 +1739,63 @@ internal sealed partial class ImGuiEditorWindow
             Toggle("景深", ref _settingsToggleDof, value => settings.DepthOfField = value);
             SliderFloat("光圈半径##dof", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
             SliderFloat("对焦距离##dof", ref settings.FocusDistance, 1F, 256F, "%.1f");
+        }
+
+        DrawLodSection(settings);
+    }
+
+    /// <summary>
+    /// 绘制距离 LOD 配置区：场景窗口与渲染窗口各一份，默认关闭，
+    /// 可调整级数与每级生效距离
+    /// </summary>
+    /// <param name="settings">目标渲染设置</param>
+    private void DrawLodSection(RenderSettings settings)
+    {
+        if (!ImGui.CollapsingHeader("距离 LOD"))
+        {
+            return;
+        }
+
+        DrawLodGroup("场景窗口", settings.SceneLod);
+        DrawLodGroup("渲染窗口", settings.RenderLod);
+    }
+
+    /// <summary>
+    /// 绘制单窗口 LOD 分组：开关、级数与逐级起始距离
+    /// </summary>
+    private static void DrawLodGroup(string label, VoxelLodSettings lod)
+    {
+        var enabled = lod.Enabled;
+        if (ImGui.Checkbox($"{label}启用 LOD##lodEnabled{label}", ref enabled))
+        {
+            lod.Enabled = enabled;
+        }
+
+        if (!enabled)
+        {
+            return;
+        }
+
+        var levels = lod.LevelCount;
+        if (ImGui.SliderInt($"{label}级数##lodCount{label}", ref levels, 1, VoxelLodSettings.MaximumLevels))
+        {
+            lod.LevelCount = levels;
+            lod.ClampAll();
+        }
+
+        for (var index = 0; index < Math.Max(lod.LevelCount - 1, 0); index++)
+        {
+            var value = index < lod.Distances.Length ? lod.Distances[index] : 64F * (index + 1);
+            ImGui.SetNextItemWidth(-1F);
+            if (ImGui.DragFloat($"{label}第 {index + 1} 级起始距离##lodDist{label}{index}", ref value,
+                    1F, VoxelLodSettings.MinimumDistance, 100_000F, "%.0f 格"))
+            {
+                var distances = (float[])lod.Distances.Clone();
+                Array.Resize(ref distances, Math.Max(distances.Length, Math.Max(lod.LevelCount - 1, 0)));
+                distances[index] = value;
+                lod.Distances = distances;
+                lod.ClampAll();
+            }
         }
     }
 
