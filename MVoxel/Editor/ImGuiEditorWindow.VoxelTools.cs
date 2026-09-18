@@ -955,7 +955,9 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 提交一组格子为一次可撤销事务并同步 GPU 工作集
+    /// 提交一组格子为一次可撤销事务。不在此处立即重建 GPU 工作集：
+    /// 场景视图与渲染视图每帧各自按预算同步，同帧多笔与撤销连发自动合并，
+    /// 避免拖动一次触发多次全量重建
     /// </summary>
     private void CommitCells(string name, IReadOnlyList<VoxelCoord64> cells, VoxelValue value)
     {
@@ -969,7 +971,6 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
     }
 
@@ -1300,25 +1301,23 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 执行一次撤销并同步体素渲染数据
+    /// 执行一次撤销；工作集由视图每帧按预算同步，这里只使累积失效
     /// </summary>
     private bool ApplyUndo()
     {
         if (!_voxelHistory.Undo()) return false;
         SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
-        _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
         return true;
     }
 
     /// <summary>
-    /// 执行一次重做并同步体素渲染数据
+    /// 执行一次重做；工作集由视图每帧按预算同步，这里只使累积失效
     /// </summary>
     private bool ApplyRedo()
     {
         if (!_voxelHistory.Redo()) return false;
         SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
-        _pipeline?.SyncWorld(_world);
         _pipeline?.ResetAccumulation();
         return true;
     }

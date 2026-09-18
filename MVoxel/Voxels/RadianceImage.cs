@@ -163,6 +163,7 @@ public static class RadianceImage
         var headerEnded = false;
         while (!headerEnded)
         {
+            if (position >= bytes.Length) throw new InvalidDataException("Radiance 文件头不完整");
             var lineEnd = bytes[(position..)].IndexOf((byte)'\n');
             if (lineEnd < 0) throw new InvalidDataException("Radiance 文件头不完整");
             var line = Encoding.ASCII.GetString(bytes.Slice(position, lineEnd).ToArray()).TrimEnd('\r');
@@ -170,6 +171,7 @@ public static class RadianceImage
             headerEnded = line.Length == 0;
         }
 
+        if (position >= bytes.Length) throw new InvalidDataException("Radiance 分辨率行缺失");
         var resolutionEnd = bytes[(position..)].IndexOf((byte)'\n');
         if (resolutionEnd < 0) throw new InvalidDataException("Radiance 分辨率行缺失");
         var resolutionLine = Encoding.ASCII.GetString(bytes.Slice(position, resolutionEnd).ToArray())
@@ -232,10 +234,20 @@ public static class RadianceImage
             var index = 0;
             while (index < width)
             {
+                if (position >= bytes.Length)
+                {
+                    throw new InvalidDataException("Radiance RLE 行数据提前结束");
+                }
+
                 var run = bytes[position++];
                 if (run > 128)
                 {
                     var count = run - 128;
+                    if (index + count > width || position >= bytes.Length)
+                    {
+                        throw new InvalidDataException("Radiance RLE 重复段越界");
+                    }
+
                     var value = bytes[position++];
                     for (var step = 0; step < count; step++)
                     {
@@ -246,6 +258,11 @@ public static class RadianceImage
                 }
                 else
                 {
+                    if (run == 0 || index + run > width || position + run > bytes.Length)
+                    {
+                        throw new InvalidDataException("Radiance RLE 字面段越界");
+                    }
+
                     for (var step = 0; step < run; step++)
                     {
                         row[(index + step) * 4 + column] = bytes[position++];
