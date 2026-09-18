@@ -121,6 +121,21 @@ public sealed class VoxelGpuWorkset
 
         var chunkCount = chunks.Count;
         var lodActive = lod is { Enabled: true } && cameraPosition.HasValue;
+
+        // 预算采样必须作用于原始体素而不是合并后的盒：丢一个采样点只是散洞，
+        // 丢一个合并盒则是整块大洞。先按原始全局序号采样、再对采样子集合并，
+        // 保持与合并前完全一致的稀疏语义；LOD 激活时由其自身控制规模，预算让位
+        var rawStarts = new long[chunkCount + 1];
+        for (var index = 0; index < chunkCount; index++)
+        {
+            rawStarts[index + 1] = rawStarts[index] + chunks[index].Chunk.OccupiedCount;
+        }
+
+        var rawTotal = (int)rawStarts[chunkCount];
+        var sampleStride = !lodActive && maximumCells > 0 && rawTotal > maximumCells
+            ? (rawTotal + maximumCells - 1) / maximumCells
+            : 1;
+
         var perChunk = new List<VoxelGpuCell>[chunkCount];
         System.Threading.Tasks.Parallel.For(0, chunkCount,
             new System.Threading.Tasks.ParallelOptions
@@ -138,6 +153,20 @@ public sealed class VoxelGpuWorkset
                 }
 
                 Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+                if (sampleStride != 1)
+                {
+                    var kept = new List<(int Key, VoxelValue Value)>(pairs.Length / sampleStride + 1);
+                    for (var localIndex = 0; localIndex < pairs.Length; localIndex++)
+                    {
+                        if ((rawStarts[chunkIndex] + localIndex) % sampleStride == 0)
+                        {
+                            kept.Add(pairs[localIndex]);
+                        }
+                    }
+
+                    pairs = [.. kept];
+                }
+
                 var level = 0;
                 if (lodActive)
                 {
@@ -158,24 +187,21 @@ public sealed class VoxelGpuWorkset
             });
 
         var total = 0;
-        foreach (var list in perChunk) total += list.Count;
-        var sampleStride = maximumCells > 0 && total > maximumCells
-            ? (total + maximumCells - 1) / maximumCells
-            : 1;
-        var cells = new VoxelGpuCell[sampleStride == 1 ? total : (total + sampleStride - 1) / sampleStride];
         var emissiveCount = 0;
-        var write = 0;
-        var serial = 0;
         foreach (var list in perChunk)
         {
+            total += list.Count;
             foreach (var cell in list)
             {
-                if (sampleStride == 1 || serial++ % sampleStride == 0)
-                {
-                    cells[write++] = cell;
-                    if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissiveCount++;
-                }
+                if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissiveCount++;
             }
+        }
+
+        var cells = new VoxelGpuCell[total];
+        var write = 0;
+        foreach (var list in perChunk)
+        {
+            foreach (var cell in list) cells[write++] = cell;
         }
 
         return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
