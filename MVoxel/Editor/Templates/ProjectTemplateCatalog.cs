@@ -1,12 +1,10 @@
 using System.Numerics;
-using System.Text.Json;
 using MVoxel.Core;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
 using MVoxel.Scene;
 using MVoxel.Voxels;
-using MVoxel.Voxels.Minecraft;
 
 namespace MVoxel.Editor.Templates;
 
@@ -97,24 +95,25 @@ public static class ProjectTemplateCatalog
 {
     /// <summary>返回当前模板的完整推荐配置，供模板创建和旧项目升级共用。</summary>
     internal static ProjectSettingsDocument CreateRecommendedSettings(ProjectTemplateId id) => CreateSettings(id);
+
     /// <summary>
     /// 所有可选模板，顺序就是界面展示顺序
     /// </summary>
     public static IReadOnlyList<ProjectTemplateDefinition> All { get; } =
     [
         new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素模型", "适合从零开始"),
-        new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "小屋、树木、石板路、玻璃窗和自发光提灯", "基础建模 · 材质 · 自发光"),
-        new(ProjectTemplateId.MaterialLab, "材质实验室", "不透明、半透明、自发光和材质槽的对照场景", "材质 · 透明 · 发光"),
-        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用当前调色板生成纯色体素材质色阶和材质槽对照", "调色板 · 纯色材质 · 材质属性"),
-        new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "负坐标、多区块、远距离建筑和少量占用体素", "大世界 · 稀疏存储 · 负坐标"),
-        new(ProjectTemplateId.LodPlayground, "LOD 练习场", "从近到远排列不同复杂度的建筑组，方便调试 LOD", "LOD · 场景性能 · 批量对象"),
-        new(ProjectTemplateId.RayTracingStudio, "光追工作室", "发光面、玻璃屏、彩色材质和暗室布光", "路径追踪 · 直接光 · 透明"),
-        new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "由高度函数生成的分层山谷、平台和水面", "程序化 · 地形 · 大量体素"),
-        new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "草地湖畔、八棵独立橡树、发光灯笼和花丛，树与地形分层存放", "MC 风格 · 分层结构 · 水面 · 发光"),
-        new(ProjectTemplateId.Architecture, "模块化建筑", "庭院、拱门、立柱、台阶和对称建筑模块", "建筑 · 对称 · 模块化"),
-        new(ProjectTemplateId.CameraGallery, "多相机构图室", "同一体素场景配置三个相机，演示渲染视图切换和相机对象联动", "相机 · 构图 · 渲染视图"),
-        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "三轴 1024 格的稀疏建筑群、塔楼和高空连桥性能验证", "大世界 · LOD · 建筑 · 性能压力"),
-        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "小型花园、中型大厅、大型塔楼、玻璃水池和发光灯带组成的完整展示场景", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪"),
+        new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "起伏草地上的石基木屋、玻璃窗与提灯、井台、名木与花圃", "基础建模 · 材质 · 自发光"),
+        new(ProjectTemplateId.MaterialLab, "材质实验室", "粗糙度阶梯、金属球、玻璃砖、发光环与水池的对照展厅", "材质 · 透明 · 发光"),
+        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "色卡沿螺旋看台排布，中央发光高台与玻璃球", "调色板 · 纯色材质 · 材质属性"),
+        new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "±384 的灯塔岛、悬索桥塔与信号塔，验证负坐标与远距离", "大世界 · 稀疏存储 · 负坐标"),
+        new(ProjectTemplateId.LodPlayground, "LOD 练习场", "同一栋房屋从全细节到方块体的五级简化序列", "LOD · 场景性能 · 批量对象"),
+        new(ProjectTemplateId.RayTracingStudio, "光追工作室", "暗室灯槽、侧窗光带、玻璃砖墙与三种材质球", "路径追踪 · 直接光 · 透明"),
+        new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "fbm 山脊、冰斗湖、雪线、沙滩与针叶林带", "程序化 · 地形 · 大量体素"),
+        new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "山脊湖盆瀑布、花丛灯笼小径、橡桦混交林分层存放", "MC 风格 · 分层结构 · 水面 · 发光"),
+        new(ProjectTemplateId.Architecture, "柱廊庭院", "凹槽柱廊、圆拱门、铜皮穹顶、镜水池与台阶基座", "建筑 · 对称 · 曲线"),
+        new(ProjectTemplateId.CameraGallery, "多相机构图室", "螺旋上升雕塑与三层参照柱，配三个相机演示构图", "相机 · 构图 · 景深"),
+        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区的性能压力场景", "大世界 · LOD · 建筑 · 性能压力"),
+        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "海港小镇：码头船队、玻璃凉亭、灯塔、林径与远景塔楼", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪"),
     ];
 
     /// <summary>
@@ -134,17 +133,18 @@ public static class ProjectTemplateCatalog
     public static void Populate(ProjectHandle project, ProjectTemplateId id, Action<string, float, bool>? report = null)
     {
         ArgumentNullException.ThrowIfNull(project);
-        report?.Invoke("正在生成示例体素模型…", .76F, true);
+        report?.Invoke("正在生成示例体素模型…", .74F, true);
         var settings = CreateSettings(id);
         settings.TemplateId = id.ToString();
         if (id != ProjectTemplateId.Empty)
         {
+            WriteMaterials(project, id);
             var modelPath = Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
             if (id == ProjectTemplateId.MinecraftValley)
             {
-                var terrain = BuildMinecraftValleyTerrain();
+                var terrain = TemplateScenes.BuildValleyTerrain();
                 LargeWorldFormat.Write(modelPath, terrain);
-                var trees = BuildMinecraftValleyTrees();
+                var trees = TemplateScenes.BuildValleyTrees(terrain);
                 var layerParts = new List<(string Name, string ModelAssetPath, int VoxelCount)>();
                 for (var index = 0; index < trees.Count; index++)
                 {
@@ -160,19 +160,10 @@ public static class ProjectTemplateCatalog
             {
                 var largeFileName = id == ProjectTemplateId.LargeWorld ? "超大型场景.mvworld" : "渲染体验馆.mvworld";
                 var largePath = Path.Combine(project.AssetsPath, "Worlds", largeFileName);
-                if (id == ProjectTemplateId.LargeWorld)
-                {
-                    LargeWorldFormat.WriteDemo(largePath);
-                    WriteScene(project, Get(id), LargeWorldFormat.DemoVoxelCount,
-                        $"Assets/Worlds/{largeFileName}");
-                }
-                else
-                {
-                    var world = BuildWorld(id, VoxelPalette.Build());
-                    LargeWorldFormat.Write(largePath, world);
-                    WriteScene(project, Get(id), world.OccupiedVoxelCount,
-                        $"Assets/Worlds/{largeFileName}");
-                }
+                var world = BuildWorld(id, VoxelPalette.Build());
+                LargeWorldFormat.Write(largePath, world);
+                WriteScene(project, Get(id), world.OccupiedVoxelCount,
+                    $"Assets/Worlds/{largeFileName}");
             }
             else
             {
@@ -199,20 +190,56 @@ public static class ProjectTemplateCatalog
         ArgumentNullException.ThrowIfNull(palette);
         return id switch
         {
-            ProjectTemplateId.Showcase => VoxelDemoScene.Build(palette),
-            ProjectTemplateId.MaterialLab => BuildMaterialLab(),
-            ProjectTemplateId.PaletteWorkshop => BuildPaletteWorkshop(palette),
-            ProjectTemplateId.SparseWorld => BuildSparseWorld(),
-            ProjectTemplateId.LodPlayground => BuildLodPlayground(),
-            ProjectTemplateId.RayTracingStudio => BuildRayTracingStudio(),
-            ProjectTemplateId.ProceduralTerrain => BuildProceduralTerrain(),
-            ProjectTemplateId.MinecraftValley => BuildMinecraftValleyTerrain(),
-            ProjectTemplateId.Architecture => BuildArchitecture(),
-            ProjectTemplateId.CameraGallery => BuildCameraGallery(),
-            ProjectTemplateId.LargeWorld => LargeWorldFormat.BuildDemoWorld(),
-            ProjectTemplateId.RenderingGallery => BuildRenderingGallery(),
+            ProjectTemplateId.Showcase => TemplateScenes.BuildCottageGarden(),
+            ProjectTemplateId.MaterialLab => TemplateScenes.BuildMaterialLab(),
+            ProjectTemplateId.PaletteWorkshop => TemplateScenes.BuildPaletteWorkshop(palette),
+            ProjectTemplateId.SparseWorld => TemplateScenes.BuildSparseWorld(),
+            ProjectTemplateId.LodPlayground => TemplateScenes.BuildLodPlayground(),
+            ProjectTemplateId.RayTracingStudio => TemplateScenes.BuildRayTracingStudio(),
+            ProjectTemplateId.ProceduralTerrain => TemplateScenes.BuildProceduralTerrain(),
+            ProjectTemplateId.MinecraftValley => TemplateScenes.BuildValleyTerrain(),
+            ProjectTemplateId.Architecture => TemplateScenes.BuildColonnade(),
+            ProjectTemplateId.CameraGallery => TemplateScenes.BuildSculptureHall(),
+            ProjectTemplateId.LargeWorld => TemplateScenes.BuildMegastructure(),
+            ProjectTemplateId.RenderingGallery => TemplateScenes.BuildHarborTown(),
             _ => new VoxelWorld(),
         };
+    }
+
+    /// <summary>
+    /// 为模板写入配套的 .material 材质定义，槽位与场景构建器约定一致
+    /// </summary>
+    private static void WriteMaterials(ProjectHandle project, ProjectTemplateId id)
+    {
+        if (id == ProjectTemplateId.Empty) return;
+        var directory = Path.Combine(project.AssetsPath, "Materials");
+        Directory.CreateDirectory(directory);
+        var materials = new List<MaterialAsset>
+        {
+            new() { Name = "清水玻璃", Slot = TemplateKit.SlotGlass, Roughness = .06F, Metallic = 0F, AbsorptionStep = .8F },
+            new() { Name = "池水", Slot = TemplateKit.SlotWater, Roughness = .08F, Metallic = 0F, AbsorptionStep = 1.4F,
+                AbsorptionColor = new Rgba32(48, 118, 168) },
+            new() { Name = "抛光金属", Slot = TemplateKit.SlotMetal, Roughness = .12F, Metallic = 1F },
+            new() { Name = "灯与炉", Slot = TemplateKit.SlotGlow, EmissiveScale = 6F },
+        };
+        if (id == ProjectTemplateId.MaterialLab)
+        {
+            for (var step = 0; step < 5; step++)
+            {
+                materials.Add(new MaterialAsset
+                {
+                    Name = $"粗糙度阶梯 {step + 1}",
+                    Slot = 5 + step,
+                    Roughness = .05F + step * .22F,
+                    Metallic = .2F,
+                });
+            }
+        }
+
+        foreach (var material in materials)
+        {
+            material.Save(Path.Combine(directory, $"{material.Name}.material"));
+        }
     }
 
     /// <summary>
@@ -231,6 +258,10 @@ public static class ProjectTemplateCatalog
                 settings.LodDistances = [48F, 96F, 192F, 384F, 768F, 1536F, 3072F, 6144F];
                 settings.DefaultRenderPreset = "大世界稀疏预览";
                 settings.RenderSettings.GroundFade = 240F;
+                settings.RenderSettings.SunElevationDegrees = 26F;
+                settings.RenderSettings.SunAzimuthDegrees = 118F;
+                settings.RenderSettings.SkyAmbient = .5F;
+                settings.RenderSettings.EmissiveIntensity = 14F;
                 break;
             case ProjectTemplateId.MinecraftValley:
                 settings.DefaultRenderPreset = "Minecraft 山谷";
@@ -282,6 +313,8 @@ public static class ProjectTemplateCatalog
                 break;
             case ProjectTemplateId.Showcase:
                 settings.DefaultRenderPreset = "基础展示";
+                settings.RenderSettings.SunElevationDegrees = 38F;
+                settings.RenderSettings.SunAzimuthDegrees = 132F;
                 settings.RenderSettings.PathTracingEnabled = true;
                 settings.RenderSettings.PathSamplesPerFrame = 2;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 384;
@@ -300,6 +333,8 @@ public static class ProjectTemplateCatalog
                 break;
             case ProjectTemplateId.MaterialLab:
                 settings.DefaultRenderPreset = "材质实验";
+                settings.RenderSettings.SunElevationDegrees = 44F;
+                settings.RenderSettings.SunAzimuthDegrees = 150F;
                 settings.RenderSettings.PathTracingEnabled = true;
                 settings.RenderSettings.PathSamplesPerFrame = 2;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 512;
@@ -331,6 +366,8 @@ public static class ProjectTemplateCatalog
                 settings.LodLevels = 5;
                 settings.DefaultRenderPreset = "程序化地形";
                 settings.RenderSettings.GroundFade = 180F;
+                settings.RenderSettings.SunElevationDegrees = 30F;
+                settings.RenderSettings.SunAzimuthDegrees = 118F;
                 settings.RenderSettings.PathTracingEnabled = true;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 384;
                 settings.RenderSettings.ShadowSoftness = .1F;
@@ -341,9 +378,12 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Tone = ToneCurve.Filmic;
                 settings.RenderSettings.Exposure = -.15F;
                 settings.RenderSettings.PathDenoiseStrength = .25F;
+                settings.RenderSettings.TransmissiveAbsorption = .4F;
                 break;
             case ProjectTemplateId.Architecture:
                 settings.DefaultRenderPreset = "建筑光照";
+                settings.RenderSettings.SunElevationDegrees = 42F;
+                settings.RenderSettings.SunAzimuthDegrees = 140F;
                 settings.RenderSettings.PathTracingEnabled = true;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 448;
                 settings.RenderSettings.ShadowSoftness = .07F;
@@ -355,6 +395,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathMetalness = .08F;
                 settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
                 settings.RenderSettings.PathDenoiseStrength = .27F;
+                settings.RenderSettings.TransmissiveAbsorption = .5F;
                 break;
             case ProjectTemplateId.CameraGallery:
                 settings.DefaultRenderPreset = "多相机景深";
@@ -366,6 +407,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.FocusDistance = 24F;
                 settings.RenderSettings.Tone = ToneCurve.Reinhard;
                 settings.RenderSettings.PathDenoiseStrength = .3F;
+                settings.RenderSettings.EmissiveIntensity = 16F;
                 break;
             case ProjectTemplateId.LargeWorld:
                 settings.LodLevels = 8;
@@ -373,6 +415,7 @@ public static class ProjectTemplateCatalog
                 settings.DefaultRenderPreset = "超大型场景性能验证";
                 settings.RenderSettings.ResolutionScale = .65F;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 64;
+                settings.RenderSettings.EmissiveIntensity = 12F;
                 break;
             case ProjectTemplateId.RenderingGallery:
                 settings.LodLevels = 6;
@@ -381,6 +424,8 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.ShowGround = true;
                 settings.RenderSettings.GroundColor = new Vector3(.18F, .24F, .30F);
                 settings.RenderSettings.GroundFade = 220F;
+                settings.RenderSettings.SunElevationDegrees = 24F;
+                settings.RenderSettings.SunAzimuthDegrees = 122F;
                 settings.RenderSettings.SkyTop = new Vector3(.08F, .18F, .38F);
                 settings.RenderSettings.SkyHorizon = new Vector3(.62F, .72F, .88F);
                 settings.RenderSettings.SkyAmbient = .55F;
@@ -497,7 +542,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.RayTracingStudio => [("光追展示台", "展示台", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.ProceduralTerrain => [("程序化地形", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.MinecraftValley => [("地形", "地形", new VoxelCoord64(0, 0, 0))],
-            ProjectTemplateId.Architecture => [("模块化建筑", "建筑", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.Architecture => [("柱廊庭院", "建筑", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.CameraGallery => [("多相机构图场景", "场景", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LargeWorld => [("超大型建筑群", "建筑群", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.RenderingGallery => [("渲染体验馆", "全效果展示", new VoxelCoord64(0, 0, 0))],
@@ -518,429 +563,5 @@ public static class ProjectTemplateCatalog
         var right = Vector3.Normalize(Vector3.Cross(forward, up));
         up = Vector3.Normalize(Vector3.Cross(right, forward));
         return Quaternion.CreateFromRotationMatrix(Matrix4x4.CreateWorld(Vector3.Zero, forward, up));
-    }
-
-    /// <summary>
-    /// 构建材质实验室
-    /// </summary>
-    private static VoxelWorld BuildMaterialLab()
-    {
-        var world = new VoxelWorld();
-        var floor = new VoxelValue(new Rgba32(52, 62, 78));
-        var red = new VoxelValue(new Rgba32(220, 76, 84), MaterialSlot: 1);
-        var glass = new VoxelValue(new Rgba32(100, 196, 238, 112), MaterialSlot: 2, Flags: VoxelFlags.Translucent);
-        var lamp = new VoxelValue(new Rgba32(255, 204, 92), MaterialSlot: 3, Flags: VoxelFlags.Emissive);
-        FillBox(world, -16, 0, -10, 16, 0, 10, floor);
-        FillBox(world, -13, 1, -6, -5, 4, 2, red);
-        FillBox(world, -2, 1, -6, 6, 4, 2, glass);
-        FillBox(world, 9, 1, -6, 13, 4, 2, lamp);
-        FillBox(world, -12, 5, -5, -6, 11, 1, new VoxelValue(new Rgba32(86, 142, 228), MaterialSlot: 1));
-        FillBox(world, -1, 5, -5, 5, 11, 1, new VoxelValue(new Rgba32(112, 218, 242, 96), MaterialSlot: 2, Flags: VoxelFlags.Translucent));
-        FillBox(world, 9, 5, -5, 13, 11, 1, new VoxelValue(new Rgba32(255, 132, 58), MaterialSlot: 3, Flags: VoxelFlags.Emissive));
-        return world;
-    }
-
-    /// <summary>
-    /// 构建调色板基础色展示场
-    /// </summary>
-    /// <param name="palette">当前生效的调色板</param>
-    /// <returns>调色板展示世界</returns>
-    private static VoxelWorld BuildPaletteWorkshop(Rgba32[] palette)
-    {
-        var world = new VoxelWorld();
-        var floor = new VoxelValue(new Rgba32(34, 40, 52));
-        FillBox(world, -36, 0, -20, 36, 0, 20, floor);
-        for (var index = 1; index < Math.Min(VoxelPalette.EntryCount, 129); index++)
-        {
-            var column = (index - 1) % 16;
-            var row = (index - 1) / 16;
-            var height = 1 + index % 7;
-            var color = palette[index];
-            var flags = (byte)(color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None);
-            FillBox(world, -31 + column * 4, 1, -16 + row * 5,
-                -29 + column * 4, height, -14 + row * 5,
-                new VoxelValue(color, MaterialSlot: (ushort)(index % 8), Flags: flags));
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 构建跨越多个区块的稀疏地标
-    /// </summary>
-    private static VoxelWorld BuildSparseWorld()
-    {
-        var world = new VoxelWorld();
-        var stone = new VoxelValue(new Rgba32(104, 128, 154));
-        var light = new VoxelValue(new Rgba32(242, 190, 76), Flags: VoxelFlags.Emissive);
-        foreach (var x in new[] { -384L, 0L, 384L })
-        foreach (var z in new[] { -384L, 0L, 384L })
-        {
-            FillBox(world, x - 3, 0, z - 3, x + 3, 31 + (Math.Abs(x) + Math.Abs(z)) % 48, z + 3, stone);
-            FillBox(world, x - 1, 32, z - 1, x + 1, 34, z + 1, light);
-        }
-
-        for (var index = -3; index <= 3; index++)
-        {
-            FillBox(world, -384 + index * 48, 0, 0, -384 + index * 48 + 15, 2, 7, stone);
-            FillBox(world, 0, 0, -384 + index * 48, 7, 2, -384 + index * 48 + 15, stone);
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 构建不同密度和高度的 LOD 观察场
-    /// </summary>
-    private static VoxelWorld BuildLodPlayground()
-    {
-        var world = new VoxelWorld();
-        var ground = new VoxelValue(new Rgba32(72, 108, 92));
-        var block = new VoxelValue(new Rgba32(82, 158, 218));
-        FillBox(world, -90, 0, -24, 90, 0, 24, ground);
-        for (var column = 0; column < 13; column++)
-        {
-            var x = -78 + column * 13;
-            var height = 4 + column * 2;
-            var width = Math.Max(1, 6 - column / 3);
-            FillBox(world, x - width, 1, -width, x + width, height, width, block);
-            if (column % 2 == 0)
-            {
-                FillBox(world, x - width - 1, height + 1, -width - 1,
-                    x + width + 1, height + 1, width + 1, new VoxelValue(new Rgba32(232, 178, 82)));
-            }
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 构建暗室中的发光和透明材质组合
-    /// </summary>
-    private static VoxelWorld BuildRayTracingStudio()
-    {
-        var world = new VoxelWorld();
-        var wall = new VoxelValue(new Rgba32(32, 38, 52));
-        var red = new VoxelValue(new Rgba32(220, 68, 76), MaterialSlot: 1);
-        var blue = new VoxelValue(new Rgba32(76, 132, 236), MaterialSlot: 1);
-        var glass = new VoxelValue(new Rgba32(130, 220, 238, 96), MaterialSlot: 2, Flags: VoxelFlags.Translucent);
-        var emitter = new VoxelValue(new Rgba32(255, 216, 102), MaterialSlot: 3, Flags: VoxelFlags.Emissive);
-        FillBox(world, -24, 0, -18, 24, 0, 18, wall);
-        FillBox(world, -24, 1, -18, -24, 14, 18, wall);
-        FillBox(world, 24, 1, -18, 24, 14, 18, wall);
-        FillBox(world, -24, 1, -18, 24, 14, -18, wall);
-        FillBox(world, -18, 12, -8, 18, 12, 8, emitter);
-        FillBox(world, -11, 1, -6, -3, 8, 2, red);
-        FillBox(world, 4, 1, -6, 12, 5, 2, blue);
-        FillBox(world, -1, 1, 7, 1, 10, 7, glass);
-        FillBox(world, -3, 1, 6, 3, 1, 12, new VoxelValue(new Rgba32(92, 98, 116)));
-        return world;
-    }
-
-    /// <summary>
-    /// 构建程序化起伏地形
-    /// </summary>
-    private static VoxelWorld BuildProceduralTerrain()
-    {
-        var world = new VoxelWorld();
-        var rock = new VoxelValue(new Rgba32(112, 118, 132));
-        var soil = new VoxelValue(new Rgba32(154, 112, 76));
-        var grass = new VoxelValue(new Rgba32(92, 176, 106));
-        var water = new VoxelValue(new Rgba32(72, 164, 222, 150), Flags: VoxelFlags.Translucent);
-        for (var x = -48; x <= 48; x++)
-        for (var z = -48; z <= 48; z++)
-        {
-            var height = 3 + (int)MathF.Round(
-                MathF.Sin(x * .14F) * 3F + MathF.Cos(z * .11F) * 2F + MathF.Sin((x + z) * .07F) * 3F);
-            height = Math.Clamp(height, 1, 12);
-            for (var y = 0; y < height; y++)
-            {
-                var value = y == height - 1 ? grass : y >= height - 3 ? soil : rock;
-                world.Set(new VoxelCoord64(x, y, z), value);
-            }
-
-            if (height <= 3)
-            {
-                world.Set(new VoxelCoord64(x, 3, z), water);
-            }
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 山谷湖面的水面高度
-    /// </summary>
-    private const int ValleyWaterLevel = 4;
-
-    /// <summary>
-    /// 山谷地形在指定平面坐标的高度，含湖盆下陷
-    /// </summary>
-    private static int ValleyHeightAt(int x, int z)
-    {
-        var baseHeight = 5.5F +
-                         MathF.Sin(x * .09F) * 2.6F +
-                         MathF.Cos(z * .085F) * 2.2F +
-                         MathF.Sin((x * .6F + z) * .06F) * 2.8F;
-        var basinX = x + 14;
-        var basinZ = z - 10;
-        var basin = 3.6F * MathF.Exp(-(basinX * basinX + basinZ * basinZ) / 620F);
-        return Math.Clamp((int)MathF.Round(baseHeight - basin), 1, 13);
-    }
-
-    /// <summary>
-    /// 取色表中的方块颜色并按方块特性附加半透明或发光标记
-    /// </summary>
-    private static VoxelValue MinecraftBlock(string name)
-    {
-        var flags = VoxelFlags.None;
-        if (MinecraftBlockColors.IsTranslucent(name)) flags |= VoxelFlags.Translucent;
-        if (MinecraftBlockColors.IsEmissive(name)) flags |= VoxelFlags.Emissive;
-        return new VoxelValue(MinecraftBlockColors.ColorOf(name), 0, flags);
-    }
-
-    /// <summary>
-    /// 构建 Minecraft 山谷的地形世界：草坡、沙岸湖盆、水层、发光灯笼小径与花丛
-    /// </summary>
-    /// <returns>地形世界，树不包含在内</returns>
-    private static VoxelWorld BuildMinecraftValleyTerrain()
-    {
-        var world = new VoxelWorld();
-        var grass = MinecraftBlock("minecraft:grass_block");
-        var dirt = MinecraftBlock("minecraft:dirt");
-        var stone = MinecraftBlock("minecraft:stone");
-        var sand = MinecraftBlock("minecraft:sand");
-        var water = MinecraftBlock("minecraft:water");
-        var gravel = MinecraftBlock("minecraft:gravel");
-        var glowstone = MinecraftBlock("minecraft:glowstone");
-        var poppy = MinecraftBlock("minecraft:poppy");
-        var dandelion = MinecraftBlock("minecraft:dandelion");
-        for (var x = -48; x <= 48; x++)
-        for (var z = -48; z <= 48; z++)
-        {
-            var height = ValleyHeightAt(x, z);
-            var underWater = height <= ValleyWaterLevel;
-            for (var y = 0; y < height; y++)
-            {
-                VoxelValue value;
-                if (underWater) value = y >= height - 1 ? sand : y >= height - 3 ? gravel : stone;
-                else if (height == ValleyWaterLevel + 1) value = y == height - 1 ? sand : y >= height - 3 ? dirt : stone;
-                else value = y == height - 1 ? grass : y >= height - 3 ? dirt : stone;
-                world.Set(new VoxelCoord64(x, y, z), value);
-            }
-
-            if (underWater)
-            {
-                for (var y = height; y <= ValleyWaterLevel; y++)
-                {
-                    world.Set(new VoxelCoord64(x, y, z), water);
-                }
-            }
-            else
-            {
-                var scatter = (x * 7919) ^ (z * 104729);
-                if (height > ValleyWaterLevel + 1 && (scatter & 63) == 5)
-                {
-                    world.Set(new VoxelCoord64(x, height, z), (scatter & 64) == 0 ? poppy : dandelion);
-                }
-            }
-        }
-
-        foreach (var (postX, postZ) in new[] { (-6, 14), (0, 5), (-20, 1), (9, 15), (-11, 22) })
-        {
-            var height = ValleyHeightAt(postX, postZ);
-            if (height <= ValleyWaterLevel + 1) continue;
-            var oakLog = MinecraftBlock("minecraft:oak_log");
-            world.Set(new VoxelCoord64(postX, height, postZ), oakLog);
-            world.Set(new VoxelCoord64(postX, height + 1, postZ), oakLog);
-            world.Set(new VoxelCoord64(postX, height + 2, postZ), glowstone);
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 构建山谷里的橡树，每棵树是独立的体素世界，坐标与地形同一空间
-    /// </summary>
-    /// <returns>最多八棵橡树的世界列表，只落在离水有距离的草地上</returns>
-    private static List<VoxelWorld> BuildMinecraftValleyTrees()
-    {
-        var trunk = MinecraftBlock("minecraft:oak_log");
-        var leaves = MinecraftBlock("minecraft:oak_leaves");
-        var chosen = new List<(int X, int Z)>();
-        for (var z = -44; z <= 44 && chosen.Count < 8; z++)
-        for (var x = -44; x <= 44 && chosen.Count < 8; x++)
-        {
-            if (ValleyHeightAt(x, z) < 7) continue;
-            var candidate = (X: x, Z: z);
-            if (chosen.Any(item => Math.Abs(item.X - candidate.X) + Math.Abs(item.Z - candidate.Z) < 15))
-            {
-                continue;
-            }
-
-            chosen.Add(candidate);
-        }
-
-        var trees = new List<VoxelWorld>();
-        for (var index = 0; index < chosen.Count; index++)
-        {
-            var (treeX, treeZ) = chosen[index];
-            var ground = ValleyHeightAt(treeX, treeZ);
-            var trunkHeight = 4 + (index & 1);
-            var tree = new VoxelWorld();
-            for (var y = ground; y < ground + trunkHeight; y++)
-            {
-                tree.Set(new VoxelCoord64(treeX, y, treeZ), trunk);
-            }
-
-            var canopyBase = ground + trunkHeight - 1;
-            for (var y = canopyBase; y <= canopyBase + 1; y++)
-            for (var dx = -2; dx <= 2; dx++)
-            for (var dz = -2; dz <= 2; dz++)
-            {
-                if (Math.Abs(dx) == 2 && Math.Abs(dz) == 2 && y == canopyBase) continue;
-                var coordinate = new VoxelCoord64(treeX + dx, y, treeZ + dz);
-                if (!tree.TryGet(coordinate, out _)) tree.Set(coordinate, leaves);
-            }
-
-            for (var y = canopyBase + 2; y <= canopyBase + 3; y++)
-            for (var dx = -1; dx <= 1; dx++)
-            for (var dz = -1; dz <= 1; dz++)
-            {
-                if (y == canopyBase + 3 && Math.Abs(dx) + Math.Abs(dz) > 1) continue;
-                var coordinate = new VoxelCoord64(treeX + dx, y, treeZ + dz);
-                if (!tree.TryGet(coordinate, out _)) tree.Set(coordinate, leaves);
-            }
-
-            trees.Add(tree);
-        }
-
-        return trees;
-    }
-
-    /// <summary>
-    /// 构建带拱门和庭院的模块化建筑
-    /// </summary>
-    private static VoxelWorld BuildArchitecture()
-    {
-        var world = new VoxelWorld();
-        var wall = new VoxelValue(new Rgba32(188, 176, 154));
-        var trim = new VoxelValue(new Rgba32(76, 108, 148));
-        var roof = new VoxelValue(new Rgba32(184, 72, 66));
-        FillBox(world, -18, 0, -14, 18, 0, 14, new VoxelValue(new Rgba32(92, 120, 88)));
-        FillBox(world, -18, 1, -14, -18, 13, 14, wall);
-        FillBox(world, 18, 1, -14, 18, 13, 14, wall);
-        FillBox(world, -18, 1, -14, 18, 13, -14, wall);
-        FillBox(world, -18, 1, 14, -5, 13, 14, wall);
-        FillBox(world, 5, 1, 14, 18, 13, 14, wall);
-        for (var x = -5; x <= 5; x++)
-        for (var y = 1; y <= 5; y++)
-        {
-            if (Math.Abs(x) <= 2 && y <= 3) continue;
-            world.Set(new VoxelCoord64(x, y, 14), wall);
-        }
-
-        foreach (var x in new[] { -13L, 13L })
-            FillBox(world, x - 2, 1, -5, x + 2, 10, 5, trim);
-        for (var layer = 0; layer < 4; layer++)
-            FillBox(world, -15 + layer, 14 + layer, -11 + layer, 15 - layer, 14 + layer, 11 - layer, roof);
-        return world;
-    }
-
-    /// <summary>
-    /// 构建适合多相机构图的中心展台
-    /// </summary>
-    /// <returns>多相机展示世界</returns>
-    private static VoxelWorld BuildCameraGallery()
-    {
-        var world = new VoxelWorld();
-        var floor = new VoxelValue(new Rgba32(54, 72, 82));
-        var platform = new VoxelValue(new Rgba32(90, 140, 182));
-        var warm = new VoxelValue(new Rgba32(232, 160, 72));
-        var cool = new VoxelValue(new Rgba32(76, 168, 224));
-        FillBox(world, -28, 0, -22, 28, 0, 22, floor);
-        FillBox(world, -10, 1, -10, 10, 2, 10, platform);
-        for (var layer = 0; layer < 5; layer++)
-        {
-            FillBox(world, -8 + layer, 3 + layer, -8 + layer,
-                8 - layer, 3 + layer, 8 - layer, layer % 2 == 0 ? warm : cool);
-        }
-
-        foreach (var x in new[] { -20L, 20L })
-        foreach (var z in new[] { -14L, 14L })
-            FillBox(world, x - 2, 1, z - 2, x + 2, 12, z + 2, platform);
-        return world;
-    }
-
-    /// <summary>
-    /// 构建覆盖小、中、大规模和主要材质效果的完整渲染体验馆
-    /// </summary>
-    private static VoxelWorld BuildRenderingGallery()
-    {
-        var world = new VoxelWorld();
-        var ground = new VoxelValue(new Rgba32(48, 64, 82));
-        var stone = new VoxelValue(new Rgba32(112, 126, 148));
-        var wall = new VoxelValue(new Rgba32(210, 198, 172));
-        var trim = new VoxelValue(new Rgba32(54, 104, 156), MaterialSlot: 1);
-        var roof = new VoxelValue(new Rgba32(176, 64, 70), MaterialSlot: 2);
-        var leaf = new VoxelValue(new Rgba32(74, 168, 96), MaterialSlot: 3);
-        var wood = new VoxelValue(new Rgba32(116, 76, 46), MaterialSlot: 4);
-        var glass = new VoxelValue(new Rgba32(94, 200, 238, 105), MaterialSlot: 5, Flags: VoxelFlags.Translucent);
-        var lamp = new VoxelValue(new Rgba32(255, 202, 82), MaterialSlot: 6, Flags: VoxelFlags.Emissive);
-        var water = new VoxelValue(new Rgba32(50, 150, 220, 120), MaterialSlot: 7, Flags: VoxelFlags.Translucent);
-
-        FillBox(world, -64, 0, -42, 64, 0, 42, ground);
-        // 小型花园与水池
-        FillBox(world, -48, 1, -28, -26, 1, -8, stone);
-        FillBox(world, -44, 2, -24, -30, 2, -12, water);
-        FillBox(world, -39, 3, -21, -35, 7, -17, wood);
-        FillBox(world, -42, 8, -24, -32, 10, -14, leaf);
-        FillBox(world, -39, 11, -21, -35, 11, -17, leaf);
-        for (var index = 0; index < 5; index++)
-            FillBox(world, -49 + index * 5, 2, -6, -47 + index * 5, 4, -4, lamp);
-
-        // 中型主厅，玻璃幕墙与暖色灯带
-        FillBox(world, -18, 1, -20, 20, 1, 20, stone);
-        FillBox(world, -15, 2, -17, 17, 13, -17, wall);
-        FillBox(world, -15, 2, 17, 17, 13, 17, wall);
-        FillBox(world, -15, 2, -17, -15, 13, 17, wall);
-        FillBox(world, 17, 2, -17, 17, 13, 17, wall);
-        FillBox(world, -11, 4, -18, 13, 9, -18, glass);
-        FillBox(world, -13, 14, -15, 15, 14, 15, trim);
-        for (var layer = 0; layer < 4; layer++)
-            FillBox(world, -12 + layer, 15 + layer, -14 + layer, 14 - layer, 15 + layer, 14 - layer, roof);
-        for (var x = -10; x <= 10; x += 5)
-            FillBox(world, x, 12, -16, x + 1, 13, -16, lamp);
-
-        // 大型远景塔楼与连桥，测试大范围深度、雾和区块边界
-        FillBox(world, 34, 1, -18, 48, 44, -4, trim);
-        FillBox(world, 31, 8, -21, 51, 8, -1, stone);
-        for (var level = 0; level < 6; level++)
-        {
-            var y = 45 + level * 3;
-            FillBox(world, 32 - level, y, -20 - level, 50 + level, y, -2 + level, roof);
-        }
-        FillBox(world, 19, 10, -12, 34, 12, -10, stone);
-        FillBox(world, 20, 13, -11, 33, 13, -9, lamp);
-        for (var tree = 0; tree < 7; tree++)
-        {
-            var tx = 24 + tree * 4;
-            FillBox(world, tx, 1, 24, tx + 1, 7 + tree % 3, 25, wood);
-            FillBox(world, tx - 3, 8 + tree % 3, 21, tx + 4, 11 + tree % 3, 28, leaf);
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 填充包含端点的长方体体素区域
-    /// </summary>
-    private static void FillBox(VoxelWorld world, long minX, long minY, long minZ,
-        long maxX, long maxY, long maxZ, VoxelValue value)
-    {
-        for (var y = minY; y <= maxY; y++)
-        for (var z = minZ; z <= maxZ; z++)
-        for (var x = minX; x <= maxX; x++)
-            world.Set(new VoxelCoord64(x, y, z), value);
     }
 }
