@@ -674,7 +674,7 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 选择外部 .vox 文件并转换为项目世界文件，随后作为当前工作世界打开
+    /// 选择外部 .vox / .qb 文件并转换为项目世界文件，随后作为当前工作世界打开
     /// </summary>
     private void ImportVoxAsWorld()
     {
@@ -683,15 +683,17 @@ internal partial class ImGuiEditorWindow
             return;
         }
 
-        var path = NativeDialogs.PickFile("选择 MagicaVoxel 模型", "MagicaVoxel 模型\0*.vox\0全部文件\0*.*\0\0");
+        var path = NativeDialogs.PickFile("选择体素模型",
+            "体素模型\0*.vox;*.qb\0MagicaVoxel 模型\0*.vox\0Qubicle 模型\0*.qb\0全部文件\0*.*\0\0");
         if (string.IsNullOrWhiteSpace(path))
         {
             return;
         }
 
+        var extension = Path.GetExtension(path).ToLowerInvariant();
         try
         {
-            var world = VoxFormat.Read(path);
+            var world = extension == ".qb" ? QubicleFormat.Read(path) : VoxFormat.Read(path);
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
             var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
@@ -700,7 +702,7 @@ internal partial class ImGuiEditorWindow
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
         {
-            SetStatus($"导入 .vox 失败：{exception.Message}");
+            SetStatus($"导入 {extension} 失败：{exception.Message}");
         }
     }
 
@@ -734,6 +736,39 @@ internal partial class ImGuiEditorWindow
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
         {
             SetStatus($"导出 .vox 失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 把资产浏览器中的体素世界导出为 Qubicle .qb 交换文件，写入 Assets/Exports
+    /// </summary>
+    /// <param name="relativePath">相对 Assets 的世界文件路径</param>
+    private void ExportQubicleAsset(string relativePath)
+    {
+        if (_project is not { } project || relativePath.Length == 0)
+        {
+            return;
+        }
+
+        var absolute = Path.GetFullPath(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(absolute))
+        {
+            SetStatus($"世界文件不存在：{relativePath}");
+            return;
+        }
+
+        try
+        {
+            var world = LargeWorldFormat.Read(absolute);
+            var exportDirectory = Path.Combine(project.AssetsPath, "Exports");
+            Directory.CreateDirectory(exportDirectory);
+            var target = Path.Combine(exportDirectory, SanitizeFileName(Path.GetFileNameWithoutExtension(absolute)) + ".qb");
+            QubicleFormat.Write(target, world);
+            SetStatus($"已导出 .qb：Exports/{Path.GetFileName(target)}（{world.OccupiedVoxelCount:N0} 体素）");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+        {
+            SetStatus($"导出 .qb 失败：{exception.Message}");
         }
     }
 

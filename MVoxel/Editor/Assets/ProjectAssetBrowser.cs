@@ -56,10 +56,11 @@ internal sealed class ProjectAssetBrowser
     /// <param name="openWorldRequest">把体素文件打开为当前世界的回调</param>
     /// <param name="instantiatePrefabRequest">把预制体文件实例化到场景的回调</param>
     /// <param name="exportVoxRequest">把体素世界导出为 .vox 的回调</param>
+    /// <param name="exportQubicleRequest">把体素世界导出为 .qb 的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
         Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
-        Func<string, int>? countReferences = null)
+        Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -87,7 +88,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, countReferences);
+        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, exportQubicleRequest, countReferences);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -179,7 +180,7 @@ internal sealed class ProjectAssetBrowser
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
         Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
-        Func<string, int>? countReferences = null)
+        Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null)
     {
         var entries = CollectEntries(project);
         if (entries.Count == 0)
@@ -257,6 +258,12 @@ internal sealed class ProjectAssetBrowser
                     ImGui.MenuItem("导出为 .vox…"))
                 {
                     exportVoxRequest?.Invoke(entry.RelativePath);
+                }
+
+                if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
+                    ImGui.MenuItem("导出为 .qb…"))
+                {
+                    exportQubicleRequest?.Invoke(entry.RelativePath);
                 }
 
                 if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Prefab &&
