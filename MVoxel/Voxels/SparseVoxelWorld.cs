@@ -270,6 +270,61 @@ public sealed class VoxelWorld
     /// </summary>
     public int ContentVersion { get; private set; }
 
+    private readonly HashSet<ChunkCoord64> _dirtyChunks = new();
+
+    /// <summary>
+    /// 区块新增或回收时递增；内容修改不改变此值
+    /// </summary>
+    internal long StructureStamp { get; private set; }
+
+    /// <summary>
+    /// 是否存在等待增量同步的脏区块
+    /// </summary>
+    internal bool HasDirtyChunks => _dirtyChunks.Count > 0;
+
+    /// <summary>
+    /// 取出当前脏区块快照（不清空），同步成功后由调用方 MarkChunksSynced 归账；
+    /// 取出之后发生的新编辑不在快照内，不会被误清
+    /// </summary>
+    /// <param name="chunks">脏区块坐标快照</param>
+    /// <returns>存在脏区块时返回 true</returns>
+    internal bool TryTakeDirty(out IReadOnlySet<ChunkCoord64> chunks)
+    {
+        if (_dirtyChunks.Count == 0)
+        {
+            chunks = EmptyChunkSet;
+            return false;
+        }
+
+        chunks = new HashSet<ChunkCoord64>(_dirtyChunks);
+        return true;
+    }
+
+    /// <summary>
+    /// 增量同步成功后归账：把快照中的区块移出脏集
+    /// </summary>
+    /// <param name="chunks">此前 TryTakeDirty 返回的快照</param>
+    internal void MarkChunksSynced(IReadOnlySet<ChunkCoord64> chunks)
+    {
+        foreach (var coordinate in chunks)
+        {
+            _dirtyChunks.Remove(coordinate);
+        }
+    }
+
+    /// <summary>
+    /// 把全部已加载区块标记为脏（增量路径的兜底入口）
+    /// </summary>
+    internal void MarkAllChunksDirty()
+    {
+        foreach (var coordinate in _chunks.Keys)
+        {
+            _dirtyChunks.Add(coordinate);
+        }
+    }
+
+    private static readonly IReadOnlySet<ChunkCoord64> EmptyChunkSet = new HashSet<ChunkCoord64>();
+
     /// <summary>
     /// 全世界占用体素总数，遍历所有区块，仅适合低频调用
     /// </summary>
@@ -362,6 +417,8 @@ public sealed class VoxelWorld
     {
         _chunks.Add(coordinate, chunk);
         ContentVersion += chunk.OccupiedCount;
+        _dirtyChunks.Add(coordinate);
+        StructureStamp++;
     }
 
     /// <summary>
@@ -397,9 +454,11 @@ public sealed class VoxelWorld
             {
                 existing.Remove(localCoordinate);
                 ContentVersion++;
+                _dirtyChunks.Add(chunkCoordinate);
                 if (existing.IsEmpty)
                 {
                     _chunks.Remove(chunkCoordinate);
+                    StructureStamp++;
                 }
             }
 
@@ -410,10 +469,12 @@ public sealed class VoxelWorld
         {
             chunk = new SparseVoxelChunk();
             _chunks.Add(chunkCoordinate, chunk);
+            StructureStamp++;
         }
 
         chunk.Set(localCoordinate, value);
         ContentVersion++;
+        _dirtyChunks.Add(chunkCoordinate);
     }
 
     /// <summary>
@@ -430,9 +491,11 @@ public sealed class VoxelWorld
         }
 
         ContentVersion++;
+        _dirtyChunks.Add(chunkCoordinate);
         if (chunk.IsEmpty)
         {
             _chunks.Remove(chunkCoordinate);
+            StructureStamp++;
         }
 
         return true;
