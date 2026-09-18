@@ -41,6 +41,18 @@ public sealed class CommandHistory
     public int RedoCount => _redo.Count;
 
     /// <summary>
+    /// 查看撤销栈顶命令，不弹出；供事务日志记录撤销方向使用
+    /// </summary>
+    /// <returns>栈顶命令，栈空时为空</returns>
+    public IEditorCommand? PeekUndo() => _undo.Count > 0 ? _undo.Peek() : null;
+
+    /// <summary>
+    /// 查看重做栈顶命令，不弹出；供事务日志记录重做方向使用
+    /// </summary>
+    /// <returns>栈顶命令，栈空时为空</returns>
+    public IEditorCommand? PeekRedo() => _redo.Count > 0 ? _redo.Peek() : null;
+
+    /// <summary>
     /// 立即执行命令并压入撤销栈，同时清空重做栈
     /// </summary>
     /// <param name="command">要执行的命令</param>

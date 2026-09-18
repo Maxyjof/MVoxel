@@ -377,6 +377,9 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private readonly Dictionary<StableId, HashSet<VoxelCoord64>> _layerOwnership = new();
 
+    /// <summary>体素编辑事务日志，随恢复区目录存放，正式保存或快照后清空</summary>
+    private VoxelEditingJournal? _editingJournal;
+
     /// <summary>按图层遮罩组成的渲染世界缓存</summary>
     private VoxelWorld? _composedRenderWorld;
 
@@ -601,6 +604,8 @@ internal sealed partial class ImGuiEditorWindow
             UpdateSceneModelReference(primaryAssetPath);
             // 切换世界是新的工作上下文：清空分层所有权，并移除旧世界遗留的分层引用
             _layerOwnership.Clear();
+            _editingJournal = new VoxelEditingJournal(
+                Path.Combine(RecoveryStore.DirectoryFor(_project.RootPath), "journal.jsonl"));
             var removedLayers = _sceneDocument is null
                 ? 0
                 : ConsolidateSecondaryModelObjects(_sceneDocument, primaryAssetPath);
@@ -1068,6 +1073,7 @@ internal sealed partial class ImGuiEditorWindow
         if (cells.Count == 0) return;
         var command = new VoxelStrokeCommand(name, _world, cells, value);
         _voxelHistory.Execute(command);
+        _editingJournal?.Append(command.Name, command.Edits);
         if (command.ChangedCellCount == 0)
         {
             _voxelHistory.Undo();
@@ -1409,6 +1415,11 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool ApplyUndo()
     {
+        if (_voxelHistory.PeekUndo() is VoxelStrokeCommand undoneStroke)
+        {
+            _editingJournal?.AppendInverse(undoneStroke.Name, undoneStroke.Edits);
+        }
+
         if (!_voxelHistory.Undo()) return false;
         SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
         _pipeline?.ResetAccumulation();
@@ -1420,6 +1431,11 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool ApplyRedo()
     {
+        if (_voxelHistory.PeekRedo() is VoxelStrokeCommand redoneStroke)
+        {
+            _editingJournal?.Append(redoneStroke.Name, redoneStroke.Edits);
+        }
+
         if (!_voxelHistory.Redo()) return false;
         SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
         _pipeline?.ResetAccumulation();

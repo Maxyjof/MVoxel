@@ -571,6 +571,8 @@ internal partial class ImGuiEditorWindow
         try
         {
             _layerOwnership.Clear();
+            _editingJournal = new VoxelEditingJournal(
+                Path.Combine(RecoveryStore.DirectoryFor(_project!.RootPath), "journal.jsonl"));
             var document = _sceneDocument ??= new SceneDocument { Name = "主场景" };
             for (var index = document.Objects.Count - 1; index >= 0; index--)
             {

@@ -3584,6 +3584,7 @@ DockId=0x6A3C3007,0
         ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();
+        _editingJournal = null;
         _voxelHistory.Clear();
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
@@ -3679,6 +3680,7 @@ DockId=0x6A3C3007,0
             RecoveryStore.Write(_project.RootPath,
                 Scene.SceneSerializer.ToJson(_sceneDocument ?? new Scene.SceneDocument { Name = "主场景" }),
                 worldModelSource: null);
+            _editingJournal?.Clear();
             _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
             SetStatus("已保存快照到恢复区（正式保存后自动清理）");
         }
@@ -3701,6 +3703,15 @@ DockId=0x6A3C3007,0
             if (File.Exists(snapshot.WorldModelPath))
             {
                 _world = Voxels.LargeWorldFormat.Read(snapshot.WorldModelPath);
+                // 快照之后的事务重放：日志逐格还原未落盘的编辑，还原后清空日志
+                var journalPath = Path.Combine(RecoveryStore.DirectoryFor(project.RootPath), "journal.jsonl");
+                var replayed = VoxelEditingJournal.Replay(_world, VoxelEditingJournal.TryRead(journalPath));
+                VoxelEditingJournal.Clear(journalPath);
+                if (replayed > 0)
+                {
+                    MVoxelLog.Info($"事务重放完成：{replayed} 格，{project.Manifest.Name}");
+                }
+
                 _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
                 FrameCameraOnWorld();
             }

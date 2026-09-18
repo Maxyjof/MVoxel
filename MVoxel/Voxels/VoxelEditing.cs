@@ -272,6 +272,11 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     public int ChangedCellCount => _edits.Length;
 
     /// <summary>
+    /// 逐格前后差异，供事务日志记录
+    /// </summary>
+    public IReadOnlyList<(VoxelCoord64 Coordinate, VoxelValue Before, VoxelValue After)> Edits => _edits;
+
+    /// <summary>
     /// 执行（或重做）描边
     /// </summary>
     public void Execute()
