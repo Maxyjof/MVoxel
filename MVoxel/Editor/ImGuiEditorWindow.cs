@@ -2053,10 +2053,17 @@ DockId=0x6A3C3007,0
         try
         {
             var settings = _activeExport.Settings;
+            var viewCamera = _activeExport.Camera ?? camera;
+            if (_activeExport.CullingMask is { } mask)
+            {
+                _pipeline!.SyncWorld(GetRenderWorld(mask), 0, settings.RenderLod,
+                    new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
+            }
+
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
-            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
+            var frame = BuildFrameState(viewCamera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
             var submitted = settings.PathTracingEnabled
                 ? pipeline.RenderPathView(settings, frame, width, height)
                 : pipeline.RenderSceneView(settings, frame, width, height);
@@ -2071,10 +2078,16 @@ DockId=0x6A3C3007,0
             if (!finished) return;
             Directory.CreateDirectory(Path.GetDirectoryName(_activeExport.Path)!);
             if (pipeline.SaveDisplayPng(_activeExport.Path))
-                SetStatus($"图片已导出：{_activeExport.Path}");
+                SetStatus($"图片已导出：{Path.GetFileName(_activeExport.Path)}（剩余队列 {_exportQueue.Count}）");
             else
                 SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
             _activeExport = null;
+            if (_activeExport is null && _exportQueue.Count == 0)
+            {
+                // 批量任务全部结束后让渲染视图按自身相机重新收敛
+                _accumulationSignature = string.Empty;
+                _renderViewNeedsInitialRender = true;
+            }
         }
         catch (Exception exception)
         {
@@ -2112,7 +2125,17 @@ DockId=0x6A3C3007,0
         {
             ExportRenderPng();
         }
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("批量出图（全部相机）"))
+        {
+            ExportAllCamerasPng();
+        }
         ImGui.EndDisabled();
+        if (canExport && ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("为每个相机对象各出一张图：相机有独立渲染配置时用其覆盖，否则用导出配置；按各相机图层遮罩分别重组渲染世界");
+        }
         if (!canExport && ImGui.IsItemHovered())
         {
             ImGui.SetTooltip("当前显卡显示结果尚未准备好");
@@ -2139,11 +2162,62 @@ DockId=0x6A3C3007,0
         SetStatus($"已加入导出队列：{fileName}");
     }
 
+    /// <summary>
+    /// 批量出图：为场景中每个相机对象各排一个导出任务，
+    /// 相机带独立渲染配置用其覆盖，否则用导出配置；按各自图层遮罩重组渲染世界
+    /// </summary>
+    private void ExportAllCamerasPng()
+    {
+        if (_pipeline is not { IsAvailable: true })
+        {
+            SetStatus("显卡渲染不可用，无法批量出图");
+            return;
+        }
+
+        if (_project is not { } project)
+        {
+            return;
+        }
+
+        var cameras = GetRenderCameraObjects();
+        if (cameras.Count == 0)
+        {
+            ExportRenderPng();
+            return;
+        }
+
+        var baseSettings = _projectSettings.ExportRenderSettings;
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        foreach (var cameraObject in cameras)
+        {
+            var component = cameraObject.Components.First(SceneComponentTypes.IsCamera);
+            var cameraData = SceneComponentTypes.ReadCamera(component);
+            var settings = cameraData.RenderOverrideJson is { Length: > 0 } json
+                ? RenderSettings.FromJson(json)
+                : baseSettings.CloneForExport();
+            settings.CameraFovDegrees = cameraData.FieldOfViewDegrees;
+            var fileName = $"渲染-{SanitizeFileName(cameraObject.Name)}-{stamp}-{++_exportSequence:000}.png";
+            _exportQueue.Enqueue(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
+            {
+                Camera = ToSceneCamera(cameraObject),
+                CullingMask = cameraData.CullingMask,
+            });
+        }
+
+        SetStatus($"已批量入队 {cameras.Count} 个相机的出图任务");
+    }
+
     private sealed class ExportJob
     {
         internal ExportJob(string path, RenderSettings settings) { Path = path; Settings = settings; }
         internal string Path { get; }
         internal RenderSettings Settings { get; }
+
+        /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
+        internal SceneCamera? Camera { get; init; }
+
+        /// <summary>任务专属图层遮罩；有值时按该遮罩重组渲染世界</summary>
+        internal uint? CullingMask { get; init; }
     }
 
     private void DrawInspector()
@@ -2778,9 +2852,39 @@ DockId=0x6A3C3007,0
                 ImGui.EndCombo();
             }
 
+            var hasOverride = data.RenderOverrideJson is { Length: > 0 };
+            var wantOverride = hasOverride;
+            if (ImGui.Checkbox("该相机使用独立渲染配置", ref wantOverride))
+            {
+                SceneComponentTypes.WriteCamera(component, new CameraComponentData(
+                    fieldOfView, nearClip, farClip, mask, wantOverride ? _renderSettings.ToJson() : null));
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+                _accumulationSignature = string.Empty;
+                changed = false;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip("勾选后以当前项目渲染配置生成该相机的独立副本；渲染视图与批量出图优先使用相机自己的配置。");
+            }
+
+            if (wantOverride)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("用当前项目配置刷新"))
+                {
+                    SceneComponentTypes.WriteCamera(component, new CameraComponentData(
+                        fieldOfView, nearClip, farClip, mask, _renderSettings.ToJson()));
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
+                    _accumulationSignature = string.Empty;
+                }
+            }
+
             if (changed)
             {
-                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask));
+                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask, data.RenderOverrideJson));
                 MarkSceneDocumentDirty();
             }
             return;

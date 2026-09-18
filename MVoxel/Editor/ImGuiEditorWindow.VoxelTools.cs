@@ -343,13 +343,32 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private uint GetActiveRenderCullingMask()
     {
-        if (GetActiveRenderCameraObject() is not { } cameraObject || _sceneDocument is null)
+        var component = GetActiveRenderCameraObject()?.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
+        return component is null ? uint.MaxValue : SceneComponentTypes.ReadCamera(component).CullingMask;
+    }
+
+    /// <summary>
+    /// 解析相机的生效渲染配置：相机携带独立覆盖时用覆盖副本，否则继承项目渲染配置
+    /// </summary>
+    /// <param name="cameraObject">相机对象，可为空</param>
+    /// <returns>生效渲染配置</returns>
+    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject)
+    {
+        var component = cameraObject?.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
+        if (component is null || SceneComponentTypes.ReadCamera(component).RenderOverrideJson is not { Length: > 0 } json)
         {
-            return uint.MaxValue;
+            return _renderSettings;
         }
 
-        var component = cameraObject.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
-        return component is null ? uint.MaxValue : SceneComponentTypes.ReadCamera(component).CullingMask;
+        try
+        {
+            return RenderSettings.FromJson(json);
+        }
+        catch (InvalidDataException)
+        {
+            SetStatus("相机渲染覆盖内容非法，已回退项目渲染配置");
+            return _renderSettings;
+        }
     }
 
     /// <summary>
@@ -816,7 +835,8 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, _renderSettings.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
+            pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
             // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
@@ -845,7 +865,7 @@ internal sealed partial class ImGuiEditorWindow
                     Vector2.Zero, pipeline.DisplayUvMax);
                 return true;
             }
-            var renderSettings = navigating ? _renderSettings.CreateInteractionPreview() : _renderSettings;
+            var renderSettings = navigating ? effective.CreateInteractionPreview() : effective;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
