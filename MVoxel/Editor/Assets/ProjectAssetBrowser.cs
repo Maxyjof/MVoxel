@@ -461,6 +461,7 @@ internal sealed class ProjectAssetBrowser
         {
             Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
             File.Move(oldPath, newPath);
+            AssetMetaStore.MoveMeta(oldPath, newPath);
             reportStatus($"已移动：{oldRelativePath} → {newRelativePath}");
             assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
             return true;
@@ -498,6 +499,7 @@ internal sealed class ProjectAssetBrowser
         try
         {
             File.Move(oldPath, newPath);
+            AssetMetaStore.MoveMeta(oldPath, newPath);
             reportStatus($"已重命名文件：{Path.GetFileName(oldRelativePath)} → {newName}");
             assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
             return true;
@@ -522,6 +524,7 @@ internal sealed class ProjectAssetBrowser
         try
         {
             File.Delete(path);
+            AssetMetaStore.DeleteMeta(path);
             reportStatus($"已删除文件：{Path.GetFileName(relativePath)}");
             assetChanged(new ProjectAssetChange(relativePath, null));
             return true;
@@ -635,6 +638,7 @@ internal sealed class ProjectAssetBrowser
         {
             var material = MaterialAsset.CreateDefault(slot);
             material.Save(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            AssetMetaStore.EnsureMeta(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
             _selectedAsset = relativePath;
             assetChanged(new ProjectAssetChange(relativePath, relativePath));
             reportStatus($"已创建材质：材质{slot}（槽位 {slot}），在检查器中编辑属性");
@@ -673,6 +677,7 @@ internal sealed class ProjectAssetBrowser
                 Source = lua ? GeneratorAsset.LuaTemplate : GeneratorAsset.JavaScriptTemplate,
             };
             asset.Save(absolutePath);
+            AssetMetaStore.EnsureMeta(absolutePath);
             _selectedAsset = relativePath;
             assetChanged(new ProjectAssetChange(relativePath, relativePath));
             reportStatus($"已创建生成器：{Path.GetFileName(absolutePath)}");

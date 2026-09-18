@@ -510,7 +510,9 @@ internal partial class ImGuiEditorWindow
                     string.IsNullOrWhiteSpace(info.LevelName) ? "Minecraft地图" : info.LevelName);
                 _mcImportProgress = "正在写入地形模型…";
                 var terrainFileName = $"{baseName}_{minChunkX}_{minChunkZ}.mvmodel";
-                LargeWorldFormat.Write(Path.Combine(worldsDirectory, terrainFileName), result.Terrain);
+                var terrainPath = Path.Combine(worldsDirectory, terrainFileName);
+                LargeWorldFormat.Write(terrainPath, result.Terrain);
+                AssetMetaStore.EnsureMeta(terrainPath);
                 var layerFileNames = new string[result.Layers.Count];
                 var layerOwnership = new HashSet<VoxelCoord64>[result.Layers.Count];
                 for (var index = 0; index < result.Layers.Count; index++)
@@ -518,7 +520,9 @@ internal partial class ImGuiEditorWindow
                     var layer = result.Layers[index];
                     _mcImportProgress = $"正在写入树分层 {index + 1}/{result.Layers.Count}…";
                     layerFileNames[index] = $"{baseName}_树{index + 1}.mvmodel";
-                    LargeWorldFormat.Write(Path.Combine(worldsDirectory, layerFileNames[index]), layer.World);
+                    var layerPath = Path.Combine(worldsDirectory, layerFileNames[index]);
+                    LargeWorldFormat.Write(layerPath, layer.World);
+                    AssetMetaStore.EnsureMeta(layerPath);
                     // 树分层的体素归属各自对象：保存时主世界只写地形，各树分别写回自己的文件
                     layerOwnership[index] = new HashSet<VoxelCoord64>(
                         layer.World.EnumerateOccupied().Select(item => item.Coordinate));
@@ -697,7 +701,9 @@ internal partial class ImGuiEditorWindow
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
             var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
-            LargeWorldFormat.Write(Path.Combine(worldsDirectory, fileName), world);
+            var worldPath = Path.Combine(worldsDirectory, fileName);
+            LargeWorldFormat.Write(worldPath, world);
+            AssetMetaStore.EnsureMeta(worldPath);
             OpenWorldAsset("Worlds/" + fileName);
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)

@@ -1,5 +1,6 @@
 using System.Numerics;
 using ImGuiNET;
+using MVoxel.Project;
 using MVoxel.Voxels;
 using MVoxel.Voxels.Mesh;
 
@@ -106,7 +107,9 @@ internal sealed partial class ImGuiEditorWindow
             var worldsDirectory = Path.Combine(project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
             var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
-            LargeWorldFormat.Write(Path.Combine(worldsDirectory, fileName), world);
+            var worldPath = Path.Combine(worldsDirectory, fileName);
+            LargeWorldFormat.Write(worldPath, world);
+            AssetMetaStore.EnsureMeta(worldPath);
             OpenWorldAsset("Worlds/" + fileName);
             SetStatus($"已导入网格：{world.OccupiedVoxelCount:N0} 体素");
         }
