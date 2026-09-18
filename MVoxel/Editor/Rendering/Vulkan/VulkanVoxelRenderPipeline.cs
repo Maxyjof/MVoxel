@@ -35,6 +35,26 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private DeviceMemory _bvhMemory;
     private ulong _bvhBufferCapacity;
     private int _bvhNodeCount;
+    private VkBuffer _brickTableBuffer;
+    private DeviceMemory _brickTableMemory;
+    private ulong _brickTableCapacity;
+
+    /// <summary>
+    /// 当前工作集是否承载砖结构（cells = BrickCells，bvh = 区块粒度粗树）
+    /// </summary>
+    private bool _usingBrickPath;
+
+    /// <summary>
+    /// 显式启用砖路径（渲染台架 `brick` 旗标）。
+    /// 默认关闭：密集场景的砖内线性扫描尚待区块内 BVH 替换，
+    /// 且砖格未做贪心合并，与传统路径存在噪声级像素差异
+    /// </summary>
+    internal static bool EnableBrickPath;
+
+    /// <summary>
+    /// 强制走传统全量路径（渲染台架 A/B 对比用）
+    /// </summary>
+    internal static bool DisableBrickPath;
     private DescriptorSetLayout _computeDescriptorLayout;
     private DescriptorPool _computeDescriptorPool;
     private PipelineLayout _computePipelineLayout;
@@ -217,6 +237,45 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
+        // 砖路径资格：无采样预算、无 LOD（LOD 大块格图元与砖布局不兼容）、体素数在显存预算内
+        var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
+            lodSignature == 0 && world.OccupiedVoxelCount <= MaxFullWorksetCells;
+        if (brickEligible)
+        {
+            var brickWatch = System.Diagnostics.Stopwatch.StartNew();
+            var bricks = VoxelBrickWorkset.Build(world);
+            SyncWorksetBuildMs = brickWatch.Elapsed.TotalMilliseconds;
+            SyncPackMs = 0;
+            SyncUploadMs = 0;
+            if (_context is not null && bricks.OccupiedCount > 0)
+            {
+                UploadBrickWorkset(bricks);
+                _usingBrickPath = true;
+            }
+            else if (_context is not null && _api is { } api && bricks.OccupiedCount == 0 && _voxelBuffer.Handle != 0)
+            {
+                api.DeviceWaitIdle(_device);
+                DestroyBvhBuffer(api);
+                DestroyVoxelBuffer(api);
+                DestroyBrickTableBuffer(api);
+                _bvhNodeCount = 0;
+                _usingBrickPath = false;
+            }
+
+            world.TryGetBounds(out var brickMin, out var brickMax);
+            var brickSize = new VoxelCoord64(
+                brickMax.X - brickMin.X + 1, brickMax.Y - brickMin.Y + 1, brickMax.Z - brickMin.Z + 1);
+            _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, brickMin, brickSize,
+                bricks.Cells, bricks.EmissiveCount);
+            _lastSyncSource = world;
+            _worksetMaximumCells = maximumCells;
+            _worksetLodSignature = lodSignature;
+            SyncTotalCells = bricks.OccupiedCount;
+            ResetAccumulation();
+            return;
+        }
+
+        _usingBrickPath = false;
         var requestedFull = maximumCells == 0 && world.OccupiedVoxelCount > MaxFullWorksetCells;
         if (requestedFull)
         {
@@ -239,7 +298,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             api.DeviceWaitIdle(_device);
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
+            DestroyBrickTableBuffer(api);
             _bvhNodeCount = 0;
+            _usingBrickPath = false;
         }
 
         _workset = next;
@@ -742,6 +803,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
+            DestroyBrickTableBuffer(api);
         }
     }
 
@@ -835,6 +897,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
         parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
+        parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
@@ -1199,7 +1262,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[7];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[8];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1207,10 +1270,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         bindings[4] = new(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[5] = new(5, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[6] = new(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[7] = new(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 7,
+            BindingCount = 8,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1226,7 +1290,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 5 * TileRingDepth),
+            new(DescriptorType.StorageBuffer, 6 * TileRingDepth),
             new(DescriptorType.StorageImage, 2 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
@@ -1322,8 +1386,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UpdateComputeDescriptors()
     {
-        if (_voxelBuffer.Handle == 0 || _bvhBuffer.Handle == 0 || _outputView.Handle == 0 ||
-            _accumulationView.Handle == 0) return;
+        if (_voxelBuffer.Handle == 0 || _bvhBuffer.Handle == 0 ||
+            _outputView.Handle == 0 || _accumulationView.Handle == 0) return;
+        // 砖表绑定在布局中恒存在（着色器静态引用），即使传统路径也要绑定最小缓冲
+        EnsureBrickTableBuffer(1);
         DescriptorBufferInfo voxelInfo = new(_voxelBuffer, 0, _voxelBufferCapacity);
         DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
@@ -1335,7 +1401,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
             DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0,
                 (ulong)(MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float)));
-            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[7];
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[8];
             writes[0] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -1401,7 +1467,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &environmentInfo
             };
-            _api!.UpdateDescriptorSets(_device, 7, writes, 0, null);
+            DescriptorBufferInfo brickTableInfo = new(_brickTableBuffer, 0, Math.Max(_brickTableCapacity, 512));
+            writes[7] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 7,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &brickTableInfo
+            };
+            _api!.UpdateDescriptorSets(_device, 8, writes, 0, null);
         }
     }
 
@@ -1526,6 +1602,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec4 envTexels[];
         };
 
+        // Brick 表：每项两个 ivec4，head = (brick 区域最小格 xyz, 占用数)，tail.x = 格池起始下标；
+        // 按区块 64 项连续排布，叶节点的 links.z/w 给出该区块的表区间
+        layout(set = 0, binding = 7, std430) readonly buffer BrickTableBuffer
+        {
+            ivec4 brickTable[];
+        };
+
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
         {
@@ -1607,6 +1690,50 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     continue;
                 if (node.links.x < 0)
                 {
+                    if (values[114] > 0.5) // P_BRICK_MODE：1 = 砖结构两级求交
+                    {
+                        // 砖模式：叶节点是单个区块，先测 64 个 8³ brick 区域盒，
+                        // 命中的 brick 内再对占用格做盒体相交；格坐标与传统路径同空间
+                        int tableStart = node.links.z;
+                        for (int brick = 0; brick < node.links.w; brick++)
+                        {
+                            ivec4 head = brickTable[(tableStart + brick) * 2];
+                            if (head.w == 0) continue;
+                            vec3 brickMin = regionOrigin + vec3(head.xyz);
+                            float brickDistance;
+                            vec3 brickNormal;
+                            if (!IntersectBox(rayOrigin, rayDirection, brickMin, brickMin + vec3(8.0),
+                                    brickDistance, brickNormal) || brickDistance > closestDistance)
+                                continue;
+                            int startIndex = brickTable[(tableStart + brick) * 2 + 1].x;
+                            for (int index = 0; index < head.w; index++)
+                            {
+                                VoxelCell cell = cells[startIndex + index];
+                                ivec3 packedExtent = ivec3(
+                                    max(cell.position.w & 0xFF, 1),
+                                    max((cell.position.w >> 8) & 0xFF, 1),
+                                    max((cell.position.w >> 16) & 0xFF, 1));
+                                vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
+                                vec3 voxelMax = voxelMin + vec3(packedExtent);
+                                float distance;
+                                vec3 normal;
+                                if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
+                                    distance < closestDistance &&
+                                    !(ignoreTranslucent && (cell.metadata.x >> 16 & 1u) != 0u))
+                                {
+                                    closestDistance = distance;
+                                    hitNormal = normal;
+                                    hitColor = cell.color;
+                                    hitFlags = cell.metadata.x >> 16;
+                                    hitSlot = cell.metadata.x & 0xFFFFu;
+                                    hitCell = cell.position.xyz;
+                                    hitExtent = packedExtent;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
                     int endIndex = min(node.links.z + node.links.w, voxelCount);
                     for (int index = node.links.z; index < endIndex; index++)
                     {
@@ -1633,6 +1760,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitCell = cell.position.xyz;
                             hitExtent = packedExtent;
                         }
+                    }
                     }
                 }
                 else
@@ -2429,8 +2557,147 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _bvhNodeCount = bvh.NodeCount;
+        _usingBrickPath = false;
         UpdateComputeDescriptors();
         SyncUploadMs = phaseWatch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// 上传砖路径工作集：cells 缓冲承载 BrickCells，bvh 缓冲承载区块粒度粗树，
+    /// 砖表缓冲承载每区块 64 项表项（32 字节：区域最小格 + 占用数、格池起始下标）
+    /// </summary>
+    /// <param name="bricks">砖工作集</param>
+    private void UploadBrickWorkset(VoxelBrickWorkset bricks)
+    {
+        if (_context is null || _api is not { } api)
+        {
+            return;
+        }
+
+        var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
+        var cellBytes = PackCells(bricks.Cells);
+        SyncPackMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
+
+        // 粗树节点沿用 BvhNode 48 字节布局
+        var nodeBytes = new byte[checked(bricks.Nodes.Length * 48)];
+        for (var index = 0; index < bricks.Nodes.Length; index++)
+        {
+            var node = bricks.Nodes[index];
+            var offset = index * 48;
+            WriteInt(nodeBytes, offset + 0, node.MinX);
+            WriteInt(nodeBytes, offset + 4, node.MinY);
+            WriteInt(nodeBytes, offset + 8, node.MinZ);
+            WriteInt(nodeBytes, offset + 12, 0);
+            WriteInt(nodeBytes, offset + 16, node.MaxX);
+            WriteInt(nodeBytes, offset + 20, node.MaxY);
+            WriteInt(nodeBytes, offset + 24, node.MaxZ);
+            WriteInt(nodeBytes, offset + 28, 0);
+            WriteInt(nodeBytes, offset + 32, node.LinkX);
+            WriteInt(nodeBytes, offset + 36, node.LinkY);
+            WriteInt(nodeBytes, offset + 40, node.LinkZ);
+            WriteInt(nodeBytes, offset + 44, node.LinkW);
+        }
+
+        var tableBytes = new byte[checked(bricks.BrickTable.Length * 32)];
+        for (var index = 0; index < bricks.BrickTable.Length; index++)
+        {
+            var entry = bricks.BrickTable[index];
+            var offset = index * 32;
+            WriteInt(tableBytes, offset + 0, entry.MinX);
+            WriteInt(tableBytes, offset + 4, entry.MinY);
+            WriteInt(tableBytes, offset + 8, entry.MinZ);
+            WriteInt(tableBytes, offset + 12, entry.Count);
+            WriteInt(tableBytes, offset + 16, entry.CellStart);
+            WriteInt(tableBytes, offset + 20, 0);
+            WriteInt(tableBytes, offset + 24, 0);
+            WriteInt(tableBytes, offset + 28, 0);
+        }
+
+        var cellRequired = checked((ulong)Math.Max(cellBytes.Length, PackedCellSize));
+        if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < cellRequired)
+        {
+            api.DeviceWaitIdle(_device);
+            DestroyVoxelBuffer(api);
+            (_voxelBuffer, _voxelMemory) = CreateBuffer(
+                NextCapacity(cellRequired),
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            _voxelBufferCapacity = NextCapacity(cellRequired);
+        }
+
+        var nodeRequired = checked((ulong)Math.Max(nodeBytes.Length, 48));
+        if (_bvhBuffer.Handle == 0 || _bvhBufferCapacity < nodeRequired)
+        {
+            api.DeviceWaitIdle(_device);
+            DestroyBvhBuffer(api);
+            (_bvhBuffer, _bvhMemory) = CreateBuffer(
+                NextCapacity(nodeRequired),
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            _bvhBufferCapacity = NextCapacity(nodeRequired);
+        }
+
+        EnsureBrickTableBuffer(bricks.BrickTable.Length);
+
+        UploadStaging(cellBytes, _voxelBuffer);
+        UploadStaging(nodeBytes, _bvhBuffer);
+        UploadStaging(tableBytes, _brickTableBuffer);
+
+        _bvhNodeCount = bricks.Nodes.Length;
+        UpdateComputeDescriptors();
+        SyncUploadMs = phaseWatch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// 把主机端字节经暂存缓冲上传到设备本地 Storage Buffer
+    /// </summary>
+    private void UploadStaging(byte[] bytes, VkBuffer destination)
+    {
+        var api = _api!;
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        var (stagingBuffer, stagingMemory) = CreateBuffer(
+            (ulong)bytes.Length,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        try
+        {
+            void* mapped = null;
+            Check(api.MapMemory(_device, stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射暂存缓冲");
+            try
+            {
+                fixed (byte* source = bytes)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
+                }
+            }
+            finally
+            {
+                api.UnmapMemory(_device, stagingMemory);
+            }
+
+            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, stagingBuffer, destination, bytes.Length));
+        }
+        finally
+        {
+            api.DestroyBuffer(_device, stagingBuffer, null);
+            api.FreeMemory(_device, stagingMemory, null);
+        }
+    }
+
+    /// <summary>
+    /// 向字节数组写入一个有符号 32 位整数
+    /// </summary>
+    private static void WriteInt(byte[] bytes, int offset, int value)
+    {
+        bytes[offset] = (byte)value;
+        bytes[offset + 1] = (byte)(value >> 8);
+        bytes[offset + 2] = (byte)(value >> 16);
+        bytes[offset + 3] = (byte)(value >> 24);
     }
 
     /// <summary>
@@ -2569,6 +2836,45 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _bvhMemory = default;
         _bvhBufferCapacity = 0;
         _bvhNodeCount = 0;
+    }
+
+    /// <summary>
+    /// 销毁砖表缓冲
+    /// </summary>
+    private void DestroyBrickTableBuffer(Vk api)
+    {
+        if (_brickTableBuffer.Handle == 0)
+        {
+            return;
+        }
+
+        api.DestroyBuffer(_device, _brickTableBuffer, null);
+        api.FreeMemory(_device, _brickTableMemory, null);
+        _brickTableBuffer = default;
+        _brickTableMemory = default;
+        _brickTableCapacity = 0;
+    }
+
+    /// <summary>
+    /// 确保砖表缓冲存在且容量足够；砖表项为两个 ivec4（区域最小格 + 占用数、格池起始下标），32 字节
+    /// </summary>
+    /// <param name="entries">所需砖表项数</param>
+    private void EnsureBrickTableBuffer(int entries)
+    {
+        var api = _api!;
+        var required = checked((ulong)Math.Max(entries * 32, 512));
+        if (_brickTableBuffer.Handle != 0 && _brickTableCapacity >= required)
+        {
+            return;
+        }
+
+        api.DeviceWaitIdle(_device);
+        DestroyBrickTableBuffer(api);
+        (_brickTableBuffer, _brickTableMemory) = CreateBuffer(
+            NextCapacity(required),
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.DeviceLocalBit);
+        _brickTableCapacity = NextCapacity(required);
     }
 
     /// <summary>

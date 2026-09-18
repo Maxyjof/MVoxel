@@ -15,10 +15,10 @@ public sealed class VoxelBrickWorkset
     /// <summary>
     /// 空工作集
     /// </summary>
-    public static VoxelBrickWorkset Empty { get; } = new([], [], [], VoxelCoord64.Zero, 0, 0);
+    public static VoxelBrickWorkset Empty { get; } = new([], [], [], VoxelCoord64.Zero, 0, 0, 0);
 
     private VoxelBrickWorkset(VoxelGpuCell[] cells, BrickEntry[] brickTable, Node[] nodes,
-        VoxelCoord64 anchor, int chunkCount, int occupiedCount)
+        VoxelCoord64 anchor, int chunkCount, int occupiedCount, int emissiveCount)
     {
         Cells = cells;
         BrickTable = brickTable;
@@ -26,6 +26,7 @@ public sealed class VoxelBrickWorkset
         Anchor = anchor;
         ChunkCount = chunkCount;
         OccupiedCount = occupiedCount;
+        EmissiveCount = emissiveCount;
     }
 
     /// <summary>
@@ -59,9 +60,14 @@ public sealed class VoxelBrickWorkset
     public int OccupiedCount { get; }
 
     /// <summary>
-    /// BrickTable 项：brick 区域最小格与占用数
+    /// 发光体素数量
     /// </summary>
-    public readonly record struct BrickEntry(int MinX, int MinY, int MinZ, int Count);
+    public int EmissiveCount { get; }
+
+    /// <summary>
+    /// BrickTable 项：brick 区域最小格、占用数与格池起始下标
+    /// </summary>
+    public readonly record struct BrickEntry(int MinX, int MinY, int MinZ, int Count, int CellStart);
 
     /// <summary>
     /// 粗树节点（与着色器 BvhNode 的三 ivec4 布局对齐）
@@ -100,6 +106,7 @@ public sealed class VoxelBrickWorkset
         var chunkBoundsMin = new VoxelCoord64[chunkCount];
         var chunkBoundsMax = new VoxelCoord64[chunkCount];
         var occupied = 0;
+        var emissive = 0;
         for (var index = 0; index < chunkCount; index++)
         {
             var (coordinate, chunk) = chunks[index];
@@ -118,13 +125,15 @@ public sealed class VoxelBrickWorkset
                     (int)(chunkBase.X + origin.X - minimum.X),
                     (int)(chunkBase.Y + origin.Y - minimum.Y),
                     (int)(chunkBase.Z + origin.Z - minimum.Z),
-                    data.BrickCounts[brick]);
+                    data.BrickCounts[brick],
+                    occupied + data.BrickStarts[brick]);
             }
 
             var occupiedMin = new VoxelCoord64(long.MaxValue, long.MaxValue, long.MaxValue);
             var occupiedMax = new VoxelCoord64(long.MinValue, long.MinValue, long.MinValue);
             foreach (var cell in data.Cells)
             {
+                if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissive++;
                 occupiedMin = VoxelCoord64.Zero + new VoxelCoord64(
                     Math.Min(occupiedMin.X, cell.X), Math.Min(occupiedMin.Y, cell.Y),
                     Math.Min(occupiedMin.Z, cell.Z));
@@ -160,7 +169,7 @@ public sealed class VoxelBrickWorkset
 
         var nodes = new List<Node>(Math.Max(1, chunkCount * 2));
         BuildTree(chunkBoundsMin, chunkBoundsMax, 0, chunkCount, chunkBrickOffsets, nodes, minimum);
-        return new VoxelBrickWorkset(cells, brickTable, nodes.ToArray(), minimum, chunkCount, occupied);
+        return new VoxelBrickWorkset(cells, brickTable, nodes.ToArray(), minimum, chunkCount, occupied, emissive);
     }
 
     /// <summary>

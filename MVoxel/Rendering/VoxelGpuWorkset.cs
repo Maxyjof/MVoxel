@@ -60,6 +60,16 @@ public sealed class VoxelGpuWorkset
     public int SourceVersion { get; }
 
     /// <summary>
+    /// 为砖路径创建记账工作集：cells 直接持有砖池格序列（体素集合与传统路径相同，仅顺序不同），
+    /// 供硬件 RT、区域参数与统计沿用现有读数
+    /// </summary>
+    internal static VoxelGpuWorkset CreateForBricks(int sourceVersion, VoxelCoord64 origin, VoxelCoord64 size,
+        VoxelGpuCell[] brickCells, int emissiveCount)
+    {
+        return new VoxelGpuWorkset(sourceVersion, origin, size, brickCells, emissiveCount);
+    }
+
+    /// <summary>
     /// 局部坐标原点对应的世界坐标
     /// </summary>
     public VoxelCoord64 Origin { get; }

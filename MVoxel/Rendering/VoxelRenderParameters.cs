@@ -13,7 +13,6 @@ public sealed class VoxelRenderParameters
     /// <summary>
     /// 参数块总槽数（float 个数），SSBO 按此大小上传
     /// </summary>
-    public const int SlotCount = 114;
 
     // 相机基向量与逐帧标量
     /// <summary>相机位置 X</summary>
@@ -90,6 +89,10 @@ public sealed class VoxelRenderParameters
     public const int BloomPass = 108, BloomEnabled = 109, BloomIntensity = 110, BloomThreshold = 111, BloomRadius = 112;
     /// <summary>场景视图立体着色开关</summary>
     public const int SceneShading = 113;
+    /// <summary>Brick 两级求交开关（1 = cells/bvh 缓冲承载砖结构）</summary>
+    public const int BrickMode = 114;
+    /// <summary>参数槽总数</summary>
+    public const int SlotCount = 115;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -134,6 +137,7 @@ public sealed class VoxelRenderParameters
             ("P_BLOOM_INTENSITY", BloomIntensity), ("P_BLOOM_THRESHOLD", BloomThreshold),
             ("P_BLOOM_RADIUS", BloomRadius),
             ("P_SCENE_SHADING", SceneShading),
+            ("P_BRICK_MODE", BrickMode),
         };
 
         var builder = new StringBuilder();
