@@ -125,12 +125,12 @@ internal sealed partial class ImGuiEditorWindow
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
                 _world = LargeWorldFormat.Read(largeWorldPath);
-                SetStatus($"已载入大世界模型：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
+                SetStatus($"已载入体素世界：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
             }
             else if (File.Exists(modelPath))
             {
                 _world = LargeWorldFormat.Read(modelPath);
-                SetStatus($"已载入体素模型：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
+                SetStatus($"已载入体素世界：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
             }
             else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
             {

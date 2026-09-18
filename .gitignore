@@ -23,8 +23,8 @@ UserSettings/
 Plugins/Cache/
 Plugins/Generated/
 *.mvmodel.tmp
-*.mvscene.tmp
-*.mvprefab.tmp
+*.mvox.tmp
+*.prefab.tmp
 *.tmp
 *.bak
 *.autosave

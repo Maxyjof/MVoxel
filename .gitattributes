@@ -16,6 +16,11 @@
 *.vox binary
 *.gox binary
 *.mvmodel binary
-*.mvscene text
-*.mvprefab text
-*.mvmat text
+*.mvworld binary
+*.mvox text
+*.prefab text
+*.material text
+*.palette binary
+*.mvenvironment text
+*.mvrenderpreset text
+*.mvgenerator text

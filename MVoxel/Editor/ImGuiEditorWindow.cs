@@ -675,7 +675,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
             if (ImGui.MenuItem("导入 .vox 为世界…", enabled: _project is not null)) ImportVoxAsWorld();
-            if (ImGui.MenuItem("导入网格模型（obj/stl/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
+            if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) Close();
             ImGui.EndMenu();
@@ -684,7 +684,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (ImGui.BeginMenu("视图"))
         {
             if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
-            if (ImGui.MenuItem("渲染窗口", "F2")) _requestedCenterTab = 1;
+            if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
             ImGui.Separator();
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
@@ -2650,7 +2650,7 @@ DockId=0x6A3C3007,0
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var model = data.Model;
             var part = data.Part;
-            BeginInspectorField("模型", "对象使用的体素数据路径。");
+            BeginInspectorField("模型", "对象引用的体素世界文件路径。");
             var changed = ImGui.InputText("##InspectorVoxelModel", ref model, 260);
             BeginInspectorField("部件", "模型中的部件名称；留空表示使用默认部件。");
             changed |= ImGui.InputText("##InspectorVoxelPart", ref part, 128);
@@ -2848,7 +2848,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;
@@ -3249,7 +3249,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在读取项目清单…", .18F, CanCancel: true));
                         var project = ProjectLayout.Open(absolutePath);
                         cancellation.ThrowIfCancellationRequested();
-                        report(new BlockingOperationProgress("正在扫描资源目录…", .76F, CanCancel: true));
+                        report(new BlockingOperationProgress("正在扫描资产目录…", .76F, CanCancel: true));
                         foreach (var directory in ProjectLayout.AssetDirectories)
                         {
                             cancellation.ThrowIfCancellationRequested();
@@ -3280,7 +3280,7 @@ DockId=0x6A3C3007,0
     private void BeginDiagnosticLoad()
     {
         _projectOperation.TryStart(
-            "正在加载项目资源",
+            "正在加载项目资产",
             "正在准备加载诊断…",
             (cancellation, report) =>
             {
@@ -3288,7 +3288,7 @@ DockId=0x6A3C3007,0
                 {
                     cancellation.ThrowIfCancellationRequested();
                     Thread.Sleep(38);
-                    report(new BlockingOperationProgress($"正在加载资源索引（{step}/8）…", .10F + step * .10F, CanCancel: true));
+                    report(new BlockingOperationProgress($"正在加载资产索引（{step}/8）…", .10F + step * .10F, CanCancel: true));
                 }
 
                 return true;
@@ -3426,7 +3426,7 @@ DockId=0x6A3C3007,0
             RecoveryStore.Clear(_project.RootPath);
             SetStatus(automatic
                 ? $"项目已自动保存：{_project.Manifest.Name}"
-                : $"项目已保存：{_project.Manifest.Name}（场景和内部数据，{_world.OccupiedVoxelCount} 体素）");
+                : $"项目已保存：{_project.Manifest.Name}（场景与体素世界，{_world.OccupiedVoxelCount} 体素）");
         }
     }
 
@@ -3489,7 +3489,7 @@ DockId=0x6A3C3007,0
     private void RefreshProjectAssets()
     {
         _assetBrowser.Reset();
-        SetStatus(_project is null ? "资源视图已刷新：未打开项目" : "资源视图已刷新");
+        SetStatus(_project is null ? "资源视图已刷新：未打开项目" : "资产视图已刷新");
     }
 
     private void ValidateCurrentScene()

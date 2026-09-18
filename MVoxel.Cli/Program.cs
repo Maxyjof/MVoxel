@@ -71,6 +71,8 @@ internal static class Program
         Console.WriteLine("      列出可用项目模板");
         Console.WriteLine("  --import-mesh <网格文件> <输出.mvmodel> [分辨率] [shell] [RRGGBB]");
         Console.WriteLine("      把 obj/stl/glb/gltf 网格体素化为世界文件，默认实体填充、分辨率 64");
+        Console.WriteLine("  --export-vox <世界文件> <输出.vox>");
+        Console.WriteLine("      把 .mvmodel/.mvworld 体素世界导出为 MagicaVoxel .vox 交换文件");
         Console.WriteLine("  --mc-bench <存档目录> <最小区块X> <最小区块Z> <最大区块X> <最大区块Z> [次数]");
         Console.WriteLine("      Minecraft 导入选区分段性能基准");
         Console.WriteLine("  --list-plugins <项目目录>");
@@ -171,6 +173,13 @@ internal static class Program
                 LargeWorldFormat.Write(args[2], world);
                 Console.WriteLine($"已体素化 {Path.GetFileName(args[1])}：{world.OccupiedVoxelCount:N0} 体素，" +
                                   $"分辨率 {resolution}，{(fill ? "实体" : "表面壳")}");
+                return 0;
+            }
+            case "--export-vox" when args.Length == 3:
+            {
+                var world = LargeWorldFormat.Read(args[1]);
+                VoxFormat.Write(args[2], world);
+                Console.WriteLine($"已导出 .vox：{args[2]}（{world.OccupiedVoxelCount:N0} 体素）");
                 return 0;
             }
             case "--list-plugins" when args.Length == 2:

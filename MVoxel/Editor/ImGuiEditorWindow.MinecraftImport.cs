@@ -703,6 +703,39 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 把资产浏览器中的体素世界导出为 MagicaVoxel .vox 交换文件，写入 Assets/Exports
+    /// </summary>
+    /// <param name="relativePath">相对 Assets 的世界文件路径</param>
+    private void ExportVoxAsset(string relativePath)
+    {
+        if (_project is not { } project || relativePath.Length == 0)
+        {
+            return;
+        }
+
+        var absolute = Path.GetFullPath(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(absolute))
+        {
+            SetStatus($"世界文件不存在：{relativePath}");
+            return;
+        }
+
+        try
+        {
+            var world = LargeWorldFormat.Read(absolute);
+            var exportDirectory = Path.Combine(project.AssetsPath, "Exports");
+            Directory.CreateDirectory(exportDirectory);
+            var target = Path.Combine(exportDirectory, SanitizeFileName(Path.GetFileNameWithoutExtension(absolute)) + ".vox");
+            VoxFormat.Write(target, world);
+            SetStatus($"已导出 .vox：Exports/{Path.GetFileName(target)}（{world.OccupiedVoxelCount:N0} 体素）");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+        {
+            SetStatus($"导出 .vox 失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
     /// 维度下拉框的显示文本
     /// </summary>
     private static string DimensionLabel(string id, IReadOnlyList<MinecraftDimension> dimensions)

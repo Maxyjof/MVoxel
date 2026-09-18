@@ -46,8 +46,10 @@ internal sealed class ProjectAssetBrowser
     /// <param name="assetChanged">资产文件变更回调</param>
     /// <param name="openWorldRequest">把体素文件打开为当前世界的回调</param>
     /// <param name="instantiatePrefabRequest">把预制体文件实例化到场景的回调</param>
+    /// <param name="exportVoxRequest">把体素世界导出为 .vox 的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
-        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null)
+        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
+        Action<string>? exportVoxRequest = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -75,7 +77,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest);
+        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -124,14 +126,14 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(searchWidth);
-        ImGui.InputTextWithHint("##资源搜索", "搜索资源…", ref _searchText, 256);
+        ImGui.InputTextWithHint("##资源搜索", "搜索资产…", ref _searchText, 256);
     }
 
     private void DrawFolderTree(ProjectHandle? project)
     {
-        ImGui.TextDisabled(project is null ? "新项目资源目录" : "资源");
+        ImGui.TextDisabled(project is null ? "新项目资产目录" : "资产");
         ImGui.Separator();
-        DrawFolderNode(project, string.Empty, "资源", 0);
+        DrawFolderNode(project, string.Empty, "资产", 0);
         if (project is null)
         {
             ImGui.Dummy(new Vector2(0F, 6F));
@@ -165,15 +167,16 @@ internal sealed class ProjectAssetBrowser
     }
 
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
-        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null)
+        Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
+        Action<string>? exportVoxRequest = null)
     {
         var entries = CollectEntries(project);
         if (entries.Count == 0)
         {
             ImGui.Dummy(new Vector2(0F, 14F));
             ImGui.TextDisabled(string.IsNullOrWhiteSpace(_searchText)
-                ? "此文件夹暂时没有资源。"
-                : "没有找到符合条件的资源。");
+                ? "此文件夹暂时没有资产。"
+                : "没有找到符合条件的资产。");
             return;
         }
 
@@ -232,6 +235,12 @@ internal sealed class ProjectAssetBrowser
                     ImGui.MenuItem("打开为世界"))
                 {
                     openWorldRequest?.Invoke(entry.RelativePath);
+                }
+
+                if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
+                    ImGui.MenuItem("导出为 .vox…"))
+                {
+                    exportVoxRequest?.Invoke(entry.RelativePath);
                 }
 
                 if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Prefab &&
@@ -428,7 +437,7 @@ internal sealed class ProjectAssetBrowser
     private void DrawFooter(ProjectHandle? project)
     {
         var description = project is null
-            ? "未打开项目：显示新项目的标准资源目录"
+            ? "未打开项目：显示新项目的标准资产目录"
             : _selectedAsset.Length == 0
                 ? $"当前文件夹：{ProjectAssetCatalog.DisplayPath(_selectedFolder)}"
                 : $"已选择：{ProjectAssetCatalog.DisplayPath(_selectedAsset)}";
@@ -444,9 +453,9 @@ internal sealed class ProjectAssetBrowser
 
     private string BuildBreadcrumb(ProjectHandle? project)
     {
-        var root = project is null ? "资源（未打开项目）" : "资源";
+        var root = project is null ? "资产（未打开项目）" : "资产";
         var path = ProjectAssetCatalog.DisplayPath(_selectedFolder);
-        return path == "资源" ? root : $"{root}  /  {path["资源".Length..].TrimStart(' ', '/', '／')}";
+        return path == "资产" ? root : $"{root}  /  {path["资产".Length..].TrimStart(' ', '/', '／')}";
     }
 
     private static string FilterLabel(ProjectAssetKind? kind) => kind is null ? "筛选：全部" : ProjectAssetCatalog.KindLabel(kind.Value);
@@ -459,7 +468,7 @@ internal sealed class ProjectAssetBrowser
         {
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         }
-        catch (Exception exception) { reportStatus($"打开资源失败：{exception.Message}"); }
+        catch (Exception exception) { reportStatus($"打开资产失败：{exception.Message}"); }
     }
 
     private static void RevealInExplorer(ProjectHandle? project, string relativePath, Action<string> reportStatus)
@@ -562,7 +571,7 @@ internal enum ProjectAssetKind
     Scene,
     /// <summary>项目内部体素数据</summary>
     VoxelModel,
-    /// <summary>预制件 .prefab</summary>
+    /// <summary>预制体 .prefab</summary>
     Prefab,
     /// <summary>材质 .material</summary>
     Material,
@@ -730,8 +739,8 @@ internal static class ProjectAssetCatalog
     /// <returns>显示文本</returns>
     internal static string DisplayPath(string relativePath)
     {
-        if (string.IsNullOrWhiteSpace(relativePath)) return "资源";
-        return "资源 / " + string.Join(" / ", relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+        if (string.IsNullOrWhiteSpace(relativePath)) return "资产";
+        return "资产 / " + string.Join(" / ", relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
             .Select(DisplayFolderName));
     }
 
@@ -744,8 +753,8 @@ internal static class ProjectAssetCatalog
     {
         ProjectAssetKind.Folder => "文件夹",
         ProjectAssetKind.Scene => "场景",
-        ProjectAssetKind.VoxelModel => "体素数据",
-        ProjectAssetKind.Prefab => "预制件",
+        ProjectAssetKind.VoxelModel => "体素世界",
+        ProjectAssetKind.Prefab => "预制体",
         ProjectAssetKind.Material => "材质",
         ProjectAssetKind.Palette => "调色板",
         ProjectAssetKind.Environment => "环境",
@@ -769,7 +778,7 @@ internal static class ProjectAssetCatalog
         return Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".mvox" => ProjectAssetKind.Scene,
-            ".mvmodel" or ".vox" => ProjectAssetKind.VoxelModel,
+            ".mvmodel" or ".mvworld" or ".vox" => ProjectAssetKind.VoxelModel,
             ".prefab" => ProjectAssetKind.Prefab,
             ".material" => ProjectAssetKind.Material,
             ".palette" or ".pal" => ProjectAssetKind.Palette,
@@ -825,13 +834,14 @@ internal static class ProjectAssetCatalog
     private static string DisplayFolderName(string name) => name switch
     {
         "Scenes" => "场景",
-        "Prefabs" => "预制件",
+        "Prefabs" => "预制体",
         "Worlds" => "世界",
         "Materials" => "材质",
         "Palettes" => "调色板",
         "Environments" => "环境",
         "RenderPresets" => "渲染预设",
         "Generators" => "生成器",
+        "Exports" => "导出",
         _ => name,
     };
 }

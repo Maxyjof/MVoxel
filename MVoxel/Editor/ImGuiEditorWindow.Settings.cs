@@ -197,7 +197,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectSettingsSurface()
     {
-        var categories = new[] { "项目", "场景", "画面", "资源" };
+        var categories = new[] { "项目", "场景", "画面", "资产" };
         DrawSettingsSidebar(categories, ref _projectSettingsCategory, "##项目设置分类", () =>
         {
             switch (_projectSettingsCategory)
@@ -755,7 +755,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectAssetSettings()
     {
-        ImGui.TextColored(ToColor(EditorPalette.Accent), "资源");
+        ImGui.TextColored(ToColor(EditorPalette.Accent), "资产");
         if (ImGui.BeginTabBar("##ProjectAssetTabs"))
         {
             if (ImGui.BeginTabItem("目录"))
@@ -768,7 +768,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("导入"))
             {
                 ImGui.TextUnformatted("导入与导出格式");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入 Minecraft 存档、读写 .palette");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入网格模型与 Minecraft 存档、读写 .palette");
                 ImGui.EndTabItem();
             }
 

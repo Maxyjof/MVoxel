@@ -136,7 +136,7 @@ public static class ProjectLayout
     public const string ProjectFileName = "Project.mvoxproj";
 
     /// <summary>
-    /// Assets 下强制存在的一级分类目录，场景 .mvox、预制件 .prefab、
+    /// Assets 下强制存在的一级分类目录，场景 .mvox、预制体 .prefab、
     /// 材质 .material、项目级调色板 .palette 都存放在对应目录中
     /// </summary>
     public static readonly string[] AssetDirectories =
@@ -149,6 +149,7 @@ public static class ProjectLayout
         "Environments",
         "RenderPresets",
         "Generators",
+        "Exports",
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
