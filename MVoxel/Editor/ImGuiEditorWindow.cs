@@ -649,6 +649,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawRenderConfig();
         DrawProjectAssets();
         DrawPluginPanels();
+        DrawGeneratorWindow();
         DrawStatusBar();
         DrawProjectPathDialog();
         DrawCloseProjectDialog();
@@ -692,6 +693,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
             if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
+            if (ImGui.MenuItem("生成器", null, ref _showGeneratorPanel)) { }
             ImGui.EndMenu();
         }
 
@@ -3051,7 +3053,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset);
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset);
         if (_assetBrowser.SelectedAssetPath.Length > 0)
         {
             _selectedSceneObjectId = null;
@@ -3552,6 +3554,7 @@ DockId=0x6A3C3007,0
         _sceneDocumentDirty = false;
         _renderCameraId = null;
         _assetBrowser.Reset();
+        ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();
         _voxelHistory.Clear();

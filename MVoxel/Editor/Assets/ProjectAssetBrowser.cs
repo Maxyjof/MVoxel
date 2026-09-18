@@ -49,7 +49,7 @@ internal sealed class ProjectAssetBrowser
     /// <param name="exportVoxRequest">把体素世界导出为 .vox 的回调</param>
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
-        Action<string>? exportVoxRequest = null)
+        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -77,7 +77,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest);
+        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -168,7 +168,7 @@ internal sealed class ProjectAssetBrowser
 
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
-        Action<string>? exportVoxRequest = null)
+        Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null)
     {
         var entries = CollectEntries(project);
         if (entries.Count == 0)
@@ -214,6 +214,11 @@ internal sealed class ProjectAssetBrowser
             {
                 instantiatePrefabRequest?.Invoke(entry.RelativePath);
             }
+            else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Generator &&
+                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            {
+                openGeneratorRequest?.Invoke(entry.RelativePath);
+            }
 
             if (ImGui.BeginPopupContextItem("##资源右键菜单"))
             {
@@ -247,6 +252,21 @@ internal sealed class ProjectAssetBrowser
                     ImGui.MenuItem("实例化到场景"))
                 {
                     instantiatePrefabRequest?.Invoke(entry.RelativePath);
+                }
+                if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Generator &&
+                    ImGui.MenuItem("在生成器面板打开"))
+                {
+                    openGeneratorRequest?.Invoke(entry.RelativePath);
+                }
+                if (entry.IsFolder && entry.RelativePath.Equals("Generators", StringComparison.OrdinalIgnoreCase) &&
+                    ImGui.MenuItem("新建生成器（JavaScript）"))
+                {
+                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, false);
+                }
+                if (entry.IsFolder && entry.RelativePath.Equals("Generators", StringComparison.OrdinalIgnoreCase) &&
+                    ImGui.MenuItem("新建生成器（Lua）"))
+                {
+                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, true);
                 }
                 if (ImGui.MenuItem("在资源管理器中打开"))
                     RevealInExplorer(project, entry.RelativePath, reportStatus);
@@ -531,6 +551,44 @@ internal sealed class ProjectAssetBrowser
         }
     }
 
+    /// <summary>
+    /// 在 Generators 目录创建新生成器，选中并请求在生成器面板打开
+    /// </summary>
+    private void CreateGeneratorAsset(ProjectHandle? project, Action<string> reportStatus,
+        Action<ProjectAssetChange> assetChanged, Action<string>? openGeneratorRequest, bool lua)
+    {
+        if (project is null) return;
+        var directory = Path.Combine(project.AssetsPath, "Generators");
+        Directory.CreateDirectory(directory);
+        string relativePath;
+        string absolutePath;
+        var index = 1;
+        do
+        {
+            relativePath = $"Generators/生成器{index}.mvgenerator";
+            absolutePath = Path.Combine(directory, $"生成器{index}.mvgenerator");
+            index++;
+        }
+        while (File.Exists(absolutePath));
+
+        try
+        {
+            var asset = new GeneratorAsset
+            {
+                Language = lua ? GeneratorAsset.LuaLanguage : GeneratorAsset.JavaScriptLanguage,
+                Source = lua ? GeneratorAsset.LuaTemplate : GeneratorAsset.JavaScriptTemplate,
+            };
+            asset.Save(absolutePath);
+            _selectedAsset = relativePath;
+            assetChanged(new ProjectAssetChange(relativePath, relativePath));
+            reportStatus($"已创建生成器：{Path.GetFileName(absolutePath)}");
+            openGeneratorRequest?.Invoke(relativePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            reportStatus($"创建生成器失败：{exception.Message}");
+        }
+    }
     private static string? ResolveAssetPath(ProjectHandle? project, string relativePath)
     {
         if (project is null || Path.IsPathRooted(relativePath)) return null;
