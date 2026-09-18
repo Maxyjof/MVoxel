@@ -29,7 +29,7 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 
 - [x] .NET 10 解决方案、Nullable、统一日志与崩溃捕获
 - [x] 原子保存（临时文件、回读校验、备份替换）与损坏输入校验
-- [x] Windows CI、便携发布脚本、Git 忽略规则
+- [x] Git 忽略规则与仓库卫生配置
 - [ ] 集中包版本与 Profile 配置
 - [ ] 崩溃后事务重放恢复
 
@@ -95,7 +95,6 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 ### 发布与生态
 
 - [x] 入门教程、11 篇技术文档、插件指南、12 个示例项目模板
-- [x] 贡献指南与行为准则
 - [ ] 开源许可证（待项目所有者决定）
 - [ ] Windows 安装包与更新机制、Linux 技术预览、gox/glTF 等更多格式
 
@@ -104,7 +103,6 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 ```powershell
 dotnet build .\MVoxel.sln --no-restore --configuration Debug -m:1
 dotnet run --project .\MVoxel.Tests\MVoxel.Tests.csproj --no-build --configuration Debug
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Scripts\Test-Docs.ps1
 ```
 
 开发约定集中在[编码规范](Docs/技术文档/11-编码规范.md)中。项目采用直接、清晰的当前实现，功能边界以技术文档和测试结果为准。
