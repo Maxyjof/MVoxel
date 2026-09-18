@@ -1369,24 +1369,46 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
         {
-            vec3 inverseDirection = 1.0 / rayDirection;
+            // 方向分量为 0 时 1/0=±Inf 会在“起点恰与该轴平面共面”时算出 0*Inf=NaN，
+            // 污染全部 max/min 比较，命中判定逐像素随机翻转（探针与主光线都可能轴向对齐）。
+            // 用钳最小绝对值的倒数：轴向分量 0 时平面距离 ±1e8，比较仍正确，
+            // 只有起点恰在平面上才可能 NaN，该退化交给入口的盒内判定兜底
+            vec3 safeDirection = mix(rayDirection, vec3(1e-8), equal(rayDirection, vec3(0.0)));
+            vec3 inverseDirection = 1.0 / safeDirection;
             vec3 nearPoint = (boxMin - rayOrigin) * inverseDirection;
             vec3 farPoint = (boxMax - rayOrigin) * inverseDirection;
             vec3 lower = min(nearPoint, farPoint);
             vec3 upper = max(nearPoint, farPoint);
+            if (!(max(max(lower.x, lower.y), lower.z) < 1e7)) return false;
+            if (!(min(min(upper.x, upper.y), upper.z) > -1e7)) return false;
             float nearDistance = max(max(lower.x, lower.y), lower.z);
             float farDistance = min(min(upper.x, upper.y), upper.z);
             if (farDistance < max(nearDistance, 0.0)) return false;
 
-            distance = nearDistance > 0.0 ? nearDistance : farDistance;
-            vec3 hitPoint = rayOrigin + rayDirection * distance;
-            vec3 distances = min(abs(hitPoint - boxMin), abs(hitPoint - boxMax));
-            if (distances.x <= distances.y && distances.x <= distances.z)
-                normal = vec3(hitPoint.x < (boxMin.x + boxMax.x) * 0.5 ? -1.0 : 1.0, 0.0, 0.0);
-            else if (distances.y <= distances.z)
-                normal = vec3(0.0, hitPoint.y < (boxMin.y + boxMax.y) * 0.5 ? -1.0 : 1.0, 0.0);
+            bool fromInside = nearDistance <= 0.0;
+            distance = fromInside ? farDistance : nearDistance;
+            // 法线必须按参数距离选轴，绝不能用“命中点到六面的欧氏距离挑最小”：
+            // 命中点由 distance 重建、自带 fp 误差，共面像素到入射面的距离并不严格为 0，
+            // 亚体素相位靠近体素边界时顶面与侧面的距离比较随机翻转，法线在 +Y 与 ±X/±Z
+            // 之间按 1 体素周期跳变，菲涅尔从 0.04 跳到 1.0，水面出现规则点阵棋盘。
+            // 参数距离没有重建误差：正面命中取入口轴（lower 最大者，法线逆着射线），
+            // 起点在盒内取出口轴（upper 最小者，法线顺着射线）
+            int normalAxis = 0;
+            if (fromInside)
+            {
+                if (upper.y < upper[normalAxis]) normalAxis = 1;
+                if (upper.z < upper[normalAxis]) normalAxis = 2;
+            }
             else
-                normal = vec3(0.0, 0.0, hitPoint.z < (boxMin.z + boxMax.z) * 0.5 ? -1.0 : 1.0);
+            {
+                if (lower.y > lower[normalAxis]) normalAxis = 1;
+                if (lower.z > lower[normalAxis]) normalAxis = 2;
+            }
+            vec3 axisVector = normalAxis == 0 ? vec3(1.0, 0.0, 0.0)
+                : (normalAxis == 1 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+            float axisOutward = fromInside ? sign(rayDirection[normalAxis])
+                : -sign(rayDirection[normalAxis]);
+            normal = axisVector * axisOutward;
             return true;
         }
 
@@ -1605,9 +1627,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 radiance = vec3(0.0);
             vec3 throughput = vec3(1.0);
             int translucentPasses = 0;
+            ivec3 lastTranslucentCell = ivec3(-2);
+            vec3 pendingInterface = vec3(0.0);
+            vec3 pendingInterfaceNormal = vec3(0.0, 1.0, 0.0);
+            bool hasPendingInterface = false;
             int bounceLimit = pathMode ? min(int(values[72]), 16) : 1;
             int surfaceBounces = 0;
-            for (int bounce = 0; bounce < 16; bounce++)
+            // 上限 32：半透明逐体素穿透与表面弹射共享迭代次数，
+            // 深水“下穿若干层、湖底反射、再上浮若干层”就要十几次迭代，
+            // 旧上限 16 会让路径在触及湖底前被硬截断，湖底贡献按体素相位忽有忽无，
+            // 水面因此长出与深度周期锁定的规则点阵
+            for (int bounce = 0; bounce < 32; bounce++)
             {
                 if (surfaceBounces >= bounceLimit) break;
                 float hitDistance;
@@ -1646,11 +1676,25 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
+                bool backfaceHit = dot(hitNormal, rayDirection) > 0.0;
                 // 半透明出口推进的 epsilon 可能让射线起点落进下一个实心体素内部，
-                // 此时盒求交返回背面交点、法线与射线同向，须翻回真实入射界面的法线，
-                // 否则水底沙面会按朝下的法线着色并朝地下弹射
-                if (dot(hitNormal, rayDirection) > 0.0)
-                    hitNormal = -hitNormal;
+                // 此时盒求交返回背面交点、法线与射线同向。翻回入射界面法线，并把
+                // 着色点精确锚回射线进入该体素的界面点（命中点沿射线回退 far-near 段）：
+                // 锚点若仍留在实心内部，阴影射线被自身体素遮挡与否随亚体素相位翻转，
+                // 湖底上方会浮出与体素网格锁定的规则点阵
+                if (backfaceHit)
+                {
+                    if (hasPendingInterface)
+                    {
+                        hitPoint = pendingInterface;
+                        hitNormal = pendingInterfaceNormal;
+                    }
+                    else
+                    {
+                        hitNormal = -hitNormal;
+                    }
+                }
+                hasPendingInterface = false;
                 if (bounce == 0) primarySurfaceHit = true;
                 if (!pathMode)
                 {
@@ -1692,6 +1736,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 if ((hitFlags & 1u) != 0u)
                 {
+                    // 同格守卫：推进后仍命中刚离开的同一水体素说明数值退化，
+                    // 立即终止该路径，绝不允许同一层的吸收与内散射被计两次
+                    if (hitCell == lastTranslucentCell) break;
                     // 气液界面按菲涅尔处理，且只属于首次进入：朗伯表面项会把水画成不透明漆面，
                     // 正确行为是正视透见底、掠射反射天空，镜面高光随材质粗糙度收窄
                     if (translucentPasses == 0)
@@ -1714,40 +1761,79 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         throughput *= 1.0 - fresnel * 0.85;
                     }
                     translucentPasses++;
-                    if (translucentPasses >= 5)
-                    {
-                        // 深水收尾：穿透足够多层后不再指望见底，直接按水体色补一帧环境 + 太阳辐射，
-                        // 使深水呈现饱和深蓝而非因往返吸收殆尽变成黑洞
-                        vec3 deepLight = Sky(hitNormal)
-                            + (values[33] > 0.5
-                                ? vec3(values[27]) * max(dot(hitNormal,
-                                    -normalize(vec3(values[24], values[25], values[26]))), 0.0)
-                                : vec3(0.0));
-                        radiance += hitColor.rgb * deepLight * 0.5;
-                        break;
-                    }
+                    if (translucentPasses >= 8)
+                        break; // 防御上限：一条路径的水气界面进入至多几次
 
-                    // 半透明按 Beer 吸收逐体素衰减：消光系数 = 吸收强度 × 0.25 步长标定 × 步长倍率 × (1 - 吸收色)。
-                    // 吸收色默认取体素基础色，材质槽给出非零吸收色时覆盖。
+                    // 解析水层：把入射点所在的连通半透明柱当作一整层均匀介质，
+                    // 吸收与内散射用闭式解一次算完，绝不“推进一格再命中一格”。
+                    // 逐格 hit-advance-rehit 循环对起点亚体素相位敏感：命中格数、
+                    // 出口面选择、背面锚定都随像素在格边界两侧翻转，连通水面因此
+                    // 长出与体素网格锁定、不随采样收敛的规则点阵阴影
                     vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
                         ? material.absorption.rgb
                         : hitColor.rgb;
                     float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
-                    throughput *= exp(-sigma);
-                    // 推进必须精确落在刚命中体素的出口面：对体素盒做带符号 slab 求交，
-                    // 逐轴取两根交点距离的较大者、再三轴取较小者即为精确出口 t。
-                    // 沿主轴固定推进 1/max|dir| 或对距离取绝对值的写法会在起点落入
-                    // slab 内部的轴上高估出口，按亚体素相位或早或晚地多穿、漏穿水体层，
-                    // 吸收层数逐像素抖动，水面因此出现确定性斑点与条纹
-                    vec3 enteredMin = vec3(values[16], values[17], values[18]) + vec3(hitCell);
-                    vec3 safeDirection = mix(rayDirection, vec3(1e-8), equal(rayDirection, vec3(0.0)));
-                    vec3 slabNear = (enteredMin - rayOrigin) / safeDirection;
-                    vec3 slabFar = (enteredMin + vec3(1.0) - rayOrigin) / safeDirection;
-                    vec3 axisExit = max(slabNear, slabFar);
-                    float tExit = max(min(min(axisExit.x, axisExit.y), axisExit.z), hitDistance + 0.002);
-                    rayOrigin = rayOrigin + rayDirection * (tExit + 0.001);
+                    float topPlane = values[17] + float(hitCell.y) + 1.0;
+                    vec3 slabEntry = backfaceHit ? rayOrigin : hitPoint;
+                    // 柱底：垂直向下探测第一段不透明面（跳过全部半透明）。起点必须落在
+                    // 水格中心而非水面平面上：起点恰在边界平面时 fromInside 判定随 fp
+                    // 逐像素翻转，柱深会在 0 与真值之间跳变，水面浮出锁定网格的点阵。
+                    // 命中距离换算回 slabEntry 坐标系
+                    float bottomPlane = values[17] + float(hitCell.y);
+                    float probeDistance;
+                    vec3 probeNormal;
+                    vec4 probeColor;
+                    uint probeFlags;
+                    uint probeSlot;
+                    ivec3 probeCell;
+                    vec3 probeOrigin = vec3(slabEntry.x, values[17] + float(hitCell.y) + 0.5, slabEntry.z);
+                    if (TraceClosest(probeOrigin, vec3(0.0, -1.0, 0.0),
+                        probeDistance, probeNormal, probeColor, probeFlags, probeSlot, probeCell, true))
+                        bottomPlane = probeOrigin.y - probeDistance;
+                    if (bottomPlane >= slabEntry.y) bottomPlane = values[17] + float(hitCell.y);
+                    // 视线方向第一段不透明面（湖底或岸壁）给出水段的另一侧边界
+                    float forwardDistance;
+                    vec3 forwardNormal;
+                    vec4 forwardColor;
+                    uint forwardFlags;
+                    uint forwardSlot;
+                    ivec3 forwardCell;
+                    float tForward = 3.4e38;
+                    bool forwardHit = false;
+                    if (TraceClosest(slabEntry + rayDirection * 0.001, rayDirection,
+                        forwardDistance, forwardNormal, forwardColor, forwardFlags, forwardSlot, forwardCell, true))
+                    {
+                        tForward = forwardDistance + 0.001;
+                        forwardHit = true;
+                    }
+                    float tSlabExit;
+                    if (rayDirection.y < -0.000001)
+                        tSlabExit = (bottomPlane - slabEntry.y) / rayDirection.y;
+                    else if (rayDirection.y > 0.000001)
+                        tSlabExit = (topPlane - slabEntry.y) / rayDirection.y;
+                    else
+                        tSlabExit = tForward;
+                    float chord = clamp(min(tSlabExit, tForward), 0.0, 256.0);
+                    // 均匀层闭式解：透射 = exp(-σ·弦长)，内散射 = 体色·(1 - 透射)，
+                    // 与逐层几何级数极限同值，但完全不含网格相位项
+                    vec3 layerTransmittance = exp(-sigma * chord);
+                    vec3 bodyAmbient = hitColor.rgb * (Sky(vec3(0.0, 1.0, 0.0))
+                        + (values[33] > 0.5 ? vec3(values[27] * 0.35) : vec3(0.0)));
+                    radiance += throughput * (vec3(1.0) - layerTransmittance) * bodyAmbient;
+                    throughput *= layerTransmittance;
+                    if (max(max(throughput.r, throughput.g), throughput.b) < 0.004) break;
+                    // 出口：柱底平面（或岸壁）处微越界落到下一介质表面，
+                    // 着色点锚回精确界面
+                    vec3 exitPoint = slabEntry + rayDirection * chord;
+                    pendingInterface = exitPoint;
+                    pendingInterfaceNormal = forwardHit && tForward <= tSlabExit
+                        ? forwardNormal
+                        : (rayDirection.y < 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0));
+                    hasPendingInterface = true;
+                    rayOrigin = exitPoint + rayDirection * 0.0005;
+                    lastTranslucentCell = hitCell;
                     continue;
                 }
 
@@ -1791,6 +1877,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
+                // 表面弹射后路径已离开半透明介质，同格守卫必须重置：
+                // 湖底漫反射折返重新进入原水体素是合法路径，不能被当作退化命中截死
+                lastTranslucentCell = ivec3(-2);
                 surfaceBounces++;
                 if (surfaceBounces >= 2)
                 {
@@ -1869,7 +1958,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
 
             // Bloom 合成通道：以（可选降噪后的）HDR 累积为基色，叠加过曝亮部的宽核辉光再统一色调映射
-            if (values[108] > 0.5)
+            if (int(values[108]) == 1)
             {
                 vec3 base = values[92] > 0.5 ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
