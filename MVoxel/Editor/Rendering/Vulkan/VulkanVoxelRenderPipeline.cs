@@ -39,6 +39,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private DescriptorPool _computeDescriptorPool;
     private PipelineLayout _computePipelineLayout;
     private Pipeline _computePipeline;
+    private VkBuffer _materialTableBuffer;
+    private DeviceMemory _materialTableMemory;
+    private float[] _materialTable = [];
 
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
     // 分块一提交就走，槽位复用时才等自己的栅栏，GPU 分块之间不再被 CPU 等待打断
@@ -224,6 +227,41 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 获取当前同步完成的体素工作集
     /// </summary>
     internal VoxelGpuWorkset Workset => _workset;
+
+    /// <summary>
+    /// 上传材质槽表：长度为 TableSlots × FloatsPerSlot 的打包数组，
+    /// 着色器按体素 MaterialSlot 寻址覆盖全局表面属性
+    /// </summary>
+    /// <param name="table">打包后的槽位表</param>
+    internal void SetMaterialTable(float[] table)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        var expected = MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot;
+        if (table.Length != expected)
+            throw new ArgumentException($"材质槽表长度应为 {expected}，实际 {table.Length}", nameof(table));
+        if (_context is null || _api is not { } api || _materialTableBuffer.Handle == 0)
+        {
+            _materialTable = table;
+            return;
+        }
+
+        void* mapped = null;
+        var byteCount = (ulong)(table.Length * sizeof(float));
+        Check(api.MapMemory(_device, _materialTableMemory, 0, byteCount, 0, &mapped), "映射材质槽表缓冲");
+        try
+        {
+            fixed (float* source = table)
+            {
+                System.Buffer.MemoryCopy(source, mapped, (long)byteCount, (long)byteCount);
+            }
+        }
+        finally
+        {
+            api.UnmapMemory(_device, _materialTableMemory);
+        }
+
+        _materialTable = table;
+    }
 
     /// <summary>
     /// 获取最近一次同步中工作集构建耗时毫秒
@@ -461,6 +499,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
 
             if (_ringCommandPool.Handle != 0) api.DestroyCommandPool(_device, _ringCommandPool, null);
+            if (_materialTableBuffer.Handle != 0)
+            {
+                api.DestroyBuffer(_device, _materialTableBuffer, null);
+                api.FreeMemory(_device, _materialTableMemory, null);
+            }
 
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
@@ -487,6 +530,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
 
             CreateRingCommands();
+            if (_context is not null)
+            {
+                var tableBytes = (ulong)(MVoxel.Project.MaterialAsset.TableSlots *
+                    MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float));
+                (_materialTableBuffer, _materialTableMemory) = CreateBuffer(
+                    tableBytes,
+                    BufferUsageFlags.StorageBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+                SetMaterialTable(MVoxel.Project.MaterialAsset.PackTable([]));
+            }
 
             var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
             var shaderModule = CreateShaderModule(words);
@@ -889,16 +942,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[5];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[6];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[3] = new(3, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[4] = new(4, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        bindings[5] = new(5, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 5,
+            BindingCount = 6,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -914,7 +968,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 3 * TileRingDepth),
+            new(DescriptorType.StorageBuffer, 4 * TileRingDepth),
             new(DescriptorType.StorageImage, 2 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
@@ -1021,7 +1075,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (_ringSets[slot].Handle == 0) return;
             DescriptorBufferInfo parameterInfo = new(_ringParameterBuffers[slot], 0,
                 (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
-            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[5];
+            DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0,
+                (ulong)(MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float)));
+            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[6];
             writes[0] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -1067,7 +1123,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageImage,
                 PImageInfo = &accumulationInfo
             };
-            _api!.UpdateDescriptorSets(_device, 5, writes, 0, null);
+            writes[5] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 5,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &materialTableInfo
+            };
+            _api!.UpdateDescriptorSets(_device, 6, writes, 0, null);
         }
     }
 
@@ -1176,6 +1241,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
 
+        struct MaterialSlotData
+        {
+            vec4 scalars;
+            vec4 absorption;
+        };
+
+        layout(set = 0, binding = 5, std430) readonly buffer MaterialTable
+        {
+            MaterialSlotData materialSlots[];
+        };
+
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
         {
@@ -1209,7 +1285,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
-            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, bool ignoreTranslucent)
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot, bool ignoreTranslucent)
         {
             int stack[64];
             int stackSize = 1;
@@ -1218,6 +1294,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             hitNormal = vec3(0.0, 1.0, 0.0);
             hitColor = vec4(0.0);
             hitFlags = 0u;
+            hitSlot = 0u;
             int voxelCount = int(values[94]);
             int nodeCount = int(values[95]);
             vec3 regionOrigin = vec3(values[16], values[17], values[18]);
@@ -1247,6 +1324,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitNormal = normal;
                             hitColor = cell.color;
                             hitFlags = cell.metadata.x >> 16;
+                            hitSlot = cell.metadata.x & 0xFFFFu;
                         }
                     }
                 }
@@ -1268,7 +1346,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 normal;
             vec4 color;
             uint flags;
-            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, true) && distance < maxDistance;
+            uint slot;
+            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, true) && distance < maxDistance;
         }
 
         float Random(inout uint state);
@@ -1393,7 +1472,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 hitNormal;
                 vec4 hitColor;
                 uint hitFlags;
-                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, false))
+                uint hitSlot;
+                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, false))
                 {
                     float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
@@ -1445,8 +1525,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     break;
                 }
 
+                MaterialSlotData material = materialSlots[int(hitSlot) % 64];
+                float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 if ((hitFlags & 2u) != 0u)
-                    radiance += throughput * hitColor.rgb * values[80];
+                    radiance += throughput * hitColor.rgb * values[80] * emissiveScale;
 
                 throughput *= AmbientOcclusion(hitPoint, hitNormal, state);
 
@@ -1471,11 +1553,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         continue;
                     }
 
-                    // 半透明按 Beer 吸收逐体素衰减：消光系数 = 吸收强度 × 0.25 步长标定 × (1 - 基础色)。
+                    // 半透明按 Beer 吸收逐体素衰减：消光系数 = 吸收强度 × 0.25 步长标定 × 步长倍率 × (1 - 吸收色)。
+                    // 吸收色默认取体素基础色，材质槽给出非零吸收色时覆盖。
                     // 推进必须越过入射体素的出口：单位体素沿主轴的出口距离为 1/max|dir|，
                     // 否则同一水体素被反复命中，吸收与 AO 逐弹射重复累积成黑色。
-                    vec3 sigma = max(values[81], 0.0) * 0.25 *
-                        (vec3(1.0) - clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+                    vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
+                        ? material.absorption.rgb
+                        : hitColor.rgb;
+                    float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
+                    vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
+                        (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
                     throughput *= exp(-sigma);
                     float exitStep = 1.0 / max(max(abs(rayDirection.x), abs(rayDirection.y)), abs(rayDirection.z));
                     rayOrigin = hitPoint + rayDirection * (exitStep + 0.001);
@@ -1489,12 +1576,38 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     !TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state))
                     radiance += throughput * hitColor.rgb * lightAmount * values[27];
 
-                float metalness = clamp(values[74], 0.0, 1.0);
-                vec3 diffuseDirection = CosineHemisphere(hitNormal, state);
-                vec3 reflectedDirection = reflect(rayDirection, hitNormal);
-                float specularWeight = clamp(metalness + (1.0 - metalness) * (1.0 - values[73]) * 0.18, 0.0, 1.0);
-                rayDirection = normalize(mix(diffuseDirection, reflectedDirection, specularWeight));
-                throughput *= mix(hitColor.rgb, vec3(values[75]), metalness);
+                float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
+                float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
+                // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
+                // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
+                float alpha = max(roughness * roughness, 0.002);
+                vec3 f0 = mix(vec3(0.04), hitColor.rgb, metalness);
+                vec3 viewDir = -rayDirection;
+                float xi1 = max(Random(state), 1e-4);
+                float xi2 = Random(state);
+                float cosThetaH = sqrt((1.0 - xi1) / (1.0 + (alpha * alpha - 1.0) * xi1));
+                float sinThetaH = sqrt(max(0.0, 1.0 - cosThetaH * cosThetaH));
+                float azimuth = 6.28318530718 * xi2;
+                vec3 tangentBasisX = normalize(cross(hitNormal,
+                    abs(hitNormal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+                vec3 tangentBasisY = cross(hitNormal, tangentBasisX);
+                vec3 microfacetNormal = normalize(tangentBasisX * sinThetaH * cos(azimuth)
+                    + tangentBasisY * sinThetaH * sin(azimuth) + hitNormal * cosThetaH);
+                float vDotH = max(dot(viewDir, microfacetNormal), 0.0);
+                float f0Max = max(max(f0.r, f0.g), f0.b);
+                float fresnelStrength = clamp(f0Max + (1.0 - f0Max) * pow(1.0 - vDotH, 5.0), 0.0, 1.0);
+                vec3 specularCandidate = normalize(reflect(rayDirection, microfacetNormal));
+                if (dot(specularCandidate, hitNormal) > 0.0 && Random(state) < fresnelStrength)
+                {
+                    rayDirection = specularCandidate;
+                    throughput *= f0 * 2.0;
+                }
+                else
+                {
+                    rayDirection = CosineHemisphere(hitNormal, state);
+                    throughput *= hitColor.rgb * (1.0 - fresnelStrength) * 2.0;
+                }
+
                 rayOrigin = hitPoint + hitNormal * 0.002;
                 if (bounce >= 2)
                 {

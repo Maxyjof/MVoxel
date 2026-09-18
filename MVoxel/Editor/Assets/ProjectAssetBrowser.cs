@@ -75,7 +75,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
-        DrawGrid(project, reportStatus, openWorldRequest, instantiatePrefabRequest);
+        DrawGrid(project, reportStatus, assetChanged, openWorldRequest, instantiatePrefabRequest);
         if (_openRenameDialog)
         {
             ImGui.OpenPopup("##资源重命名");
@@ -164,7 +164,7 @@ internal sealed class ProjectAssetBrowser
         ImGui.TreePop();
     }
 
-    private void DrawGrid(ProjectHandle? project, Action<string> reportStatus,
+    private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null)
     {
         var entries = CollectEntries(project);
@@ -241,6 +241,11 @@ internal sealed class ProjectAssetBrowser
                 }
                 if (ImGui.MenuItem("在资源管理器中打开"))
                     RevealInExplorer(project, entry.RelativePath, reportStatus);
+                if (entry.IsFolder && entry.RelativePath.Equals("Materials", StringComparison.OrdinalIgnoreCase) &&
+                    ImGui.MenuItem("新建材质"))
+                {
+                    CreateMaterialAsset(project, reportStatus, assetChanged);
+                }
                 if (!entry.IsFolder)
                 {
                     if (ImGui.MenuItem("重命名"))
@@ -469,6 +474,52 @@ internal sealed class ProjectAssetBrowser
                 Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
         }
         catch (Exception exception) { reportStatus($"打开资源管理器失败：{exception.Message}"); }
+    }
+
+    /// <summary>
+    /// 在 Materials 目录创建新材质：占用槽位自动跳过，文件名带槽号，创建后直接选中
+    /// </summary>
+    private void CreateMaterialAsset(ProjectHandle? project, Action<string> reportStatus,
+        Action<ProjectAssetChange> assetChanged)
+    {
+        if (project is null) return;
+        var directory = Path.Combine(project.AssetsPath, "Materials");
+        Directory.CreateDirectory(directory);
+        var usedSlots = new HashSet<int>();
+        foreach (var file in Directory.EnumerateFiles(directory, "*.material"))
+        {
+            try
+            {
+                usedSlots.Add(MaterialAsset.Load(file).Slot);
+            }
+            catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException
+                or InvalidDataException or UnauthorizedAccessException)
+            {
+                // 损坏文件不登记槽位，其槽位可被新材质复用
+            }
+        }
+
+        var slot = 0;
+        while (slot < MaterialAsset.TableSlots && usedSlots.Contains(slot)) slot++;
+        if (slot >= MaterialAsset.TableSlots)
+        {
+            reportStatus($"材质槽位已满（{MaterialAsset.TableSlots} 个），先删除闲置材质");
+            return;
+        }
+
+        var relativePath = $"Materials/材质{slot}.material";
+        try
+        {
+            var material = MaterialAsset.CreateDefault(slot);
+            material.Save(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            _selectedAsset = relativePath;
+            assetChanged(new ProjectAssetChange(relativePath, relativePath));
+            reportStatus($"已创建材质：材质{slot}（槽位 {slot}），在检查器中编辑属性");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            reportStatus($"创建材质失败：{exception.Message}");
+        }
     }
 
     private static string? ResolveAssetPath(ProjectHandle? project, string relativePath)

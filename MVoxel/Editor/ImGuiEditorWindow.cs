@@ -2895,6 +2895,12 @@ DockId=0x6A3C3007,0
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
         }
+
+        if (oldPath.EndsWith(".material", StringComparison.OrdinalIgnoreCase) ||
+            newPath?.EndsWith(".material", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            ReloadMaterialTable();
+        }
     }
 
     /// <summary>
