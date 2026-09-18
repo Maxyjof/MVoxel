@@ -60,7 +60,7 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 - [x] `.vox` 导入导出、Minecraft 存档导入与树分层、大选区全链路并行
 - [ ] Brick 层级、占用位压缩与 Empty/Uniform/Sparse/Dense 编码
 - [ ] 后台压缩、内存预算与磁盘流送
-- [ ] 网格模型（obj/gltf/stl）体素化导入
+- [x] 网格模型（obj/gltf/stl）体素化导入
 
 ### 渲染
 

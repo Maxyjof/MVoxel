@@ -650,6 +650,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawProjectPathDialog();
         DrawCloseProjectDialog();
         DrawMinecraftImportWindow();
+        DrawMeshImportWindow();
         if (inputBlocked) ImGui.EndDisabled();
         if (!inputBlocked) DrawSettingsWindow();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
@@ -674,6 +675,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
             if (ImGui.MenuItem("导入 .vox 为世界…", enabled: _project is not null)) ImportVoxAsWorld();
+            if (ImGui.MenuItem("导入网格模型（obj/stl/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) Close();
             ImGui.EndMenu();

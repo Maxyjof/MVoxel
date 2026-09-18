@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.IO.Pipes;
 using System.Text;
@@ -6,6 +7,7 @@ using MVoxel.Editor.Templates;
 using MVoxel.Project;
 using MVoxel.Scene;
 using MVoxel.Voxels;
+using MVoxel.Voxels.Mesh;
 using MVoxel.Voxels.Minecraft;
 
 namespace MVoxel.Cli;
@@ -67,6 +69,8 @@ internal static class Program
         Console.WriteLine("      创建项目并生成指定示例模板");
         Console.WriteLine("  --list-templates");
         Console.WriteLine("      列出可用项目模板");
+        Console.WriteLine("  --import-mesh <网格文件> <输出.mvmodel> [分辨率] [shell] [RRGGBB]");
+        Console.WriteLine("      把 obj/stl/glb/gltf 网格体素化为世界文件，默认实体填充、分辨率 64");
         Console.WriteLine("  --mc-bench <存档目录> <最小区块X> <最小区块Z> <最大区块X> <最大区块Z> [次数]");
         Console.WriteLine("      Minecraft 导入选区分段性能基准");
         Console.WriteLine("  --list-plugins <项目目录>");
@@ -153,6 +157,22 @@ internal static class Program
                 foreach (var template in ProjectTemplateCatalog.All)
                     Console.WriteLine($"{template.Id}\t{template.Name}\t{template.Focus}");
                 return 0;
+            case "--import-mesh" when args.Length is >= 3 and <= 6:
+            {
+                var resolution = args.Length >= 4 && int.TryParse(args[3], out var parsed) ? parsed : 64;
+                var fill = args.Length < 5 || !args[4].Equals("shell", StringComparison.OrdinalIgnoreCase);
+                var color = new Rgba32(200, 200, 200);
+                if (args.Length >= 6 && args[5].Length == 6 &&
+                    byte.TryParse(args[5][..2], NumberStyles.HexNumber, null, out var cr) &&
+                    byte.TryParse(args[5][2..4], NumberStyles.HexNumber, null, out var cg) &&
+                    byte.TryParse(args[5][4..], NumberStyles.HexNumber, null, out var cb))
+                    color = new Rgba32(cr, cg, cb);
+                var world = MeshImport.Import(args[1], color, resolution, fill);
+                LargeWorldFormat.Write(args[2], world);
+                Console.WriteLine($"已体素化 {Path.GetFileName(args[1])}：{world.OccupiedVoxelCount:N0} 体素，" +
+                                  $"分辨率 {resolution}，{(fill ? "实体" : "表面壳")}");
+                return 0;
+            }
             case "--list-plugins" when args.Length == 2:
             {
                 var project = ProjectLayout.Open(args[1]);
