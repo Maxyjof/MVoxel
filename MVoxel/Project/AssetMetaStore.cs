@@ -125,6 +125,29 @@ public static class AssetMetaStore
     }
 
     /// <summary>
+    /// 强制重写边车为指定 GUID（用于扫描时消除重复 GUID）
+    /// </summary>
+    /// <param name="assetAbsolutePath">资产文件的绝对路径</param>
+    /// <param name="guid">要写入的 GUID</param>
+    public static void WriteMeta(string assetAbsolutePath, Guid guid)
+    {
+        var document = new AssetMetaDocument(FormatVersion, guid);
+        AtomicFile.WriteText(MetaPathFor(assetAbsolutePath), JsonSerializer.Serialize(document, JsonOptions));
+    }
+
+    /// <summary>
+    /// 强制为资产生成并写入新 GUID，返回新 GUID
+    /// </summary>
+    /// <param name="assetAbsolutePath">资产文件的绝对路径</param>
+    /// <returns>新写入的 GUID</returns>
+    public static Guid RegenerateMeta(string assetAbsolutePath)
+    {
+        var guid = Guid.NewGuid();
+        WriteMeta(assetAbsolutePath, guid);
+        return guid;
+    }
+
+    /// <summary>
     /// 删除资产时同步删除边车
     /// </summary>
     /// <param name="assetAbsolutePath">资产文件的绝对路径</param>

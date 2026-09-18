@@ -31,6 +31,9 @@ internal sealed class ProjectAssetBrowser
     /// <summary>项目级反向依赖映射缓存；资产变更或项目切换后失效</summary>
     private IReadOnlyDictionary<string, IReadOnlyList<string>>? _referencedBy;
 
+    /// <summary>反向依赖映射对应的项目根路径</summary>
+    private string? _referencedByRoot;
+
     /// <summary>待移动资产的相对路径</summary>
     private string? _movePath;
 
@@ -578,7 +581,7 @@ internal sealed class ProjectAssetBrowser
         string.IsNullOrWhiteSpace(directory) ? name : $"{directory.Replace('\\', '/')}/{name}";
 
     /// <summary>
-    /// 查询资产被项目内哪些场景/预制体文件引用；依赖映射按需扫描并缓存
+    /// 查询资产被项目内哪些场景/预制体文件引用；依赖查询走落盘缓存的增量数据库
     /// </summary>
     private IReadOnlyList<string> GetReferencingFiles(ProjectHandle? project, string relativePath)
     {
@@ -587,9 +590,11 @@ internal sealed class ProjectAssetBrowser
             return Array.Empty<string>();
         }
 
-        if (_referencedBy is null)
+        if (_referencedBy is null || _referencedByRoot != project.RootPath)
         {
-            _referencedBy = AssetDependencies.ScanReferencedBy(project.AssetsPath);
+            var loaded = ProjectAssetDatabase.Load(project.AssetsPath, ProjectAssetDatabase.DefaultCachePath(project.RootPath));
+            _referencedBy = loaded.ReferencedBy;
+            _referencedByRoot = project.RootPath;
         }
 
         return AssetDependencies.ReferencingFiles(_referencedBy, relativePath);

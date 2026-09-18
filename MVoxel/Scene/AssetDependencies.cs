@@ -41,26 +41,22 @@ public static partial class AssetDependencies
             }
 
             var referencingPath = Path.GetRelativePath(root, file).Replace('\\', '/');
-            string content;
-            try
+            var references = ScanFile(file);
+            if (references.Count == 0)
             {
-                content = File.ReadAllText(file);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                continue; // 文件正被外部程序写入或不可读，跳过本次扫描
+                continue;
             }
 
-            foreach (Match match in ReferencePattern().Matches(content))
+            var key = NormalizeKey(referencingPath);
+            foreach (var reference in references)
             {
-                var key = Normalize(match.Groups[1].Value);
-                if (!result.TryGetValue(key, out var list))
+                if (!result.TryGetValue(reference, out var list))
                 {
                     list = new List<string>();
-                    result[key] = list;
+                    result[reference] = list;
                 }
 
-                ((List<string>)list).Add(referencingPath);
+                ((List<string>)list).Add(key);
             }
         }
 
@@ -68,26 +64,52 @@ public static partial class AssetDependencies
     }
 
     /// <summary>
+    /// 扫描单个场景/预制体文件，返回其引用的资产键（规范化小写形式）
+    /// </summary>
+    /// <param name="filePath">场景或预制体文件绝对路径</param>
+    /// <returns>引用的资产键列表（去重）</returns>
+    public static IReadOnlyList<string> ScanFile(string filePath)
+    {
+        string content;
+        try
+        {
+            content = File.ReadAllText(filePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return Array.Empty<string>(); // 文件正被外部程序写入或不可读，跳过本次扫描
+        }
+
+        var references = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (Match match in ReferencePattern().Matches(content))
+        {
+            references.Add(NormalizeKey(match.Groups[1].Value));
+        }
+
+        return references.ToList();
+    }
+
+    /// <summary>
     /// 查询某资产被哪些项目文件引用
     /// </summary>
     /// <param name="referencedBy">ScanReferencedBy 的结果</param>
     /// <param name="assetRelativePath">资产相对路径，形如 Worlds/主世界.mvmodel</param>
-    /// <returns>引用文件相对路径列表（去重）</returns>
+    /// <returns>引用文件相对路径键列表（规范化小写，去重）</returns>
     public static IReadOnlyList<string> ReferencingFiles(
         IReadOnlyDictionary<string, IReadOnlyList<string>> referencedBy, string assetRelativePath)
     {
-        if (referencedBy.TryGetValue(Normalize(assetRelativePath), out var list))
+        if (referencedBy.TryGetValue(NormalizeKey(assetRelativePath), out var list))
         {
-            return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return list.Distinct(StringComparer.Ordinal).ToList();
         }
 
         return Array.Empty<string>();
     }
 
     /// <summary>
-    /// 规范化引用路径：统一斜杠、折叠 JSON 转义产生的重复斜杠与大小写，去掉可选的 Assets/ 前缀
+    /// 规范化引用路径键：统一斜杠、折叠 JSON 转义产生的重复斜杠与大小写，去掉可选的 Assets/ 前缀
     /// </summary>
-    private static string Normalize(string path)
+    public static string NormalizeKey(string path)
     {
         var value = path.Replace('\\', '/').Trim();
         value = CollapseSlashes().Replace(value, "/");
