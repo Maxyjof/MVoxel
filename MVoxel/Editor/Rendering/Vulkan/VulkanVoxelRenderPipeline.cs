@@ -1385,7 +1385,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
-            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot, bool ignoreTranslucent)
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
+            out ivec3 hitCell, bool ignoreTranslucent)
         {
             int stack[64];
             int stackSize = 1;
@@ -1395,6 +1396,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             hitColor = vec4(0.0);
             hitFlags = 0u;
             hitSlot = 0u;
+            hitCell = ivec3(0);
             int voxelCount = int(values[94]);
             int nodeCount = int(values[95]);
             vec3 regionOrigin = vec3(values[16], values[17], values[18]);
@@ -1425,6 +1427,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitColor = cell.color;
                             hitFlags = cell.metadata.x >> 16;
                             hitSlot = cell.metadata.x & 0xFFFFu;
+                            hitCell = cell.position.xyz;
                         }
                     }
                 }
@@ -1447,7 +1450,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec4 color;
             uint flags;
             uint slot;
-            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, true) && distance < maxDistance;
+            ivec3 cell;
+            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, cell, true) && distance < maxDistance;
         }
 
         float Random(inout uint state);
@@ -1588,15 +1592,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 throughput = vec3(1.0);
             int translucentPasses = 0;
             int bounceLimit = pathMode ? min(int(values[72]), 16) : 1;
+            int surfaceBounces = 0;
             for (int bounce = 0; bounce < 16; bounce++)
             {
-                if (bounce >= bounceLimit) break;
+                if (surfaceBounces >= bounceLimit) break;
                 float hitDistance;
                 vec3 hitNormal;
                 vec4 hitColor;
                 uint hitFlags;
                 uint hitSlot;
-                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, false))
+                ivec3 hitCell;
+                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, false))
                 {
                     float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
                         ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
@@ -1626,6 +1632,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 vec3 hitPoint = rayOrigin + rayDirection * hitDistance;
+                // 半透明出口推进的 epsilon 可能让射线起点落进下一个实心体素内部，
+                // 此时盒求交返回背面交点、法线与射线同向，须翻回真实入射界面的法线，
+                // 否则水底沙面会按朝下的法线着色并朝地下弹射
+                if (dot(hitNormal, rayDirection) > 0.0)
+                    hitNormal = -hitNormal;
                 if (bounce == 0) primarySurfaceHit = true;
                 if (!pathMode)
                 {
@@ -1651,35 +1662,59 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 if ((hitFlags & 2u) != 0u)
-                    radiance += throughput * hitColor.rgb * values[80] * emissiveScale;
+                {
+                    // 发光贡献按萤火虫钳制：单次弹射命中发光体素的辐射上限取最终钳制的 10% 且不低于 1，
+                    // 否则高强度小发光体（提灯等）在漫弹射中偶发命中会产生白点火噪，
+                    // 低采样累积阶段表现为亮斑周围的蓝白噪点
+                    float emissiveCeil = max(values[77] * 0.1, 1.0);
+                    radiance += throughput * min(hitColor.rgb * values[80] * emissiveScale,
+                        vec3(emissiveCeil));
+                }
 
-                throughput *= AmbientOcclusion(hitPoint, hitNormal, state);
+                // 半透明内部穿透（非首次进入）只走体积吸收，不再逐层叠加 AO，
+                // 否则同一片水面会被叠出多层遮蔽形成暗带
+                if ((hitFlags & 1u) == 0u || translucentPasses == 0)
+                    throughput *= AmbientOcclusion(hitPoint, hitNormal, state);
 
                 if ((hitFlags & 1u) != 0u)
                 {
-                    // 半透明表面先获得与不透明一致的天空与太阳直接光贡献，
-                    // 保证深水区域本身可见，不会因穿透衰减归零成黑色
-                    vec3 surfaceLight = normalize(vec3(values[24], values[25], values[26]));
-                    float surfaceAmount = values[33] > 0.5 ? max(dot(hitNormal, -surfaceLight), 0.0) : 0.0;
-                    if (surfaceAmount > 0.0 &&
-                        !TraceSoftShadow(hitPoint + hitNormal * 0.002, -surfaceLight, 10000.0, state))
-                        radiance += throughput * hitColor.rgb * surfaceAmount * values[27];
-                    radiance += throughput * hitColor.rgb * Sky(hitNormal) * 0.25;
-
-                    translucentPasses++;
-                    if (translucentPasses >= 4)
+                    // 气液界面按菲涅尔处理，且只属于首次进入：朗伯表面项会把水画成不透明漆面，
+                    // 正确行为是正视透见底、掠射反射天空，镜面高光随材质粗糙度收窄
+                    if (translucentPasses == 0)
                     {
-                        // 深水内部按普通漫射表面收尾，避免无限穿透
-                        rayDirection = CosineHemisphere(hitNormal, state);
-                        rayOrigin = hitPoint + hitNormal * 0.002;
-                        throughput *= hitColor.rgb;
-                        continue;
+                        vec3 reflected = reflect(rayDirection, hitNormal);
+                        float cosView = max(dot(reflected, hitNormal), 0.0);
+                        float fresnel = clamp(0.04 + 0.96 * pow(1.0 - cosView, 5.0), 0.0, 1.0);
+                        radiance += throughput * Sky(reflected) * fresnel;
+                        if (values[33] > 0.5)
+                        {
+                            float interfaceRoughness = clamp(material.scalars.x >= 0.0
+                                ? material.scalars.x : values[73], 0.01, 1.0);
+                            float glintExponent = clamp(2.0 / (interfaceRoughness * interfaceRoughness) - 2.0, 32.0, 1024.0);
+                            vec3 sunGlint = normalize(vec3(values[24], values[25], values[26]));
+                            float glint = pow(max(dot(reflected, -sunGlint), 0.0), glintExponent);
+                            if (glint > 0.001 &&
+                                !TraceSoftShadow(hitPoint + hitNormal * 0.002, -sunGlint, 10000.0, state))
+                                radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27] * 6.0;
+                        }
+                        throughput *= 1.0 - fresnel * 0.85;
+                    }
+                    translucentPasses++;
+                    if (translucentPasses >= 5)
+                    {
+                        // 深水收尾：穿透足够多层后不再指望见底，直接按水体色补一帧环境 + 太阳辐射，
+                        // 使深水呈现饱和深蓝而非因往返吸收殆尽变成黑洞
+                        vec3 deepLight = Sky(hitNormal)
+                            + (values[33] > 0.5
+                                ? vec3(values[27]) * max(dot(hitNormal,
+                                    -normalize(vec3(values[24], values[25], values[26]))), 0.0)
+                                : vec3(0.0));
+                        radiance += hitColor.rgb * deepLight * 0.5;
+                        break;
                     }
 
                     // 半透明按 Beer 吸收逐体素衰减：消光系数 = 吸收强度 × 0.25 步长标定 × 步长倍率 × (1 - 吸收色)。
                     // 吸收色默认取体素基础色，材质槽给出非零吸收色时覆盖。
-                    // 推进必须越过入射体素的出口：单位体素沿主轴的出口距离为 1/max|dir|，
-                    // 否则同一水体素被反复命中，吸收与 AO 逐弹射重复累积成黑色。
                     vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
                         ? material.absorption.rgb
                         : hitColor.rgb;
@@ -1687,8 +1722,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
                     throughput *= exp(-sigma);
-                    float exitStep = 1.0 / max(max(abs(rayDirection.x), abs(rayDirection.y)), abs(rayDirection.z));
-                    rayOrigin = hitPoint + rayDirection * (exitStep + 0.001);
+                    // 推进必须精确落在刚命中体素的出口面：对体素盒做带符号 slab 求交，
+                    // 逐轴取两根交点距离的较大者、再三轴取较小者即为精确出口 t。
+                    // 沿主轴固定推进 1/max|dir| 或对距离取绝对值的写法会在起点落入
+                    // slab 内部的轴上高估出口，按亚体素相位或早或晚地多穿、漏穿水体层，
+                    // 吸收层数逐像素抖动，水面因此出现确定性斑点与条纹
+                    vec3 enteredMin = vec3(values[16], values[17], values[18]) + vec3(hitCell);
+                    vec3 safeDirection = mix(rayDirection, vec3(1e-8), equal(rayDirection, vec3(0.0)));
+                    vec3 slabNear = (enteredMin - rayOrigin) / safeDirection;
+                    vec3 slabFar = (enteredMin + vec3(1.0) - rayOrigin) / safeDirection;
+                    vec3 axisExit = max(slabNear, slabFar);
+                    float tExit = max(min(min(axisExit.x, axisExit.y), axisExit.z), hitDistance + 0.002);
+                    rayOrigin = rayOrigin + rayDirection * (tExit + 0.001);
                     continue;
                 }
 
@@ -1732,7 +1777,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
-                if (bounce >= 2)
+                surfaceBounces++;
+                if (surfaceBounces >= 2)
                 {
                     float survival = clamp(max(max(throughput.r, throughput.g), throughput.b),
                         max(values[76], 0.001), 0.98);

@@ -590,7 +590,11 @@ internal static class TemplateScenes
             baseHeight += ridge * ridge * 8F;
             var basinX = x + 16;
             var basinZ = z - 12;
-            baseHeight -= 5.5F * MathF.Exp(-(basinX * basinX + basinZ * basinZ) / 700F);
+            // 湖盆用锥形开挖保证一定见水：高斯下凹会被山脊项淹没，此前种子下湖底全是旱地
+            var basinFalloff = MathF.Max(0F, 1F - MathF.Sqrt(basinX * basinX + basinZ * basinZ) / 26F);
+            basinFalloff *= basinFalloff;
+            if (basinFalloff > 0F)
+                baseHeight = MathF.Min(baseHeight - 9F * basinFalloff, waterLevel + 1.4F - 6F * basinFalloff);
             var height = Math.Clamp((int)MathF.Round(baseHeight), 1, 22);
             var underWater = height <= waterLevel;
             for (var y = 0; y < height; y++)
@@ -612,10 +616,11 @@ internal static class TemplateScenes
             }
         }
 
-        // 瀑布：湖盆东侧缺口处水帘直落
-        for (var y = 1; y <= waterLevel; y++)
+        // 瀑布：湖盆东岸岩壁，水帘自崖顶高出水面处直落入湖
+        for (var y = 1; y <= 8; y++)
         for (var z = 8; z <= 11; z++)
         {
+            world.Set(new VoxelCoord64(-3, y, z), Paint(TemplateKit.Jitter(Rock, -3, y, z, seed)));
             world.Set(new VoxelCoord64(-4, y, z), Water());
         }
 
@@ -626,7 +631,7 @@ internal static class TemplateScenes
             return groundY > 5 && world.TryGet(new VoxelCoord64(x, groundY, z), out var top) && top.Color == GrassGreen;
         }, -46, 46, -46, 46, seed,
             new VoxelValue(new Rgba32(214, 72, 66)), new VoxelValue(new Rgba32(240, 210, 92)), new VoxelValue(new Rgba32(206, 128, 178)));
-        foreach (var (postX, postZ) in new[] { (-6, 18), (4, 22), (14, 16), (22, 4), (18, -12) })
+        foreach (var (postX, postZ) in new[] { (10, 26), (22, 22), (22, 4), (18, -12), (2, -26) })
         {
             var groundY = TemplateKit.FindSurfaceY(world, postX, postZ);
             if (groundY < 5) continue;
