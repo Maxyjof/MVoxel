@@ -226,18 +226,36 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     /// <param name="name">命令显示名</param>
     /// <param name="world">目标世界</param>
     /// <param name="cells">描边覆盖的格子</param>
-    /// <param name="after">写入的体素值，空值表示删除</param>
+    /// <param name="after">统一写入的体素值，空值表示删除</param>
     public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<VoxelCoord64> cells, VoxelValue after)
+        : this(name, world, cells.Select(cell => (cell, after)))
+    {
+    }
+
+    /// <summary>
+    /// 捕获逐格不同目标值的批量差异，同一格子多次出现时以最后一次为准
+    /// </summary>
+    /// <param name="name">命令显示名</param>
+    /// <param name="world">目标世界</param>
+    /// <param name="cells">格子与各自目标值的序列，空值表示删除</param>
+    public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<(VoxelCoord64 Coordinate, VoxelValue After)> cells)
     {
         ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(cells);
         Name = name;
         _world = world;
-        var edits = new List<(VoxelCoord64, VoxelValue, VoxelValue)>();
-        foreach (var cell in cells)
+        var byCoordinate = new Dictionary<VoxelCoord64, VoxelValue>();
+        foreach (var (coordinate, after) in cells)
         {
-            var before = world.TryGet(cell, out var existing) ? existing : default;
+            byCoordinate[coordinate] = after;
+        }
+
+        var edits = new List<(VoxelCoord64, VoxelValue, VoxelValue)>(byCoordinate.Count);
+        foreach (var (coordinate, after) in byCoordinate)
+        {
+            var before = world.TryGet(coordinate, out var existing) ? existing : default;
             if (before == after) continue;
-            edits.Add((cell, before, after));
+            edits.Add((coordinate, before, after));
         }
 
         _edits = edits.ToArray();
