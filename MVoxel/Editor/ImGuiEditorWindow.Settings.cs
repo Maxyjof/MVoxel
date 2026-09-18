@@ -417,6 +417,7 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("白平衡色温", ref settings.WhiteBalance, 2000F, 12000F, "%.0f K");
         SliderFloat("暗角", ref settings.Vignette, 0F, 1F, "%.2f");
         ImGui.Checkbox("输出抖动", ref settings.Dither);
+        ImGui.Checkbox("场景立体着色", ref settings.SceneShading);
 
         ImGui.SeparatorText("路径追踪质量");
         ImGui.Checkbox("启用路径追踪", ref settings.PathTracingEnabled);

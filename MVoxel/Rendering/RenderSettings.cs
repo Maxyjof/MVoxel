@@ -282,7 +282,7 @@ public sealed class RenderSettings
     /// <summary>
     /// 单样本辐射度截断，抑制萤火虫
     /// </summary>
-    public float RadianceClamp = 40F;
+    public float RadianceClamp = 12F;
 
     /// <summary>
     /// 全局 GGX 粗糙度
@@ -340,6 +340,11 @@ public sealed class RenderSettings
     public bool BloomEnabled = true;
 
     /// <summary>
+    /// 场景视图立体着色：按太阳方向对体素面做明暗，让纯色方块具备体积可读性
+    /// </summary>
+    public bool SceneShading = true;
+
+    /// <summary>
     /// Bloom 强度，过曝亮部按此倍率叠加回画面
     /// </summary>
     public float BloomIntensity = 0.35F;
@@ -381,7 +386,6 @@ public sealed class RenderSettings
         preview.ShadowSamples = 1;
         preview.ShadowSoftness = 0F;
         preview.AmbientOcclusionEnabled = false;
-        preview.PathDenoising = false;
         preview.DirectLightingMIS = false;
         preview.BloomEnabled = false;
         return preview;
@@ -549,7 +553,7 @@ public sealed class RenderSettings
         Vignette = Safe(Vignette, 0F);
         ResolutionScale = Safe(ResolutionScale, 1F);
         RussianRouletteThreshold = Safe(RussianRouletteThreshold, 0.004F);
-        RadianceClamp = Safe(RadianceClamp, 40F);
+        RadianceClamp = Safe(RadianceClamp, 12F);
         PathRoughness = Safe(PathRoughness, 0.22F);
         PathMetalness = Safe(PathMetalness, 0F);
         PathSpecularF0 = Safe(PathSpecularF0, 0.04F);

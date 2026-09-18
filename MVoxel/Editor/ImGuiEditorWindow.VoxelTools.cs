@@ -707,6 +707,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.PathDenoiseStrength)
             .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
             .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
+            .Append(',').Append(settings.SceneShading)
             .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
             .Append(',').Append(settings.SceneBackgroundColor.Z);
         if (GetActiveRenderCameraObject() is null)
@@ -739,8 +740,11 @@ internal sealed partial class ImGuiEditorWindow
         {
             pipeline.SyncWorld(_world);
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-            var width = Math.Max(16, (int)(size.X * scale));
-            var height = Math.Max(16, (int)(size.Y * scale));
+            // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
+            // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
+            var renderScale = Math.Clamp(_renderSettings.ResolutionScale, 0.25F, 1F);
+            var width = Math.Max(16, (int)(size.X * scale * renderScale));
+            var height = Math.Max(16, (int)(size.Y * scale * renderScale));
             var signature = TraceSignature(size, scale);
             if (signature != _accumulationSignature)
             {

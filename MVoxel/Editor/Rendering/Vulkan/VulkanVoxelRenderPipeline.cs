@@ -1713,7 +1713,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float outlineAmount = values[57] > 0.5
                         ? 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance)
                         : 0.0;
-                    radiance += mix(hitColor.rgb, vec3(0.012, 0.014, 0.018), outlineAmount);
+                    vec3 faceColor = hitColor.rgb;
+                    if (values[113] > 0.5)
+                    {
+                        // 场景视图立体着色：顶面最亮、迎太阳面次之、背光面保留天空环境项，
+                        // 让纯色方块具备体积可读性而不引入路径追踪成本
+                        vec3 sceneSun = normalize(vec3(values[24], values[25], values[26]));
+                        float sunFace = max(dot(hitNormal, -sceneSun), 0.0);
+                        faceColor *= 0.52 + 0.38 * sunFace + 0.14 * max(hitNormal.y, 0.0);
+                    }
+                    radiance += mix(faceColor, vec3(0.012, 0.014, 0.018), outlineAmount);
                     break;
                 }
 
@@ -1901,15 +1910,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 filtered = vec3(0.0);
             float weightSum = 0.0;
             float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
-            for (int oy = -1; oy <= 1; oy++)
+            for (int oy = -2; oy <= 2; oy++)
             {
-                for (int ox = -1; ox <= 1; ox++)
+                for (int ox = -2; ox <= 2; ox++)
                 {
                     ivec2 samplePixel = clamp(pixel + ivec2(ox, oy), ivec2(0), ivec2(width - 1, height - 1));
                     vec3 neighbor = imageLoad(accumulationImage, samplePixel).rgb;
-                    float spatial = (ox == 0 && oy == 0) ? 4.0 : ((ox == 0 || oy == 0) ? 2.0 : 1.0);
+                    float spatial = exp(-float(ox * ox + oy * oy) / 3.5);
                     float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
-                    float edge = exp(-abs(neighborLuma - centerLuma) * 8.0);
+                    float edge = exp(-abs(neighborLuma - centerLuma) * 10.0);
                     float weight = spatial * mix(0.0, edge, strength);
                     filtered += neighbor * weight;
                     weightSum += weight;
@@ -1982,7 +1991,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
             {
                 if (sampleIndex >= samples) break;
-                vec2 jitter = pathMode ? vec2(Random(state), Random(state)) - 0.5 : vec2(0.0);
+                // 像素静态分层抖动：每像素固定基准保证网格分层（低样本无团簇颗粒），
+                // 帧间黄金比旋转去相关（累积仍收敛到均匀覆盖）
+                vec2 jitter = vec2(0.0);
+                if (pathMode)
+                {
+                    float saltX = float(Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 42317u + 11u)) / 4294967296.0;
+                    float saltY = float(Hash(uint(pixel.x) * 7393u + uint(pixel.y) * 15211u + 47u)) / 4294967296.0;
+                    jitter = vec2(fract(saltX + float(values[7]) * 0.6180339887),
+                        fract(saltY + float(values[7]) * 0.7548776662)) - 0.5;
+                }
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
                 vec3 sampleOrigin = origin;
                 if (pathMode && values[87] > 0.0)
