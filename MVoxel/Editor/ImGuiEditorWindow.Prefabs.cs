@@ -112,6 +112,156 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 解析资产的生效内容：普通资产原样返回；变体沿基础链逐层合并（防环，深度上限 8）
+    /// </summary>
+    private bool TryGetEffectivePrefab(PrefabAsset asset, out PrefabAsset effective, out IReadOnlyList<string> conflicts)
+    {
+        effective = asset;
+        conflicts = Array.Empty<string>();
+        if (asset.BaseAssetPath.Length == 0 || _project is null)
+        {
+            return true;
+        }
+
+        var chain = new List<PrefabAsset> { asset };
+        var visited = new HashSet<StableId> { asset.PrefabId };
+        var current = asset;
+        while (current.BaseAssetPath.Length > 0)
+        {
+            var basePath = Path.GetFullPath(
+                Path.Combine(_project.AssetsPath, current.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!File.Exists(basePath))
+            {
+                return false; // 基础资产缺失，按原内容使用
+            }
+
+            PrefabAsset baseAsset;
+            try
+            {
+                baseAsset = LoadPrefabCached(basePath);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException)
+            {
+                return false;
+            }
+
+            if (!visited.Add(baseAsset.PrefabId) || chain.Count > 8)
+            {
+                return false; // 基础链成环或过深
+            }
+
+            chain.Add(baseAsset);
+            current = baseAsset;
+        }
+
+        var allConflicts = new List<string>();
+        for (var index = chain.Count - 2; index >= 0; index--)
+        {
+            var (merged, list, _) = PrefabSystem.ComputeEffectiveVariant(chain[index], effective);
+            allConflicts.AddRange(list);
+            effective = merged;
+        }
+
+        conflicts = allConflicts;
+        return true;
+    }
+
+    /// <summary>
+    /// 把当前选中的实例存为变体资产：记录基础链与覆盖类型，实例改指向变体
+    /// </summary>
+    private void CreateVariantFromSelectedInstance()
+    {
+        if (_project is null || _sceneDocument is null)
+        {
+            return;
+        }
+
+        if (!TryGetSelectedPrefabInstance(out var instanceRoot, out var baseAsset, out _))
+        {
+            return;
+        }
+
+        try
+        {
+            var variant = PrefabSystem.CreateVariantFromInstance(_sceneDocument, instanceRoot, baseAsset, instanceRoot.Name);
+            var fileBase = SanitizeFileName($"{instanceRoot.Name}变体");
+            var relativePath = $"Assets/Prefabs/{fileBase}.prefab";
+            var absolutePath = Path.Combine(_project.AssetsPath, "Prefabs", $"{fileBase}.prefab");
+            var serial = 1;
+            while (File.Exists(absolutePath))
+            {
+                relativePath = $"Assets/Prefabs/{fileBase}_{serial}.prefab";
+                absolutePath = Path.Combine(_project.AssetsPath, "Prefabs", $"{fileBase}_{serial}.prefab");
+                serial++;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
+            PrefabSerializer.Save(absolutePath, variant);
+            instanceRoot.Prefab.AssetPath = relativePath;
+            instanceRoot.Prefab.SourceId = variant.PrefabId;
+            _prefabCache[absolutePath] = variant;
+            MarkSceneDocumentDirty();
+            SetStatus($"已存为变体：{relativePath}（基础：{variant.BaseAssetPath}）");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            MVoxelLog.Error("存为变体失败", exception);
+            SetStatus($"存为变体失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 给选中变体的全部实例拉取基础更新：生效内容写回变体资产并刷新实例
+    /// </summary>
+    private void PullBaseUpdateForSelectedVariant()
+    {
+        if (_project is null || _sceneDocument is null)
+        {
+            return;
+        }
+
+        if (!TryGetSelectedPrefabInstance(out var instanceRoot, out var asset, out var relativePath))
+        {
+            return;
+        }
+
+        if (asset.BaseAssetPath.Length == 0)
+        {
+            SetStatus("该实例来自普通预制体，没有基础可拉取");
+            return;
+        }
+
+        var basePath = Path.GetFullPath(
+            Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!File.Exists(basePath))
+        {
+            SetStatus($"基础资产缺失，无法拉取更新：{asset.BaseAssetPath}");
+            return;
+        }
+
+        try
+        {
+            var baseAsset = LoadPrefabCached(basePath);
+            var conflicts = PrefabSystem.PullBaseUpdate(asset, baseAsset,
+                Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar))));
+            foreach (var instance in PrefabSystem.CollectInstanceRoots(_sceneDocument, relativePath))
+            {
+                PrefabSystem.RefreshInstance(_sceneDocument, instance, asset, preserveRootTransform: true);
+            }
+
+            MarkSceneDocumentDirty();
+            SetStatus(conflicts.Count == 0
+                ? $"已拉取基础更新：{relativePath}"
+                : $"已拉取基础更新，{conflicts.Count} 处覆盖保留变体值：{string.Join("；", conflicts.Take(3))}");
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            MVoxelLog.Error("拉取基础更新失败", exception);
+            SetStatus($"拉取基础更新失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
     /// 把选中的实例完全还原为资产内容，丢弃实例侧修改
     /// </summary>
     private void RevertSelectedPrefabInstance()
@@ -123,7 +273,13 @@ internal partial class ImGuiEditorWindow
 
         try
         {
-            if (!PrefabSystem.RefreshInstance(_sceneDocument!, instanceRoot, asset, preserveRootTransform: false))
+            if (!TryGetEffectivePrefab(asset, out var effective, out _))
+            {
+                SetStatus($"预制体生效内容不可用，无法还原：{relativePath}");
+                return;
+            }
+
+            if (!PrefabSystem.RefreshInstance(_sceneDocument!, instanceRoot, effective, preserveRootTransform: false))
             {
                 SetStatus("所选对象不是预制体实例");
                 return;
@@ -256,6 +412,12 @@ internal partial class ImGuiEditorWindow
                 _selectedSceneObjectId = sceneObject.Id;
                 _pendingActions.Enqueue(ApplySelectedPrefabToAsset);
             }
+
+            if (ImGui.MenuItem("存为变体"))
+            {
+                _selectedSceneObjectId = sceneObject.Id;
+                _pendingActions.Enqueue(CreateVariantFromSelectedInstance);
+            }
         }
     }
 
@@ -281,10 +443,46 @@ internal partial class ImGuiEditorWindow
             ApplySelectedPrefabToAsset();
         }
 
-        // 覆盖检测：相对来源资产展示差异并支持单项还原
-        if (TryGetSelectedPrefabInstance(out _, out var asset, out _))
+        ImGui.SameLine();
+        if (ImGui.SmallButton("存为变体"))
         {
-            var overrides = PrefabOverrides.Compute(_sceneDocument!, selectedObject, asset);
+            CreateVariantFromSelectedInstance();
+            return;
+        }
+
+        // 变体：显示基础链状态与拉取更新入口
+        if (TryGetSelectedPrefabInstance(out _, out var asset, out _) && asset.BaseAssetPath.Length > 0)
+        {
+            ImGui.TextDisabled($"变体基础：{asset.BaseAssetPath}");
+            var baseExists = _project is not null && File.Exists(Path.GetFullPath(
+                Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar))));
+            if (!baseExists)
+            {
+                ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F), "基础资产缺失，变体按当前内容使用");
+            }
+            else if (asset.BasePrefabId != StableId.Empty && LoadPrefabCached(Path.GetFullPath(
+                         Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar))))
+                     is { } baseAsset && baseAsset.PrefabId != asset.BasePrefabId)
+            {
+                ImGui.TextColored(new Vector4(1F, 0.6F, 0.25F, 1F), "基础资产已更新，实例可拉取继承内容");
+                if (ImGui.SmallButton("拉取基础更新"))
+                {
+                    PullBaseUpdateForSelectedVariant();
+                    return;
+                }
+            }
+        }
+
+        // 覆盖检测：相对生效内容展示差异并支持单项还原
+        if (TryGetSelectedPrefabInstance(out _, out asset, out _) &&
+            TryGetEffectivePrefab(asset, out var effective, out var conflicts))
+        {
+            if (conflicts.Count > 0)
+            {
+                ImGui.TextColored(new Vector4(1F, 0.6F, 0.25F, 1F), $"基础与变体冲突 {conflicts.Count} 处（保留变体值）");
+            }
+
+            var overrides = PrefabOverrides.Compute(_sceneDocument!, selectedObject, effective);
             if (overrides.Count == 0)
             {
                 ImGui.TextDisabled("与预制体资产一致，无覆盖");
@@ -300,11 +498,11 @@ internal partial class ImGuiEditorWindow
                 {
                     foreach (var item in overrides)
                     {
-                        ImGui.BulletText($"{item.ObjectName}：{LabelOf(item.Kind)}　{item.Detail}");
+                        ImGui.BulletText($"{item.ObjectName}：{PrefabSystem.KindLabel(item.Kind)}　{item.Detail}");
                         ImGui.SameLine();
                         if (ImGui.SmallButton($"还原此项##{item.ObjectId.Value}"))
                         {
-                            if (PrefabOverrides.RevertObject(_sceneDocument!, selectedObject, asset, item.ObjectId))
+                            if (PrefabOverrides.RevertObject(_sceneDocument!, selectedObject, effective, item.ObjectId))
                             {
                                 MarkSceneDocumentDirty();
                                 SetStatus($"已还原对象：{item.ObjectName}");
@@ -321,21 +519,4 @@ internal partial class ImGuiEditorWindow
 
         ImGui.Separator();
     }
-
-    /// <summary>
-    /// 覆盖类型的中文标签
-    /// </summary>
-    private static string LabelOf(PrefabOverrides.Kind kind) => kind switch
-    {
-        PrefabOverrides.Kind.Renamed => "重命名",
-        PrefabOverrides.Kind.Transform => "变换",
-        PrefabOverrides.Kind.Layer => "图层",
-        PrefabOverrides.Kind.Visibility => "可见性",
-        PrefabOverrides.Kind.Lock => "锁定",
-        PrefabOverrides.Kind.Component => "组件",
-        PrefabOverrides.Kind.Added => "新增对象",
-        PrefabOverrides.Kind.Missing => "缺失对象",
-        PrefabOverrides.Kind.SourceDrift => "来源漂移",
-        _ => kind.ToString(),
-    };
 }

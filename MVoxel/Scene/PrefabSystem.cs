@@ -374,6 +374,247 @@ public static class PrefabSystem
     }
 
     /// <summary>
+    /// 把实例转换为变体资产：快照实例子树并记录基础链与逐对象覆盖类型，
+    /// 返回的资产由调用方保存为新的 .prefab 文件，实例随后改指向变体
+    /// </summary>
+    /// <param name="document">场景文档</param>
+    /// <param name="instanceRoot">实例根</param>
+    /// <param name="baseAsset">实例当前来源资产</param>
+    /// <param name="name">变体资产显示名</param>
+    /// <returns>待保存的变体资产</returns>
+    public static PrefabAsset CreateVariantFromInstance(SceneDocument document, SceneObject instanceRoot,
+        PrefabAsset baseAsset, string name)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(instanceRoot);
+        ArgumentNullException.ThrowIfNull(baseAsset);
+        if (instanceRoot.Prefab is null)
+        {
+            throw new InvalidOperationException("只有预制体实例可以转换为变体");
+        }
+
+        var variant = ApplyInstanceToAsset(document, instanceRoot, name);
+        variant.BaseAssetPath = instanceRoot.Prefab.AssetPath;
+        variant.BasePrefabId = baseAsset.PrefabId;
+        variant.BaseLinks = new Dictionary<string, string>(instanceRoot.Prefab.Links, StringComparer.Ordinal);
+        foreach (var item in PrefabOverrides.Compute(document, instanceRoot, baseAsset))
+        {
+            if (item.Kind is PrefabOverrides.Kind.SourceDrift or PrefabOverrides.Kind.Missing)
+            {
+                continue;
+            }
+
+            var key = item.ObjectId.Value.ToString();
+            variant.OverrideKinds[key] = variant.OverrideKinds.TryGetValue(key, out var existing)
+                ? $"{existing},{item.Kind}"
+                : item.Kind.ToString();
+        }
+
+        return variant;
+    }
+
+    /// <summary>
+    /// 计算变体的生效内容：非覆盖类型继承基础资产最新值，覆盖类型保留变体值，
+    /// 基础新增对象并入变体树，变体删除的对象保持删除
+    /// </summary>
+    /// <param name="variant">变体资产</param>
+    /// <param name="baseAsset">基础资产当前内容</param>
+    /// <returns>生效内容、冲突说明列表与基础是否有更新</returns>
+    public static (PrefabAsset Effective, IReadOnlyList<string> Conflicts, bool BaseChanged)
+        ComputeEffectiveVariant(PrefabAsset variant, PrefabAsset baseAsset)
+    {
+        ArgumentNullException.ThrowIfNull(variant);
+        ArgumentNullException.ThrowIfNull(baseAsset);
+        var conflicts = new List<string>();
+        var baseChanged = variant.BasePrefabId != StableId.Empty && baseAsset.PrefabId != variant.BasePrefabId;
+        if (variant.BaseAssetPath.Length == 0 ||
+            variant.BasePrefabId == StableId.Empty ||
+            !baseChanged)
+        {
+            return (variant, conflicts, baseChanged);
+        }
+
+        var baseById = baseAsset.Objects.ToDictionary(item => item.Id);
+        var linkedBaseIds = new HashSet<StableId>(
+            variant.BaseLinks.Values
+                .Select(value => StableId.TryParse(value, out var id) ? id : StableId.Empty)
+                .Where(id => id != StableId.Empty));
+        var merged = new List<SceneObject>();
+        foreach (var variantObject in variant.Objects)
+        {
+            SceneObject? baseObject = null;
+            var hasBase = variant.BaseLinks.TryGetValue(variantObject.Id.Value.ToString(), out var baseLink) &&
+                StableId.TryParse(baseLink, out var baseId) &&
+                baseById.TryGetValue(baseId, out baseObject);
+            if (!hasBase || baseObject is null)
+            {
+                merged.Add(CloneObject(variantObject)); // 基础中已删除或变体新增：保留变体内容
+                continue;
+            }
+
+            var kinds = ParseKinds(variant.OverrideKinds, variantObject.Id);
+            var clone = new SceneObject
+            {
+                Id = variantObject.Id,
+                ParentId = variantObject.ParentId,
+                Name = kinds.Contains(PrefabOverrides.Kind.Renamed) ? variantObject.Name : baseObject.Name,
+                Visible = kinds.Contains(PrefabOverrides.Kind.Visibility) ? variantObject.Visible : baseObject.Visible,
+                Locked = kinds.Contains(PrefabOverrides.Kind.Lock) ? variantObject.Locked : baseObject.Locked,
+                LayerIndex = kinds.Contains(PrefabOverrides.Kind.Layer) ? variantObject.LayerIndex : baseObject.LayerIndex,
+                Transform = kinds.Contains(PrefabOverrides.Kind.Transform)
+                    ? CloneTransform(variantObject.Transform)
+                    : CloneTransform(baseObject.Transform),
+                Components = [],
+            };
+            clone.Components.AddRange(
+                (kinds.Contains(PrefabOverrides.Kind.Component)
+                    ? variantObject.Components
+                    : baseObject.Components)
+                .Select(item => new ComponentRecord
+                {
+                    Enabled = item.Enabled,
+                    OwnerPluginId = item.OwnerPluginId,
+                    TypeId = item.TypeId,
+                    SchemaVersion = item.SchemaVersion,
+                    Data = item.Data.ValueKind == JsonValueKind.Undefined ? item.Data : item.Data.Clone(),
+                }));
+            merged.Add(clone);
+            if (kinds.Count > 0)
+            {
+                conflicts.Add($"{variantObject.Name}：{string.Join("、", kinds.Select(kind => KindLabel(kind)))}（保留变体值）");
+            }
+        }
+
+        // 基础侧新增对象并入变体树：父级优先映射到变体对象，否则挂到变体根
+        var rootId = variant.Objects[0].Id;
+        var newBaseIds = baseAsset.Objects
+            .Select(item => item.Id)
+            .Where(id => !linkedBaseIds.Contains(id))
+            .ToHashSet();
+        var addedLinks = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var baseObject in baseAsset.Objects)
+        {
+            if (!newBaseIds.Contains(baseObject.Id))
+            {
+                continue;
+            }
+
+            var clone = CloneObject(baseObject);
+            clone.Id = StableId.New();
+            clone.Prefab = null;
+            clone.ParentId = baseObject.ParentId is not null &&
+                baseById.TryGetValue(baseObject.ParentId.Value, out var baseParent) &&
+                addedLinks.TryGetValue(baseParent.Id.Value.ToString(), out var mappedParent)
+                ? StableId.Parse(mappedParent)
+                : rootId;
+            merged.Add(clone);
+            addedLinks[clone.Id.Value.ToString()] = baseObject.Id.Value.ToString();
+        }
+
+        var effective = new PrefabAsset
+        {
+            Name = variant.Name,
+            PrefabId = variant.PrefabId,
+            BaseAssetPath = variant.BaseAssetPath,
+            BasePrefabId = variant.BasePrefabId,
+            BaseLinks = new Dictionary<string, string>(variant.BaseLinks, StringComparer.Ordinal),
+            OverrideKinds = new Dictionary<string, string>(variant.OverrideKinds, StringComparer.Ordinal),
+            Objects = merged,
+        };
+        foreach (var (key, value) in addedLinks)
+        {
+            effective.BaseLinks[key] = value;
+        }
+
+        return (effective, conflicts, baseChanged);
+    }
+
+    /// <summary>
+    /// 应用变体的基础更新：把生效内容写回变体资产（含新并入对象）并原子保存
+    /// </summary>
+    /// <param name="variant">变体资产（就地更新 Objects 与 BaseLinks、BasePrefabId）</param>
+    /// <param name="baseAsset">基础资产当前内容</param>
+    /// <param name="path">变体资产文件路径</param>
+    /// <returns>冲突说明列表</returns>
+    public static IReadOnlyList<string> PullBaseUpdate(PrefabAsset variant, PrefabAsset baseAsset, string path)
+    {
+        var (effective, conflicts, baseChanged) = ComputeEffectiveVariant(variant, baseAsset);
+        if (!baseChanged)
+        {
+            return conflicts;
+        }
+
+        variant.Objects = effective.Objects;
+        variant.BaseLinks = new Dictionary<string, string>(effective.BaseLinks, StringComparer.Ordinal);
+        variant.BasePrefabId = baseAsset.PrefabId;
+        PrefabSerializer.Save(path, variant);
+        return conflicts;
+    }
+
+    /// <summary>
+    /// 深拷贝场景对象（不保留实例标记）
+    /// </summary>
+    private static SceneObject CloneObject(SceneObject source)
+    {
+        return new SceneObject
+        {
+            Id = source.Id,
+            ParentId = source.ParentId,
+            Name = source.Name,
+            Visible = source.Visible,
+            Locked = source.Locked,
+            LayerIndex = source.LayerIndex,
+            Transform = CloneTransform(source.Transform),
+            Components = source.Components.Select(item => new ComponentRecord
+            {
+                Enabled = item.Enabled,
+                OwnerPluginId = item.OwnerPluginId,
+                TypeId = item.TypeId,
+                SchemaVersion = item.SchemaVersion,
+                Data = item.Data.ValueKind == JsonValueKind.Undefined ? item.Data : item.Data.Clone(),
+            }).ToList(),
+        };
+    }
+
+    /// <summary>
+    /// 读取某对象的覆盖类型名单
+    /// </summary>
+    private static HashSet<PrefabOverrides.Kind> ParseKinds(IReadOnlyDictionary<string, string> overrideKinds,
+        StableId objectId)
+    {
+        var result = new HashSet<PrefabOverrides.Kind>();
+        if (overrideKinds.TryGetValue(objectId.Value.ToString(), out var text))
+        {
+            foreach (var name in text.Split(','))
+            {
+                if (Enum.TryParse<PrefabOverrides.Kind>(name.Trim(), out var kind))
+                {
+                    result.Add(kind);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 覆盖类型的中文标签（与检查器一致）
+    /// </summary>
+    public static string KindLabel(PrefabOverrides.Kind kind) => kind switch
+    {
+        PrefabOverrides.Kind.Renamed => "重命名",
+        PrefabOverrides.Kind.Transform => "变换",
+        PrefabOverrides.Kind.Layer => "图层",
+        PrefabOverrides.Kind.Visibility => "可见性",
+        PrefabOverrides.Kind.Lock => "锁定",
+        PrefabOverrides.Kind.Component => "组件",
+        PrefabOverrides.Kind.Added => "新增对象",
+        PrefabOverrides.Kind.Missing => "缺失对象",
+        PrefabOverrides.Kind.SourceDrift => "来源漂移",
+        _ => kind.ToString(),
+    };
+
+    /// <summary>
     /// 统一资产路径分隔符，保证实例与资产按同一路径匹配
     /// </summary>
     private static string NormalizePath(string path)

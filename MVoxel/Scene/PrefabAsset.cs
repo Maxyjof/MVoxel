@@ -27,6 +27,27 @@ public sealed class PrefabAsset
     /// 子树快照，父对象在前；对象 ID 就是实例链接表里的来源 ID
     /// </summary>
     public List<SceneObject> Objects { get; set; } = [];
+
+    /// <summary>
+    /// 变体基础资产的相对路径；空字符串表示普通预制体而非变体
+    /// </summary>
+    public string BaseAssetPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 创建变体时基础资产的 PrefabId，用于判断基础是否已更新
+    /// </summary>
+    public StableId BasePrefabId { get; set; } = StableId.Empty;
+
+    /// <summary>
+    /// 变体对象 ID → 基础资产来源对象 ID 的映射，覆盖整棵变体子树
+    /// </summary>
+    public Dictionary<string, string> BaseLinks { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 变体对象 ID → 逗号分隔的覆盖类型名单（PrefabOverrides.Kind 名称），
+    /// 拉取基础更新时这些类型保留变体值，其余类型继承基础最新内容
+    /// </summary>
+    public Dictionary<string, string> OverrideKinds { get; set; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
