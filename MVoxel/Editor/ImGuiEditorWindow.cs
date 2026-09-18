@@ -2079,7 +2079,10 @@ DockId=0x6A3C3007,0
             var finished = !settings.PathTracingEnabled || pipeline.AccumulatedSamples >= settings.PathMaxAccumulatedSamples;
             if (!finished) return;
             Directory.CreateDirectory(Path.GetDirectoryName(_activeExport.Path)!);
-            if (pipeline.SaveDisplayPng(_activeExport.Path))
+            var saved = _activeExport.Format == ExportImageFormat.Hdr
+                ? pipeline.SaveDisplayHdr(_activeExport.Path)
+                : pipeline.SaveDisplayPng(_activeExport.Path);
+            if (saved)
                 SetStatus($"图片已导出：{Path.GetFileName(_activeExport.Path)}（剩余队列 {_exportQueue.Count}）");
             else
                 SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
@@ -2129,6 +2132,15 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SameLine();
+        if (ImGui.SmallButton("导出 HDR"))
+        {
+            ExportRenderHdr();
+        }
+        if (canExport && ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("把 HDR 累积缓冲导出为 Radiance .hdr 文件，保留完整动态范围供后期处理");
+        }
+        ImGui.SameLine();
         if (ImGui.SmallButton("批量出图（全部相机）"))
         {
             ExportAllCamerasPng();
@@ -2161,6 +2173,26 @@ DockId=0x6A3C3007,0
         var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
             .CloneForExport();
         _exportQueue.Enqueue(new ExportJob(path, exportSettings));
+        SetStatus($"已加入导出队列：{fileName}");
+    }
+
+    /// <summary>
+    /// 把当前渲染视图的 HDR 累积结果导出为 Radiance .hdr 文件加入导出队列
+    /// </summary>
+    private void ExportRenderHdr()
+    {
+        if (_pipeline is not { IsAvailable: true })
+        {
+            SetStatus("显卡渲染不可用，无法加入导出队列");
+            return;
+        }
+
+        var projectPath = _project?.RootPath ?? AppPaths.DataDirectory;
+        var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}-{++_exportSequence:000}.hdr";
+        var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
+        var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
+            .CloneForExport();
+        _exportQueue.Enqueue(new ExportJob(path, exportSettings, ExportImageFormat.Hdr));
         SetStatus($"已加入导出队列：{fileName}");
     }
 
@@ -2209,11 +2241,15 @@ DockId=0x6A3C3007,0
         SetStatus($"已批量入队 {cameras.Count} 个相机的出图任务");
     }
 
+    internal enum ExportImageFormat { Png, Hdr }
+
     private sealed class ExportJob
     {
-        internal ExportJob(string path, RenderSettings settings) { Path = path; Settings = settings; }
+        internal ExportJob(string path, RenderSettings settings, ExportImageFormat format = ExportImageFormat.Png)
+        { Path = path; Settings = settings; Format = format; }
         internal string Path { get; }
         internal RenderSettings Settings { get; }
+        internal ExportImageFormat Format { get; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
         internal SceneCamera? Camera { get; init; }

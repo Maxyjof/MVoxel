@@ -573,6 +573,115 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 尝试把路径追踪 HDR 累积缓冲导出为 Radiance .hdr 文件。
+    /// 从 rgba16f 累积图像读回线性浮点值，不做色调映射，保留全部动态范围
+    /// </summary>
+    /// <param name="path">输出 .hdr 文件路径</param>
+    /// <returns>当前是否保存成功</returns>
+    internal bool SaveDisplayHdr(string path)
+    {
+        if (_usingHardwareRayTracing || _context is null || _api is not { } api ||
+            _accumulationImage.Handle == 0 || _outputWidth == 0 || _outputHeight == 0)
+        {
+            return false;
+        }
+
+        var bytesPerPixel = 8; // R16G16B16A16 = 4 × half = 8 bytes
+        var byteCount = checked((ulong)_outputWidth * _outputHeight * (ulong)bytesPerPixel);
+        var (stagingBuffer, stagingMemory) = CreateBuffer(
+            byteCount,
+            BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        try
+        {
+            var pixels = new byte[checked((int)byteCount)];
+            _context.ExecuteImmediate(commandBuffer =>
+            {
+                // 累积图像常驻 General 布局，只需访问掩码屏障
+                ImageMemoryBarrier toTransfer = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.General,
+                    NewLayout = ImageLayout.General,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _accumulationImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                    SrcAccessMask = AccessFlags.ShaderWriteBit,
+                    DstAccessMask = AccessFlags.TransferReadBit
+                };
+                api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.ComputeShaderBit,
+                    PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in toTransfer);
+
+                BufferImageCopy copy = new()
+                {
+                    BufferOffset = 0,
+                    BufferRowLength = 0,
+                    BufferImageHeight = 0,
+                    ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+                    ImageOffset = default,
+                    ImageExtent = new Extent3D((uint)_outputWidth, (uint)_outputHeight, 1)
+                };
+                api.CmdCopyImageToBuffer(commandBuffer, _accumulationImage, ImageLayout.General,
+                    stagingBuffer, 1, in copy);
+
+                ImageMemoryBarrier backToShader = new()
+                {
+                    SType = StructureType.ImageMemoryBarrier,
+                    OldLayout = ImageLayout.General,
+                    NewLayout = ImageLayout.General,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = _accumulationImage,
+                    SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                    SrcAccessMask = AccessFlags.TransferReadBit,
+                    DstAccessMask = AccessFlags.ShaderWriteBit
+                };
+                api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
+                    PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in backToShader);
+            });
+
+            void* mapped = null;
+            Check(api.MapMemory(_device, stagingMemory, 0, byteCount, 0, &mapped), "映射 HDR 导出暂存缓冲");
+            byte[] raw;
+            try
+            {
+                Marshal.Copy((nint)mapped, pixels, 0, pixels.Length);
+            }
+            finally
+            {
+                api.UnmapMemory(_device, stagingMemory);
+            }
+
+            // rgba16f → float RGB → RGBE
+            var rgbe = new byte[_outputWidth * _outputHeight * 4];
+            var halfSpan = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(pixels.AsSpan());
+            for (var pixelIndex = 0; pixelIndex < _outputWidth * _outputHeight; pixelIndex++)
+            {
+                var r = (float)halfSpan[pixelIndex * 4];
+                var g = (float)halfSpan[pixelIndex * 4 + 1];
+                var b = (float)halfSpan[pixelIndex * 4 + 2];
+                var encoded = RadianceImage.EncodeRgbe([r, g, b]);
+                for (var channel = 0; channel < 4; channel++)
+                    rgbe[pixelIndex * 4 + channel] = encoded[channel];
+            }
+
+            AtomicFile.WriteBytes(path, RadianceImage.ComposeRadiance((int)_outputWidth, (int)_outputHeight, rgbe));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("导出 Vulkan HDR 图像失败", exception);
+            return false;
+        }
+        finally
+        {
+            api.DestroyBuffer(_device, stagingBuffer, null);
+            api.FreeMemory(_device, stagingMemory, null);
+        }
+    }
+
+    /// <summary>
     /// 释放 Vulkan 体素资源
     /// </summary>
     public void Dispose()
