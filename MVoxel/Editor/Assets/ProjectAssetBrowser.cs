@@ -41,11 +41,11 @@ internal sealed class ProjectAssetBrowser
     private string _moveTargetFolder = string.Empty;
 
     /// <summary>移动对话框是否打开</summary>
-    private bool _openMoveDialog;
     private string _renameName = string.Empty;
     private string? _deletePath;
     private bool _openRenameDialog;
     private bool _openDeleteDialog;
+    private bool _openMoveDialog;
 
     internal string SelectedAssetPath => _selectedAsset;
 
@@ -117,6 +117,11 @@ internal sealed class ProjectAssetBrowser
         {
             ImGui.OpenPopup("##资源删除确认");
             _openDeleteDialog = false;
+        }
+        if (_openMoveDialog)
+        {
+            ImGui.OpenPopup("##资源移动");
+            _openMoveDialog = false;
         }
         DrawAssetDialogs(project, reportStatus, trackedChange, countReferences);
         ImGui.EndChild();

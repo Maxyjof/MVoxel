@@ -707,7 +707,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
             void* mapped = null;
             Check(api.MapMemory(_device, stagingMemory, 0, byteCount, 0, &mapped), "映射 HDR 导出暂存缓冲");
-            byte[] raw;
             try
             {
                 Marshal.Copy((nint)mapped, pixels, 0, pixels.Length);
@@ -1397,6 +1396,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
+        // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[8];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1404,7 +1405,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 (ulong)(VoxelRenderParameters.SlotCount * sizeof(float)));
             DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0,
                 (ulong)(MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float)));
-            WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[8];
             writes[0] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -2534,11 +2534,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 上传砖路径工作集：cells 缓冲承载 BrickCells，bvh 缓冲承载区块粒度粗树，
-    /// 砖表缓冲承载每区块 64 项表项（32 字节：区域最小格 + 占用数、格池起始下标）
-    /// </summary>
-    /// <param name="bricks">砖工作集</param>
-    /// <summary>
     /// 砖路径同步：优先按脏区块增量更新驻留并只上传脏区间；
     /// 首次、结构变化、容量溢出或脏区块超阈值时全量重建驻留并整体上传
     /// </summary>
@@ -2553,15 +2548,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             incremental = _brickResidency.TryUpdate(world, dirty, out plan);
         }
 
+        BrickResidency residency;
         if (!incremental)
         {
             LastBrickRejectReason = _brickResidency?.LastRejectReason ?? "first/no-residency";
-            _brickResidency = BrickResidency.BuildFull(world);
+            residency = _brickResidency = BrickResidency.BuildFull(world);
             plan = null;
         }
         else
         {
             LastBrickRejectReason = string.Empty;
+            residency = _brickResidency!;
         }
 
         LastSyncUsedIncrementalBrick = incremental;
@@ -2571,7 +2568,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         SyncUploadMs = 0;
         if (_context is not null && _api is { } api)
         {
-            if (_brickResidency.IsEmpty)
+            if (residency.IsEmpty)
             {
                 if (_voxelBuffer.Handle != 0)
                 {
@@ -2588,7 +2585,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
             else
             {
-                UploadBrickFull(_brickResidency);
+                UploadBrickFull(residency);
             }
         }
 
@@ -2598,13 +2595,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _usingBrickPath = false;
-        _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, _brickResidency.Anchor,
-            _brickResidency.Size, _brickResidency.Cells, _brickResidency.EmissiveCount);
+        _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, residency.Anchor,
+            residency.Size, residency.Cells, residency.EmissiveCount);
         _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
         _worksetGreedyMerge = true;
-        SyncTotalCells = _brickResidency.OccupiedCount;
+        SyncTotalCells = residency.OccupiedCount;
         ResetAccumulation();
     }
 
@@ -2707,7 +2704,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UploadStagingRange(byte[] bytes, VkBuffer destination, long destinationByteOffset)
     {
-        var api = _api!;
+        if (_context is not { } context || _api is not { } api)
+        {
+            return;
+        }
+
         if (bytes.Length == 0)
         {
             return;
@@ -2772,7 +2773,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UploadStaging(byte[] bytes, VkBuffer destination)
     {
-        var api = _api!;
+        if (_context is not { } context || _api is not { } api)
+        {
+            return;
+        }
+
         if (bytes.Length == 0)
         {
             return;

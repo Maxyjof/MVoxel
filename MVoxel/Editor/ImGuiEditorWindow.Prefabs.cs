@@ -197,7 +197,7 @@ internal partial class ImGuiEditorWindow
 
             Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
             PrefabSerializer.Save(absolutePath, variant);
-            instanceRoot.Prefab.AssetPath = relativePath;
+            instanceRoot.Prefab!.AssetPath = relativePath;
             instanceRoot.Prefab.SourceId = variant.PrefabId;
             _prefabCache[absolutePath] = variant;
             MarkSceneDocumentDirty();
@@ -308,7 +308,7 @@ internal partial class ImGuiEditorWindow
         {
             var asset = PrefabSystem.ApplyInstanceToAsset(_sceneDocument!, instanceRoot, instanceRoot.Name);
             var absolutePath = Path.GetFullPath(
-                Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+                Path.Combine(_project!.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
             Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
             PrefabSerializer.Save(absolutePath, asset);
             _prefabCache[absolutePath] = asset;
@@ -454,14 +454,14 @@ internal partial class ImGuiEditorWindow
         if (TryGetSelectedPrefabInstance(out _, out var asset, out _) && asset.BaseAssetPath.Length > 0)
         {
             ImGui.TextDisabled($"变体基础：{asset.BaseAssetPath}");
-            var baseExists = _project is not null && File.Exists(Path.GetFullPath(
-                Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar))));
+            var basePath = _project is null ? null : Path.GetFullPath(
+                Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar)));
+            var baseExists = basePath is not null && File.Exists(basePath);
             if (!baseExists)
             {
                 ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F), "基础资产缺失，变体按当前内容使用");
             }
-            else if (asset.BasePrefabId != StableId.Empty && LoadPrefabCached(Path.GetFullPath(
-                         Path.Combine(_project.AssetsPath, asset.BaseAssetPath.Replace('/', Path.DirectorySeparatorChar))))
+            else if (asset.BasePrefabId != StableId.Empty && LoadPrefabCached(basePath!)
                      is { } baseAsset && baseAsset.PrefabId != asset.BasePrefabId)
             {
                 ImGui.TextColored(new Vector4(1F, 0.6F, 0.25F, 1F), "基础资产已更新，实例可拉取继承内容");

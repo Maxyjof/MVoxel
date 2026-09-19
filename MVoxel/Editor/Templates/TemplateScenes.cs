@@ -188,7 +188,6 @@ internal static class TemplateScenes
     public static VoxelWorld BuildPaletteWorkshop(Rgba32[] palette)
     {
         var world = new VoxelWorld();
-        const int seed = 33;
         TemplateKit.Cylinder(world, 0, 0, 0, 34, 34, .5, Paint(RockDark), hollow: false);
         var total = Math.Min(VoxelPalette.EntryCount, 128) - 1;
         for (var index = 1; index <= total; index++)

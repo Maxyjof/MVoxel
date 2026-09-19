@@ -54,10 +54,16 @@ public sealed class VoxelLodSettings
         }
 
         var level = 0;
-        var bound = Math.Min(Distances?.Length ?? 0, Math.Max(LevelCount - 1, 0));
+        var distances = Distances;
+        if (distances is null)
+        {
+            return 0;
+        }
+
+        var bound = Math.Min(distances.Length, Math.Max(LevelCount - 1, 0));
         for (var index = 0; index < bound; index++)
         {
-            if (distance >= Distances[index])
+            if (distance >= distances[index])
             {
                 level = index + 1;
             }
