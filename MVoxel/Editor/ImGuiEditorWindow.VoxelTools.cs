@@ -1648,10 +1648,52 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        DrawSceneSection(settings);
-        DrawPaletteSection(settings);
-        DrawPostSection(settings);
-        DrawPathTraceSection(settings);
+        if (ImGui.BeginTabBar("##渲染配置分类"))
+        {
+            if (ImGui.BeginTabItem("光照"))
+            {
+                DrawSceneSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("材质与笔刷"))
+            {
+                DrawPaletteSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("色彩输出"))
+            {
+                DrawPostSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("路径追踪"))
+            {
+                DrawPathTraceSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("全局材质"))
+            {
+                DrawGlobalMaterialSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("相机"))
+            {
+                DrawCameraSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("LOD"))
+            {
+                DrawLodSection(settings);
+                ImGui.EndTabItem();
+            }
+
+            ImGui.EndTabBar();
+        }
     }
 
     private static void DrawColorSlider(string label, ref NumVector3 linearColor)
@@ -1681,7 +1723,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawSceneSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("光照 · 太阳与阴影", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.SeparatorText("太阳与阴影");
         Toggle("太阳平行光", ref _settingsToggleSun, value => settings.SunEnabled = value);
         SliderFloat("方位角##sun", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
         SliderFloat("仰角##sun", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
@@ -1719,7 +1761,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPaletteSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("材质基础色与笔刷", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.SeparatorText("基础色与色相");
         Toggle("调色板着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色板，不使用贴图");
         SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
@@ -1788,7 +1830,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPostSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("色彩管理 · 色调映射", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.SeparatorText("色调映射");
         var tone = (int)settings.Tone;
         if (ImGui.Combo("色调曲线", ref tone, "线性截断\0Reinhard\0ACES（Narkowicz）\0Filmic（HV）\0", 4))
         {
@@ -1805,7 +1847,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPathTraceSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("渲染视图 · 渐进式路径追踪", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.SeparatorText("渐进式路径追踪");
         Toggle("启用路径追踪渲染", ref _settingsTogglePath, value =>
         {
             settings.PathTracingEnabled = value;
@@ -1822,26 +1864,27 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("在呈现通道对累积结果做保边缘邻域滤波，不增加路径追踪样本，导出画面也会使用该设置。");
-        if (ImGui.CollapsingHeader("材质（全局）"))
-        {
-            SliderFloat("粗糙度（GGX）", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
-            SliderFloat("金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
-            SliderFloat("介电基础反射 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
-            SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
-            SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
-            Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
-            Toggle("直接光 MIS 采样（太阳+灯）", ref _settingsToggleMis, value => settings.DirectLightingMIS = value);
-        }
+    }
 
-        if (ImGui.CollapsingHeader("渲染相机"))
-        {
-            SliderFloat("视场角 FOV##path", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");
-            Toggle("景深", ref _settingsToggleDof, value => settings.DepthOfField = value);
-            SliderFloat("光圈半径##dof", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
-            SliderFloat("对焦距离##dof", ref settings.FocusDistance, 1F, 256F, "%.1f");
-        }
+    private void DrawGlobalMaterialSection(RenderSettings settings)
+    {
+        ImGui.SeparatorText("全局材质（GGX）");
+        SliderFloat("粗糙度（GGX）", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
+        SliderFloat("金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
+        SliderFloat("介电基础反射 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
+        SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
+        SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
+        Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
+        Toggle("直接光 MIS 采样（太阳+灯）", ref _settingsToggleMis, value => settings.DirectLightingMIS = value);
+    }
 
-        DrawLodSection(settings);
+    private void DrawCameraSection(RenderSettings settings)
+    {
+        ImGui.SeparatorText("渲染相机");
+        SliderFloat("视场角 FOV##path", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");
+        Toggle("景深", ref _settingsToggleDof, value => settings.DepthOfField = value);
+        SliderFloat("光圈半径##dof", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
+        SliderFloat("对焦距离##dof", ref settings.FocusDistance, 1F, 256F, "%.1f");
     }
 
     /// <summary>
@@ -1851,11 +1894,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="settings">目标渲染设置</param>
     private void DrawLodSection(RenderSettings settings)
     {
-        if (!ImGui.CollapsingHeader("距离 LOD"))
-        {
-            return;
-        }
-
+        ImGui.SeparatorText("距离 LOD（场景窗口与渲染窗口各一份，默认关闭）");
         DrawLodGroup("场景窗口", settings.SceneLod);
         DrawLodGroup("渲染窗口", settings.RenderLod);
     }
