@@ -3036,10 +3036,7 @@ DockId=0x6A3C3007,0
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
         if (ImGui.Button("打开完整设置")) OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
-        if (ImGui.CollapsingHeader("距离 LOD"))
-        {
-            DrawLodSection(_renderSettings);
-        }
+        DrawLodSection(_renderSettings);
 
         ImGui.SeparatorText("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
