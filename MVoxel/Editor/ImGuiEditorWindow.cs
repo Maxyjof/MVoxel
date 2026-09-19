@@ -683,7 +683,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("打开项目", "Ctrl+O")) ShowProjectPathDialog(create: false);
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
-            if (ImGui.MenuItem("导入 .vox / .qb 为世界…", enabled: _project is not null)) ImportVoxAsWorld();
+            if (ImGui.MenuItem("导入 .vox / .qb / .schem 为世界…", enabled: _project is not null)) ImportVoxAsWorld();
             if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) Close();

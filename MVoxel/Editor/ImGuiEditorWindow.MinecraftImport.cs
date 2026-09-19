@@ -678,7 +678,7 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 选择外部 .vox / .qb 文件并转换为项目世界文件，随后作为当前工作世界打开
+    /// 选择外部 .vox / .qb / .schem 文件并转换为项目世界文件，随后作为当前工作世界打开
     /// </summary>
     private void ImportVoxAsWorld()
     {
@@ -688,7 +688,7 @@ internal partial class ImGuiEditorWindow
         }
 
         var path = NativeDialogs.PickFile("选择体素模型",
-            "体素模型\0*.vox;*.qb\0MagicaVoxel 模型\0*.vox\0Qubicle 模型\0*.qb\0全部文件\0*.*\0\0");
+            "体素模型\0*.vox;*.qb;*.schem\0MagicaVoxel 模型\0*.vox\0Qubicle 模型\0*.qb\0Minecraft 结构\0*.schem\0全部文件\0*.*\0\0");
         if (string.IsNullOrWhiteSpace(path))
         {
             return;
@@ -697,7 +697,12 @@ internal partial class ImGuiEditorWindow
         var extension = Path.GetExtension(path).ToLowerInvariant();
         try
         {
-            var world = extension == ".qb" ? QubicleFormat.Read(path) : VoxFormat.Read(path);
+            var world = extension switch
+            {
+                ".qb" => QubicleFormat.Read(path),
+                ".schem" => SchematicFormat.Read(path),
+                _ => VoxFormat.Read(path),
+            };
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
             var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
