@@ -187,8 +187,9 @@ public sealed class VoxelBrickWorkset
                 : new Box(0, 0, 0, 0, 0, 0, index);
         }
 
-        // 外层区块树（叶容量 1，每叶对应一个区块）
-        var (outerNodes, outerOrder) = BuildBvh(chunkBoxes, 1);
+        // 外层区块树（叶容量 1，每叶对应一个区块），按区块索引对半切分保证拓扑与包围盒无关，
+        // 增量更新时外层拓扑稳定（只改包围盒不改结构）
+        var (outerNodes, outerOrder) = BuildBvh(chunkBoxes, 1, spatial: false);
         var outerCount = outerNodes.Count;
 
         // 组装全局节点数组：外层在前，随后各区块内层子树连续排布
@@ -265,34 +266,96 @@ public sealed class VoxelBrickWorkset
     }
 
     /// <summary>
+    /// 构建单个区块的合并格片（坐标相对锚点，贪心合并，稳定序）
+    /// </summary>
+    internal static VoxelGpuCell[] BuildChunkCells(SparseVoxelChunk chunk, ChunkCoord64 coordinate,
+        VoxelCoord64 anchor)
+    {
+        var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
+        var pairIndex = 0;
+        foreach (var pair in chunk.Snapshot)
+        {
+            pairs[pairIndex++] = (pair.Key, pair.Value);
+        }
+
+        Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+        var merged = new List<VoxelGpuCell>(pairs.Length);
+        VoxelGpuWorkset.GreedyMergeChunk(pairs, coordinate, anchor, merged);
+        return merged.ToArray();
+    }
+
+    /// <summary>
+    /// 为一个区块的合并格片构建内层 BVH，返回格池写入序（order 指向入参下标）与局部节点
+    /// </summary>
+    internal static (List<BvhNode> Nodes, int[] Order) BuildInnerBvh(VoxelGpuCell[] chunkCells)
+    {
+        var items = new Box[chunkCells.Length];
+        for (var cell = 0; cell < chunkCells.Length; cell++)
+        {
+            var value = chunkCells[cell];
+            items[cell] = new Box(value.X, value.Y, value.Z,
+                value.X + value.ExtentX, value.Y + value.ExtentY, value.Z + value.ExtentZ, cell);
+        }
+
+        return BuildBvh(items, InnerLeafSize);
+    }
+
+    /// <summary>
+    /// 把内层局部节点写入全局节点数组指定基址：格叶 links.z 叠加 cellBase，内部链接叠加 nodeBase
+    /// </summary>
+    internal static void WriteInnerNodes(List<BvhNode> localNodes, int nodeBase, int cellBase, Node[] globalNodes)
+    {
+        for (var node = 0; node < localNodes.Count; node++)
+        {
+            var source = localNodes[node];
+            if (source.Left < 0)
+            {
+                globalNodes[nodeBase + node] = new Node(source.MinX, source.MinY, source.MinZ,
+                    source.MaxX, source.MaxY, source.MaxZ, -1, -1, cellBase + source.Start, source.Count);
+            }
+            else
+            {
+                globalNodes[nodeBase + node] = new Node(source.MinX, source.MinY, source.MinZ,
+                    source.MaxX, source.MaxY, source.MaxZ, nodeBase + source.Left, nodeBase + source.Right, 0, 0);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 内层子树节点数（供容量预算）
+    /// </summary>
+    internal static int InnerNodeCount(VoxelGpuCell[] chunkCells) =>
+        chunkCells.Length == 0 ? 0 : BuildInnerBvh(chunkCells).Nodes.Count;
+
+    /// <summary>
     /// 轴对齐盒（构建期中间表示，坐标相对锚点，max 为开区间上界）
     /// </summary>
-    private readonly record struct Box(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ, int Payload);
+    internal readonly record struct Box(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ, int Payload);
 
     /// <summary>
     /// 单区块内层子树的中间结果
     /// </summary>
     private sealed record InnerSlab(List<BvhNode> Nodes, int[] Order);
 
-    private readonly record struct BvhNode(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ,
+    internal readonly record struct BvhNode(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ,
         int Left, int Right, int Start, int Count);
 
     /// <summary>
-    /// 通用空间 BVH：按最长轴中心中位数递归切分，叶容量 leafSize，前序分配节点编号。
-    /// 返回节点列表（局部索引）与叶内负载按遍历顺序的重排数组
+    /// 通用空间 BVH：spatial 为真按最长轴中心中位数切分，为假按当前下标对半切分（拓扑与包围盒无关，供外层稳定复用）。
+    /// 叶容量 leafSize，前序分配节点编号，返回节点列表（局部索引）与叶内负载按遍历顺序的重排数组
     /// </summary>
-    private static (List<BvhNode> Nodes, int[] Order) BuildBvh(Box[] items, int leafSize)
+    internal static (List<BvhNode> Nodes, int[] Order) BuildBvh(Box[] items, int leafSize, bool spatial = true)
     {
         var nodes = new List<BvhNode>();
         var order = new int[items.Length];
         var indices = new int[items.Length];
         for (var index = 0; index < indices.Length; index++) indices[index] = index;
         var orderCursor = 0;
-        BuildNode(items, indices, 0, indices.Length, leafSize, nodes, order, ref orderCursor);
+        BuildNode(items, indices, 0, indices.Length, leafSize, spatial, nodes, order, ref orderCursor);
         return (nodes, order);
     }
 
-    private static void BuildNode(Box[] items, int[] indices, int start, int count, int leafSize,
+    private static void BuildNode(Box[] items, int[] indices, int start, int count, int leafSize, bool spatial,
         List<BvhNode> nodes, int[] order, ref int orderCursor)
     {
         var minX = int.MaxValue; var minY = int.MaxValue; var minZ = int.MaxValue;
@@ -318,21 +381,25 @@ public sealed class VoxelBrickWorkset
             return;
         }
 
-        var extentX = maxX - minX;
-        var extentY = maxY - minY;
-        var extentZ = maxZ - minZ;
-        var axis = extentX >= extentY && extentX >= extentZ ? 0 : extentY >= extentZ ? 1 : 2;
-        Array.Sort(indices, start, count, Comparer<int>.Create((a, b) =>
+        if (spatial)
         {
-            var centerA = AxisCenter(items[a], axis);
-            var centerB = AxisCenter(items[b], axis);
-            return centerA != centerB ? centerA.CompareTo(centerB) : a.CompareTo(b);
-        }));
+            var extentX = maxX - minX;
+            var extentY = maxY - minY;
+            var extentZ = maxZ - minZ;
+            var axis = extentX >= extentY && extentX >= extentZ ? 0 : extentY >= extentZ ? 1 : 2;
+            Array.Sort(indices, start, count, Comparer<int>.Create((a, b) =>
+            {
+                var centerA = AxisCenter(items[a], axis);
+                var centerB = AxisCenter(items[b], axis);
+                return centerA != centerB ? centerA.CompareTo(centerB) : a.CompareTo(b);
+            }));
+        }
+
         var middle = count / 2;
         var left = nodeIndex + 1;
-        BuildNode(items, indices, start, middle, leafSize, nodes, order, ref orderCursor);
+        BuildNode(items, indices, start, middle, leafSize, spatial, nodes, order, ref orderCursor);
         var right = nodes.Count;
-        BuildNode(items, indices, start + middle, count - middle, leafSize, nodes, order, ref orderCursor);
+        BuildNode(items, indices, start + middle, count - middle, leafSize, spatial, nodes, order, ref orderCursor);
         nodes[nodeIndex] = new BvhNode(minX, minY, minZ, maxX, maxY, maxZ, left, right, 0, 0);
     }
 

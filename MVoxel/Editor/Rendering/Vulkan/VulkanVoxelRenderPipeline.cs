@@ -45,6 +45,26 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private bool _usingBrickPath;
 
     /// <summary>
+    /// 砖驻留（可变常驻，跨同步保留以支持增量更新）
+    /// </summary>
+    private BrickResidency? _brickResidency;
+
+    /// <summary>
+    /// 最近一次砖路径同步是否走了增量（诊断用）
+    /// </summary>
+    internal bool LastSyncUsedIncrementalBrick { get; private set; }
+
+    /// <summary>
+    /// 最近一次砖增量被拒绝的原因（诊断用）
+    /// </summary>
+    internal string LastBrickRejectReason { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// 单次增量允许的最大脏区块数，超出走全量重排
+    /// </summary>
+    private const int MaxIncrementalChunks = 64;
+
+    /// <summary>
     /// 显式启用砖路径（渲染台架 `brick` 旗标）。
     /// 默认关闭：密集场景的砖内线性扫描尚待区块内 BVH 替换，
     /// 且砖格未做贪心合并，与传统路径存在噪声级像素差异
@@ -237,45 +257,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
-        // 砖路径资格：无采样预算、无 LOD（LOD 大块格图元与砖布局不兼容）、体素数在显存预算内
+        // 砖路径资格：无采样预算、无 LOD、硬件 RT 关闭（砖池含预留间隙，RT 稠密读会出错）、体素在显存预算内
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
-            lodSignature == 0 && world.OccupiedVoxelCount <= MaxFullWorksetCells;
+            lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
         if (brickEligible)
         {
-            var brickWatch = System.Diagnostics.Stopwatch.StartNew();
-            var bricks = VoxelBrickWorkset.Build(world);
-            SyncWorksetBuildMs = brickWatch.Elapsed.TotalMilliseconds;
-            SyncPackMs = 0;
-            SyncUploadMs = 0;
-            if (_context is not null && bricks.OccupiedCount > 0)
-            {
-                UploadBrickWorkset(bricks);
-                // 两级 BVH 与传统路径共用着色器遍历，P_BRICK_MODE 保持 0
-                _usingBrickPath = false;
-            }
-            else if (_context is not null && _api is { } api && bricks.OccupiedCount == 0 && _voxelBuffer.Handle != 0)
-            {
-                api.DeviceWaitIdle(_device);
-                DestroyBvhBuffer(api);
-                DestroyVoxelBuffer(api);
-                DestroyBrickTableBuffer(api);
-                _bvhNodeCount = 0;
-                _usingBrickPath = false;
-            }
-
-            world.TryGetBounds(out var brickMin, out var brickMax);
-            var brickSize = new VoxelCoord64(
-                brickMax.X - brickMin.X + 1, brickMax.Y - brickMin.Y + 1, brickMax.Z - brickMin.Z + 1);
-            _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, brickMin, brickSize,
-                bricks.Cells, bricks.EmissiveCount);
-            _lastSyncSource = world;
-            _worksetMaximumCells = maximumCells;
-            _worksetLodSignature = lodSignature;
-            SyncTotalCells = bricks.OccupiedCount;
-            ResetAccumulation();
+            SyncBrick(world, lodSignature, maximumCells);
             return;
         }
 
+        _brickResidency = null;
         _usingBrickPath = false;
         var requestedFull = maximumCells == 0 && world.OccupiedVoxelCount > MaxFullWorksetCells;
         if (requestedFull)
@@ -2379,29 +2370,49 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         for (var index = from; index < to; index++)
         {
-            var cell = cells[index];
-            var offset = index * PackedCellSize;
-            var x = cell.X;
-            var y = cell.Y;
-            var z = cell.Z;
-            var materialSlot = cell.Value.MaterialSlot;
-            var red = cell.Value.Color.R / 255F;
-            var green = cell.Value.Color.G / 255F;
-            var blue = cell.Value.Color.B / 255F;
-            var alpha = cell.Value.Color.A / 255F;
-            var extent = cell.ExtentX | (cell.ExtentY << 8) | (cell.ExtentZ << 16);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 0, 4), in x);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 4, 4), in y);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 8, 4), in z);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 12, 4), in extent);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 16, 4), in red);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 20, 4), in green);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 24, 4), in blue);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 28, 4), in alpha);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 32, 2), in materialSlot);
-            var metadata = (uint)materialSlot | ((uint)cell.Value.Flags << 16);
-            MemoryMarshal.Write(bytes.AsSpan(offset + 32, 4), in metadata);
+            PackCellInto(bytes, index * PackedCellSize, cells[index]);
         }
+    }
+
+    /// <summary>
+    /// 打包指定区间的格为独立字节流（相对偏移从 0 开始），供增量上传到设备缓冲的对应偏移
+    /// </summary>
+    private static byte[] PackCellsRange(IReadOnlyList<VoxelGpuCell> cells, int start, int count)
+    {
+        var bytes = new byte[count * PackedCellSize];
+        for (var index = 0; index < count; index++)
+        {
+            PackCellInto(bytes, index * PackedCellSize, cells[start + index]);
+        }
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// 把单个格图元按 std430 布局写入字节数组指定偏移
+    /// </summary>
+    private static void PackCellInto(byte[] bytes, int offset, VoxelGpuCell cell)
+    {
+        var x = cell.X;
+        var y = cell.Y;
+        var z = cell.Z;
+        var materialSlot = cell.Value.MaterialSlot;
+        var red = cell.Value.Color.R / 255F;
+        var green = cell.Value.Color.G / 255F;
+        var blue = cell.Value.Color.B / 255F;
+        var alpha = cell.Value.Color.A / 255F;
+        var extent = cell.ExtentX | (cell.ExtentY << 8) | (cell.ExtentZ << 16);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 0, 4), in x);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 4, 4), in y);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 8, 4), in z);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 12, 4), in extent);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 16, 4), in red);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 20, 4), in green);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 24, 4), in blue);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 28, 4), in alpha);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 32, 2), in materialSlot);
+        var metadata = (uint)materialSlot | ((uint)cell.Value.Flags << 16);
+        MemoryMarshal.Write(bytes.AsSpan(offset + 32, 4), in metadata);
     }
 
     /// <summary>
@@ -2516,47 +2527,89 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 砖表缓冲承载每区块 64 项表项（32 字节：区域最小格 + 占用数、格池起始下标）
     /// </summary>
     /// <param name="bricks">砖工作集</param>
-    private void UploadBrickWorkset(VoxelBrickWorkset bricks)
+    /// <summary>
+    /// 砖路径同步：优先按脏区块增量更新驻留并只上传脏区间；
+    /// 首次、结构变化、容量溢出或脏区块超阈值时全量重建驻留并整体上传
+    /// </summary>
+    private void SyncBrick(VoxelWorld world, long lodSignature, int maximumCells)
     {
-        if (_context is null || _api is not { } api)
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var hasDirty = world.TryTakeDirty(out var dirty);
+        BrickResidency.UploadPlan? plan = null;
+        var incremental = false;
+        if (_brickResidency is { IsEmpty: false } && hasDirty && dirty.Count <= MaxIncrementalChunks)
         {
-            return;
+            incremental = _brickResidency.TryUpdate(world, dirty, out plan);
         }
 
-        var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var cellBytes = PackCells(bricks.Cells);
-        SyncPackMs = phaseWatch.Elapsed.TotalMilliseconds;
-        phaseWatch.Restart();
-
-        // 粗树节点沿用 BvhNode 48 字节布局
-        var nodeBytes = new byte[checked(bricks.Nodes.Length * 48)];
-        for (var index = 0; index < bricks.Nodes.Length; index++)
+        if (!incremental)
         {
-            var node = bricks.Nodes[index];
-            var offset = index * 48;
-            WriteInt(nodeBytes, offset + 0, node.MinX);
-            WriteInt(nodeBytes, offset + 4, node.MinY);
-            WriteInt(nodeBytes, offset + 8, node.MinZ);
-            WriteInt(nodeBytes, offset + 12, 0);
-            WriteInt(nodeBytes, offset + 16, node.MaxX);
-            WriteInt(nodeBytes, offset + 20, node.MaxY);
-            WriteInt(nodeBytes, offset + 24, node.MaxZ);
-            WriteInt(nodeBytes, offset + 28, 0);
-            WriteInt(nodeBytes, offset + 32, node.LinkX);
-            WriteInt(nodeBytes, offset + 36, node.LinkY);
-            WriteInt(nodeBytes, offset + 40, node.LinkZ);
-            WriteInt(nodeBytes, offset + 44, node.LinkW);
+            LastBrickRejectReason = _brickResidency?.LastRejectReason ?? "first/no-residency";
+            _brickResidency = BrickResidency.BuildFull(world);
+            plan = null;
+        }
+        else
+        {
+            LastBrickRejectReason = string.Empty;
         }
 
-        // 两级 BVH 与传统路径共用同一着色器叶/内节点语义，无需砖表；
-        // 绑定 7 仍在布局中，绑一个最小 dummy 缓冲保证描述符有效
+        LastSyncUsedIncrementalBrick = incremental;
+
+        SyncWorksetBuildMs = watch.Elapsed.TotalMilliseconds;
+        SyncPackMs = 0;
+        SyncUploadMs = 0;
+        if (_context is not null && _api is { } api)
+        {
+            if (_brickResidency.IsEmpty)
+            {
+                if (_voxelBuffer.Handle != 0)
+                {
+                    api.DeviceWaitIdle(_device);
+                    DestroyBvhBuffer(api);
+                    DestroyVoxelBuffer(api);
+                    DestroyBrickTableBuffer(api);
+                    _bvhNodeCount = 0;
+                }
+            }
+            else if (incremental && plan is not null)
+            {
+                UploadBrickRanges(plan);
+            }
+            else
+            {
+                UploadBrickFull(_brickResidency);
+            }
+        }
+
+        if (hasDirty)
+        {
+            world.MarkChunksSynced(dirty);
+        }
+
+        _usingBrickPath = false;
+        _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, _brickResidency.Anchor,
+            _brickResidency.Size, _brickResidency.Cells, _brickResidency.EmissiveCount);
+        _lastSyncSource = world;
+        _worksetMaximumCells = maximumCells;
+        _worksetLodSignature = lodSignature;
+        SyncTotalCells = _brickResidency.OccupiedCount;
+        ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 全量上传驻留格池与节点池（首次或回退时）
+    /// </summary>
+    private void UploadBrickFull(BrickResidency residency)
+    {
+        var api = _api!;
+        var cellBytes = PackCells(residency.Cells);
+        var nodeBytes = PackResidencyNodes(residency.Nodes, 0, residency.Nodes.Length);
         var cellRequired = checked((ulong)Math.Max(cellBytes.Length, PackedCellSize));
         if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < cellRequired)
         {
             api.DeviceWaitIdle(_device);
             DestroyVoxelBuffer(api);
-            (_voxelBuffer, _voxelMemory) = CreateBuffer(
-                NextCapacity(cellRequired),
+            (_voxelBuffer, _voxelMemory) = CreateBuffer(NextCapacity(cellRequired),
                 BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
                 MemoryPropertyFlags.DeviceLocalBit);
             _voxelBufferCapacity = NextCapacity(cellRequired);
@@ -2567,21 +2620,139 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         {
             api.DeviceWaitIdle(_device);
             DestroyBvhBuffer(api);
-            (_bvhBuffer, _bvhMemory) = CreateBuffer(
-                NextCapacity(nodeRequired),
+            (_bvhBuffer, _bvhMemory) = CreateBuffer(NextCapacity(nodeRequired),
                 BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
                 MemoryPropertyFlags.DeviceLocalBit);
             _bvhBufferCapacity = NextCapacity(nodeRequired);
         }
 
         EnsureBrickTableBuffer(1);
-
         UploadStaging(cellBytes, _voxelBuffer);
         UploadStaging(nodeBytes, _bvhBuffer);
-
-        _bvhNodeCount = bricks.Nodes.Length;
+        _bvhNodeCount = residency.Nodes.Length;
         UpdateComputeDescriptors();
-        SyncUploadMs = phaseWatch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// 增量上传脏区间：外层节点区间总在计划内，格片与内层子树按脏区块定界
+    /// </summary>
+    private void UploadBrickRanges(BrickResidency.UploadPlan plan)
+    {
+        foreach (var (start, count) in plan.CellRanges)
+        {
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            var bytes = PackCellsRange(_brickResidency!.Cells, start, count);
+            UploadStagingRange(bytes, _voxelBuffer, (long)start * PackedCellSize);
+        }
+
+        foreach (var (start, count) in plan.NodeRanges)
+        {
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            var bytes = PackResidencyNodes(_brickResidency!.Nodes, start, count);
+            UploadStagingRange(bytes, _bvhBuffer, (long)start * 48);
+        }
+
+        _bvhNodeCount = _brickResidency!.Nodes.Length;
+    }
+
+    /// <summary>
+    /// 打包节点区间为 std430 字节流
+    /// </summary>
+    private static byte[] PackResidencyNodes(VoxelBrickWorkset.Node[] nodes, int start, int count)
+    {
+        var bytes = new byte[count * 48];
+        for (var index = 0; index < count; index++)
+        {
+            var node = nodes[start + index];
+            var offset = index * 48;
+            WriteInt(bytes, offset + 0, node.MinX);
+            WriteInt(bytes, offset + 4, node.MinY);
+            WriteInt(bytes, offset + 8, node.MinZ);
+            WriteInt(bytes, offset + 12, 0);
+            WriteInt(bytes, offset + 16, node.MaxX);
+            WriteInt(bytes, offset + 20, node.MaxY);
+            WriteInt(bytes, offset + 24, node.MaxZ);
+            WriteInt(bytes, offset + 28, 0);
+            WriteInt(bytes, offset + 32, node.LinkX);
+            WriteInt(bytes, offset + 36, node.LinkY);
+            WriteInt(bytes, offset + 40, node.LinkZ);
+            WriteInt(bytes, offset + 44, node.LinkW);
+        }
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// 把主机端字节上传到设备缓冲指定字节偏移处
+    /// </summary>
+    private void UploadStagingRange(byte[] bytes, VkBuffer destination, long destinationByteOffset)
+    {
+        var api = _api!;
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        var (stagingBuffer, stagingMemory) = CreateBuffer((ulong)bytes.Length,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        try
+        {
+            void* mapped = null;
+            Check(api.MapMemory(_device, stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射区间暂存缓冲");
+            try
+            {
+                fixed (byte* source = bytes)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
+                }
+            }
+            finally
+            {
+                api.UnmapMemory(_device, stagingMemory);
+            }
+
+            _context.ExecuteImmediate(commandBuffer =>
+                RecordUploadRange(commandBuffer, stagingBuffer, destination, bytes.Length, destinationByteOffset));
+        }
+        finally
+        {
+            api.DestroyBuffer(_device, stagingBuffer, null);
+            api.FreeMemory(_device, stagingMemory, null);
+        }
+    }
+
+    /// <summary>
+    /// 记录暂存缓冲到设备缓冲指定偏移的复制与同步
+    /// </summary>
+    private void RecordUploadRange(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destination,
+        int byteCount, long destinationByteOffset)
+    {
+        var api = _api!;
+        var copy = new BufferCopy(0, (ulong)destinationByteOffset, (ulong)byteCount);
+        api.CmdCopyBuffer(commandBuffer, stagingBuffer, destination, 1, in copy);
+        BufferMemoryBarrier barrier = new()
+        {
+            SType = StructureType.BufferMemoryBarrier,
+            SrcAccessMask = AccessFlags.TransferWriteBit,
+            DstAccessMask = AccessFlags.ShaderReadBit,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = destination,
+            Offset = (ulong)destinationByteOffset,
+            Size = (ulong)byteCount,
+        };
+        api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
+            PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.FragmentShaderBit,
+            0, 0, null, 1, in barrier, 0, null);
     }
 
     /// <summary>

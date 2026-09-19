@@ -82,7 +82,7 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 - [x] Bloom 辉光（HDR 累积宽核亮部提取，与降噪合成同通道）
 - [ ] EXR 输出、OIDN
 - [x] 世界脏区块跟踪（TryTakeDirty/StructureStamp）与区块 Brick 化构建（增量上传第一阶段）
-- [ ] GPU Brick 驻留与 Chunk 级增量上传（BrickTable 缓冲与着色器两级求交，第二阶段）
+- [x] GPU Brick 驻留与 Chunk 级增量上传（两级 BVH + 贪心合并遍历 4.8×、脏区间增量上传重同步 95×，实测达标；默认关闭待启用决策）
 
 ### 预制体
 

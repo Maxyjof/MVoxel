@@ -422,6 +422,24 @@ public sealed class VoxelWorld
     }
 
     /// <summary>
+    /// 读取指定坐标的稀疏区块
+    /// </summary>
+    /// <param name="coordinate">区块坐标</param>
+    /// <param name="chunk">命中时输出区块</param>
+    /// <returns>区块存在且非空时返回 true</returns>
+    internal bool TryGetChunk(ChunkCoord64 coordinate, out SparseVoxelChunk chunk)
+    {
+        if (_chunks.TryGetValue(coordinate, out var found) && found.OccupiedCount > 0)
+        {
+            chunk = found;
+            return true;
+        }
+
+        chunk = null!;
+        return false;
+    }
+
+    /// <summary>
     /// 读取世界坐标处的体素
     /// </summary>
     /// <param name="coordinate">世界整数坐标</param>
