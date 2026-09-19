@@ -59,8 +59,6 @@ internal sealed partial class ImGuiEditorWindow
 
     private void ApplyProjectSettingsToUi()
     {
-        _projectLodLevels = Math.Clamp(_projectSettings.LodLevels, 1, _projectLodDistances.Length);
-        Array.Copy(_projectSettings.LodDistances, _projectLodDistances, _projectLodDistances.Length);
         _showGrid = _projectSettings.ShowGrid;
         _showVoxelOutlines = _projectSettings.ShowVoxelOutlines;
         _renderSettings = _projectSettings.RenderSettings;
@@ -77,8 +75,6 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void ApplyEditorSettingsToUi()
     {
-        _editorLodLevels = Math.Clamp(_editorSettings.SceneLodLevels, 1, _editorLodDistances.Length);
-        Array.Copy(_editorSettings.SceneLodDistances, _editorLodDistances, _editorLodDistances.Length);
         _showGrid = _editorSettings.ShowSceneGrid;
         _showVoxelOutlines = _editorSettings.ShowVoxelOutlines;
         _sceneMoveSpeed = _editorSettings.SceneMoveSpeed;
@@ -90,8 +86,6 @@ internal sealed partial class ImGuiEditorWindow
 
     private void CaptureProjectSettingsFromUi()
     {
-        _projectSettings.LodLevels = _projectLodLevels;
-        Array.Copy(_projectLodDistances, _projectSettings.LodDistances, _projectLodDistances.Length);
         _projectSettings.ShowGrid = _showGrid;
         _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
         _projectSettings.SceneMoveSpeed = _sceneMoveSpeed;
@@ -208,8 +202,6 @@ internal sealed partial class ImGuiEditorWindow
                 default: DrawProjectAssetSettings(); break;
             }
         });
-        _projectSettings.LodLevels = _projectLodLevels;
-        Array.Copy(_projectLodDistances, _projectSettings.LodDistances, _projectLodDistances.Length);
         _projectSettings.ShowGrid = _showGrid;
         _projectSettings.ShowVoxelOutlines = _showVoxelOutlines;
         _projectSettings.SceneMoveSpeed = _sceneMoveSpeed;
@@ -324,10 +316,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("显示场景网格", ref _editorSettings.ShowSceneGrid);
                 ImGui.Checkbox("显示体素轮廓", ref _editorSettings.ShowVoxelOutlines);
                 ImGui.SeparatorText("场景 LOD");
-                SliderInt("LOD 等级数量", ref _editorSettings.SceneLodLevels, 1, _editorSettings.SceneLodDistances.Length);
-                for (var index = 0; index < _editorSettings.SceneLodLevels; index++)
-                    SliderFloat($"LOD 第 {index + 1} 级距离", ref _editorSettings.SceneLodDistances[index],
-                        1F, 16384F, "%.0f 格");
+                DrawLodSection(_editorSettings.RenderViewSettings);
                 ImGui.SeparatorText("场景相机");
                 SliderFloat("移动速度", ref _editorSettings.SceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _editorSettings.SceneNearClip, 0.001F, 1000F, "%.3f 格");
@@ -703,9 +692,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("LOD"))
             {
-                SliderInt("等级数量", ref _projectLodLevels, 1, _projectLodDistances.Length);
-                for (var index = 0; index < _projectLodLevels; index++)
-                    SliderFloat($"第 {index + 1} 级距离", ref _projectLodDistances[index], 1F, 16384F, "%.0f 格");
+                DrawLodSection(_projectSettings.RenderSettings);
                 ImGui.EndTabItem();
             }
 

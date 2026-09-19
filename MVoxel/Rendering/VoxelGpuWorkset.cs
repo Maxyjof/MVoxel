@@ -99,11 +99,14 @@ public sealed class VoxelGpuWorkset
     /// </summary>
     /// <param name="world">源稀疏世界</param>
     /// <param name="maximumCells">工作集最大体素数，零表示不采样</param>
+    /// <param name="lod">距离 LOD 配置，null 或关闭时全细节</param>
+    /// <param name="cameraPosition">LOD 判距相机</param>
+    /// <param name="greedyMerge">是否做贪心盒体合并；场景视图传 false 只显示原始体素，渲染与导出传 true</param>
     /// <returns>可直接上传到 GPU 的确定性快照</returns>
     /// <exception cref="ArgumentNullException">世界为空时抛出</exception>
     /// <exception cref="InvalidDataException">包围盒尺寸超出 GPU 局部坐标范围时抛出</exception>
     public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0,
-        VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null)
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null, bool greedyMerge = true)
     {
         ArgumentNullException.ThrowIfNull(world);
         if (!world.TryGetBounds(out var minimum, out var maximum))
@@ -186,7 +189,23 @@ public sealed class VoxelGpuWorkset
                 var list = new List<VoxelGpuCell>(pairs.Length);
                 if (level == 0)
                 {
-                    GreedyMergeChunk(pairs, coordinate, minimum, list);
+                    if (greedyMerge)
+                    {
+                        GreedyMergeChunk(pairs, coordinate, minimum, list);
+                    }
+                    else
+                    {
+                        // 场景视图：逐格原始体素，不做盒体合并，素描边与拾取按真实体素
+                        foreach (var (key, value) in pairs)
+                        {
+                            var local = SparseVoxelChunk.FromIndex(key);
+                            list.Add(new VoxelGpuCell(
+                                (int)(coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X),
+                                (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y),
+                                (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z),
+                                value));
+                        }
+                    }
                 }
                 else
                 {

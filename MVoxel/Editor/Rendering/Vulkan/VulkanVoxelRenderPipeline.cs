@@ -117,6 +117,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private bool _disposed;
     private bool _usingHardwareRayTracing;
     private int _worksetMaximumCells;
+
+    /// <summary>
+    /// 当前工作集是否按贪心合并构建（场景视图 false），纳入同步跳过判定
+    /// </summary>
+    private bool _worksetGreedyMerge = true;
     private VoxelWorld? _lastSyncSource;
     private VoxelLodSettings? _activeLod;
     private System.Numerics.Vector3? _lodCamera;
@@ -233,8 +238,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 同步稀疏体素世界到 Vulkan 工作集
     /// </summary>
     /// <param name="world">体素世界</param>
+    /// <param name="maximumCells">显存预算格数，0 为不采样</param>
+    /// <param name="lod">距离 LOD 配置</param>
+    /// <param name="camera">LOD 判距相机</param>
+    /// <param name="greedyMerge">是否贪心盒体合并：场景视图 false，渲染与导出 true</param>
     internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
-        VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null)
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true)
     {
         ArgumentNullException.ThrowIfNull(world);
         // 编辑类同步不带相机与 LOD：沿用上一次的活动配置，避免笔刷提交把 LOD 分档重置
@@ -252,13 +261,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         // 引用一致 + 版本一致才跳过：渲染世界按图层遮罩重组后是新实例，
         // 必须靠引用差异触发重建，仅比版本号会让两次不同遮罩的组成撞车
         if (ReferenceEquals(_lastSyncSource, world) && world.ContentVersion == _workset.SourceVersion &&
-            maximumCells == _worksetMaximumCells && lodSignature == _worksetLodSignature)
+            maximumCells == _worksetMaximumCells && lodSignature == _worksetLodSignature &&
+            greedyMerge == _worksetGreedyMerge)
         {
             return;
         }
 
-        // 砖路径资格：无采样预算、无 LOD、硬件 RT 关闭（砖池含预留间隙，RT 稠密读会出错）、体素在显存预算内
-        var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
+        // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭、体素在预算内
+        var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
             lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
         if (brickEligible)
         {
@@ -277,7 +287,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         LastSyncWasBudgeted = requestedFull;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera);
+        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge);
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         SyncPackMs = 0;
         SyncUploadMs = 0;
@@ -299,6 +309,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
+        _worksetGreedyMerge = greedyMerge;
         SyncTotalCells = next.Cells.Count;
         ResetAccumulation();
     }
@@ -2592,6 +2603,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
+        _worksetGreedyMerge = true;
         SyncTotalCells = _brickResidency.OccupiedCount;
         ResetAccumulation();
     }

@@ -269,22 +269,10 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>零表示完整工作集，其余数值表示场景视图采样上限</returns>
     private int GetSceneGpuCellBudget()
     {
+        // 场景视图只按显存安全上限采样，不再按相机距离做隐式降采样；
+        // 距离粗化统一交给"场景窗口 LOD"（RenderSettings.SceneLod）的勾选与分档控制
         var count = _world.OccupiedVoxelCount;
-        if (count <= 250_000)
-        {
-            return 0;
-        }
-
-        var levels = _project is null ? _editorLodLevels : _projectLodLevels;
-        var distances = _project is null ? _editorLodDistances : _projectLodDistances;
-        var level = 0;
-        while (level < Math.Max(0, levels - 1) && _sceneCameraDistance > distances[level])
-        {
-            level++;
-        }
-
-        var divisor = 1 << Math.Min(level, 5);
-        return Math.Clamp((count + divisor - 1) / divisor, 32_768, 250_000);
+        return count <= 250_000 ? 0 : 250_000;
     }
 
     /// <summary>
@@ -747,7 +735,9 @@ internal sealed partial class ImGuiEditorWindow
         if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            pipeline.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget(), _renderSettings.SceneLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            // 场景视图不贪心合并，逐格显示真实体素；LOD 仍按场景窗口配置生效
+            pipeline.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget(), _renderSettings.SceneLod,
+                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z), greedyMerge: false);
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));

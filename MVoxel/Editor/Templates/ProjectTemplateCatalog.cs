@@ -254,8 +254,6 @@ public static class ProjectTemplateCatalog
         switch (id)
         {
             case ProjectTemplateId.SparseWorld:
-                settings.LodLevels = 5;
-                settings.LodDistances = [48F, 96F, 192F, 384F, 768F, 1536F, 3072F, 6144F];
                 settings.DefaultRenderPreset = "大世界稀疏预览";
                 settings.RenderSettings.GroundFade = 240F;
                 settings.RenderSettings.SunElevationDegrees = 26F;
@@ -279,8 +277,6 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Exposure = .12F;
                 break;
             case ProjectTemplateId.LodPlayground:
-                settings.LodLevels = 6;
-                settings.LodDistances = [24F, 48F, 96F, 192F, 384F, 768F, 1536F, 3072F];
                 settings.DefaultRenderPreset = "LOD 练习";
                 settings.RenderSettings.ResolutionScale = .85F;
                 break;
@@ -363,7 +359,6 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Tone = ToneCurve.Linear;
                 break;
             case ProjectTemplateId.ProceduralTerrain:
-                settings.LodLevels = 5;
                 settings.DefaultRenderPreset = "程序化地形";
                 settings.RenderSettings.GroundFade = 180F;
                 settings.RenderSettings.SunElevationDegrees = 30F;
@@ -410,16 +405,12 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.EmissiveIntensity = 16F;
                 break;
             case ProjectTemplateId.LargeWorld:
-                settings.LodLevels = 8;
-                settings.LodDistances = [96F, 192F, 384F, 768F, 1536F, 3072F, 6144F, 12288F];
                 settings.DefaultRenderPreset = "超大型场景性能验证";
                 settings.RenderSettings.ResolutionScale = .65F;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 64;
                 settings.RenderSettings.EmissiveIntensity = 12F;
                 break;
             case ProjectTemplateId.RenderingGallery:
-                settings.LodLevels = 6;
-                settings.LodDistances = [32F, 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F];
                 settings.DefaultRenderPreset = "全效果展示";
                 settings.RenderSettings.ShowGround = true;
                 settings.RenderSettings.GroundColor = new Vector3(.18F, .24F, .30F);

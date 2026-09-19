@@ -82,10 +82,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneNearClip = 0.05F;
     private float _sceneFarClip = 100000F;
     private float _sceneFieldOfView = 50F;
-    private int _editorLodLevels = 4;
-    private int _projectLodLevels = 4;
-    private readonly float[] _editorLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
-    private readonly float[] _projectLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
     private bool _sceneMouseCaptured;
@@ -3040,22 +3036,9 @@ DockId=0x6A3C3007,0
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
         if (ImGui.Button("打开完整设置")) OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
-        if (ImGui.CollapsingHeader("LOD 等级"))
+        if (ImGui.CollapsingHeader("距离 LOD"))
         {
-            ImGui.PushItemWidth(Math.Max(64F, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("第 8 级距离").X - 16F));
-            ImGui.SliderInt("等级数量##editor", ref _editorLodLevels, 1, _editorLodDistances.Length);
-            for (var index = 0; index < _editorLodLevels; index++)
-            {
-                ImGui.SliderFloat($"第 {index + 1} 级距离##editor", ref _editorLodDistances[index], 1F, 16384F, "%.0f");
-            }
-
-            ImGui.SliderInt("等级数量##project", ref _projectLodLevels, 1, _projectLodDistances.Length);
-            for (var index = 0; index < _projectLodLevels; index++)
-            {
-                ImGui.SliderFloat($"第 {index + 1} 级距离##project", ref _projectLodDistances[index], 1F, 16384F, "%.0f");
-            }
-
-            ImGui.PopItemWidth();
+            DrawLodSection(_renderSettings);
         }
 
         ImGui.SeparatorText("场景视图辅助显示");
@@ -3478,8 +3461,6 @@ DockId=0x6A3C3007,0
                         ProjectTemplateCatalog.Populate(project, templateId,
                             (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
                         var projectSettings = SettingsStore.LoadProject(project);
-                        projectSettings.LodLevels = _editorSettings.SceneLodLevels;
-                        projectSettings.LodDistances = _editorSettings.SceneLodDistances.ToArray();
                         projectSettings.ShowGrid = _editorSettings.ShowSceneGrid;
                         projectSettings.ShowVoxelOutlines = _editorSettings.ShowVoxelOutlines;
                         projectSettings.SceneMoveSpeed = _editorSettings.SceneMoveSpeed;

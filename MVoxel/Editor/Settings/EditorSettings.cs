@@ -50,8 +50,6 @@ public sealed class EditorSettingsDocument
     public string Theme = EditorPalette.DefaultThemeName;
     public bool EnableGpuDiagnostics;
     public bool UseHardwareRayTracing;
-    public int SceneLodLevels = 4;
-    public float[] SceneLodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     public bool ShowSceneGrid = true;
     public bool ShowVoxelOutlines = true;
     public float SceneMoveSpeed = 12F;
@@ -117,24 +115,6 @@ public sealed class EditorSettingsDocument
         Theme = string.IsNullOrWhiteSpace(Theme) ? EditorPalette.DefaultThemeName : Theme.Trim();
         UndoRepeatDelayMs = Math.Clamp(UndoRepeatDelayMs, 100, 2000);
         UndoRepeatIntervalMs = Math.Clamp(UndoRepeatIntervalMs, 20, 500);
-        SceneLodDistances ??= Array.Empty<float>();
-        if (SceneLodDistances.Length != 8)
-        {
-            SceneLodDistances = SceneLodDistances
-                .Concat(new[] { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F })
-                .Take(8)
-                .ToArray();
-        }
-
-        SceneLodLevels = Math.Clamp(SceneLodLevels, 1, SceneLodDistances.Length);
-        for (var index = 0; index < SceneLodDistances.Length; index++)
-        {
-            var fallback = index == 0 ? 64F : SceneLodDistances[index - 1] * 2F;
-            SceneLodDistances[index] = float.IsFinite(SceneLodDistances[index])
-                ? Math.Clamp(SceneLodDistances[index], index == 0 ? 1F : SceneLodDistances[index - 1], 16384F)
-                : Math.Clamp(fallback, index == 0 ? 1F : SceneLodDistances[index - 1], 16384F);
-        }
-
         SceneMoveSpeed = float.IsFinite(SceneMoveSpeed) ? Math.Clamp(SceneMoveSpeed, 0.1F, 256F) : 12F;
         SceneNearClip = float.IsFinite(SceneNearClip) ? Math.Clamp(SceneNearClip, 0.001F, 1000F) : 0.05F;
         SceneFarClip = float.IsFinite(SceneFarClip) ? Math.Clamp(SceneFarClip, SceneNearClip + 1F, 100000000F) : 100000F;
@@ -168,8 +148,6 @@ public sealed class ProjectSettingsDocument
     /// <summary>内置模板渲染配置版本，用于把旧示例项目升级到当前效果配置。</summary>
     public int RenderProfileVersion;
     public string TemplateId = "未指定";
-    public int LodLevels = 4;
-    public float[] LodDistances = { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F };
     public bool ShowGrid = true;
     public bool ShowVoxelOutlines = true;
     public string VoxelUnit = "1 格 = 1 体素单位";
@@ -189,24 +167,6 @@ public sealed class ProjectSettingsDocument
     public void Normalize()
     {
         TemplateId = string.IsNullOrWhiteSpace(TemplateId) ? "未指定" : TemplateId.Trim();
-        LodDistances ??= Array.Empty<float>();
-        if (LodDistances.Length != 8)
-        {
-            LodDistances = LodDistances
-                .Concat(new[] { 64F, 128F, 256F, 512F, 1024F, 2048F, 4096F, 8192F })
-                .Take(8)
-                .ToArray();
-        }
-
-        LodLevels = Math.Clamp(LodLevels, 1, LodDistances.Length);
-        for (var index = 0; index < LodDistances.Length; index++)
-        {
-            var fallback = index == 0 ? 64F : LodDistances[index - 1] * 2F;
-            LodDistances[index] = float.IsFinite(LodDistances[index])
-                ? Math.Clamp(LodDistances[index], index == 0 ? 1F : LodDistances[index - 1], 16384F)
-                : Math.Clamp(fallback, index == 0 ? 1F : LodDistances[index - 1], 16384F);
-        }
-
         AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
         VoxelUnit = string.IsNullOrWhiteSpace(VoxelUnit) ? "1 格 = 1 体素单位" : VoxelUnit.Trim();
         DefaultRenderPreset = string.IsNullOrWhiteSpace(DefaultRenderPreset) ? "默认" : DefaultRenderPreset.Trim();
