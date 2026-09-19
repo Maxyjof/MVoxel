@@ -191,14 +191,13 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectSettingsSurface()
     {
-        var categories = new[] { "项目", "场景", "画面", "资产" };
+        var categories = new[] { "项目", "画面", "资产" };
         DrawSettingsSidebar(categories, ref _projectSettingsCategory, "##项目设置分类", () =>
         {
             switch (_projectSettingsCategory)
             {
                 case 0: DrawProjectGeneralSettings(); break;
-                case 1: DrawProjectSceneSettings(); break;
-                case 2: DrawProjectVisualSettings(); break;
+                case 1: DrawProjectVisualSettings(); break;
                 default: DrawProjectAssetSettings(); break;
             }
         });
@@ -714,34 +713,6 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private void DrawProjectSceneSettings()
-    {
-        ImGui.TextColored(ToColor(EditorPalette.Accent), "场景");
-        if (ImGui.BeginTabBar("##ProjectSceneTabs"))
-        {
-            if (ImGui.BeginTabItem("LOD"))
-            {
-                DrawLodSection(_projectSettings.RenderSettings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("辅助显示"))
-            {
-                ImGui.Checkbox("显示网格", ref _showGrid);
-                ImGui.Checkbox("显示体素棱线", ref _showVoxelOutlines);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("网格和轮廓只显示在场景中");
-                ImGui.SeparatorText("场景相机");
-                SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
-                SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
-                SliderFloat("远处裁剪", ref _sceneFarClip, 1F, 100000000F, "%.0f 格");
-                SliderFloat("视场角 FOV", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
-        }
-    }
-
     private void DrawProjectVisualSettings()
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), "画面");
@@ -749,8 +720,19 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("场景画面"))
             {
+                ImGui.SeparatorText("场景辅助显示");
+                ImGui.Checkbox("显示场景网格", ref _showGrid);
+                ImGui.Checkbox("显示体素轮廓", ref _showVoxelOutlines);
+                ImGui.SeparatorText("场景相机");
+                SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
+                SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
+                SliderFloat("远处裁剪", ref _sceneFarClip, 1F, 100000000F, "%.0f 格");
+                SliderFloat("视场角 FOV", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
+                ImGui.SeparatorText("场景背景");
                 DrawColorSlider("场景背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("打开项目后优先使用项目级背景色");
+                ImGui.SeparatorText("场景 LOD");
+                DrawLodSection(_projectSettings.RenderSettings);
                 ImGui.EndTabItem();
             }
 
