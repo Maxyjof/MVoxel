@@ -243,7 +243,7 @@ public sealed class VoxelGpuWorkset
     /// 再沿 Y 扩成板、沿 Z 扩成块；合并盒严格同值且互不重叠，
     /// 最近命中结果与逐格表示逐像素一致
     /// </summary>
-    private static void GreedyMergeChunk((int Key, VoxelValue Value)[] pairs, ChunkCoord64 coordinate,
+    internal static void GreedyMergeChunk((int Key, VoxelValue Value)[] pairs, ChunkCoord64 coordinate,
         VoxelCoord64 minimum, List<VoxelGpuCell> output)
     {
         var lookup = new Dictionary<int, VoxelValue>(pairs.Length);

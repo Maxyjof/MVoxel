@@ -250,7 +250,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (_context is not null && bricks.OccupiedCount > 0)
             {
                 UploadBrickWorkset(bricks);
-                _usingBrickPath = true;
+                // 两级 BVH 与传统路径共用着色器遍历，P_BRICK_MODE 保持 0
+                _usingBrickPath = false;
             }
             else if (_context is not null && _api is { } api && bricks.OccupiedCount == 0 && _voxelBuffer.Handle != 0)
             {
@@ -1602,13 +1603,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec4 envTexels[];
         };
 
-        // Brick 表：每项两个 ivec4，head = (brick 区域最小格 xyz, 占用数)，tail.x = 格池起始下标；
-        // 按区块 64 项连续排布，叶节点的 links.z/w 给出该区块的表区间
-        layout(set = 0, binding = 7, std430) readonly buffer BrickTableBuffer
-        {
-            ivec4 brickTable[];
-        };
-
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal)
         {
@@ -1690,50 +1684,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     continue;
                 if (node.links.x < 0)
                 {
-                    if (values[114] > 0.5) // P_BRICK_MODE：1 = 砖结构两级求交
-                    {
-                        // 砖模式：叶节点是单个区块，先测 64 个 8³ brick 区域盒，
-                        // 命中的 brick 内再对占用格做盒体相交；格坐标与传统路径同空间
-                        int tableStart = node.links.z;
-                        for (int brick = 0; brick < node.links.w; brick++)
-                        {
-                            ivec4 head = brickTable[(tableStart + brick) * 2];
-                            if (head.w == 0) continue;
-                            vec3 brickMin = regionOrigin + vec3(head.xyz);
-                            float brickDistance;
-                            vec3 brickNormal;
-                            if (!IntersectBox(rayOrigin, rayDirection, brickMin, brickMin + vec3(8.0),
-                                    brickDistance, brickNormal) || brickDistance > closestDistance)
-                                continue;
-                            int startIndex = brickTable[(tableStart + brick) * 2 + 1].x;
-                            for (int index = 0; index < head.w; index++)
-                            {
-                                VoxelCell cell = cells[startIndex + index];
-                                ivec3 packedExtent = ivec3(
-                                    max(cell.position.w & 0xFF, 1),
-                                    max((cell.position.w >> 8) & 0xFF, 1),
-                                    max((cell.position.w >> 16) & 0xFF, 1));
-                                vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
-                                vec3 voxelMax = voxelMin + vec3(packedExtent);
-                                float distance;
-                                vec3 normal;
-                                if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
-                                    distance < closestDistance &&
-                                    !(ignoreTranslucent && (cell.metadata.x >> 16 & 1u) != 0u))
-                                {
-                                    closestDistance = distance;
-                                    hitNormal = normal;
-                                    hitColor = cell.color;
-                                    hitFlags = cell.metadata.x >> 16;
-                                    hitSlot = cell.metadata.x & 0xFFFFu;
-                                    hitCell = cell.position.xyz;
-                                    hitExtent = packedExtent;
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
                     int endIndex = min(node.links.z + node.links.w, voxelCount);
                     for (int index = node.links.z; index < endIndex; index++)
                     {
@@ -1760,7 +1710,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitCell = cell.position.xyz;
                             hitExtent = packedExtent;
                         }
-                    }
                     }
                 }
                 else
@@ -2599,21 +2548,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             WriteInt(nodeBytes, offset + 44, node.LinkW);
         }
 
-        var tableBytes = new byte[checked(bricks.BrickTable.Length * 32)];
-        for (var index = 0; index < bricks.BrickTable.Length; index++)
-        {
-            var entry = bricks.BrickTable[index];
-            var offset = index * 32;
-            WriteInt(tableBytes, offset + 0, entry.MinX);
-            WriteInt(tableBytes, offset + 4, entry.MinY);
-            WriteInt(tableBytes, offset + 8, entry.MinZ);
-            WriteInt(tableBytes, offset + 12, entry.Count);
-            WriteInt(tableBytes, offset + 16, entry.CellStart);
-            WriteInt(tableBytes, offset + 20, 0);
-            WriteInt(tableBytes, offset + 24, 0);
-            WriteInt(tableBytes, offset + 28, 0);
-        }
-
+        // 两级 BVH 与传统路径共用同一着色器叶/内节点语义，无需砖表；
+        // 绑定 7 仍在布局中，绑一个最小 dummy 缓冲保证描述符有效
         var cellRequired = checked((ulong)Math.Max(cellBytes.Length, PackedCellSize));
         if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < cellRequired)
         {
@@ -2638,11 +2574,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             _bvhBufferCapacity = NextCapacity(nodeRequired);
         }
 
-        EnsureBrickTableBuffer(bricks.BrickTable.Length);
+        EnsureBrickTableBuffer(1);
 
         UploadStaging(cellBytes, _voxelBuffer);
         UploadStaging(nodeBytes, _bvhBuffer);
-        UploadStaging(tableBytes, _brickTableBuffer);
 
         _bvhNodeCount = bricks.Nodes.Length;
         UpdateComputeDescriptors();

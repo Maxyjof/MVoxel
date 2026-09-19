@@ -4,45 +4,54 @@ using MVoxel.Voxels;
 namespace MVoxel.Rendering;
 
 /// <summary>
-/// 区块粒度 Brick 工作集：GPU 两级求交（粗树 → BrickTable → BrickCells）的 CPU 数据源
-/// 布局契约：BrickTable 与 BrickCells 都按"区块对齐"连续存放，一个区块的内容更新
-/// 只影响它自己的 64 项表项与格区间，不搬动其他区块
-/// 粗树沿用 BvhNode 三 vec4 布局：叶节点 links.x = -1，links.z/w 指向该区块在
-/// BrickTable 中的 64 项连续区间；内部节点 links.x/y 为子节点下标
+/// 区块对齐两级 BVH 工作集：GPU 增量上传与两级求交的 CPU 数据源
+/// 结构为"外层区块树 + 每区块内层格树"：外层叶节点指向所属区块的内层子树根，
+/// 内层叶节点指向格池中的小区间（默认 8 格），彻底取代早期"砖内线性扫描"在密集场景的退化
+/// 布局契约：格池与内层节点都按区块连续分片存放，编辑单个区块只需重建该区块的格片、
+/// 内层子树与外层叶包围盒，不触碰其他区块，为增量上传提供 O(改动) 的写入边界
+/// 节点沿用着色器 BvhNode 三 ivec4 布局：links.x &lt; 0 为格叶（links.z/w = 格起点/数量），
+/// 否则 links.x/y 为子节点下标（外层叶的 links.y = -1，遍历时被守卫跳过）
 /// </summary>
 public sealed class VoxelBrickWorkset
 {
     /// <summary>
+    /// 内层格树叶子容量
+    /// </summary>
+    private const int InnerLeafSize = 8;
+
+    /// <summary>
     /// 空工作集
     /// </summary>
-    public static VoxelBrickWorkset Empty { get; } = new([], [], [], VoxelCoord64.Zero, 0, 0, 0);
+    public static VoxelBrickWorkset Empty { get; } = new(
+        [], [], [], VoxelCoord64.Zero, 0, 0, 0, default);
 
-    private VoxelBrickWorkset(VoxelGpuCell[] cells, BrickEntry[] brickTable, Node[] nodes,
-        VoxelCoord64 anchor, int chunkCount, int occupiedCount, int emissiveCount)
+    private VoxelBrickWorkset(VoxelGpuCell[] cells, Node[] nodes, ChunkSlab[] slabs,
+        VoxelCoord64 anchor, int chunkCount, int occupiedCount, int emissiveCount, VoxelCoord64 size)
     {
         Cells = cells;
-        BrickTable = brickTable;
         Nodes = nodes;
+        Slabs = slabs;
         Anchor = anchor;
         ChunkCount = chunkCount;
         OccupiedCount = occupiedCount;
         EmissiveCount = emissiveCount;
+        Size = size;
     }
 
     /// <summary>
-    /// BrickCells 池：全部占用格，按区块 64 个 brick 连续排布
+    /// 格池：全部合并盒图元，按区块连续分片，坐标相对锚点
     /// </summary>
     public VoxelGpuCell[] Cells { get; }
 
     /// <summary>
-    /// BrickTable：每区块 64 项，项 = brick 区域最小格（相对锚点）+ 占用格数
-    /// </summary>
-    public BrickEntry[] BrickTable { get; }
-
-    /// <summary>
-    /// 区块粒度粗树（BvhNode 布局）
+    /// 两级节点数组（外层树在前，随后是各区块连续内层子树）
     /// </summary>
     public Node[] Nodes { get; }
+
+    /// <summary>
+    /// 每区块的格片与内层子树边界，供增量上传定位写入区间
+    /// </summary>
+    public ChunkSlab[] Slabs { get; }
 
     /// <summary>
     /// 工作集锚点（世界包围盒最小角）
@@ -50,42 +59,54 @@ public sealed class VoxelBrickWorkset
     public VoxelCoord64 Anchor { get; }
 
     /// <summary>
+    /// 工作集包围盒尺寸
+    /// </summary>
+    public VoxelCoord64 Size { get; }
+
+    /// <summary>
     /// 参与渲染的区块数
     /// </summary>
     public int ChunkCount { get; }
 
     /// <summary>
-    /// 占用体素总数
+    /// 合并盒图元总数（等于格池长度）
     /// </summary>
     public int OccupiedCount { get; }
 
     /// <summary>
-    /// 发光体素数量
+    /// 发光图元数量
     /// </summary>
     public int EmissiveCount { get; }
 
     /// <summary>
-    /// BrickTable 项：brick 区域最小格、占用数与格池起始下标
+    /// 单个区块的对齐分片边界
     /// </summary>
-    public readonly record struct BrickEntry(int MinX, int MinY, int MinZ, int Count, int CellStart);
+    /// <param name="Coordinate">区块坐标</param>
+    /// <param name="CellBase">格池起始下标</param>
+    /// <param name="CellCount">格池长度</param>
+    /// <param name="NodeBase">内层子树在节点数组中的起始下标</param>
+    /// <param name="NodeCount">内层子树节点数</param>
+    /// <param name="OuterLeafIndex">外层树中指向该区块内层根的叶节点下标</param>
+    public readonly record struct ChunkSlab(
+        ChunkCoord64 Coordinate, int CellBase, int CellCount, int NodeBase, int NodeCount, int OuterLeafIndex);
 
     /// <summary>
-    /// 粗树节点（与着色器 BvhNode 的三 ivec4 布局对齐）
+    /// 节点（与着色器 BvhNode 三 ivec4 布局对齐）
     /// </summary>
     public readonly record struct Node(
         int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ,
         int LinkX, int LinkY, int LinkZ, int LinkW);
 
     /// <summary>
-    /// 从世界构建 Brick 工作集；空世界返回 Empty。
-    /// 区块按 (Z, Y, X) 稳定序排列，全部输出逐字节确定
+    /// 从世界构建两级 BVH 工作集；空世界返回 Empty。
+    /// 区块按 (Z, Y, X) 稳定序排列，格图元经贪心合并，全部输出逐字节确定
     /// </summary>
     /// <param name="world">源稀疏世界</param>
-    /// <returns>Brick 工作集</returns>
+    /// <returns>两级 BVH 工作集</returns>
     public static VoxelBrickWorkset Build(VoxelWorld world)
     {
         ArgumentNullException.ThrowIfNull(world);
-        if (!world.TryGetBounds(out var minimum, out var maximum))
+        if (!world.TryGetBounds(out var minimum, out _))
         {
             return Empty;
         }
@@ -100,117 +121,225 @@ public sealed class VoxelBrickWorkset
         });
 
         var chunkCount = chunks.Count;
-        var brickTable = new BrickEntry[chunkCount * ChunkBrickSet.BricksPerChunk];
-        var chunkDatas = new ChunkBrickSet.BrickChunkData[chunkCount];
-        var chunkCellStarts = new int[chunkCount];
-        var chunkBoundsMin = new VoxelCoord64[chunkCount];
-        var chunkBoundsMax = new VoxelCoord64[chunkCount];
-        var occupied = 0;
+        var perChunkCells = new VoxelGpuCell[chunkCount][];
+        System.Threading.Tasks.Parallel.For(0, chunkCount,
+            new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            },
+            index =>
+            {
+                var (coordinate, chunk) = chunks[index];
+                var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
+                var pairIndex = 0;
+                foreach (var pair in chunk.Snapshot)
+                {
+                    pairs[pairIndex++] = (pair.Key, pair.Value);
+                }
+
+                Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+                var merged = new List<VoxelGpuCell>(pairs.Length);
+                VoxelGpuWorkset.GreedyMergeChunk(pairs, coordinate, minimum, merged);
+                perChunkCells[index] = merged.ToArray();
+            });
+
+        // 拼接格池并记录每区块格片边界
+        var totalCells = 0;
+        foreach (var cells in perChunkCells) totalCells += cells.Length;
+        var cells_ = new VoxelGpuCell[totalCells];
+        var cellBase = new int[chunkCount];
         var emissive = 0;
+        var cursor = 0;
         for (var index = 0; index < chunkCount; index++)
         {
-            var (coordinate, chunk) = chunks[index];
-            var data = ChunkBrickSet.Build(coordinate, chunk, minimum);
-            chunkDatas[index] = data;
-            chunkCellStarts[index] = occupied;
-            var brickBase = index * ChunkBrickSet.BricksPerChunk;
-            var chunkBase = new VoxelCoord64(
-                coordinate.X * VoxelWorld.ChunkSize,
-                coordinate.Y * VoxelWorld.ChunkSize,
-                coordinate.Z * VoxelWorld.ChunkSize);
-            for (var brick = 0; brick < ChunkBrickSet.BricksPerChunk; brick++)
-            {
-                var origin = ChunkBrickSet.BrickOrigin(brick);
-                brickTable[brickBase + brick] = new BrickEntry(
-                    (int)(chunkBase.X + origin.X - minimum.X),
-                    (int)(chunkBase.Y + origin.Y - minimum.Y),
-                    (int)(chunkBase.Z + origin.Z - minimum.Z),
-                    data.BrickCounts[brick],
-                    occupied + data.BrickStarts[brick]);
-            }
-
-            var occupiedMin = new VoxelCoord64(long.MaxValue, long.MaxValue, long.MaxValue);
-            var occupiedMax = new VoxelCoord64(long.MinValue, long.MinValue, long.MinValue);
-            foreach (var cell in data.Cells)
+            cellBase[index] = cursor;
+            cursor += perChunkCells[index].Length;
+            foreach (var cell in perChunkCells[index])
             {
                 if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissive++;
-                occupiedMin = VoxelCoord64.Zero + new VoxelCoord64(
-                    Math.Min(occupiedMin.X, cell.X), Math.Min(occupiedMin.Y, cell.Y),
-                    Math.Min(occupiedMin.Z, cell.Z));
-                occupiedMax = VoxelCoord64.Zero + new VoxelCoord64(
-                    Math.Max(occupiedMax.X, cell.X), Math.Max(occupiedMax.Y, cell.Y),
-                    Math.Max(occupiedMax.Z, cell.Z));
             }
+        }
 
-            if (data.OccupiedCount == 0)
+        // 每区块内层 BVH（局部索引，叶 start/count 相对区块格片），记录子树规模与包围盒。
+        // 内层叶按 order 指向重排后的格片，因此格池写入采用叶序而非原始合并序
+        var innerSlabs = new List<InnerSlab>(chunkCount);
+        var chunkBoxes = new Box[chunkCount];
+        for (var index = 0; index < chunkCount; index++)
+        {
+            var chunkCells = perChunkCells[index];
+            var items = new Box[chunkCells.Length];
+            for (var cell = 0; cell < chunkCells.Length; cell++)
             {
-                occupiedMin = VoxelCoord64.Zero;
-                occupiedMax = VoxelCoord64.Zero;
+                var value = chunkCells[cell];
+                items[cell] = new Box(value.X, value.Y, value.Z,
+                    value.X + value.ExtentX, value.Y + value.ExtentY, value.Z + value.ExtentZ, cell);
             }
 
-            // data.Cells 已相对锚点：包围盒同样保持相对锚点
-            chunkBoundsMin[index] = occupiedMin;
-            chunkBoundsMax[index] = occupiedMax;
-            occupied += data.OccupiedCount;
+            var (nodes, order) = BuildBvh(items, InnerLeafSize);
+            innerSlabs.Add(new InnerSlab(nodes, order));
+            for (var position = 0; position < order.Length; position++)
+            {
+                cells_[cellBase[index] + position] = chunkCells[order[position]];
+            }
+
+            chunkBoxes[index] = nodes.Count > 0
+                ? new Box(nodes[0].MinX, nodes[0].MinY, nodes[0].MinZ, nodes[0].MaxX, nodes[0].MaxY, nodes[0].MaxZ, index)
+                : new Box(0, 0, 0, 0, 0, 0, index);
         }
 
-        // 拼接 BrickCells：各区块区间绝对连续
-        var cells = new VoxelGpuCell[occupied];
+        // 外层区块树（叶容量 1，每叶对应一个区块）
+        var (outerNodes, outerOrder) = BuildBvh(chunkBoxes, 1);
+        var outerCount = outerNodes.Count;
+
+        // 组装全局节点数组：外层在前，随后各区块内层子树连续排布
+        var globalNodes = new Node[outerCount + innerSlabs.Sum(slab => slab.Nodes.Count)];
+        var nodeBase = new int[chunkCount];
+        var innerBase = outerCount;
         for (var index = 0; index < chunkCount; index++)
         {
-            Array.Copy(chunkDatas[index].Cells, 0, cells, chunkCellStarts[index], chunkDatas[index].Cells.Length);
+            nodeBase[index] = innerBase;
+            innerBase += innerSlabs[index].Nodes.Count;
         }
 
-        var chunkBrickOffsets = new int[chunkCount];
+        var outerLeafToChunk = new int[outerCount];
+        for (var node = 0; node < outerCount; node++)
+        {
+            var source = outerNodes[node];
+            outerLeafToChunk[node] = -1;
+            if (source.Left < 0)
+            {
+                // 外层叶：links.x 指向该区块内层根，links.y = -1 由遍历守卫跳过
+                var chunkIndex = outerOrder[source.Start];
+                outerLeafToChunk[node] = chunkIndex;
+                globalNodes[node] = new Node(source.MinX, source.MinY, source.MinZ,
+                    source.MaxX, source.MaxY, source.MaxZ, nodeBase[chunkIndex], -1, 0, 0);
+            }
+            else
+            {
+                globalNodes[node] = new Node(source.MinX, source.MinY, source.MinZ,
+                    source.MaxX, source.MaxY, source.MaxZ, source.Left, source.Right, 0, 0);
+            }
+        }
+
         for (var index = 0; index < chunkCount; index++)
         {
-            chunkBrickOffsets[index] = index * ChunkBrickSet.BricksPerChunk;
+            var slab = innerSlabs[index];
+            var base_ = nodeBase[index];
+            var cellOffset = cellBase[index];
+            for (var node = 0; node < slab.Nodes.Count; node++)
+            {
+                var source = slab.Nodes[node];
+                if (source.Left < 0)
+                {
+                    globalNodes[base_ + node] = new Node(source.MinX, source.MinY, source.MinZ,
+                        source.MaxX, source.MaxY, source.MaxZ, -1, -1, cellOffset + source.Start, source.Count);
+                }
+                else
+                {
+                    globalNodes[base_ + node] = new Node(source.MinX, source.MinY, source.MinZ,
+                        source.MaxX, source.MaxY, source.MaxZ, base_ + source.Left, base_ + source.Right, 0, 0);
+                }
+            }
         }
 
-        var nodes = new List<Node>(Math.Max(1, chunkCount * 2));
-        BuildTree(chunkBoundsMin, chunkBoundsMax, 0, chunkCount, chunkBrickOffsets, nodes, minimum);
-        return new VoxelBrickWorkset(cells, brickTable, nodes.ToArray(), minimum, chunkCount, occupied, emissive);
+        var slabs = new ChunkSlab[chunkCount];
+        var outerLeafByChunk = new int[chunkCount];
+        for (var node = 0; node < outerCount; node++)
+        {
+            if (outerLeafToChunk[node] >= 0)
+            {
+                outerLeafByChunk[outerLeafToChunk[node]] = node;
+            }
+        }
+
+        for (var index = 0; index < chunkCount; index++)
+        {
+            slabs[index] = new ChunkSlab(chunks[index].Coordinate, cellBase[index], perChunkCells[index].Length,
+                nodeBase[index], innerSlabs[index].Nodes.Count, outerLeafByChunk[index]);
+        }
+
+        world.TryGetBounds(out _, out var maximumBound);
+        var size = new VoxelCoord64(
+            maximumBound.X - minimum.X + 1, maximumBound.Y - minimum.Y + 1, maximumBound.Z - minimum.Z + 1);
+        return new VoxelBrickWorkset(cells_, globalNodes, slabs, minimum, chunkCount, totalCells, emissive, size);
     }
 
     /// <summary>
-    /// 递归构建区块粒度二叉树：按区间中位切分，叶节点 = 单区块
+    /// 轴对齐盒（构建期中间表示，坐标相对锚点，max 为开区间上界）
     /// </summary>
-    private static void BuildTree(VoxelCoord64[] boundsMin, VoxelCoord64[] boundsMax,
-        int start, int end, int[] chunkBrickOffsets, List<Node> nodes, VoxelCoord64 anchor)
+    private readonly record struct Box(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ, int Payload);
+
+    /// <summary>
+    /// 单区块内层子树的中间结果
+    /// </summary>
+    private sealed record InnerSlab(List<BvhNode> Nodes, int[] Order);
+
+    private readonly record struct BvhNode(int MinX, int MinY, int MinZ, int MaxX, int MaxY, int MaxZ,
+        int Left, int Right, int Start, int Count);
+
+    /// <summary>
+    /// 通用空间 BVH：按最长轴中心中位数递归切分，叶容量 leafSize，前序分配节点编号。
+    /// 返回节点列表（局部索引）与叶内负载按遍历顺序的重排数组
+    /// </summary>
+    private static (List<BvhNode> Nodes, int[] Order) BuildBvh(Box[] items, int leafSize)
     {
-        var minX = long.MaxValue; var minY = long.MaxValue; var minZ = long.MaxValue;
-        var maxX = long.MinValue; var maxY = long.MinValue; var maxZ = long.MinValue;
-        for (var index = start; index < end; index++)
+        var nodes = new List<BvhNode>();
+        var order = new int[items.Length];
+        var indices = new int[items.Length];
+        for (var index = 0; index < indices.Length; index++) indices[index] = index;
+        var orderCursor = 0;
+        BuildNode(items, indices, 0, indices.Length, leafSize, nodes, order, ref orderCursor);
+        return (nodes, order);
+    }
+
+    private static void BuildNode(Box[] items, int[] indices, int start, int count, int leafSize,
+        List<BvhNode> nodes, int[] order, ref int orderCursor)
+    {
+        var minX = int.MaxValue; var minY = int.MaxValue; var minZ = int.MaxValue;
+        var maxX = int.MinValue; var maxY = int.MinValue; var maxZ = int.MinValue;
+        for (var index = start; index < start + count; index++)
         {
-            minX = Math.Min(minX, boundsMin[index].X);
-            minY = Math.Min(minY, boundsMin[index].Y);
-            minZ = Math.Min(minZ, boundsMin[index].Z);
-            maxX = Math.Max(maxX, boundsMax[index].X);
-            maxY = Math.Max(maxY, boundsMax[index].Y);
-            maxZ = Math.Max(maxZ, boundsMax[index].Z);
+            var box = items[indices[index]];
+            minX = Math.Min(minX, box.MinX); minY = Math.Min(minY, box.MinY); minZ = Math.Min(minZ, box.MinZ);
+            maxX = Math.Max(maxX, box.MaxX); maxY = Math.Max(maxY, box.MaxY); maxZ = Math.Max(maxZ, box.MaxZ);
         }
 
         var nodeIndex = nodes.Count;
         nodes.Add(default);
-        if (end - start == 1)
+        if (count <= leafSize)
         {
-            // 区块包围盒在 Build 中已相对锚点，这里直接使用
-            nodes[nodeIndex] = new Node(
-                (int)minX, (int)minY, (int)minZ,
-                (int)maxX, (int)maxY, (int)maxZ,
-                -1, -1, chunkBrickOffsets[start], ChunkBrickSet.BricksPerChunk);
+            var leafStart = orderCursor;
+            for (var index = 0; index < count; index++)
+            {
+                order[orderCursor++] = items[indices[start + index]].Payload;
+            }
+
+            nodes[nodeIndex] = new BvhNode(minX, minY, minZ, maxX, maxY, maxZ, -1, -1, leafStart, count);
             return;
         }
 
-        var middle = (start + end) / 2;
-        BuildTree(boundsMin, boundsMax, start, middle, chunkBrickOffsets, nodes, anchor);
-        // 左子树根紧随父节点；右子树根是左子树全部节点之后的下一个分配位
-        var leftChild = nodeIndex + 1;
-        var rightChild = nodes.Count;
-        BuildTree(boundsMin, boundsMax, middle, end, chunkBrickOffsets, nodes, anchor);
-        nodes[nodeIndex] = new Node(
-            (int)minX, (int)minY, (int)minZ,
-            (int)maxX, (int)maxY, (int)maxZ,
-            leftChild, rightChild, -1, -1);
+        var extentX = maxX - minX;
+        var extentY = maxY - minY;
+        var extentZ = maxZ - minZ;
+        var axis = extentX >= extentY && extentX >= extentZ ? 0 : extentY >= extentZ ? 1 : 2;
+        Array.Sort(indices, start, count, Comparer<int>.Create((a, b) =>
+        {
+            var centerA = AxisCenter(items[a], axis);
+            var centerB = AxisCenter(items[b], axis);
+            return centerA != centerB ? centerA.CompareTo(centerB) : a.CompareTo(b);
+        }));
+        var middle = count / 2;
+        var left = nodeIndex + 1;
+        BuildNode(items, indices, start, middle, leafSize, nodes, order, ref orderCursor);
+        var right = nodes.Count;
+        BuildNode(items, indices, start + middle, count - middle, leafSize, nodes, order, ref orderCursor);
+        nodes[nodeIndex] = new BvhNode(minX, minY, minZ, maxX, maxY, maxZ, left, right, 0, 0);
     }
+
+    private static int AxisCenter(Box box, int axis) => axis switch
+    {
+        0 => box.MinX + box.MaxX,
+        1 => box.MinY + box.MaxY,
+        _ => box.MinZ + box.MaxZ,
+    };
 }
