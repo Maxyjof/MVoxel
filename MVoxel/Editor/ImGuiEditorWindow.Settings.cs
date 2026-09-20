@@ -412,7 +412,9 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("撤回"))
             {
                 var changed = false;
+                SetSettingsSliderWidth();
                 changed |= ImGui.SliderInt("开始持续撤回延迟（毫秒）", ref _editorSettings.UndoRepeatDelayMs, 100, 2000);
+                SetSettingsSliderWidth();
                 changed |= ImGui.SliderInt("持续撤回间隔（毫秒）", ref _editorSettings.UndoRepeatIntervalMs, 20, 500);
                 _editorSettings.Normalize();
                 ImGui.TextDisabled($"当前速度：{1000F / _editorSettings.UndoRepeatIntervalMs:0.0} 次/秒");
@@ -763,7 +765,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (ImGui.BeginTabItem("字体"))
             {
-                ImGui.SliderFloat("界面缩放", ref _editorSettings.UiScale, 0.75F, 2F, "%.2fx");
+                SliderFloat("界面缩放", ref _editorSettings.UiScale, 0.75F, 2F, "%.2fx");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("按 DPI 使用整数倍字体缩放，降低文字发虚");
                 ImGui.EndTabItem();
             }
@@ -799,6 +801,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         DrawSettingsPageHeader("性能", "控制编辑器工作方式与诊断，不直接改变体素数据");
         DrawSettingsSectionHeader("导出队列", "预留并行度上限，当前 GPU 管线仍按单任务安全执行");
+        SetSettingsSliderWidth();
         if (ImGui.SliderInt("同时执行的导出数", ref _editorSettings.ExportParallelism, 1, 4))
         {
             _editorSettings.Normalize();
@@ -865,6 +868,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.BeginTabItem("自动保存"))
             {
                 ImGui.Checkbox("启用自动保存", ref _projectSettings.AutoSave);
+                SetSettingsSliderWidth();
                 ImGui.SliderInt("间隔（秒）", ref _projectSettings.AutoSaveSeconds, 10, 3600);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按此间隔自动保存");
                 ImGui.EndTabItem();

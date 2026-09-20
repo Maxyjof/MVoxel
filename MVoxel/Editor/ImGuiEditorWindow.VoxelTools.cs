@@ -1376,6 +1376,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!follow)
         {
             var value = current ?? (minimum + maximum) * 0.5F;
+            SetSettingsSliderWidth();
             if (ImGui.SliderFloat(sliderLabel, ref value, minimum, maximum)) apply(value);
         }
     }
@@ -1996,7 +1997,7 @@ internal sealed partial class ImGuiEditorWindow
         for (var index = 0; index < Math.Max(lod.LevelCount - 1, 0); index++)
         {
             var value = index < lod.Distances.Length ? lod.Distances[index] : 64F * (index + 1);
-            ImGui.SetNextItemWidth(-1F);
+            SetSettingsSliderWidth();
             if (ImGui.DragFloat($"{label}第 {index + 1} 级起始距离##lodDist{label}{index}", ref value,
                     1F, VoxelLodSettings.MinimumDistance, 100_000F, "%.0f 格"))
             {
@@ -2011,20 +2012,32 @@ internal sealed partial class ImGuiEditorWindow
 
     private static void SliderFloat(string label, ref float value, float minimum, float maximum, string format)
     {
-        ImGui.SetNextItemWidth(-1F);
+        SetSettingsSliderWidth();
         ImGui.SliderFloat(label, ref value, minimum, maximum, format);
     }
 
     private static void SliderInt(string label, ref int value, int minimum, int maximum)
     {
-        ImGui.SetNextItemWidth(-1F);
+        SetSettingsSliderWidth();
         ImGui.SliderInt(label, ref value, minimum, maximum);
     }
 
     private static void SliderInt(string label, ref int value, int minimum, int maximum, string format)
     {
-        ImGui.SetNextItemWidth(-1F);
+        SetSettingsSliderWidth();
         ImGui.SliderInt(label, ref value, minimum, maximum, format);
+    }
+
+    /// <summary>
+    /// 为配置面板中的滑动条保留右侧安全边距，避免控件铺满整行后裁掉同一行的内容。
+    /// 面板较宽时限制最大宽度，面板较窄时仍会随容器收缩。
+    /// </summary>
+    private static void SetSettingsSliderWidth()
+    {
+        const float maxWidth = 320F;
+        const float rightMargin = 16F;
+        var available = MathF.Max(120F, ImGui.GetContentRegionAvail().X - rightMargin);
+        ImGui.SetNextItemWidth(MathF.Min(maxWidth, available));
     }
 
     private static void Toggle(string label, ref bool storage, Action<bool> apply)
