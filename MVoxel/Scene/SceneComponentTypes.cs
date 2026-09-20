@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using MVoxel.Core;
 
 namespace MVoxel.Scene;
@@ -125,26 +124,18 @@ public static class SceneComponentTypes
     }
 
     /// <summary>
-    /// 序列化相机组件数据：渲染配置覆盖以 JSON 字符串承载，落盘时还原为内嵌对象
+    /// 序列化相机组件数据。渲染参数统一由项目配置提供，相机只保存摄影参数与图层遮罩。
     /// </summary>
     private static JsonElement SerializeCameraData(CameraComponentData data)
     {
         var normalized = data.Normalize();
-        var root = JsonSerializer.SerializeToNode(normalized, JsonOptions)!.AsObject();
-        root.Remove("renderOverrideJson");
-        if (normalized.RenderOverrideJson is { Length: > 0 } overrideJson)
+        return JsonSerializer.SerializeToElement(new
         {
-            try
-            {
-                root["renderOverride"] = JsonNode.Parse(overrideJson);
-            }
-            catch (JsonException)
-            {
-                // 覆盖内容非法时直接丢弃，相机回退继承项目配置
-            }
-        }
-
-        return JsonSerializer.Deserialize<JsonElement>(root.ToJsonString());
+            fieldOfViewDegrees = normalized.FieldOfViewDegrees,
+            nearClip = normalized.NearClip,
+            farClip = normalized.FarClip,
+            cullingMask = normalized.CullingMask,
+        }, JsonOptions);
     }
 
     public static string GetDisplayName(ComponentRecord component) =>
@@ -181,17 +172,10 @@ public static class SceneComponentTypes
             }
         }
 
-        string? renderOverride = null;
-        if (data.TryGetProperty("renderOverride", out var overrideElement) &&
-            overrideElement.ValueKind == JsonValueKind.Object)
-        {
-            renderOverride = overrideElement.GetRawText();
-        }
-
         return new CameraComponentData(
             ReadFloat(data, "fieldOfViewDegrees", CameraComponentData.Default.FieldOfViewDegrees),
             ReadFloat(data, "nearClip", CameraComponentData.Default.NearClip),
-            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask, renderOverride).Normalize();
+            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask).Normalize();
     }
 
     /// <summary>
@@ -290,8 +274,7 @@ public readonly record struct CameraComponentData(
     float FieldOfViewDegrees,
     float NearClip,
     float FarClip,
-    uint CullingMask,
-    string? RenderOverrideJson = null)
+    uint CullingMask)
 {
     /// <summary>
     /// 默认相机摄影参数：全图层遮罩
@@ -308,6 +291,6 @@ public readonly record struct CameraComponentData(
         var far = Math.Clamp(float.IsFinite(FarClip) ? FarClip : Default.FarClip, near + 0.001F, 100_000_000F);
         var fov = Math.Clamp(float.IsFinite(FieldOfViewDegrees) ? FieldOfViewDegrees : Default.FieldOfViewDegrees,
             20F, 120F);
-        return new CameraComponentData(fov, near, far, CullingMask, RenderOverrideJson);
+        return new CameraComponentData(fov, near, far, CullingMask);
     }
 }

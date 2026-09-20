@@ -193,7 +193,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         // 导航和绘制必须从同一个有效相机快照开始。这里不能直接读取相机组件，
-        // 因为渲染窗口的 FOV 可能由当前相机的渲染配置覆盖。
+        // 因为渲染窗口的 FOV 由项目渲染配置统一提供。
         var camera = GetRenderViewCamera();
         var capsLockMode = IsCapsLockEnabled();
         if (capsLockMode)

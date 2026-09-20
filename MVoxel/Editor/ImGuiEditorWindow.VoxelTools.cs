@@ -338,67 +338,31 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 解析相机的生效渲染配置：相机携带独立覆盖时用覆盖副本，否则继承项目渲染配置
+    /// 解析当前渲染配置。渲染参数只来自编辑器默认配置或当前项目配置，
+    /// 相机对象不再拥有独立覆盖。
     /// </summary>
     /// <param name="cameraObject">相机对象，可为空</param>
     /// <returns>生效渲染配置</returns>
-    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject)
-    {
-        var component = cameraObject?.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
-        if (component is null || SceneComponentTypes.ReadCamera(component).RenderOverrideJson is not { Length: > 0 } json)
-        {
-            return _renderSettings;
-        }
-
-        try
-        {
-            return RenderSettings.FromJson(json);
-        }
-        catch (Exception exception) when (exception is InvalidDataException or JsonException)
-        {
-            SetStatus("相机渲染覆盖内容非法，已回退项目渲染配置");
-            return _renderSettings;
-        }
-    }
+    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject) => _renderSettings;
 
     /// <summary>
-    /// 返回渲染窗口右侧面板应该编辑的配置。相机存在覆盖时，面板必须编辑覆盖副本，
-    /// 否则用户修改项目配置不会影响当前正在渲染的相机。
+    /// 返回渲染窗口右侧面板应该编辑的项目配置。
     /// </summary>
-    private RenderSettings GetEditableRenderSettings(out SceneObject? cameraObject,
-        out ComponentRecord? cameraComponent, out CameraComponentData? cameraData)
-    {
-        cameraObject = GetActiveRenderCameraObject();
-        cameraComponent = cameraObject?.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
-        cameraData = cameraComponent is null ? null : SceneComponentTypes.ReadCamera(cameraComponent);
-        var hasOverride = cameraData?.RenderOverrideJson is { Length: > 0 };
-        var settings = ResolveRenderSettings(cameraObject);
-        if (hasOverride)
-        {
-            SyncSettingsToggles(settings);
-        }
-
-        return settings;
-    }
+    private RenderSettings GetEditableRenderSettings() => _renderSettings;
 
     /// <summary>
-    /// 把右侧面板对当前相机覆盖的修改写回场景文档。
+    /// 确认右侧面板对项目配置的修改，并重置渲染累积。
     /// </summary>
-    private void SaveEditableRenderSettings(SceneObject? cameraObject, ComponentRecord? cameraComponent,
-        CameraComponentData? cameraData, RenderSettings settings, string before)
+    private void SaveEditableRenderSettings(RenderSettings settings, string before)
     {
-        if (cameraObject is null || cameraComponent is null || cameraData?.RenderOverrideJson is not { Length: > 0 } ||
-            string.Equals(before, settings.ToJson(), StringComparison.Ordinal))
+        if (string.Equals(before, settings.ToJson(), StringComparison.Ordinal))
         {
             return;
         }
 
         settings.ClampAll();
-        SceneComponentTypes.WriteCamera(cameraComponent, cameraData.Value with
-        {
-            RenderOverrideJson = settings.ToJson(),
-        });
-        MarkSceneDocumentDirty();
+        _renderSettings = settings;
+        SyncSettingsToggles(settings);
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
     }
@@ -921,8 +885,8 @@ internal sealed partial class ImGuiEditorWindow
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
                               pipeline.DisplayTextureId == IntPtr.Zero;
-            // 是否采样只由当前生效的相机/项目配置决定，不能读取全局 UI 开关；
-            // 否则相机覆盖开启路径追踪时会错误地只 Present 旧图。
+            // 是否采样只由当前项目配置决定，不能读取全局 UI 开关；
+            // 首帧和路径追踪状态都必须直接驱动当前渲染提交。
             var wantTrace = (firstSubmit || effective.PathTracingEnabled) &&
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
@@ -1693,14 +1657,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawRenderSettingsPanel()
     {
-        var settings = GetEditableRenderSettings(out var cameraObject, out var cameraComponent,
-            out var cameraData);
+        var settings = GetEditableRenderSettings();
         var before = settings.ToJson();
-        var hasCameraOverride = cameraData?.RenderOverrideJson is { Length: > 0 };
-        if (hasCameraOverride)
-        {
-            ImGui.TextColored(ToColor(EditorPalette.Accent), $"当前编辑：{cameraObject?.Name ?? "相机"} 的独立渲染配置");
-        }
 
         if (_pipeline is not { IsAvailable: true })
         {
@@ -1714,28 +1672,16 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Button("恢复默认参数", new Vector2(138F, 30F)))
         {
             var defaults = new RenderSettings();
-            if (hasCameraOverride && cameraComponent is not null && cameraData is { } overrideData)
-            {
-                settings = defaults;
-                SceneComponentTypes.WriteCamera(cameraComponent, overrideData with
-                {
-                    RenderOverrideJson = defaults.ToJson(),
-                });
-                MarkSceneDocumentDirty();
-            }
+            if (_project is null)
+                _editorSettings.RenderViewSettings = defaults;
             else
             {
-                if (_project is null)
-                    _editorSettings.RenderViewSettings = defaults;
-                else
-                {
-                    _projectSettings.RenderSettings = defaults;
-                    _projectSettings.DefaultRenderPreset = "默认";
-                }
-
-                _renderSettings = defaults;
-                settings = defaults;
+                _projectSettings.RenderSettings = defaults;
+                _projectSettings.DefaultRenderPreset = "默认";
             }
+
+            _renderSettings = defaults;
+            settings = defaults;
 
             SyncSettingsToggles(settings);
             _pipeline?.ResetAccumulation();
@@ -1765,7 +1711,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("material", "全局材质", "GGX、金属度、透明与自发光", () => DrawGlobalMaterialSection(settings));
         DrawRenderSettingsAccordion("camera", "相机", "视场角、景深与对焦", () => DrawCameraSection(settings));
         DrawRenderSettingsAccordion("lod", "LOD", "场景窗口与渲染窗口的距离细节", () => DrawLodSection(settings));
-        SaveEditableRenderSettings(cameraObject, cameraComponent, cameraData, settings, before);
+        SaveEditableRenderSettings(settings, before);
     }
 
     /// <summary>

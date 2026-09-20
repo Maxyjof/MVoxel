@@ -2176,7 +2176,7 @@ DockId=0x6A3C3007,0
         ImGui.EndDisabled();
         if (canExport && ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("为每个相机对象各出一张图：相机有独立渲染配置时用其覆盖，否则用导出配置；按各相机图层遮罩分别重组渲染世界");
+            ImGui.SetTooltip("为每个相机对象各出一张图：统一使用项目渲染配置，并按各相机的视角、视场角和图层遮罩分别重组渲染世界");
         }
         if (!canExport && ImGui.IsItemHovered())
         {
@@ -2226,7 +2226,7 @@ DockId=0x6A3C3007,0
 
     /// <summary>
     /// 批量出图：为场景中每个相机对象各排一个导出任务，
-    /// 相机带独立渲染配置用其覆盖，否则用导出配置；按各自图层遮罩重组渲染世界
+    /// 所有相机统一使用项目导出配置，并按各自图层遮罩重组渲染世界
     /// </summary>
     private void ExportAllCamerasPng()
     {
@@ -2254,9 +2254,7 @@ DockId=0x6A3C3007,0
         {
             var component = cameraObject.Components.First(SceneComponentTypes.IsCamera);
             var cameraData = SceneComponentTypes.ReadCamera(component);
-            var settings = cameraData.RenderOverrideJson is { Length: > 0 } json
-                ? RenderSettings.FromJson(json)
-                : baseSettings.CloneForExport();
+            var settings = baseSettings.CloneForExport();
             settings.CameraFovDegrees = cameraData.FieldOfViewDegrees;
             var fileName = $"渲染-{SanitizeFileName(cameraObject.Name)}-{stamp}-{++_exportSequence:000}.png";
             _exportQueue.Enqueue(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
@@ -2386,7 +2384,7 @@ DockId=0x6A3C3007,0
         }
 
         // 检查器内容必须由外层统一滚动。组件自身不能用固定高度裁剪，
-        // 否则相机的图层、独立渲染配置等字段会在展开状态下直接消失。
+        // 否则相机的图层等字段会在展开状态下直接消失。
         if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None))
         {
             ImGui.EndChild();
@@ -2939,39 +2937,9 @@ DockId=0x6A3C3007,0
                 ImGui.EndCombo();
             }
 
-            var hasOverride = data.RenderOverrideJson is { Length: > 0 };
-            var wantOverride = hasOverride;
-            if (ImGui.Checkbox("该相机使用独立渲染配置", ref wantOverride))
-            {
-                SceneComponentTypes.WriteCamera(component, new CameraComponentData(
-                    fieldOfView, nearClip, farClip, mask, wantOverride ? _renderSettings.ToJson() : null));
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-                _accumulationSignature = string.Empty;
-                changed = false;
-            }
-
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip("勾选后以当前项目渲染配置生成该相机的独立副本；渲染视图与批量出图优先使用相机自己的配置。");
-            }
-
-            if (wantOverride)
-            {
-                ImGui.SameLine();
-                if (ImGui.SmallButton("用当前项目配置刷新"))
-                {
-                    SceneComponentTypes.WriteCamera(component, new CameraComponentData(
-                        fieldOfView, nearClip, farClip, mask, _renderSettings.ToJson()));
-                    MarkSceneDocumentDirty();
-                    _pipeline?.ResetAccumulation();
-                    _accumulationSignature = string.Empty;
-                }
-            }
-
             if (changed)
             {
-                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask, data.RenderOverrideJson));
+                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask));
                 MarkSceneDocumentDirty();
             }
             return;
