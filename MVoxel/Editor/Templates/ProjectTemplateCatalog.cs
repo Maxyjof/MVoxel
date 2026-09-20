@@ -140,11 +140,9 @@ public static class ProjectTemplateCatalog
             WriteMaterials(project, id);
             WriteProjectPalette(project);
             WriteRenderPreset(project, settings);
-            var modelPath = Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
             if (id == ProjectTemplateId.MinecraftValley)
             {
                 var terrain = TemplateScenes.BuildValleyTerrain();
-                LargeWorldFormat.Write(modelPath, terrain);
                 var trees = TemplateScenes.BuildValleyTrees(terrain);
                 var modelParts = WriteTemplateModelParts(project, id, terrain);
                 for (var index = 0; index < trees.Count; index++)
@@ -156,7 +154,7 @@ public static class ProjectTemplateCatalog
                         GetWorldOrigin(trees[index])));
                 }
 
-                WriteScene(project, Get(id), terrain.OccupiedVoxelCount, "Assets/Worlds/主世界.mvmodel",
+                WriteScene(project, Get(id), terrain.OccupiedVoxelCount, "Assets/Worlds/山谷分层模型.mvmodel",
                     modelParts: modelParts, framingWorld: terrain);
             }
             else if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
@@ -172,10 +170,9 @@ public static class ProjectTemplateCatalog
             else
             {
                 var world = BuildWorld(id, VoxelPalette.Build());
-                LargeWorldFormat.Write(modelPath, world);
                 var modelParts = WriteTemplateModelParts(project, id, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
-                    $"Assets/Worlds/{Path.GetFileName(modelPath)}",
+                    "Assets/Worlds/分层模型.mvmodel",
                     cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1,
                     modelParts: modelParts,
                     framingWorld: world);
@@ -585,14 +582,28 @@ public static class ProjectTemplateCatalog
     {
         var result = new List<SceneModelPart>();
         var prefix = id == ProjectTemplateId.Showcase ? "小屋与花园" : Get(id).Name;
+        long totalVoxels = 0;
         foreach (var (name, part, partWorld) in TemplateScenes.BuildParts(id, world))
         {
+            if (partWorld.OccupiedVoxelCount == 0) continue;
             var fileName = $"{prefix}_{name}.mvmodel";
             var path = Path.Combine(project.AssetsPath, "Worlds", fileName);
             LargeWorldFormat.Write(path, partWorld);
+            totalVoxels += partWorld.OccupiedVoxelCount;
             result.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
                 partWorld.OccupiedVoxelCount, GetWorldOrigin(partWorld)));
         }
+
+        // 模板的层级必须是真正的分件，而不是写出一个完整模型再复制多个对象。
+        // 这里在生成阶段硬失败，避免以后新增模板时悄悄退化成单体引用。
+        if (result.Count < 2)
+            throw new InvalidOperationException($"模板 {id} 未生成至少两个独立模型层");
+        if (totalVoxels != world.OccupiedVoxelCount)
+            throw new InvalidOperationException(
+                $"模板 {id} 的分件体素数量不守恒：分件 {totalVoxels:N0}，原世界 {world.OccupiedVoxelCount:N0}");
+        if (result.Select(item => item.ModelAssetPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != result.Count)
+            throw new InvalidOperationException($"模板 {id} 生成了重复的模型资产路径");
 
         return result;
     }

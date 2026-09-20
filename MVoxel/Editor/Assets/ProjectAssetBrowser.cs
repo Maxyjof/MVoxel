@@ -184,10 +184,11 @@ internal sealed class ProjectAssetBrowser
         if (children.Count == 0) flags |= ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen;
 
         var opened = ImGui.TreeNodeEx($"{displayName}##资源树-{relativePath}", flags);
-        if (ImGui.IsItemClicked())
+        // TreeNodeEx 返回后必须立即读取当前行的点击状态。树节点后续绘制会改写
+        // ImGui 的 last-item；同时明确限定左键，避免首帧或右键菜单状态吞掉导航点击。
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
         {
-            _selectedFolder = relativePath;
-            _selectedAsset = string.Empty;
+            ActivateFolder(relativePath);
         }
 
         if (children.Count == 0 || !opened) return;
@@ -244,10 +245,11 @@ internal sealed class ProjectAssetBrowser
                 reportStatus($"已选择{ProjectAssetCatalog.KindLabel(entry.Kind)}：{entry.DisplayName}");
             }
 
-            if (entry.IsFolder && doubleClicked)
+            // 文件夹是导航项，不要求用户先选中再双击。单击立即进入，双击自然保持
+            // 幂等；这也修复了编辑器刚打开时第一次点击只留下选中态、没有切换目录的问题。
+            if (entry.IsFolder && activated)
             {
-                _selectedFolder = entry.RelativePath;
-                _selectedAsset = string.Empty;
+                ActivateFolder(entry.RelativePath);
                 reportStatus($"已打开文件夹：{entry.DisplayName}");
             }
             else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
@@ -625,6 +627,15 @@ internal sealed class ProjectAssetBrowser
             .OrderByDescending(entry => entry.IsFolder)
             .ThenBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// 统一处理目录导航，避免树节点、资产卡片和右键菜单各自维护一套状态。
+    /// </summary>
+    private void ActivateFolder(string relativePath)
+    {
+        _selectedFolder = relativePath.Replace('\\', '/').Trim('/');
+        _selectedAsset = string.Empty;
     }
 
     private void DrawFooter(ProjectHandle? project)
