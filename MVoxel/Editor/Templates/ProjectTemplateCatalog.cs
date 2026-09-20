@@ -348,7 +348,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.RadianceClamp = 24F;
                 settings.RenderSettings.MaxBounces = 8;
                 settings.RenderSettings.PathDenoising = true;
-                settings.RenderSettings.PathDenoiseStrength = .32F;
+                settings.RenderSettings.PathDenoiseStrength = .68F;
                 settings.RenderSettings.EmissiveIntensity = 18F;
                 settings.RenderSettings.TransmissiveAbsorption = .35F;
                 settings.RenderSettings.DirectLightingMIS = true;
@@ -369,7 +369,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Tone = ToneCurve.Reinhard;
                 settings.RenderSettings.Exposure = .15F;
                 settings.RenderSettings.PathDenoising = true;
-                settings.RenderSettings.PathDenoiseStrength = .24F;
+                settings.RenderSettings.PathDenoiseStrength = .62F;
                 settings.RenderSettings.EmissiveIntensity = 14F;
                 settings.RenderSettings.TransmissiveAbsorption = .6F;
                 break;
@@ -392,7 +392,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathSpecularF0 = .08F;
                 settings.RenderSettings.TransmissiveAbsorption = .42F;
                 settings.RenderSettings.EmissiveIntensity = 22F;
-                settings.RenderSettings.PathDenoiseStrength = .26F;
+                settings.RenderSettings.PathDenoiseStrength = .65F;
                 break;
             case ProjectTemplateId.PaletteWorkshop:
                 settings.DefaultRenderPreset = "调色板材质展示";
@@ -418,7 +418,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.SkyAmbient = .52F;
                 settings.RenderSettings.Tone = ToneCurve.Filmic;
                 settings.RenderSettings.Exposure = -.15F;
-                settings.RenderSettings.PathDenoiseStrength = .25F;
+                settings.RenderSettings.PathDenoiseStrength = .64F;
                 settings.RenderSettings.TransmissiveAbsorption = .4F;
                 break;
             case ProjectTemplateId.Architecture:
@@ -435,7 +435,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathRoughness = .24F;
                 settings.RenderSettings.PathMetalness = .08F;
                 settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
-                settings.RenderSettings.PathDenoiseStrength = .27F;
+                settings.RenderSettings.PathDenoiseStrength = .66F;
                 settings.RenderSettings.TransmissiveAbsorption = .5F;
                 break;
             case ProjectTemplateId.CameraGallery:
@@ -447,7 +447,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.ApertureRadius = .06F;
                 settings.RenderSettings.FocusDistance = 24F;
                 settings.RenderSettings.Tone = ToneCurve.Reinhard;
-                settings.RenderSettings.PathDenoiseStrength = .3F;
+                settings.RenderSettings.PathDenoiseStrength = .68F;
                 settings.RenderSettings.EmissiveIntensity = 16F;
                 break;
             case ProjectTemplateId.LargeWorld:
@@ -475,7 +475,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathMaxAccumulatedSamples = 768;
                 settings.RenderSettings.MaxBounces = 7;
                 settings.RenderSettings.PathDenoising = true;
-                settings.RenderSettings.PathDenoiseStrength = .28F;
+                settings.RenderSettings.PathDenoiseStrength = .68F;
                 settings.RenderSettings.EmissiveVoxels = true;
                 settings.RenderSettings.EmissiveIntensity = 20F;
                 settings.RenderSettings.TransmissiveAbsorption = .28F;
@@ -503,7 +503,7 @@ public static class ProjectTemplateCatalog
                 break;
         }
 
-        settings.RenderProfileVersion = 1;
+        settings.RenderProfileVersion = 2;
         settings.Normalize();
         return settings;
     }

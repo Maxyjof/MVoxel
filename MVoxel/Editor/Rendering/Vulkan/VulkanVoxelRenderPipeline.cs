@@ -919,6 +919,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         // 每个分块仍是独立一次提交，单块 GPU 时长不变；提交走环形队列，
         // CPU 录完即走，只有环满需要复用槽位时才等待对应栅栏。
         const int tileSize = 128;
+        bool realtimePost = !pathMode && !frameState.ShowOutlines;
+        bool bloomActive = settings.BloomEnabled && settings.BloomIntensity > 0F &&
+                           (pathMode || realtimePost);
         for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
         {
             var tileHeight = Math.Min(tileSize, heightPixels - tileY);
@@ -931,7 +934,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
-                if (pathMode)
+                if (pathMode || bloomActive)
                 {
                     TransitionAccumulationToGeneral(commandBuffer);
                 }
@@ -947,10 +950,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
         }
 
-        // 收尾通道必须在整帧累积完成后执行。独立的最终通道读取稳定的累积图像，
-        // 避免在采样阶段读写邻居造成竞态。Bloom 合成通道在降噪开启时一并完成降噪。
-        bool bloomActive = pathMode && settings.BloomEnabled && settings.BloomIntensity > 0F;
-        if (bloomActive || (pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F))
+        // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
+        // 实时模式也可以使用 Bloom，但不执行路径专用降噪。
+        bool denoiseActive = pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F;
+        if (bloomActive || denoiseActive)
         {
             void DispatchFinalPass(int modeSlot, float modeValue)
             {
@@ -961,6 +964,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
+                if (pathMode || bloomActive)
+                {
+                    // 最终降噪/Bloom 读取整张累积图，必须显式等待前面所有分块的写入。
+                    TransitionAccumulationToGeneral(commandBuffer);
+                }
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
                 var descriptorSet = _ringSets[slot];
                 api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
@@ -976,7 +984,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             {
                 DispatchFinalPass(VoxelRenderParameters.BloomPass, 1F);
             }
-            else
+            else if (denoiseActive)
             {
                 DispatchFinalPass(VoxelRenderParameters.DenoisePass, 1F);
             }
@@ -1177,30 +1185,29 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 把路径追踪累积图像转换为 Compute 可读写布局
+    /// 把累积图像转换为 Compute 可读写布局，并建立分块之间的写后读屏障。
     /// </summary>
     /// <param name="commandBuffer">当前命令缓冲</param>
     private void TransitionAccumulationToGeneral(CommandBuffer commandBuffer)
     {
-        if (_accumulationInitialized)
-        {
-            return;
-        }
-
         var api = _api!;
+        var initialized = _accumulationInitialized;
         ImageMemoryBarrier barrier = new()
         {
             SType = StructureType.ImageMemoryBarrier,
-            OldLayout = ImageLayout.Undefined,
+            OldLayout = initialized ? ImageLayout.General : ImageLayout.Undefined,
             NewLayout = ImageLayout.General,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = _accumulationImage,
             SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
-            SrcAccessMask = 0,
+            SrcAccessMask = initialized
+                ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit
+                : 0,
             DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
         };
-        api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TopOfPipeBit,
+        api.CmdPipelineBarrier(commandBuffer,
+            initialized ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit : PipelineStageFlags.TopOfPipeBit,
             PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in barrier);
         _accumulationInitialized = true;
     }
@@ -1868,6 +1875,48 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return groundColor;
         }
 
+        // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
+        // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
+        vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
+            vec4 hitColor, uint hitFlags, MaterialSlotData material, inout uint state)
+        {
+            vec3 baseColor = max(hitColor.rgb, vec3(0.0));
+            vec3 skyAmbient = Sky(hitNormal) * (0.45 + values[43] * 0.35);
+            vec3 diffuse = baseColor * skyAmbient;
+            vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
+            vec3 lightDirection = normalize(-sunDirection);
+            float directAmount = max(dot(hitNormal, lightDirection), 0.0);
+            if (values[33] > 0.5 && directAmount > 0.0)
+            {
+                float blocked = values[31] > 0.0001
+                    ? (TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state) ? 1.0 : 0.0)
+                    : (TraceShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0) ? 1.0 : 0.0);
+                diffuse += baseColor * vec3(values[28], values[29], values[30]) *
+                    values[27] * directAmount * (1.0 - blocked);
+            }
+
+            float ao = AmbientOcclusion(hitPoint, hitNormal, state);
+            diffuse *= ao;
+            float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
+            float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
+            float f0 = clamp(material.scalars.y >= 0.0
+                ? mix(values[75], 0.92, material.scalars.y) : values[75], 0.0, 0.98);
+            vec3 viewDirection = normalize(-rayDirection);
+            vec3 halfDirection = normalize(lightDirection + viewDirection);
+            float specular = pow(max(dot(hitNormal, halfDirection), 0.0),
+                mix(12.0, 192.0, 1.0 - roughness));
+            float fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(viewDirection, hitNormal), 0.0), 5.0);
+            vec3 highlight = vec3(specular * fresnel * directAmount * values[27]) *
+                vec3(values[28], values[29], values[30]);
+            vec3 result = mix(diffuse, diffuse * baseColor, metallic) + highlight;
+            if ((hitFlags & 2u) != 0u)
+            {
+                float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
+                result += baseColor * values[80] * emissiveScale;
+            }
+            return max(result, vec3(0.0));
+        }
+
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
             out bool primarySurfaceHit)
         {
@@ -1945,10 +1994,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
                 hasPendingInterface = false;
                 if (bounce == 0) primarySurfaceHit = true;
-                if (!pathMode)
+                MaterialSlotData material = materialSlots[int(hitSlot) % 64];
+                if (!pathMode && values[57] < 0.5)
                 {
-                    // 描边距离按命中盒体的局部坐标计算：合并大块只在块边缘描边，
-                    // 块内部不再出现单位体素网格线
+                    // 场景视图保留清晰的原色与体素描边；渲染视图关闭描边时走完整实时光照。
                     vec3 outlineBoxMin = vec3(values[16], values[17], values[18]) + vec3(hitCell);
                     vec3 outlineExtent = vec3(hitExtent);
                     vec3 localPoint = clamp(hitPoint - outlineBoxMin, vec3(0.0), outlineExtent);
@@ -1961,14 +2010,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     else
                         edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.y, remainPoint.y));
                     float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
-                    float outlineAmount = values[57] > 0.5
-                        ? 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance)
-                        : 0.0;
+                    float outlineAmount = 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance);
                     vec3 faceColor = hitColor.rgb;
                     if (values[113] > 0.5)
                     {
-                        // 场景视图立体着色：顶面最亮、迎太阳面次之、背光面保留天空环境项，
-                        // 让纯色方块具备体积可读性而不引入路径追踪成本
                         vec3 sceneSun = normalize(vec3(values[24], values[25], values[26]));
                         float sunFace = max(dot(hitNormal, -sceneSun), 0.0);
                         faceColor *= 0.52 + 0.38 * sunFace + 0.14 * max(hitNormal.y, 0.0);
@@ -1977,7 +2022,40 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     break;
                 }
 
-                MaterialSlotData material = materialSlots[int(hitSlot) % 64];
+                if (!pathMode)
+                {
+                    vec3 realtime = RealtimeShade(hitPoint, hitNormal, rayDirection,
+                        hitColor, hitFlags, material, state);
+                    if ((hitFlags & 1u) != 0u)
+                    {
+                        // 实时模式采用一层确定性透射：玻璃/水显示后方不透明体，
+                        // 不引入随机折射噪声；路径追踪仍使用下方完整介质模型。
+                        vec3 transmitted = Sky(rayDirection);
+                        float behindDistance;
+                        vec3 behindNormal;
+                        vec4 behindColor;
+                        uint behindFlags;
+                        uint behindSlot;
+                        ivec3 behindCell;
+                        ivec3 behindExtent;
+                        if (TraceClosest(hitPoint + rayDirection * 0.01, rayDirection,
+                            behindDistance, behindNormal, behindColor, behindFlags, behindSlot,
+                            behindCell, behindExtent, true))
+                        {
+                            MaterialSlotData behindMaterial = materialSlots[int(behindSlot) % 64];
+                            transmitted = RealtimeShade(hitPoint + rayDirection * (0.01 + behindDistance),
+                                behindNormal, rayDirection, behindColor, behindFlags, behindMaterial, state);
+                        }
+                        float alpha = clamp(hitColor.a, 0.08, 0.82);
+                        radiance += mix(transmitted, realtime, alpha);
+                    }
+                    else
+                    {
+                        radiance += realtime;
+                    }
+                    break;
+                }
+
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 if ((hitFlags & 2u) != 0u)
                 {
@@ -2212,7 +2290,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
 
-            if (values[103] > 0.5 && values[92] > 0.5)
+            bool pathMode = values[86] > 0.5;
+            bool useDenoise = pathMode && values[92] > 0.5;
+            bool bloomRequested = values[109] > 0.5 && values[110] > 0.0 &&
+                (pathMode || values[57] < 0.5);
+            if (values[103] > 0.5 && useDenoise)
             {
                 vec3 color = DenoiseAt(pixel, width, height);
                 imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
@@ -2222,18 +2304,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             // Bloom 合成通道：以（可选降噪后的）HDR 累积为基色，叠加过曝亮部的宽核辉光再统一色调映射
             if (int(values[108]) == 1)
             {
-                vec3 base = values[92] > 0.5 ? DenoiseAt(pixel, width, height)
+                vec3 base = useDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
                 vec3 color = base + BloomGather(pixel, width, height) * clamp(values[110], 0.0, 2.0);
                 imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
                 return;
             }
 
-            bool pathMode = values[86] > 0.5;
             int samples = pathMode ? max(int(values[78]), 1) : 1;
             int accumulatedSamples = max(int(values[79]), 0);
+            // 实时模式保持屏幕空间效果稳定，不把毫秒级帧号带入 AO/阴影随机种子；
+            // 路径模式才使用帧号做时间去相关并交给累积缓冲收敛。
             uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
-                uint(values[7]) * 26699u + uint(values[88]));
+                (pathMode ? uint(values[7]) * 26699u : 0u) + uint(values[88]));
             vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
             vec3 forward = vec3(values[4], values[5], values[6]);
@@ -2284,6 +2367,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 color = totalSamples > 0.0
                     ? (previous.rgb * float(accumulatedSamples) + sampleColor * float(samples)) / totalSamples
                     : sampleColor;
+                imageStore(accumulationImage, pixel, vec4(color, 1.0));
+            }
+            else if (bloomRequested)
+            {
+                // 实时模式没有路径累积，但 Bloom 仍需要一份当前帧 HDR 输入。
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
             }
             float outputAlpha = pathMode || primarySurfaceHit ? 1.0 : 0.0;

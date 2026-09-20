@@ -907,7 +907,9 @@ internal sealed partial class ImGuiEditorWindow
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
                               pipeline.DisplayTextureId == IntPtr.Zero;
-            var wantTrace = (firstSubmit || _settingsTogglePath) &&
+            // 是否采样只由当前生效的相机/项目配置决定，不能读取全局 UI 开关；
+            // 否则相机覆盖开启路径追踪时会错误地只 Present 旧图。
+            var wantTrace = (firstSubmit || effective.PathTracingEnabled) &&
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {

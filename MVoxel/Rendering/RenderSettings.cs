@@ -332,10 +332,10 @@ public sealed class RenderSettings
     /// <summary>
     /// 快速降噪强度，越高越平滑但细节越柔和
     /// </summary>
-    public float PathDenoiseStrength = 0.22F;
+    public float PathDenoiseStrength = 0.65F;
 
     /// <summary>
-    /// 是否启用渲染视图的 Bloom 辉光，仅作用于路径追踪 HDR 累积
+    /// 是否启用渲染视图的 Bloom 辉光，实时渲染和路径追踪都可使用
     /// </summary>
     public bool BloomEnabled = true;
 
@@ -579,7 +579,7 @@ public sealed class RenderSettings
         PathSpecularF0 = Safe(PathSpecularF0, 0.04F);
         EmissiveIntensity = Safe(EmissiveIntensity, 12F);
         TransmissiveAbsorption = Safe(TransmissiveAbsorption, 1F);
-        PathDenoiseStrength = Safe(PathDenoiseStrength, 0.22F);
+        PathDenoiseStrength = Safe(PathDenoiseStrength, 0.65F);
         BloomIntensity = Safe(BloomIntensity, 0.35F);
         BloomThreshold = Safe(BloomThreshold, 1F);
         BloomRadius = Safe(BloomRadius, 12F);

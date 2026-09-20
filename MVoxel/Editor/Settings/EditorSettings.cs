@@ -268,6 +268,15 @@ public static class SettingsStore
                     document.Normalize();
                     SaveProject(project, document);
                 }
+                if (document.RenderProfileVersion < 2)
+                {
+                    UpgradePathDenoise(document.SceneRenderSettings);
+                    UpgradePathDenoise(document.RenderSettings);
+                    UpgradePathDenoise(document.ExportRenderSettings);
+                    document.RenderProfileVersion = 2;
+                    document.Normalize();
+                    SaveProject(project, document);
+                }
                 return document;
             }
         }
@@ -276,6 +285,12 @@ public static class SettingsStore
         }
 
         return ProjectSettingsDocument.CreateDefault();
+    }
+
+    private static void UpgradePathDenoise(RenderSettings settings)
+    {
+        if (settings.PathDenoising && settings.PathDenoiseStrength < 0.5F)
+            settings.PathDenoiseStrength = 0.65F;
     }
 
     public static void SaveProject(ProjectHandle project, ProjectSettingsDocument document)

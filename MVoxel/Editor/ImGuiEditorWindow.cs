@@ -2135,6 +2135,12 @@ DockId=0x6A3C3007,0
                     ? "硬件光追"
                     : "显卡计算路径追踪";
         ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
+        if (activeRenderSettings.PathTracingEnabled && pipeline is not null)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled($"· {pipeline.AccumulatedSamples}/{activeRenderSettings.PathMaxAccumulatedSamples} spp" +
+                               (activeRenderSettings.PathDenoising ? " · 降噪" : ""));
+        }
         if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(hardwareError);
