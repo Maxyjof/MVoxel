@@ -1999,10 +1999,9 @@ DockId=0x6A3C3007,0
             $"RenderView 导航输入，鼠标=({io.MousePos.X:0.0},{io.MousePos.Y:0.0})，增量=({io.MouseDelta.X:0.0},{io.MouseDelta.Y:0.0})，" +
             $"左键={ImGui.IsMouseDown(ImGuiMouseButton.Left)}，中键={ImGui.IsMouseDown(ImGuiMouseButton.Middle)}，右键={ImGui.IsMouseDown(ImGuiMouseButton.Right)}，" +
             $"Shift={IsShiftPressed()}，CapsLock={IsCapsLockEnabled()}，视口={size.X:0}x{size.Y:0}");
-        HandleRenderCameraNavigation(origin, size);
+        var camera = HandleRenderCameraNavigation(origin, size);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
-        var camera = GetRenderViewCamera();
         var showVoxelWorld = IsVoxelWorldVisible();
         var exporting = _activeExport is not null || _exportQueue.Count > 0;
         var gpuRendered = false;

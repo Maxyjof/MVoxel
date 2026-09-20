@@ -160,19 +160,19 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="origin">视口左上角屏幕坐标</param>
     /// <param name="size">视口尺寸</param>
-    private void HandleRenderCameraNavigation(Vector2 origin, Vector2 size)
+    private SceneCamera HandleRenderCameraNavigation(Vector2 origin, Vector2 size)
     {
         if (GetActiveRenderCameraObject() is not { } cameraObject)
         {
             HandleSceneNavigation(origin, size, new Vector2(-100000F, -100000F), 0F,
                 allowMouseCapture: true, ViewportCaptureTarget.Render);
-            return;
+            return GetRenderViewCamera();
         }
 
         if (cameraObject.Locked)
         {
             EndSceneMouseCapture(ViewportCaptureTarget.Render);
-            return;
+            return GetRenderViewCamera();
         }
 
         var io = ImGui.GetIO();
@@ -182,10 +182,12 @@ internal sealed partial class ImGuiEditorWindow
         if (!inViewport || !IsFocused || !ImGui.IsWindowHovered())
         {
             EndSceneMouseCapture(ViewportCaptureTarget.Render);
-            return;
+            return GetRenderViewCamera();
         }
 
-        var camera = ToSceneCamera(cameraObject);
+        // 导航和绘制必须从同一个有效相机快照开始。这里不能直接读取相机组件，
+        // 因为渲染窗口的 FOV 可能由当前相机的渲染配置覆盖。
+        var camera = GetRenderViewCamera();
         var capsLockMode = IsCapsLockEnabled();
         if (capsLockMode)
         {
@@ -207,7 +209,7 @@ internal sealed partial class ImGuiEditorWindow
                         orientation.Forward, orientation.Up);
                 }
 
-                return;
+                return GetRenderViewCamera();
             }
         }
         else
@@ -230,7 +232,7 @@ internal sealed partial class ImGuiEditorWindow
             var dolly = ViewportNavigationMath.OrbitAroundPivot(
                 camera, pivot, Vector2.Zero, orbitLimits.MinimumDistance, nextDistance);
             WriteCameraTransform(cameraObject, dolly.Position, dolly.Forward, dolly.Up);
-            camera = ToSceneCamera(cameraObject);
+            camera = GetRenderViewCamera();
         }
 
         var orbiting = ImGui.IsMouseDragging(ImGuiMouseButton.Right);
@@ -239,7 +241,7 @@ internal sealed partial class ImGuiEditorWindow
             var orbit = ViewportNavigationMath.OrbitAroundPivot(
                 camera, pivot, io.MouseDelta, orbitLimits.MinimumDistance, null);
             WriteCameraTransform(cameraObject, orbit.Position, orbit.Forward, orbit.Up);
-            camera = ToSceneCamera(cameraObject);
+            camera = GetRenderViewCamera();
         }
 
         if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
@@ -251,6 +253,8 @@ internal sealed partial class ImGuiEditorWindow
             var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
+
+        return GetRenderViewCamera();
     }
 
     private Vector3 GetRenderOrbitPivot()
@@ -284,7 +288,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="position">新的位置</param>
     /// <param name="forward">新的朝向</param>
     /// <param name="up">新的上方向</param>
-    private static void WriteCameraTransform(SceneObject cameraObject, Vector3 position, Vector3 forward, Vector3 up)
+    private void WriteCameraTransform(SceneObject cameraObject, Vector3 position, Vector3 forward, Vector3 up)
     {
         forward = Vector3.Normalize(forward);
         up = Vector3.Normalize(up);
@@ -314,6 +318,14 @@ internal sealed partial class ImGuiEditorWindow
         var rotation = System.Numerics.Quaternion.CreateFromRotationMatrix(rotationMatrix);
         cameraObject.Transform.SetFree(new FreeTransform(
             new Double3(position.X, position.Y, position.Z), rotation));
+
+        // 相机对象的变换是渲染窗口的唯一权威状态。同步变换标记、场景脏状态
+        // 和累积结果，避免下一帧又从旧状态或旧纹理恢复到环绕前的位置。
+        UpdateTransformMarker(cameraObject);
+        MarkSceneDocumentDirty();
+        _pipeline?.ResetAccumulation();
+        _accumulationSignature = string.Empty;
+        _renderViewNeedsInitialRender = true;
     }
 
     /// <summary>
