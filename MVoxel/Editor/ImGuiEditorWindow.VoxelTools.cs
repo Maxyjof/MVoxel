@@ -76,9 +76,10 @@ internal sealed partial class ImGuiEditorWindow
         SyncSettingsToggles();
     }
 
-    private void SyncSettingsToggles()
+    private void SyncSettingsToggles() => SyncSettingsToggles(_renderSettings);
+
+    private void SyncSettingsToggles(RenderSettings settings)
     {
-        var settings = _renderSettings;
         _settingsToggleSun = settings.SunEnabled;
         _settingsToggleAo = settings.AmbientOcclusionEnabled;
         _settingsTogglePalette = settings.PaletteShading;
@@ -352,11 +353,53 @@ internal sealed partial class ImGuiEditorWindow
         {
             return RenderSettings.FromJson(json);
         }
-        catch (InvalidDataException)
+        catch (Exception exception) when (exception is InvalidDataException or JsonException)
         {
             SetStatus("相机渲染覆盖内容非法，已回退项目渲染配置");
             return _renderSettings;
         }
+    }
+
+    /// <summary>
+    /// 返回渲染窗口右侧面板应该编辑的配置。相机存在覆盖时，面板必须编辑覆盖副本，
+    /// 否则用户修改项目配置不会影响当前正在渲染的相机。
+    /// </summary>
+    private RenderSettings GetEditableRenderSettings(out SceneObject? cameraObject,
+        out ComponentRecord? cameraComponent, out CameraComponentData? cameraData)
+    {
+        cameraObject = GetActiveRenderCameraObject();
+        cameraComponent = cameraObject?.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
+        cameraData = cameraComponent is null ? null : SceneComponentTypes.ReadCamera(cameraComponent);
+        var hasOverride = cameraData?.RenderOverrideJson is { Length: > 0 };
+        var settings = ResolveRenderSettings(cameraObject);
+        if (hasOverride)
+        {
+            SyncSettingsToggles(settings);
+        }
+
+        return settings;
+    }
+
+    /// <summary>
+    /// 把右侧面板对当前相机覆盖的修改写回场景文档。
+    /// </summary>
+    private void SaveEditableRenderSettings(SceneObject? cameraObject, ComponentRecord? cameraComponent,
+        CameraComponentData? cameraData, RenderSettings settings, string before)
+    {
+        if (cameraObject is null || cameraComponent is null || cameraData?.RenderOverrideJson is not { Length: > 0 } ||
+            string.Equals(before, settings.ToJson(), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        settings.ClampAll();
+        SceneComponentTypes.WriteCamera(cameraComponent, cameraData.Value with
+        {
+            RenderOverrideJson = settings.ToJson(),
+        });
+        MarkSceneDocumentDirty();
+        _pipeline?.ResetAccumulation();
+        _accumulationSignature = string.Empty;
     }
 
     /// <summary>
@@ -729,6 +772,7 @@ internal sealed partial class ImGuiEditorWindow
         NumVector3 Convert(Vector3 value) => new(value.X, value.Y, value.Z);
         var width = Math.Max(16, widthOverride);
         var height = Math.Max(16, heightOverride);
+        var effectiveSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         return new VoxelRenderParameters.FrameState(
             Convert(camera.Position), Convert(camera.Forward), Convert(camera.Right), Convert(camera.Up),
             SceneProjection.FocalLength(viewLogical, camera) * deviceScale,
@@ -738,7 +782,7 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline?.RegionSize ?? default,
             _pipeline?.StepBudget ?? 8192,
             _pipeline?.EmissiveLightCount ?? 0,
-            HuePhaseDegrees: _renderSettings.HueCycle ? _elapsedSeconds * _renderSettings.HueCycleSpeed % 360F : 0F,
+            HuePhaseDegrees: effectiveSettings.HueCycle ? _elapsedSeconds * effectiveSettings.HueCycleSpeed % 360F : 0F,
             ShowOutlines: outlines,
             AccumulatedSamples: _pipeline?.AccumulatedSamples ?? 0,
             PathMode: pathMode,
@@ -756,7 +800,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private string TraceSignature(Vector2 size, float deviceScale)
     {
-        var settings = _renderSettings;
+        var settings = ResolveRenderSettings(GetActiveRenderCameraObject());
         var buffer = new StringBuilder()
             .Append(size.X.ToString("F1")).Append('x').Append(size.Y.ToString("F1")).Append('@').Append(deviceScale.ToString("F2")).Append('|')
             .Append(_world.ContentVersion).Append('|')
@@ -817,16 +861,16 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_gpuRenderingDisabled || _renderSettings.Backend == RenderBackend.Cpu ||
+        var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
+        if (_gpuRenderingDisabled || effective.Backend == RenderBackend.Cpu ||
             _pipeline is not { IsAvailable: true } pipeline) return false;
         try
         {
-            var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
             pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
             // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
-            var renderScale = Math.Clamp(_renderSettings.ResolutionScale, 0.25F, 1F);
+            var renderScale = Math.Clamp(effective.ResolutionScale, 0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
             var nowMs = Environment.TickCount64;
@@ -1647,7 +1691,15 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawRenderSettingsPanel()
     {
-        var settings = _renderSettings;
+        var settings = GetEditableRenderSettings(out var cameraObject, out var cameraComponent,
+            out var cameraData);
+        var before = settings.ToJson();
+        var hasCameraOverride = cameraData?.RenderOverrideJson is { Length: > 0 };
+        if (hasCameraOverride)
+        {
+            ImGui.TextColored(ToColor(EditorPalette.Accent), $"当前编辑：{cameraObject?.Name ?? "相机"} 的独立渲染配置");
+        }
+
         if (_pipeline is not { IsAvailable: true })
         {
             var message = _pipeline?.GpuWorksetUploaded == true
@@ -1660,16 +1712,32 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Button("恢复默认参数", new Vector2(138F, 30F)))
         {
             var defaults = new RenderSettings();
-            if (_project is null)
-                _editorSettings.RenderViewSettings = defaults;
+            if (hasCameraOverride && cameraComponent is not null && cameraData is { } overrideData)
+            {
+                settings = defaults;
+                SceneComponentTypes.WriteCamera(cameraComponent, overrideData with
+                {
+                    RenderOverrideJson = defaults.ToJson(),
+                });
+                MarkSceneDocumentDirty();
+            }
             else
             {
-                _projectSettings.RenderSettings = defaults;
-                _projectSettings.DefaultRenderPreset = "默认";
+                if (_project is null)
+                    _editorSettings.RenderViewSettings = defaults;
+                else
+                {
+                    _projectSettings.RenderSettings = defaults;
+                    _projectSettings.DefaultRenderPreset = "默认";
+                }
+
+                _renderSettings = defaults;
+                settings = defaults;
             }
-            _renderSettings = defaults;
-            SyncSettingsToggles();
+
+            SyncSettingsToggles(settings);
             _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
             SetStatus("已恢复默认渲染参数");
         }
 
@@ -1695,6 +1763,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("material", "全局材质", "GGX、金属度、透明与自发光", () => DrawGlobalMaterialSection(settings));
         DrawRenderSettingsAccordion("camera", "相机", "视场角、景深与对焦", () => DrawCameraSection(settings));
         DrawRenderSettingsAccordion("lod", "LOD", "场景窗口与渲染窗口的距离细节", () => DrawLodSection(settings));
+        SaveEditableRenderSettings(cameraObject, cameraComponent, cameraData, settings, before);
     }
 
     /// <summary>

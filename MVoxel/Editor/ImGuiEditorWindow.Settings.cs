@@ -556,7 +556,6 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("白平衡色温", ref settings.WhiteBalance, 2000F, 12000F, "%.0f K");
                 SliderFloat("暗角", ref settings.Vignette, 0F, 1F, "%.2f");
                 ImGui.Checkbox("输出抖动", ref settings.Dither);
-                ImGui.Checkbox("场景立体着色", ref settings.SceneShading);
                 DrawSettingsSectionHeader("辉光 Bloom", "高亮体素的后期扩散");
                 ImGui.Checkbox("Bloom 辉光", ref settings.BloomEnabled);
                 SliderFloat("辉光强度", ref settings.BloomIntensity, 0F, 2F, "%.2f");

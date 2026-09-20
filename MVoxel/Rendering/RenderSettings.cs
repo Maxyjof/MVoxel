@@ -413,7 +413,7 @@ public sealed class RenderSettings
     }
 
     /// <summary>
-    /// 由方位角与仰角推导的单位太阳方向
+    /// 由方位角与仰角推导的单位太阳方向（从被照表面指向太阳）
     /// </summary>
     public Vector3 SunDirection
     {

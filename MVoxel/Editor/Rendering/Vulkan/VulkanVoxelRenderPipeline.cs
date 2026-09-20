@@ -1886,6 +1886,17 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 groundColor = pathMode
                 ? vec3(values[36], values[37], values[38])
                 : LinearToDisplay(vec3(values[98], values[99], values[100]));
+            float groundFadeDistance = max(values[34], 0.0);
+            if (groundFadeDistance > 0.0)
+            {
+                float groundRadialDistance = length(point.xz - rayOrigin.xz);
+                float groundFade = smoothstep(groundFadeDistance * 0.65, groundFadeDistance,
+                    groundRadialDistance);
+                vec3 horizon = pathMode
+                    ? Sky(rayDirection)
+                    : LinearToDisplay(vec3(values[98], values[99], values[100]));
+                groundColor = mix(groundColor, horizon, groundFade);
+            }
             if (values[90] > 0.5)
             {
                 float gridStep = max(values[89], 0.001);
@@ -1927,7 +1938,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             ambientFill += vec3(0.035, 0.040, 0.050) * (0.5 + max(hitNormal.y, 0.0));
             vec3 diffuse = baseColor * ambientFill;
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
-            vec3 lightDirection = normalize(-sunDirection);
+            // SunDirection 表示从表面指向太阳，正方向才是受光方向。
+            vec3 lightDirection = sunDirection;
             float directAmount = max(dot(hitNormal, lightDirection), 0.0);
             if (values[33] > 0.5 && directAmount > 0.0)
             {
@@ -1958,6 +1970,21 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 // 实时 Bloom 需要 HDR 亮部，但限制极端亮度避免单个灯把整个画面冲成白块。
                 result += baseColor * min(values[80] * emissiveScale, 4.5);
+            }
+            float cameraDistance = length(hitPoint - vec3(values[0], values[1], values[2]));
+            float nearFadeDistance = max(values[39], 0.0);
+            if (nearFadeDistance > 0.0)
+            {
+                float nearVisibility = smoothstep(0.0, nearFadeDistance, cameraDistance);
+                result = mix(Sky(rayDirection), result, nearVisibility);
+            }
+            float fogDensity = max(values[51], 0.0);
+            if (fogDensity > 0.0)
+            {
+                float fogAmount = 1.0 - exp(-fogDensity * cameraDistance);
+                vec3 fogColor = mix(Sky(rayDirection),
+                    vec3(values[48], values[49], values[50]), 0.55);
+                result = mix(result, fogColor, clamp(fogAmount, 0.0, 0.92));
             }
             return max(result, vec3(0.0));
         }
@@ -2139,7 +2166,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                                 ? material.scalars.x : values[73], 0.01, 1.0);
                             float glintExponent = clamp(2.0 / (interfaceRoughness * interfaceRoughness) - 2.0, 32.0, 1024.0);
                             vec3 sunGlint = normalize(vec3(values[24], values[25], values[26]));
-                            float glint = pow(max(dot(reflected, -sunGlint), 0.0), glintExponent);
+                            float glint = pow(max(dot(reflected, sunGlint), 0.0), glintExponent);
                             if (glint > 0.001 &&
                                 !TraceSoftShadow(hitPoint + hitNormal * 0.002, -sunGlint, 10000.0, state))
                                 radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27] * 6.0;
@@ -2226,7 +2253,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
-                vec3 lightDirection = normalize(-sunDirection);
+                vec3 lightDirection = sunDirection;
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
                 if (values[85] > 0.5 && lightAmount > 0.0 &&
                     !TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state))

@@ -2182,7 +2182,7 @@ DockId=0x6A3C3007,0
             ImGui.SetTooltip("当前显卡显示结果尚未准备好");
         }
         ImGui.SameLine();
-        ImGui.TextDisabled($"{(int)_renderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
+        ImGui.TextDisabled($"{(int)activeRenderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
     }
 
     private void ExportRenderPng()
@@ -3060,13 +3060,14 @@ DockId=0x6A3C3007,0
         DrawSettingsPageHeader("视口渲染", _project is null
             ? "编辑器默认值 · 实时生效"
             : "当前项目值 · 实时生效");
-        ImGui.TextDisabled($"{(_renderSettings.Backend == RenderBackend.Gpu ? "显卡计算" : "CPU 计算")}  ·  " +
-                           $"路径追踪 {(_renderSettings.PathTracingEnabled ? "开启" : "关闭")}  ·  " +
+        var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
+        ImGui.TextDisabled($"{(activeRenderSettings.Backend == RenderBackend.Gpu ? "显卡计算" : "CPU 计算")}  ·  " +
+                           $"路径追踪 {(activeRenderSettings.PathTracingEnabled ? "开启" : "关闭")}  ·  " +
                            $"网格 {(_showGrid ? "显示" : "隐藏")}  ·  " +
                            $"体素轮廓 {(_showVoxelOutlines ? "显示" : "隐藏")}");
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
             OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
-        DrawLodSection(_renderSettings);
+        DrawLodSection(activeRenderSettings);
 
         DrawSettingsSectionHeader("场景视图辅助显示", "只影响视口辅助元素，不改变导出画面");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
