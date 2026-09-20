@@ -1620,7 +1620,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             // 方向分量为 0 时 1/0=±Inf 会在“起点恰与该轴平面共面”时算出 0*Inf=NaN，
             // 污染全部 max/min 比较，命中判定逐像素随机翻转（探针与主光线都可能轴向对齐）。
             // 用钳最小绝对值的倒数：轴向分量 0 时平面距离 ±1e8，比较仍正确，
-            // 只有起点恰在平面上才可能 NaN，该退化交给入口的盒内判定兜底
+            // 只有起点恰在平面上才可能 NaN；边界起点在下面单独按射线方向处理。
             vec3 safeDirection = mix(rayDirection, vec3(1e-8), equal(rayDirection, vec3(0.0)));
             vec3 inverseDirection = 1.0 / safeDirection;
             vec3 nearPoint = (boxMin - rayOrigin) * inverseDirection;
@@ -1633,8 +1633,28 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             float farDistance = min(min(upper.x, upper.y), upper.z);
             if (farDistance < max(nearDistance, 0.0)) return false;
 
-            bool fromInside = nearDistance <= 0.0;
-            distance = fromInside ? farDistance : nearDistance;
+            // 相机或上一段射线经常会落在两个相邻体素共用的平面上。
+            // 旧逻辑用 nearDistance <= 0 判断“盒内”，会把共面且向盒内的射线
+            // 当成从内部出发，直接取 farDistance，近侧面就被跳过，贴近模型时
+            // 表面遮挡会出现翻转。边界上按射线方向决定当前盒是否是入射盒：
+            // 离开当前面的盒拒绝，进入当前面的盒从 t=0 命中；只有严格在盒内
+            // 才取出口面。
+            const float boundaryEpsilon = 0.0001;
+            bool onMinX = abs(rayOrigin.x - boxMin.x) <= boundaryEpsilon;
+            bool onMaxX = abs(rayOrigin.x - boxMax.x) <= boundaryEpsilon;
+            bool onMinY = abs(rayOrigin.y - boxMin.y) <= boundaryEpsilon;
+            bool onMaxY = abs(rayOrigin.y - boxMax.y) <= boundaryEpsilon;
+            bool onMinZ = abs(rayOrigin.z - boxMin.z) <= boundaryEpsilon;
+            bool onMaxZ = abs(rayOrigin.z - boxMax.z) <= boundaryEpsilon;
+            if ((onMinX && rayDirection.x < 0.0) || (onMaxX && rayDirection.x > 0.0) ||
+                (onMinY && rayDirection.y < 0.0) || (onMaxY && rayDirection.y > 0.0) ||
+                (onMinZ && rayDirection.z < 0.0) || (onMaxZ && rayDirection.z > 0.0))
+                return false;
+
+            bool strictlyInside = all(greaterThan(rayOrigin, boxMin + vec3(boundaryEpsilon))) &&
+                                   all(lessThan(rayOrigin, boxMax - vec3(boundaryEpsilon)));
+            bool fromInside = strictlyInside;
+            distance = fromInside ? farDistance : max(nearDistance, 0.0);
             // 法线必须按参数距离选轴，绝不能用“命中点到六面的欧氏距离挑最小”：
             // 命中点由 distance 重建、自带 fp 误差，共面像素到入射面的距离并不严格为 0，
             // 亚体素相位靠近体素边界时顶面与侧面的距离比较随机翻转，法线在 +Y 与 ±X/±Z
