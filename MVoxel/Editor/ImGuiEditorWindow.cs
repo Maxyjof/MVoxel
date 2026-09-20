@@ -3497,7 +3497,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
-                    OpenProject,
+                    project => _pendingActions.Enqueue(() => OpenProject(project)),
                     exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, path),
                     () => SetStatus("已取消创建项目")))
             {
@@ -3539,7 +3539,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: true));
                         return project;
                     },
-                    OpenProject,
+                    project => _pendingActions.Enqueue(() => OpenProject(project)),
                     exception => ShowProjectOperationError("打开项目失败", exception, fromWelcome, 2, path),
                     () => SetStatus("已取消加载项目")))
             {
@@ -3761,7 +3761,12 @@ DockId=0x6A3C3007,0
                     MVoxelLog.Info($"事务重放完成：{replayed} 格，{project.Manifest.Name}");
                 }
 
-                _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
+                // 恢复区载入也延后到渲染视图按需同步，避免打开项目回调阻塞 UI。
+                _composedRenderWorld = null;
+                _composedSignature = 0;
+                _composedMask = uint.MaxValue;
+                _renderViewNeedsInitialRender = true;
+                _pipeline?.ResetAccumulation();
                 FrameCameraOnWorld();
             }
 

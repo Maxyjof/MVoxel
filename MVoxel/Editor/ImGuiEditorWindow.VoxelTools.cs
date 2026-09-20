@@ -111,6 +111,9 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocumentDirty = false;
         _renderCameraId = null;
         _renderCameraInitialFramePending = true;
+        _composedRenderWorld = null;
+        _composedSignature = 0;
+        _composedMask = uint.MaxValue;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
@@ -158,7 +161,9 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"{_statusText}，已合并 {mergedLayers} 个分层对象");
         }
 
-        _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
+        // 项目创建/打开完成回调不能在 UI 线程同步构建和上传 GPU 工作集，
+        // 否则大模板会让进度弹窗停在 98%。场景视图不依赖该工作集，
+        // 渲染视图首次绘制时会按当前图层和项目配置按需同步。
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         _lastRenderGpuSubmitMs = 0;
