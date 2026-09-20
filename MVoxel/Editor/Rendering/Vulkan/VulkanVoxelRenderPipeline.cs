@@ -1558,6 +1558,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _lastParameters = null;
     }
 
+    internal static string ComputeShaderSourceForTests => SceneComputeShader;
+
     private const string SceneComputeShader = """
         #version 450
 
@@ -1995,9 +1997,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 hasPendingInterface = false;
                 if (bounce == 0) primarySurfaceHit = true;
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
-                if (!pathMode && values[57] < 0.5)
+                if (!pathMode && values[57] > 0.5)
                 {
-                    // 场景视图保留清晰的原色与体素描边；渲染视图关闭描边时走完整实时光照。
+                    // 只有编辑器场景预览显式要求描边时才绘制纯色体素轮廓；
+                    // 渲染视图关闭描边时必须继续执行下方完整的实时光照路径。
                     vec3 outlineBoxMin = vec3(values[16], values[17], values[18]) + vec3(hitCell);
                     vec3 outlineExtent = vec3(hitExtent);
                     vec3 localPoint = clamp(hitPoint - outlineBoxMin, vec3(0.0), outlineExtent);

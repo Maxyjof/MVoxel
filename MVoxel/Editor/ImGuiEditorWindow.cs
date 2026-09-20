@@ -1169,11 +1169,10 @@ DockId=0x6A3C3007,0
             SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
         }
 
-        // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
+        // 场景窗口是编辑器预览，不参与渲染窗口的实时光照或路径追踪。
+        // 这样网格、坐标轴和体素编辑反馈不会被渲染管线的累积结果污染。
         var showVoxelWorld = IsVoxelWorldVisible();
-        var gpuRendered = showVoxelWorld && _project is not null &&
-                          TryRenderGpuSceneView(drawList, origin, size, camera);
-        if (showVoxelWorld && _project is not null && !gpuRendered)
+        if (showVoxelWorld && _project is not null)
         {
             DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }

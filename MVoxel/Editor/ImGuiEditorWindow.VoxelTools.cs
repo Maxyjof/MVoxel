@@ -720,7 +720,7 @@ internal sealed partial class ImGuiEditorWindow
         return removed;
     }
 
-    // GPU 视口
+    // 渲染视口 GPU 管线
 
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
@@ -748,38 +748,6 @@ internal sealed partial class ImGuiEditorWindow
             NearClip = camera.NearClip,
             FarClip = float.IsFinite(camera.FarClip) ? camera.FarClip : 100_000_000F,
         };
-    }
-
-    /// <summary>
-    /// 通过 GPU 工作集绘制场景标签页
-    /// </summary>
-    private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
-    {
-        if (_gpuRenderingDisabled || _pipeline is not { IsAvailable: true } pipeline) return false;
-        try
-        {
-            // 场景视图不贪心合并，逐格显示真实体素；LOD 仍按场景窗口配置生效
-            pipeline.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget(), _renderSettings.SceneLod,
-                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z), greedyMerge: false);
-            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-            var width = Math.Max(16, (int)(size.X * scale));
-            var height = Math.Max(16, (int)(size.Y * scale));
-            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: false, outlines: _showVoxelOutlines,
-                showGrid: _showGrid, gridStep: SceneGrid.Spacing(_sceneCameraDistance, size));
-            // 场景只显示体素原色，完整光照和路径追踪仅由渲染窗口执行
-            if (!pipeline.RenderSceneView(CurrentSceneRenderSettings, frame, width, height)) return false;
-            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                Vector2.Zero, pipeline.DisplayUvMax);
-            return true;
-        }
-        catch (Exception exception)
-        {
-            MVoxelLog.SetRuntimeContext(
-                $"Vulkan 场景绘制失败，设备={_vulkan?.DeviceName ?? "未知"}，视口={size.X:0}x{size.Y:0}，" +
-                $"体素={_world.OccupiedVoxelCount}，管线={pipeline.ShaderLog ?? "无诊断信息"}");
-            DisableGpuRendering(exception);
-            return false;
-        }
     }
 
     /// <summary>
