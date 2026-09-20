@@ -106,7 +106,8 @@ internal sealed partial class ImGuiEditorWindow
             var world = MeshImport.Import(path, color, _meshImportResolution, _meshImportFill);
             var worldsDirectory = Path.Combine(project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
-            var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
+            var fileName = UniqueAssetFileName(worldsDirectory,
+                SanitizeFileName(Path.GetFileNameWithoutExtension(path)), ".mvmodel");
             var worldPath = Path.Combine(worldsDirectory, fileName);
             LargeWorldFormat.Write(worldPath, world);
             AssetMetaStore.EnsureMeta(worldPath);

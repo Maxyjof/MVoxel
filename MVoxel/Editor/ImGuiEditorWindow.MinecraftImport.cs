@@ -40,6 +40,7 @@ internal partial class ImGuiEditorWindow
     private string _mcImportProgress = string.Empty;
     private string? _mcImportError;
     private PreparedMcImport? _mcImportPrepared;
+    private CancellationTokenSource? _mcImportCancellation;
 
     /// <summary>
     /// 后台线程完成转换、文件写入与回填后的可应用导入结果
@@ -342,7 +343,7 @@ internal partial class ImGuiEditorWindow
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(100F, 32F)))
+        if (ImGui.Button(_mcImportBusy ? "取消导入" : "取消", new Vector2(100F, 32F)))
         {
             CloseMcImport();
         }
@@ -499,17 +500,22 @@ internal partial class ImGuiEditorWindow
         _mcImportError = null;
         _mcImportPrepared = null;
         _mcImportProgress = "准备导入…";
+        _mcImportCancellation?.Dispose();
+        _mcImportCancellation = new CancellationTokenSource();
+        var cancellationToken = _mcImportCancellation.Token;
         Task.Run(() =>
         {
             try
             {
                 var result = McWorldImporter.ConvertRange(info, minChunkX, minChunkZ, maxChunkX, maxChunkZ,
-                    progress => _mcImportProgress = progress);
+                    progress => _mcImportProgress = progress, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 Directory.CreateDirectory(worldsDirectory);
                 var baseName = SanitizeFileName(
                     string.IsNullOrWhiteSpace(info.LevelName) ? "Minecraft地图" : info.LevelName);
                 _mcImportProgress = "正在写入地形模型…";
-                var terrainFileName = $"{baseName}_{minChunkX}_{minChunkZ}.mvmodel";
+                var terrainFileName = UniqueAssetFileName(worldsDirectory,
+                    $"{baseName}_{minChunkX}_{minChunkZ}", ".mvmodel");
                 var terrainPath = Path.Combine(worldsDirectory, terrainFileName);
                 LargeWorldFormat.Write(terrainPath, result.Terrain);
                 AssetMetaStore.EnsureMeta(terrainPath);
@@ -517,9 +523,11 @@ internal partial class ImGuiEditorWindow
                 var layerOwnership = new HashSet<VoxelCoord64>[result.Layers.Count];
                 for (var index = 0; index < result.Layers.Count; index++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var layer = result.Layers[index];
                     _mcImportProgress = $"正在写入树分层 {index + 1}/{result.Layers.Count}…";
-                    layerFileNames[index] = $"{baseName}_树{index + 1}.mvmodel";
+                    layerFileNames[index] = UniqueAssetFileName(worldsDirectory,
+                        $"{baseName}_树{index + 1}", ".mvmodel");
                     var layerPath = Path.Combine(worldsDirectory, layerFileNames[index]);
                     LargeWorldFormat.Write(layerPath, layer.World);
                     AssetMetaStore.EnsureMeta(layerPath);
@@ -533,6 +541,7 @@ internal partial class ImGuiEditorWindow
                 // 树体量远小于地形，直接回填进地形对象使其成为完整工作世界，免去整世界复制
                 foreach (var layer in result.Layers)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     foreach (var item in layer.World.EnumerateOccupied())
                     {
                         result.Terrain.Set(item.Coordinate, item.Value);
@@ -548,6 +557,10 @@ internal partial class ImGuiEditorWindow
                     LayerFileNames = layerFileNames,
                     LayerOwnership = layerOwnership,
                 };
+            }
+            catch (OperationCanceledException)
+            {
+                _mcImportError = "用户已取消导入";
             }
             catch (Exception exception)
             {
@@ -662,6 +675,9 @@ internal partial class ImGuiEditorWindow
     /// </summary>
     private void CloseMcImport()
     {
+        _mcImportCancellation?.Cancel();
+        _mcImportCancellation?.Dispose();
+        _mcImportCancellation = null;
         _mcImportActive = false;
         _mcImportBusy = false;
         _mcImportDone = false;
@@ -701,11 +717,13 @@ internal partial class ImGuiEditorWindow
             {
                 ".qb" => QubicleFormat.Read(path),
                 ".schem" => SchematicFormat.Read(path),
-                _ => VoxFormat.Read(path),
+                ".vox" => VoxFormat.Read(path),
+                _ => throw new InvalidDataException($"不支持导入的体素格式：{extension}")
             };
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
-            var fileName = SanitizeFileName(Path.GetFileNameWithoutExtension(path)) + ".mvmodel";
+            var fileName = UniqueAssetFileName(worldsDirectory,
+                SanitizeFileName(Path.GetFileNameWithoutExtension(path)), ".mvmodel");
             var worldPath = Path.Combine(worldsDirectory, fileName);
             LargeWorldFormat.Write(worldPath, world);
             AssetMetaStore.EnsureMeta(worldPath);
@@ -731,16 +749,17 @@ internal partial class ImGuiEditorWindow
         var absolute = Path.GetFullPath(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         if (!File.Exists(absolute))
         {
-            SetStatus($"世界文件不存在：{relativePath}");
+            SetStatus($"体素数据文件不存在：{relativePath}");
             return;
         }
 
         try
         {
-            var world = LargeWorldFormat.Read(absolute);
+            var world = ReadVoxelAsset(absolute);
             var exportDirectory = Path.Combine(project.AssetsPath, "Exports");
             Directory.CreateDirectory(exportDirectory);
-            var target = Path.Combine(exportDirectory, SanitizeFileName(Path.GetFileNameWithoutExtension(absolute)) + ".vox");
+            var target = Path.Combine(exportDirectory, UniqueAssetFileName(exportDirectory,
+                Path.GetFileNameWithoutExtension(absolute), ".vox"));
             VoxFormat.Write(target, world);
             SetStatus($"已导出 .vox：Exports/{Path.GetFileName(target)}（{world.OccupiedVoxelCount:N0} 体素）");
         }
@@ -764,16 +783,17 @@ internal partial class ImGuiEditorWindow
         var absolute = Path.GetFullPath(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         if (!File.Exists(absolute))
         {
-            SetStatus($"世界文件不存在：{relativePath}");
+            SetStatus($"体素数据文件不存在：{relativePath}");
             return;
         }
 
         try
         {
-            var world = LargeWorldFormat.Read(absolute);
+            var world = ReadVoxelAsset(absolute);
             var exportDirectory = Path.Combine(project.AssetsPath, "Exports");
             Directory.CreateDirectory(exportDirectory);
-            var target = Path.Combine(exportDirectory, SanitizeFileName(Path.GetFileNameWithoutExtension(absolute)) + ".qb");
+            var target = Path.Combine(exportDirectory, UniqueAssetFileName(exportDirectory,
+                Path.GetFileNameWithoutExtension(absolute), ".qb"));
             QubicleFormat.Write(target, world);
             SetStatus($"已导出 .qb：Exports/{Path.GetFileName(target)}（{world.OccupiedVoxelCount:N0} 体素）");
         }
@@ -781,6 +801,35 @@ internal partial class ImGuiEditorWindow
         {
             SetStatus($"导出 .qb 失败：{exception.Message}");
         }
+    }
+
+    /// <summary>
+    /// 读取资产浏览器中的体素文件。外部交换格式与项目原生格式走各自解析器，
+    /// 避免把 .vox 误当成 .mvmodel 读取。
+    /// </summary>
+    private static VoxelWorld ReadVoxelAsset(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".vox" => VoxFormat.Read(path),
+            ".qb" => QubicleFormat.Read(path),
+            ".schem" => SchematicFormat.Read(path),
+            ".mvmodel" or ".mvworld" => LargeWorldFormat.Read(path),
+            _ => throw new InvalidDataException($"不支持读取的体素文件：{Path.GetExtension(path)}"),
+        };
+    }
+
+    /// <summary>
+    /// 导入和导出均不覆盖已有资产，重复名称自动增加序号。
+    /// </summary>
+    private static string UniqueAssetFileName(string directory, string baseName, string extension)
+    {
+        var safeBaseName = SanitizeFileName(baseName);
+        var safeExtension = extension.StartsWith('.') ? extension : "." + extension;
+        var candidate = safeBaseName + safeExtension;
+        for (var index = 2; File.Exists(Path.Combine(directory, candidate)); index++)
+            candidate = $"{safeBaseName}_{index}{safeExtension}";
+        return candidate;
     }
 
     /// <summary>

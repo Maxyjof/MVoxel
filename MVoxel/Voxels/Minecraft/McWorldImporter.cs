@@ -59,9 +59,10 @@ public static class McWorldImporter
     /// <returns>地形与分层的转换结果</returns>
     public static McImportResult ConvertRange(MinecraftSaveInfo info,
         long minChunkX, long minChunkZ, long maxChunkX, long maxChunkZ,
-        Action<string>? progress = null)
+        Action<string>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(info);
+        cancellationToken.ThrowIfCancellationRequested();
         (minChunkX, maxChunkX) = (Math.Min(minChunkX, maxChunkX), Math.Max(minChunkX, maxChunkX));
         (minChunkZ, maxChunkZ) = (Math.Min(minChunkZ, maxChunkZ), Math.Max(minChunkZ, maxChunkZ));
         var widthX = maxChunkX - minChunkX + 1;
@@ -80,6 +81,7 @@ public static class McWorldImporter
         for (var chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
         for (var chunkX = minChunkX; chunkX <= maxChunkX; chunkX++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             chunkCoords.Add((chunkX, chunkZ));
         }
 
@@ -92,9 +94,14 @@ public static class McWorldImporter
         var mergeGate = new object();
         var processed = 0;
         Parallel.For(0, groups.Count,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16) },
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+                CancellationToken = cancellationToken,
+            },
             groupIndex =>
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var result = new GroupResult();
                 foreach (var (chunkX, chunkZ) in groups[groupIndex].Chunks)
                 {
@@ -124,7 +131,8 @@ public static class McWorldImporter
         timings.Add(new McPhaseTiming("区块解析与合并", phaseWatch.Elapsed.TotalMilliseconds));
 
         phaseWatch.Restart();
-        var layers = SplitTrees(full, groupResults, groupByKey);
+        cancellationToken.ThrowIfCancellationRequested();
+        var layers = SplitTrees(full, groupResults, groupByKey, cancellationToken);
         timings.Add(new McPhaseTiming("树分层拆分", phaseWatch.Elapsed.TotalMilliseconds));
         progress?.Invoke($"已拆出 {layers.Count} 个树分层");
         return new McImportResult(full, layers, timings);
@@ -331,13 +339,18 @@ public static class McWorldImporter
     /// 命名按尺寸降序与最小坐标升序确定
     /// </summary>
     private static List<McImportLayer> SplitTrees(VoxelWorld full, GroupResult[] groups,
-        Dictionary<(long Column, long Row), int> groupByKey)
+        Dictionary<(long Column, long Row), int> groupByKey, CancellationToken cancellationToken)
     {
         var labels = new ConcurrentDictionary<VoxelCoord64, int>();
         var componentCounter = 0;
-        var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16) };
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            CancellationToken = cancellationToken,
+        };
         Parallel.For(0, groups.Length, options, groupIndex =>
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var group = groups[groupIndex];
             if (group.Vegetation.Count == 0)
             {

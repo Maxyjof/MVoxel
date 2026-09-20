@@ -79,7 +79,7 @@ internal sealed partial class ImGuiEditorWindow
 
         if (cameras.Count == 0)
         {
-            ImGui.Selectable("场景视角（跟随场景）", true);
+            ImGui.TextDisabled("场景视角（跟随场景）");
             ImGui.EndCombo();
             return;
         }
@@ -213,25 +213,39 @@ internal sealed partial class ImGuiEditorWindow
             EndSceneMouseCapture(ViewportCaptureTarget.Render);
         }
 
+        var pivot = GetRenderOrbitPivot();
+        var orbitLimits = GetRenderOrbitLimits();
         if (Math.Abs(io.MouseWheel) > float.Epsilon)
         {
-            var dolly = MathF.Max(0.1F, Vector3.Distance(camera.Position, camera.Target) * 0.2F) * io.MouseWheel;
-            WriteCameraTransform(cameraObject, camera.Position + camera.Forward * dolly, camera.Forward, camera.Up);
+            // 渲染相机的推拉必须围绕同一个场景 pivot 计算，不能沿着
+            // ToSceneCamera 的临时 Target（前方 100 格）移动，否则相机穿过原点后
+            // 右键环绕半径会接近 0，视觉上就退化成第一人称原地转向。
+            var currentDistance = Vector3.Distance(camera.Position, pivot);
+            if (!float.IsFinite(currentDistance)) currentDistance = orbitLimits.MinimumDistance;
+            var nextDistance = Math.Clamp(
+                MathF.Max(orbitLimits.MinimumDistance, currentDistance) * MathF.Exp(-io.MouseWheel * 0.2F),
+                orbitLimits.MinimumDistance, orbitLimits.MaximumDistance);
+            var dolly = ViewportNavigationMath.OrbitAroundPivot(
+                camera, pivot, Vector2.Zero, orbitLimits.MinimumDistance, nextDistance);
+            WriteCameraTransform(cameraObject, dolly.Position, dolly.Forward, dolly.Up);
             camera = ToSceneCamera(cameraObject);
         }
 
         var orbiting = ImGui.IsMouseDragging(ImGuiMouseButton.Right);
         if (orbiting)
         {
-            var pivot = GetRenderOrbitPivot();
-            var orbit = ViewportNavigationMath.OrbitAroundPivot(camera, pivot, io.MouseDelta);
+            var orbit = ViewportNavigationMath.OrbitAroundPivot(
+                camera, pivot, io.MouseDelta, orbitLimits.MinimumDistance, null);
             WriteCameraTransform(cameraObject, orbit.Position, orbit.Forward, orbit.Up);
             camera = ToSceneCamera(cameraObject);
         }
 
         if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
         {
-            var panScale = MathF.Max(0.1F, Vector3.Distance(camera.Position, camera.Target) * 0.01F);
+            var orbitDistance = Vector3.Distance(camera.Position, pivot);
+            var panScale = MathF.Max(0.1F,
+                MathF.Max(orbitLimits.MinimumDistance, float.IsFinite(orbitDistance)
+                    ? orbitDistance : orbitLimits.MinimumDistance) * 0.01F);
             var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
@@ -248,6 +262,17 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return Vector3.Zero;
+    }
+
+    private SceneZoomLimits GetRenderOrbitLimits()
+    {
+        if (!_world.TryGetBounds(out var min, out var max))
+            return SceneZoomPolicy.Default();
+
+        return SceneZoomPolicy.FromBounds(
+            max.X - min.X + 1D,
+            max.Y - min.Y + 1D,
+            max.Z - min.Z + 1D);
     }
 
     /// <summary>

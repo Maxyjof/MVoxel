@@ -36,10 +36,40 @@ internal static class ViewportNavigationMath
     internal static (Vector3 Position, Vector3 Forward, Vector3 Up) OrbitAroundPivot(
         SceneCamera camera, Vector3 pivot, Vector2 mouseDelta)
     {
+        return OrbitAroundPivot(camera, pivot, mouseDelta, 1.25F, null);
+    }
+
+    /// <summary>
+    /// 围绕观察中心旋转相机，并保证轨道半径不会退化为第一人称原地转向。
+    /// </summary>
+    /// <param name="camera">当前相机</param>
+    /// <param name="pivot">观察中心</param>
+    /// <param name="mouseDelta">鼠标帧间位移</param>
+    /// <param name="minimumDistance">允许的最小轨道半径</param>
+    /// <param name="distanceOverride">可选的目标轨道半径，用于围绕 pivot 推拉</param>
+    /// <returns>新的位置、视线方向和上方向</returns>
+    internal static (Vector3 Position, Vector3 Forward, Vector3 Up) OrbitAroundPivot(
+        SceneCamera camera, Vector3 pivot, Vector2 mouseDelta, float minimumDistance, float? distanceOverride)
+    {
         var offset = camera.Position - pivot;
-        var distance = MathF.Max(0.001F, offset.Length);
+        var safeMinimum = float.IsFinite(minimumDistance) ? MathF.Max(0.01F, minimumDistance) : 1.25F;
+        var rawDistance = offset.Length;
+        var distance = distanceOverride is { } requestedDistance && float.IsFinite(requestedDistance)
+            ? MathF.Max(safeMinimum, requestedDistance)
+            : MathF.Max(safeMinimum, float.IsFinite(rawDistance) ? rawDistance : safeMinimum);
+        if (!float.IsFinite(rawDistance) || rawDistance < 0.0001F)
+        {
+            // 相机正好位于 pivot 时，使用当前朝向反推一个稳定的轨道方向，避免 atan2(0, 0)
+            // 把相机突然放到固定的第一人称方向。
+            offset = -camera.Forward;
+            if (!float.IsFinite(offset.X) || !float.IsFinite(offset.Y) || !float.IsFinite(offset.Z) ||
+                offset.LengthSquared < 0.0001F)
+                offset = Vector3.UnitZ;
+        }
+
+        var direction = Vector3.Normalize(offset);
         var yaw = MathF.Atan2(offset.X, offset.Z) + ViewportInputPolicy.OrbitYawDelta(mouseDelta.X);
-        var pitch = Math.Clamp(MathF.Asin(Math.Clamp(offset.Y / distance, -1F, 1F)) +
+        var pitch = Math.Clamp(MathF.Asin(Math.Clamp(direction.Y, -1F, 1F)) +
             ViewportInputPolicy.OrbitPitchDelta(mouseDelta.Y), -1.55F, 1.55F);
         // 轨道相机保持在地面平面上方，避免绕到地下后天空和地面在屏幕上下看起来互换。
         var minimumPitch = MathF.Asin(Math.Clamp((0.25F - pivot.Y) / distance, -1F, 1F));

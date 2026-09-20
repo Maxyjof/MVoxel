@@ -86,7 +86,9 @@ public sealed record ProjectTemplateDefinition(
     ProjectTemplateId Id,
     string Name,
     string Description,
-    string Focus);
+    string Focus,
+    string Scale,
+    string LearningGoal);
 
 /// <summary>
 /// 内置项目模板目录和资源生成器
@@ -101,19 +103,19 @@ public static class ProjectTemplateCatalog
     /// </summary>
     public static IReadOnlyList<ProjectTemplateDefinition> All { get; } =
     [
-        new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素模型", "适合从零开始"),
-        new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "起伏草地上的石基木屋、玻璃窗与提灯、井台、名木与花圃", "基础建模 · 材质 · 自发光"),
-        new(ProjectTemplateId.MaterialLab, "材质实验室", "粗糙度阶梯、金属球、玻璃砖、发光环与水池的对照展厅", "材质 · 透明 · 发光"),
-        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "色卡沿螺旋看台排布，中央发光高台与玻璃球", "调色板 · 纯色材质 · 材质属性"),
-        new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "±384 的灯塔岛、悬索桥塔与信号塔，验证负坐标与远距离", "大世界 · 稀疏存储 · 负坐标"),
-        new(ProjectTemplateId.LodPlayground, "LOD 练习场", "同一栋房屋从全细节到方块体的五级简化序列", "LOD · 场景性能 · 批量对象"),
-        new(ProjectTemplateId.RayTracingStudio, "光追工作室", "暗室灯槽、侧窗光带、玻璃砖墙与三种材质球", "路径追踪 · 直接光 · 透明"),
-        new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "fbm 山脊、冰斗湖、雪线、沙滩与针叶林带", "程序化 · 地形 · 大量体素"),
-        new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "山脊湖盆瀑布、花丛灯笼小径、橡桦混交林分层存放", "MC 风格 · 分层结构 · 水面 · 发光"),
-        new(ProjectTemplateId.Architecture, "柱廊庭院", "凹槽柱廊、圆拱门、铜皮穹顶、镜水池与台阶基座", "建筑 · 对称 · 曲线"),
-        new(ProjectTemplateId.CameraGallery, "多相机构图室", "螺旋上升雕塑与三层参照柱，配三个相机演示构图", "相机 · 构图 · 景深"),
-        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区的性能压力场景", "大世界 · LOD · 建筑 · 性能压力"),
-        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "海港小镇：码头船队、玻璃凉亭、灯塔、林径与远景塔楼", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪"),
+        new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素数据", "适合从零开始", "起步", "建立自己的项目结构"),
+        new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
+        new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
+        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色板 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
+        new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "一座灯塔岛连接悬索桥与远处信号塔，地标分散在负坐标和远距离位置。", "大世界 · 稀疏存储 · 负坐标", "大型", "理解稀疏世界和远距离编辑"),
+        new(ProjectTemplateId.LodPlayground, "LOD 练习场", "同一座建筑从完整细节到块状轮廓排列成渐变展廊，距离变化一眼可见。", "LOD · 场景性能 · 批量对象", "中型", "验证距离 LOD 的视觉与性能取舍"),
+        new(ProjectTemplateId.RayTracingStudio, "光追工作室", "暗室、侧窗、玻璃砖墙、金属球和暖色灯槽组成一个明确的光线实验场。", "路径追踪 · 直接光 · 透明", "中型", "观察光照、反射和透明材质"),
+        new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "从沙滩、湖盆、雪线到针叶林逐层过渡的山地剖面，适合观察生成结果。", "程序化 · 地形 · 大量体素", "大型", "理解噪声地形和分层材质"),
+        new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "湖盆、瀑布、灯笼小径和混交林组成可漫游的山谷，树木作为独立层保存。", "MC 风格 · 分层结构 · 水面 · 发光", "中型", "学习分层世界和对象所有权"),
+        new(ProjectTemplateId.Architecture, "柱廊庭院", "围绕镜水池组织的柱廊、圆拱、台阶和铜皮穹顶，强调比例和轴线。", "建筑 · 对称 · 曲线", "中型", "练习模块化建筑和对称构图"),
+        new(ProjectTemplateId.CameraGallery, "多相机构图室", "螺旋雕塑、参照柱和三条不同视线组成小型摄影棚，每台相机都有明确任务。", "相机 · 构图 · 景深", "中型", "学习相机、构图和景深"),
+        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区组成真正用于性能验证的远景建筑群。", "大世界 · LOD · 建筑 · 性能压力", "超大型", "验证大坐标、LOD 和 GPU 工作集"),
+        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "从近处玻璃凉亭、码头船队到远处灯塔和塔楼，形成有前景、中景、远景的海湾小镇。", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪", "小—大型", "用一个完整场景体验最终渲染链路"),
     ];
 
     /// <summary>
@@ -139,6 +141,8 @@ public static class ProjectTemplateCatalog
         if (id != ProjectTemplateId.Empty)
         {
             WriteMaterials(project, id);
+            WriteProjectPalette(project);
+            WriteRenderPreset(project, settings);
             var modelPath = Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
             if (id == ProjectTemplateId.MinecraftValley)
             {
@@ -154,7 +158,7 @@ public static class ProjectTemplateCatalog
                 }
 
                 WriteScene(project, Get(id), terrain.OccupiedVoxelCount,
-                    "Assets/Worlds/主世界.mvmodel", layerParts: layerParts);
+                    "Assets/Worlds/主世界.mvmodel", layerParts: layerParts, framingWorld: terrain);
             }
             else if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
@@ -163,7 +167,24 @@ public static class ProjectTemplateCatalog
                 var world = BuildWorld(id, VoxelPalette.Build());
                 LargeWorldFormat.Write(largePath, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
-                    $"Assets/Worlds/{largeFileName}");
+                    $"Assets/Worlds/{largeFileName}", framingWorld: world);
+            }
+            else if (id == ProjectTemplateId.Showcase)
+            {
+                // 每个层级对象都绑定独立模型资产，确保它们可单独隐藏、选中、移动和编辑。
+                var world = BuildWorld(id, VoxelPalette.Build());
+                LargeWorldFormat.Write(modelPath, world);
+                var modelParts = new List<SceneModelPart>();
+                foreach (var (name, part, partWorld) in TemplateScenes.BuildCottageParts(world))
+                {
+                    var fileName = $"小屋与花园_{name}.mvmodel";
+                    LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", fileName), partWorld);
+                    modelParts.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
+                        partWorld.OccupiedVoxelCount, new VoxelCoord64(0, 0, 0)));
+                }
+
+                WriteScene(project, Get(id), world.OccupiedVoxelCount,
+                    "Assets/Worlds/主世界.mvmodel", modelParts: modelParts, framingWorld: world);
             }
             else
             {
@@ -171,7 +192,8 @@ public static class ProjectTemplateCatalog
                 LargeWorldFormat.Write(modelPath, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
                     $"Assets/Worlds/{Path.GetFileName(modelPath)}",
-                    cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1);
+                    cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1,
+                    framingWorld: world);
             }
         }
 
@@ -240,6 +262,27 @@ public static class ProjectTemplateCatalog
         {
             material.Save(Path.Combine(directory, $"{material.Name}.material"));
         }
+    }
+
+    private static void WriteProjectPalette(ProjectHandle project)
+    {
+        PaletteFormat.Save(Path.Combine(project.AssetsPath, "Palettes", EditorPalettes.ProjectPaletteName),
+            VoxelPalette.Build());
+    }
+
+    private static void WriteRenderPreset(ProjectHandle project, ProjectSettingsDocument settings)
+    {
+        var fileName = string.IsNullOrWhiteSpace(settings.DefaultRenderPreset)
+            ? "默认.mvrenderpreset"
+            : SanitizeFileName(settings.DefaultRenderPreset) + ".mvrenderpreset";
+        settings.RenderSettings.SaveTo(Path.Combine(project.AssetsPath, "RenderPresets", fileName));
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sanitized = new string(value.Trim().Select(character => invalid.Contains(character) ? '_' : character).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? "默认" : sanitized;
     }
 
     /// <summary>
@@ -470,16 +513,34 @@ public static class ProjectTemplateCatalog
     /// <param name="voxelCount">体素数量</param>
     private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
         string modelAssetPath = "Assets/Worlds/主世界.mvmodel", int cameraCount = 1,
-        IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount)>? layerParts = null)
+        IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount)>? layerParts = null,
+        IReadOnlyList<SceneModelPart>? modelParts = null,
+        VoxelWorld? framingWorld = null)
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
-        foreach (var (name, part, position) in GetTemplateParts(template.Id))
+        if (modelParts is not null)
         {
-            var modelObject = graph.Add(name,
-                transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
-            modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
-                modelAssetPath, voxelCount, template.Id.ToString(), part));
+            foreach (var modelPart in modelParts)
+            {
+                var modelObject = graph.Add(modelPart.Name,
+                    transform: TransformComponent.FromGrid(new GridTransform(
+                        modelPart.Position, OrthogonalRotation.Identity)));
+                modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
+                    modelPart.ModelAssetPath, modelPart.VoxelCount, template.Id.ToString(), modelPart.Part));
+            }
+        }
+        else
+        {
+            var parts = GetTemplateParts(template.Id);
+            for (var index = 0; index < parts.Count; index++)
+            {
+                var (name, part, position) = parts[index];
+                var modelObject = graph.Add(name,
+                    transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
+                modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
+                    modelAssetPath, voxelCount, template.Id.ToString(), part));
+            }
         }
 
         if (layerParts is not null)
@@ -493,25 +554,45 @@ public static class ProjectTemplateCatalog
             }
         }
 
+        var (center, distance) = GetFraming(framingWorld);
         var lightObject = graph.Add("主光照", transform: TransformComponent.FromFree(new FreeTransform(
-            new Double3(0D, 24D, 0D), Quaternion.Identity)));
+            new Double3(center.X, center.Y + distance * .8D, center.Z), Quaternion.Identity)));
         lightObject.Components.Add(SceneComponentTypes.CreateLight(LightComponentData.Default));
         var positions = new[]
         {
-            new Double3(0D, 8D, 18D),
-            new Double3(22D, 7D, 4D),
-            new Double3(-20D, 10D, -16D),
+            new Double3(center.X + distance * .38D, center.Y + distance * .48D, center.Z + distance),
+            new Double3(center.X - distance * 1.05D, center.Y + distance * .32D, center.Z + distance * .25D),
+            new Double3(center.X + distance * .18D, center.Y + distance * .72D, center.Z - distance * 1.1D),
         };
         for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
         {
             var position = positions[index];
-            var forward = Vector3.Normalize(new Vector3((float)-position.X, -3.5F, (float)-position.Z));
+            // 场景相机的既有约定使用 -Z 作为视线，并保留轻微俯视角；
+            // 不直接把完整三维中心差值传入，避免翻转旧文件的相机朝向语义。
+            var forward = Vector3.Normalize(new Vector3(
+                (float)(center.X - position.X), -3.5F, (float)(center.Z - position.Z)));
             var cameraObject = graph.Add(index == 0 ? "主相机" : $"相机 {index + 1}",
                 transform: TransformComponent.FromFree(new FreeTransform(
                     position, CreateCameraRotation(forward, Vector3.UnitY))));
             cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
         }
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
+    }
+
+    private readonly record struct SceneModelPart(
+        string Name, string Part, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position);
+
+    private static (Double3 Center, double Distance) GetFraming(VoxelWorld? world)
+    {
+        if (world is null || !world.TryGetBounds(out var minimum, out var maximum))
+            return (new Double3(0D, 4D, 0D), 24D);
+
+        var center = new Double3(
+            (minimum.X + maximum.X) * .5D,
+            (minimum.Y + maximum.Y) * .5D,
+            (minimum.Z + maximum.Z) * .5D);
+        var span = Math.Max(maximum.X - minimum.X, Math.Max(maximum.Y - minimum.Y, maximum.Z - minimum.Z));
+        return (center, Math.Max(24D, span * 1.35D));
     }
 
     private static IReadOnlyList<(string Name, string Part, VoxelCoord64 Position)> GetTemplateParts(ProjectTemplateId id)

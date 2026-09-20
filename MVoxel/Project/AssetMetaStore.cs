@@ -28,7 +28,8 @@ public static class AssetMetaStore
     public static readonly IReadOnlySet<string> AssetExtensions =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            ".mvmodel", ".mvworld", ".mvox", ".prefab", ".material", ".mvgenerator", ".palette",
+            ".mvmodel", ".mvworld", ".mvox", ".prefab", ".material", ".mvgenerator", ".palette", ".pal",
+            ".mvrenderpreset", ".mvrender", ".hdr", ".exr", ".vox", ".qb", ".schem",
         };
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

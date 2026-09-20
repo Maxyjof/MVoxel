@@ -288,33 +288,45 @@ public sealed class VoxelGpuWorkset
             }
 
             var extentY = 1;
-            ExpandPlate:
             while (origin.Y + extentY < VoxelWorld.ChunkSize)
             {
+                var canExpandPlate = true;
                 for (var dx = 0; dx < extentX; dx++)
                 {
                     if (!TryUnvisited(lookup, visited, SparseVoxelChunk.ToIndex(
                             new LocalCoord(origin.X + dx, origin.Y + extentY, origin.Z)), value))
                     {
-                        break ExpandPlate;
+                        canExpandPlate = false;
+                        break;
                     }
+                }
+
+                if (!canExpandPlate)
+                {
+                    break;
                 }
 
                 extentY++;
             }
 
             var extentZ = 1;
-            ExpandBlock:
             while (origin.Z + extentZ < VoxelWorld.ChunkSize)
             {
+                var canExpandBlock = true;
                 for (var dy = 0; dy < extentY; dy++)
                 for (var dx = 0; dx < extentX; dx++)
                 {
                     if (!TryUnvisited(lookup, visited, SparseVoxelChunk.ToIndex(
                             new LocalCoord(origin.X + dx, origin.Y + dy, origin.Z + extentZ)), value))
                     {
-                        break ExpandBlock;
+                        canExpandBlock = false;
+                        break;
                     }
+                }
+
+                if (!canExpandBlock)
+                {
+                    break;
                 }
 
                 extentZ++;

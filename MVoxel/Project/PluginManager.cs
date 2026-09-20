@@ -552,7 +552,7 @@ public static class PluginManager
     /// <param name="versionText">已安装版本</param>
     /// <param name="range">依赖版本范围</param>
     /// <returns>是否满足版本范围</returns>
-    private static bool IsVersionSatisfied(string versionText, string range)
+    internal static bool IsVersionSatisfied(string versionText, string range)
     {
         if (range.Trim() == "*") return Version.TryParse(versionText, out _);
         if (!Version.TryParse(versionText, out var actual)) return false;
@@ -577,7 +577,7 @@ public static class PluginManager
                 if (!Version.TryParse(value.TrimStart('>', '<', '='), out var expected)) { matches = false; continue; }
                 matches &= prefix switch
                 {
-                    '^' => actual.Major == expected.Major && actual >= expected,
+                    '^' => actual >= expected && actual < CaretUpperBound(expected),
                     '~' => actual.Major == expected.Major && actual.Minor == expected.Minor && actual >= expected,
                     _ when part.StartsWith(">=", StringComparison.Ordinal) => actual >= expected,
                     _ when part.StartsWith(">", StringComparison.Ordinal) => actual > expected,
@@ -589,5 +589,14 @@ public static class PluginManager
             if (matches) return true;
         }
         return false;
+    }
+
+    private static Version CaretUpperBound(Version version)
+    {
+        return version.Major > 0
+            ? new Version(version.Major + 1, 0)
+            : version.Minor > 0
+                ? new Version(0, version.Minor + 1)
+                : new Version(0, 0, version.Build + 1);
     }
 }

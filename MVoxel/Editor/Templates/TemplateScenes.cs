@@ -132,6 +132,43 @@ internal static class TemplateScenes
     }
 
     /// <summary>
+    /// 将小屋花园拆成真正可编辑的模型层。
+    /// 坐标保持原世界坐标，因此拆分后重新组合不会产生位移或缩放误差。
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Part, VoxelWorld World)> BuildCottageParts(VoxelWorld source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var parts = new (string Name, string Part, VoxelWorld World)[]
+        {
+            ("小屋", "房屋", new VoxelWorld()),
+            ("左侧树木", "左侧树木", new VoxelWorld()),
+            ("右侧树木", "右侧树木", new VoxelWorld()),
+            ("石板小路", "小路", new VoxelWorld()),
+            ("门口提灯", "提灯", new VoxelWorld()),
+            ("花园环境", "花园环境", new VoxelWorld()),
+        };
+
+        foreach (var (coordinate, value) in source.EnumerateOccupied())
+        {
+            var index = coordinate switch
+            {
+                // 提灯柱与灯笼
+                { X: >= 5 and <= 6, Z: 8, Y: >= 5 } => 4,
+                // 只把石板本身归入小路，路下的草地留给环境层
+                { Y: 3, Z: >= 6, X: >= 0 and <= 8 } when value.Color == PathGray => 3,
+                // 树冠和树干按空间区域分层；房屋边界优先于环境
+                { X: <= -9, Z: >= -9 and <= 7, Y: >= 3 } => 1,
+                { X: >= 9, Z: >= 8 and <= 25, Y: >= 3 } => 2,
+                { X: >= -9 and <= 8, Z: >= -7 and <= 6, Y: >= 3 } => 0,
+                _ => 5,
+            };
+            parts[index].World.Set(coordinate, value);
+        }
+
+        return parts;
+    }
+
+    /// <summary>
     /// 材质实验室：粗糙度阶梯、金属/玻璃/发光/水样品台与弧形背景屏
     /// </summary>
     public static VoxelWorld BuildMaterialLab()

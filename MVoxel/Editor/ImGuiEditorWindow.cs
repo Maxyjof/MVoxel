@@ -683,7 +683,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("打开项目", "Ctrl+O")) ShowProjectPathDialog(create: false);
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
-            if (ImGui.MenuItem("导入 .vox / .qb / .schem 为世界…", enabled: _project is not null)) ImportVoxAsWorld();
+            if (ImGui.MenuItem("导入体素数据（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
             if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) Close();
@@ -748,10 +748,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("工具"))
         {
+            ImGui.TextDisabled("视口工具");
             if (ImGui.MenuItem("相机", null, _activeTool == EditorTool.Camera)) _activeTool = EditorTool.Camera;
             if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
+            ImGui.Separator();
+            ImGui.TextDisabled("体素编辑工具");
             if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw)) _activeTool = EditorTool.Draw;
             if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase)) _activeTool = EditorTool.Erase;
+            if (ImGui.MenuItem("直线", null, _activeTool == EditorTool.Line)) _activeTool = EditorTool.Line;
+            if (ImGui.MenuItem("长方体", null, _activeTool == EditorTool.Box)) _activeTool = EditorTool.Box;
+            if (ImGui.MenuItem("填充", null, _activeTool == EditorTool.Fill)) _activeTool = EditorTool.Fill;
             ImGui.Separator();
             if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
             ImGui.EndMenu();
@@ -777,14 +783,18 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2);
             if (ImGui.MenuItem("项目设置", enabled: _project is not null)) OpenSettings(1);
             ImGui.Separator();
-            if (ImGui.MenuItem("快速画面设置")) _requestedInspectorTab = 1;
+            if (ImGui.MenuItem("快速画面设置"))
+            {
+                _showInspector = true;
+                _requestedInspectorTab = 1;
+            }
             ImGui.EndMenu();
         }
 
         if (ImGui.BeginMenu("帮助"))
         {
-            ImGui.MenuItem("MVoxel 体素建模软件");
-            ImGui.MenuItem("在场景中旋转、平移和缩放，观察你的作品");
+            ImGui.MenuItem("MVoxel 体素建模软件", enabled: false);
+            ImGui.MenuItem("在场景中旋转、平移和缩放，观察你的作品", enabled: false);
             ImGui.EndMenu();
         }
 
@@ -1066,7 +1076,8 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 绘制对象可选中状态图标
+    /// 绘制对象可选中状态图标：使用“定位靶心”而不是手掌，
+    /// 在 16~20px 的层级行图标中轮廓更清楚，也不会产生多指误读。
     /// </summary>
     /// <param name="drawList">目标绘制列表</param>
     /// <param name="min">图标左上角</param>
@@ -1076,13 +1087,13 @@ DockId=0x6A3C3007,0
     private static void DrawSelectableIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
     {
         var center = (min + max) * 0.5F;
-        var palm = center + new Vector2(-2F, 3F);
-        drawList.AddCircleFilled(palm, 4.2F, color, 12);
-        drawList.AddLine(palm + new Vector2(-3F, 0F), palm + new Vector2(-6F, -5F), color, 2F);
-        drawList.AddLine(palm + new Vector2(-1F, -1F), palm + new Vector2(-2F, -9F), color, 2F);
-        drawList.AddLine(palm + new Vector2(1F, -1F), palm + new Vector2(1F, -10F), color, 2F);
-        drawList.AddLine(palm + new Vector2(3F, 0F), palm + new Vector2(4F, -8F), color, 2F);
-        drawList.AddLine(palm + new Vector2(4F, 2F), palm + new Vector2(8F, -2F), color, 2F);
+        var radius = Math.Max(4F, (max.X - min.X) * .28F);
+        drawList.AddCircle(center, radius, color, 16, 1.5F);
+        drawList.AddCircleFilled(center, 2F, color, 10);
+        drawList.AddLine(center + new Vector2(-radius - 2F, 0F), center + new Vector2(-radius + 1F, 0F), color, 1.5F);
+        drawList.AddLine(center + new Vector2(radius - 1F, 0F), center + new Vector2(radius + 2F, 0F), color, 1.5F);
+        drawList.AddLine(center + new Vector2(0F, -radius - 2F), center + new Vector2(0F, -radius + 1F), color, 1.5F);
+        drawList.AddLine(center + new Vector2(0F, radius - 1F), center + new Vector2(0F, radius + 2F), color, 1.5F);
         if (!active)
         {
             drawList.AddLine(min + new Vector2(3F, 3F), max - new Vector2(3F, 3F), color, 1.8F);
@@ -1151,18 +1162,19 @@ DockId=0x6A3C3007,0
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
 
+        // 辅助图层与模型内容是两个独立系统。空场景仍必须显示网格，
+        // 否则用户无法判断原点、比例和编辑位置。
+        if (_showGrid)
+        {
+            SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+        }
+
         // 场景视图始终使用同一条纯色 GPU 绘制路径，交互时也不切换成另一套画面
         var showVoxelWorld = IsVoxelWorldVisible();
         var gpuRendered = showVoxelWorld && _project is not null &&
                           TryRenderGpuSceneView(drawList, origin, size, camera);
         if (showVoxelWorld && _project is not null && !gpuRendered)
         {
-            // GPU 不可用时仍保持网格在体素之前绘制，避免网格盖住模型
-            if (_showGrid)
-            {
-                SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-            }
-
             DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
@@ -1177,10 +1189,7 @@ DockId=0x6A3C3007,0
         }
 
         // ImGui 绘制列表没有场景深度，轴线在体素图像之后提交并按体素射线裁剪遮挡段
-        if (showVoxelWorld)
-        {
-            DrawSceneWorldAxes(drawList, origin, size, camera);
-        }
+        DrawSceneWorldAxes(drawList, origin, size, camera);
 
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
         if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Scene)
@@ -2346,7 +2355,8 @@ DockId=0x6A3C3007,0
     private void DrawInspectorProperties()
     {
         if (_selectedSceneObjectId is null &&
-            (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector() || TryDrawSelectedEnvironmentInspector()))
+            (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector() || TryDrawSelectedEnvironmentInspector() ||
+             TryDrawSelectedAssetInspector()))
         {
             return;
         }
@@ -3034,14 +3044,21 @@ DockId=0x6A3C3007,0
 
     private void DrawConfigurationPanel()
     {
-        ImGui.TextColored(ToColor(EditorPalette.Accent), "LOD 与画面设置");
-        if (ImGui.Button("打开完整设置")) OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
+        DrawSettingsPageHeader("视口渲染", _project is null
+            ? "编辑器默认值 · 实时生效"
+            : "当前项目值 · 实时生效");
+        ImGui.TextDisabled($"{(_renderSettings.Backend == RenderBackend.Gpu ? "显卡计算" : "CPU 计算")}  ·  " +
+                           $"路径追踪 {(_renderSettings.PathTracingEnabled ? "开启" : "关闭")}  ·  " +
+                           $"网格 {(_showGrid ? "显示" : "隐藏")}  ·  " +
+                           $"体素轮廓 {(_showVoxelOutlines ? "显示" : "隐藏")}");
+        if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
+            OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
         DrawLodSection(_renderSettings);
 
-        ImGui.SeparatorText("场景视图辅助显示");
+        DrawSettingsSectionHeader("场景视图辅助显示", "只影响视口辅助元素，不改变导出画面");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        ImGui.SeparatorText("渲染设置（显卡计算 · 实时生效）");
+        DrawSettingsSectionHeader("渲染参数", "实时预览与导出配置的快捷入口");
         var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
         if (_renderSettings.ToJson() != before)
@@ -3399,18 +3416,21 @@ DockId=0x6A3C3007,0
     private void DrawProjectTemplatePicker()
     {
         var selected = ProjectTemplateCatalog.Get(_selectedProjectTemplate);
+        ImGui.TextDisabled("模板不是装饰场景：每个模板都对应一条明确的编辑或渲染练习路径。");
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedProjectTemplate;
-                if (ImGui.Selectable(template.Name, isSelected)) _selectedProjectTemplate = template.Id;
+                if (ImGui.Selectable($"{template.Name}  ·  {template.Scale}", isSelected)) _selectedProjectTemplate = template.Id;
                 if (isSelected) ImGui.SetItemDefaultFocus();
             }
 
             ImGui.EndCombo();
         }
-
+        ImGui.TextDisabled($"规模：{selected.Scale}    重点：{selected.Focus}");
+        ImGui.TextWrapped(selected.Description);
+        ImGui.TextColored(ToColor(EditorPalette.Accent), $"学习目标：{selected.LearningGoal}");
     }
 
     private static string GetNewProjectPath(string requestedPath)

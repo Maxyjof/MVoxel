@@ -580,15 +580,38 @@ internal sealed partial class ImGuiEditorWindow
         var absolute = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         if (!File.Exists(absolute))
         {
-            SetStatus($"世界文件不存在：{relativePath}");
+            SetStatus($"体素数据文件不存在：{relativePath}");
             return;
         }
 
         if (_sceneDocumentDirty) SaveProject();
         try
         {
-            _world = LargeWorldFormat.Read(absolute);
-            var primaryAssetPath = "Assets/" + relativePath.Replace('\\', '/');
+            var workingRelativePath = relativePath.Replace('\\', '/');
+            var extension = Path.GetExtension(absolute).ToLowerInvariant();
+            if (extension is ".vox" or ".qb" or ".schem")
+            {
+                // 外部交换格式不能直接成为可编辑工作资产；双击时先导入为原生 .mvmodel。
+                _world = ReadVoxelAsset(absolute);
+                var importedBaseName = Path.GetFileNameWithoutExtension(absolute);
+                var importedName = importedBaseName + ".mvmodel";
+                var importedPath = Path.Combine(_project.AssetsPath, "Worlds", importedName);
+                for (var suffix = 2; File.Exists(importedPath); suffix++)
+                {
+                    importedName = $"{importedBaseName}_{suffix}.mvmodel";
+                    importedPath = Path.Combine(_project.AssetsPath, "Worlds", importedName);
+                }
+                LargeWorldFormat.Write(importedPath, _world);
+                AssetMetaStore.EnsureMeta(importedPath);
+                workingRelativePath = "Worlds/" + importedName;
+                SetStatus($"已将外部 {extension} 导入为体素数据：{workingRelativePath}");
+            }
+            else
+            {
+                _world = LargeWorldFormat.Read(absolute);
+            }
+
+            var primaryAssetPath = "Assets/" + workingRelativePath;
             UpdateSceneModelReference(primaryAssetPath);
             // 切换世界是新的工作上下文：清空分层所有权，并移除旧世界遗留的分层引用
             _layerOwnership.Clear();
@@ -610,11 +633,11 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
             FrameCameraOnWorld();
-            SetStatus($"已打开世界：{Path.GetFileName(relativePath)}（{_world.OccupiedVoxelCount:N0} 体素）");
+            SetStatus($"已打开体素数据：{Path.GetFileName(workingRelativePath)}（{_world.OccupiedVoxelCount:N0} 体素）");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
         {
-            SetStatus($"打开世界失败：{exception.Message}");
+            SetStatus($"打开体素数据失败：{exception.Message}");
         }
     }
 
@@ -950,7 +973,15 @@ internal sealed partial class ImGuiEditorWindow
 
         var capsLockMode = IsCapsLockEnabled();
         var shiftPressed = IsShiftPressed();
-        if (_activeTool == EditorTool.Pick && !capsLockMode && !shiftPressed)
+        // 相机和选择是观察工具，绝不能因为默认左键动作是 Place 而修改体素。
+        // 之前“相机/选择/擦除”按钮虽然能切换状态，却仍会落入同一套放置逻辑。
+        if (_activeTool == EditorTool.Camera)
+        {
+            _brushPreview = null;
+            return;
+        }
+
+        if (_activeTool == EditorTool.Pick)
         {
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
@@ -1002,7 +1033,7 @@ internal sealed partial class ImGuiEditorWindow
             return false;
         }
 
-        var erase = action == ViewportMouseAction.Destroy;
+        var erase = _activeTool == EditorTool.Erase || action == ViewportMouseAction.Destroy;
         var hit = PickVoxel(mouse, origin, size, camera);
         if (hit is null)
         {
@@ -1271,19 +1302,21 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 选中 .hdr 环境资产时在检查器提供设为/清除环境贴图操作
+    /// 选中 .hdr/.exr 环境资产时在检查器提供设为/清除环境贴图操作
     /// </summary>
     private bool TryDrawSelectedEnvironmentInspector()
     {
         var relativePath = _assetBrowser.SelectedAssetPath;
-        if (_project is null || !relativePath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)) return false;
+        if (_project is null ||
+            !(relativePath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) ||
+              relativePath.EndsWith(".exr", StringComparison.OrdinalIgnoreCase))) return false;
         var path = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         if (!File.Exists(path)) return false;
 
         ImGui.Text("环境贴图");
         ImGui.Separator();
         ImGui.TextWrapped(Path.GetFileName(path));
-        ImGui.TextDisabled($"大小  {new FileInfo(path).Length / 1024F:0.0} KB");
+        ImGui.TextDisabled($"格式  {Path.GetExtension(path).ToUpperInvariant()[1..]}    大小  {new FileInfo(path).Length / 1024F:0.0} KB");
         if (ImGui.Button("设为环境贴图", new Vector2(150F, 30F)))
         {
             try
@@ -1494,10 +1527,14 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawBrushToolbarRow()
     {
         var previousTool = _activeTool;
+        ImGui.TextDisabled("观察");
+        ImGui.SameLine(0F, 6F);
         ToolButton("相机", EditorTool.Camera);
         ImGui.SameLine();
         ToolButton("选择", EditorTool.Pick);
-        ImGui.SameLine();
+        ImGui.SameLine(0F, 12F);
+        ImGui.TextDisabled("编辑");
+        ImGui.SameLine(0F, 6F);
         ToolButton("绘制", EditorTool.Draw);
         ImGui.SameLine();
         ToolButton("擦除", EditorTool.Erase);
@@ -1564,6 +1601,17 @@ internal sealed partial class ImGuiEditorWindow
         var active = _activeTool == tool;
         if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
         if (ImGui.SmallButton(label) && !active) _activeTool = tool;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tool switch
+        {
+            EditorTool.Camera => "观察：左键不修改体素，右键环绕，中键平移",
+            EditorTool.Pick => "选择：点击体素查看坐标和颜色",
+            EditorTool.Draw => "绘制：左键放置，Shift+左键或右键擦除",
+            EditorTool.Erase => "擦除：左键或右键擦除体素",
+            EditorTool.Line => "直线：拖动绘制或擦除一条直线",
+            EditorTool.Box => "长方体：拖动绘制或擦除实心长方体",
+            EditorTool.Fill => "填充：替换同值连通区域",
+            _ => label,
+        });
         if (active) ImGui.PopStyleColor();
     }
 
@@ -1617,24 +1665,28 @@ internal sealed partial class ImGuiEditorWindow
             var message = _pipeline?.GpuWorksetUploaded == true
                 ? "显卡体素工作集已上传，显卡绘制管线仍在初始化，当前使用 CPU 预览。"
                 : "显卡体素工作集尚未上传，当前使用 CPU 预览。";
-            ImGui.TextColored(ToColor(EditorPalette.Accent), message);
+            ImGui.TextColored(ToColor(EditorPalette.Error), message);
             if (!string.IsNullOrEmpty(_pipelineStatus)) ImGui.TextWrapped(_pipelineStatus);
         }
 
-        if (ImGui.Button("恢复默认参数"))
+        if (ImGui.Button("恢复默认参数", new Vector2(138F, 30F)))
         {
             var defaults = new RenderSettings();
             if (_project is null)
                 _editorSettings.RenderViewSettings = defaults;
             else
+            {
                 _projectSettings.RenderSettings = defaults;
+                _projectSettings.DefaultRenderPreset = "默认";
+            }
             _renderSettings = defaults;
             SyncSettingsToggles();
             _pipeline?.ResetAccumulation();
+            SetStatus("已恢复默认渲染参数");
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("保存配置"))
+        if (ImGui.Button("保存配置", new Vector2(112F, 30F)))
         {
             try
             {

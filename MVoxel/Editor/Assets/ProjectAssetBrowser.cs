@@ -87,6 +87,10 @@ internal sealed class ProjectAssetBrowser
         };
 
         DrawToolbar(project);
+        if (string.IsNullOrEmpty(_selectedFolder))
+        {
+            ImGui.TextDisabled("场景 = 对象、镜头与摆放    ·    体素数据 = 实际模型内容    ·    预制体 = 可复用对象组合");
+        }
         ImGui.Separator();
 
         var bodyHeight = Math.Max(64F, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8F);
@@ -210,9 +214,16 @@ internal sealed class ProjectAssetBrowser
         if (entries.Count == 0)
         {
             ImGui.Dummy(new Vector2(0F, 14F));
-            ImGui.TextDisabled(string.IsNullOrWhiteSpace(_searchText)
-                ? "此文件夹暂时没有资产。"
-                : "没有找到符合条件的资产。");
+            if (string.IsNullOrWhiteSpace(_searchText))
+            {
+                ImGui.TextDisabled("此文件夹暂时没有资产。");
+                var description = ProjectAssetCatalog.FolderDescription(_selectedFolder);
+                if (description.Length > 0) ImGui.TextWrapped(description);
+            }
+            else
+            {
+                ImGui.TextDisabled("没有找到符合条件的资产。");
+            }
             return;
         }
 
@@ -273,7 +284,7 @@ internal sealed class ProjectAssetBrowser
                 }
 
                 if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
-                    ImGui.MenuItem("打开为世界"))
+                    ImGui.MenuItem("打开为当前体素数据"))
                 {
                     openWorldRequest?.Invoke(entry.RelativePath);
                 }
@@ -976,7 +987,7 @@ internal static class ProjectAssetCatalog
     {
         ProjectAssetKind.Folder => "文件夹",
         ProjectAssetKind.Scene => "场景",
-        ProjectAssetKind.VoxelModel => "体素世界",
+        ProjectAssetKind.VoxelModel => "体素数据",
         ProjectAssetKind.Prefab => "预制体",
         ProjectAssetKind.Material => "材质",
         ProjectAssetKind.Palette => "调色板",
@@ -987,6 +998,24 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Document => "文档",
         ProjectAssetKind.Image => "PNG 图像",
         _ => "其他文件",
+    };
+
+    /// <summary>
+    /// 空分类仍保留为稳定的项目结构，但在界面中说明它的真实用途，
+    /// 避免用户把标准目录误认为未完成的占位功能。
+    /// </summary>
+    internal static string FolderDescription(string relativePath) => relativePath.Trim('/').ToLowerInvariant() switch
+    {
+        "scenes" => "保存 .mvox 场景：对象层级、变换、相机、灯光与模型引用。",
+        "prefabs" => "保存 .prefab 预制体：可复用的对象子树和变体。通过层级右键创建。",
+        "worlds" => "保存 .mvmodel/.mvworld 体素数据；外部 .vox 文件也会在这里显示。",
+        "materials" => "保存 .material 材质槽覆盖，供渲染管线加载。",
+        "palettes" => "保存 .palette/.pal 调色板；项目打开时会自动维护主调色板。",
+        "environments" => "放置可被检视器加载的 .hdr/.exr 环境贴图。",
+        "renderpresets" => "保存 .mvrenderpreset/.mvrender 渲染参数，可在检视器中应用。",
+        "generators" => "保存 .mvgenerator 生成器脚本，可在生成器面板运行。",
+        "exports" => "渲染图像和外部导出结果目录，不作为场景输入资产。",
+        _ => string.Empty,
     };
 
     /// <summary>
@@ -1001,11 +1030,13 @@ internal static class ProjectAssetCatalog
         return Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".mvox" => ProjectAssetKind.Scene,
-            ".mvmodel" or ".mvworld" or ".vox" => ProjectAssetKind.VoxelModel,
+            ".mvmodel" or ".mvworld" or ".vox" or ".qb" or ".schem" => ProjectAssetKind.VoxelModel,
             ".prefab" => ProjectAssetKind.Prefab,
             ".material" => ProjectAssetKind.Material,
             ".palette" or ".pal" => ProjectAssetKind.Palette,
-            ".mvenvironment" or ".hdr" or ".exr" => ProjectAssetKind.Environment,
+            // 环境资产使用实际可解码的 Radiance HDR / OpenEXR 文件；
+            // 不再把不存在解析器的自定义 .mvenvironment 假装成可用格式。
+            ".hdr" or ".exr" => ProjectAssetKind.Environment,
             ".mvrenderpreset" or ".mvrender" => ProjectAssetKind.RenderPreset,
             ".mvgenerator" => ProjectAssetKind.Generator,
             ".cs" or ".lua" => ProjectAssetKind.Script,
@@ -1058,7 +1089,7 @@ internal static class ProjectAssetCatalog
     {
         "Scenes" => "场景",
         "Prefabs" => "预制体",
-        "Worlds" => "世界",
+        "Worlds" => "体素数据",
         "Materials" => "材质",
         "Palettes" => "调色板",
         "Environments" => "环境",

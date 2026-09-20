@@ -469,12 +469,13 @@ internal sealed class ImGuiWelcomeContent
     private void DrawTemplatePicker()
     {
         var selected = ProjectTemplateCatalog.Get(_selectedTemplate);
+        ImGui.TextColored(ToColor(EditorPalette.Text), "选择一个有明确学习目标的起始场景");
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedTemplate;
-                if (ImGui.Selectable(template.Name, isSelected))
+                if (ImGui.Selectable($"{template.Name}  ·  {template.Scale}", isSelected))
                 {
                     _selectedTemplate = template.Id;
                     _pathText = ApplyTemplateProjectName(_pathText, _templateAutoName, template.Name, out var autoName);
@@ -486,7 +487,9 @@ internal sealed class ImGuiWelcomeContent
 
             ImGui.EndCombo();
         }
-
+        ImGui.TextDisabled($"规模：{selected.Scale}    重点：{selected.Focus}");
+        ImGui.TextWrapped(selected.Description);
+        ImGui.TextColored(ToColor(EditorPalette.Accent), $"创建后你将学到：{selected.LearningGoal}");
     }
 
     /// <summary>
