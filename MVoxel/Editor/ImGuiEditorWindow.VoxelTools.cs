@@ -833,10 +833,13 @@ internal sealed partial class ImGuiEditorWindow
     {
         var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
         if (_gpuRenderingDisabled || effective.Backend == RenderBackend.Cpu ||
-            _pipeline is not { IsAvailable: true } pipeline) return false;
+            _pipeline is not { } pipeline) return false;
         try
         {
             pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            // 首帧工作集是在渲染视图按需上传的，因此不能在 SyncWorld 之前用
+            // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
+            if (!pipeline.IsAvailable) return false;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
             // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
