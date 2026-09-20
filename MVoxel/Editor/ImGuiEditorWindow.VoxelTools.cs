@@ -110,6 +110,7 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocument = LoadSceneDocument(project);
         _sceneDocumentDirty = false;
         _renderCameraId = null;
+        _renderCameraInitialFramePending = true;
         _palette = EditorPalettes.ResolveProjectPalette(project);
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");

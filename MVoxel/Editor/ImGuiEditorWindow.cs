@@ -124,6 +124,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _gpuRenderingDisabled;
     private long _lastRenderGpuSubmitMs;
     private bool _renderViewNeedsInitialRender = true;
+    private bool _renderCameraInitialFramePending = true;
     private bool _renderViewWasFocused;
     private Vector2 _lastRenderViewportSize;
     private Queue<ExportJob> _exportQueue = new();
@@ -3180,6 +3181,7 @@ DockId=0x6A3C3007,0
             _sceneDocumentDirty = false;
             _selectedSceneObjectId = null;
             _renderCameraId = null;
+            _renderCameraInitialFramePending = true;
         }
         if (touchesScene || touchesModel)
         {
@@ -3638,6 +3640,7 @@ DockId=0x6A3C3007,0
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _sceneDocumentDirty = false;
         _renderCameraId = null;
+        _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
         ResetGeneratorPanel();
         _world = new VoxelWorld();
