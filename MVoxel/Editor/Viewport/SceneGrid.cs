@@ -96,13 +96,15 @@ internal static class SceneGrid
             // 保留克制的主线，让远景保持可读
                 var spacingPixels = step * SceneProjection.FocalLength(size, camera) /
                                     Math.Max(camera.NearClip, depth);
+                // 远处允许降低副线密度，但不能把整片地面淡出成空白：
+                // 主线始终作为空间参照，副线保留最低可见度，避免缩放到某个距离后网格突然消失。
                 var densityFade = major
-                    ? 0.22F + 0.78F * SmoothStep(0.08F, 0.55F, spacingPixels)
-                    : SmoothStep(0.55F, 1.45F, spacingPixels);
+                    ? 0.72F + 0.28F * SmoothStep(0.08F, 0.55F, spacingPixels)
+                    : 0.16F + 0.84F * SmoothStep(0.55F, 1.45F, spacingPixels);
                 var radial = Math.Max(Math.Abs(mid.X - camera.Target.X), Math.Abs(mid.Z - camera.Target.Z)) / extent;
-                var edgeFade = 1F - SmoothStep(0.985F, 1F, radial);
+                var edgeFade = 0.42F + 0.58F * (1F - SmoothStep(0.985F, 1F, radial));
                 var fade = densityFade * edgeFade;
-                if (fade < 0.01F) continue;
+                if (fade < (major ? 0.08F : 0.025F)) continue;
                 if (SceneProjection.ClipLine(a, b, origin, size, camera, out var p, out var q))
                 {
                     var color = major ? new Vector4(0.42F, 0.50F, 0.62F, fade * 0.78F) :

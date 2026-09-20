@@ -1788,54 +1788,59 @@ DockId=0x6A3C3007,0
         if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion)
             return;
 
-        const int maximumPreviewVoxels = 20_000;
-        const int maximumPreviewFaces = 48_000;
+        const int maximumPreviewFaces = 80_000;
         _cpuPreviewSurfaceFaces.Clear();
-        var totalVoxels = _world.OccupiedVoxelCount;
-        var stride = totalVoxels <= maximumPreviewVoxels
-            ? 1
-            : (int)Math.Ceiling(totalVoxels / (double)maximumPreviewVoxels);
-        var sourceIndex = 0;
-        foreach (var item in _world.EnumerateOccupied())
+        // 场景窗口不使用渲染窗口的光照或路径追踪，但几何必须来自同一份完整世界数据。
+        // 通过与 GPU 工作集一致的贪心盒合并减少 ImGui 面片数量，避免抽样造成“散点化”结构。
+        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: true);
+        foreach (var cell in workset.Cells)
         {
-            if (sourceIndex++ % stride != 0) continue;
-            var coordinate = item.Coordinate;
-            var color = Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z), FaceDirection.Left, color, maximumPreviewFaces);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z), FaceDirection.Right, color, maximumPreviewFaces);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z), FaceDirection.Bottom, color, maximumPreviewFaces);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z), FaceDirection.Top, color, maximumPreviewFaces);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1), FaceDirection.Back, color, maximumPreviewFaces);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1), FaceDirection.Front, color, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Left, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Right, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Bottom, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Top, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Back, maximumPreviewFaces);
+            AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Front, maximumPreviewFaces);
         }
 
-        if (stride > 1 || _cpuPreviewSurfaceFaces.Count >= maximumPreviewFaces)
+        if (_cpuPreviewSurfaceFaces.Count >= maximumPreviewFaces)
         {
-            MVoxelLog.Info($"场景窗口 CPU 预览已限额：原始 {totalVoxels:N0} 体素，抽样步长 {stride}，表面 {_cpuPreviewSurfaceFaces.Count:N0} 面");
+            MVoxelLog.Info($"场景窗口 CPU 预览已限额：原始 {_world.OccupiedVoxelCount:N0} 体素，合并盒 {workset.Cells.Count:N0}，表面 {_cpuPreviewSurfaceFaces.Count:N0} 面");
         }
 
         _cpuPreviewWorld = _world;
         _cpuPreviewWorldVersion = _world.ContentVersion;
     }
 
-    private void AddCpuPreviewSurfaceFace(VoxelCoord64 coordinate, VoxelCoord64 neighbor,
-        FaceDirection direction, Color baseColor, int maximumFaces)
+    private void AddCpuPreviewBoxSurfaceFace(VoxelCoord64 worksetOrigin, VoxelGpuCell cell,
+        FaceDirection direction, int maximumFaces)
     {
         if (_cpuPreviewSurfaceFaces.Count >= maximumFaces) return;
-        if (_world.TryGet(neighbor, out var neighborValue) && !neighborValue.IsEmpty)
+
+        var coordinate = new VoxelCoord64(
+            worksetOrigin.X + cell.X,
+            worksetOrigin.Y + cell.Y,
+            worksetOrigin.Z + cell.Z);
+        var extentX = Math.Max(1, cell.ExtentX);
+        var extentY = Math.Max(1, cell.ExtentY);
+        var extentZ = Math.Max(1, cell.ExtentZ);
+        if (!IsCpuPreviewBoxFaceExposed(coordinate, extentX, extentY, extentZ, direction))
             return;
 
         var x = (float)coordinate.X;
         var y = (float)coordinate.Y;
         var z = (float)coordinate.Z;
+        var maxX = x + extentX;
+        var maxY = y + extentY;
+        var maxZ = z + extentZ;
         var corners = direction switch
         {
-            FaceDirection.Left => new[] { new Vector3(x, y, z), new Vector3(x, y + 1, z), new Vector3(x, y + 1, z + 1), new Vector3(x, y, z + 1) },
-            FaceDirection.Right => new[] { new Vector3(x + 1, y, z + 1), new Vector3(x + 1, y + 1, z + 1), new Vector3(x + 1, y + 1, z), new Vector3(x + 1, y, z) },
-            FaceDirection.Bottom => new[] { new Vector3(x, y, z + 1), new Vector3(x + 1, y, z + 1), new Vector3(x + 1, y, z), new Vector3(x, y, z) },
-            FaceDirection.Top => new[] { new Vector3(x, y + 1, z), new Vector3(x + 1, y + 1, z), new Vector3(x + 1, y + 1, z + 1), new Vector3(x, y + 1, z + 1) },
-            FaceDirection.Back => new[] { new Vector3(x + 1, y, z), new Vector3(x + 1, y + 1, z), new Vector3(x, y + 1, z), new Vector3(x, y, z) },
-            _ => new[] { new Vector3(x, y, z + 1), new Vector3(x, y + 1, z + 1), new Vector3(x + 1, y + 1, z + 1), new Vector3(x + 1, y, z + 1) },
+            FaceDirection.Left => new[] { new Vector3(x, y, z), new Vector3(x, maxY, z), new Vector3(x, maxY, maxZ), new Vector3(x, y, maxZ) },
+            FaceDirection.Right => new[] { new Vector3(maxX, y, maxZ), new Vector3(maxX, maxY, maxZ), new Vector3(maxX, maxY, z), new Vector3(maxX, y, z) },
+            FaceDirection.Bottom => new[] { new Vector3(x, y, maxZ), new Vector3(maxX, y, maxZ), new Vector3(maxX, y, z), new Vector3(x, y, z) },
+            FaceDirection.Top => new[] { new Vector3(x, maxY, z), new Vector3(maxX, maxY, z), new Vector3(maxX, maxY, maxZ), new Vector3(x, maxY, maxZ) },
+            FaceDirection.Back => new[] { new Vector3(maxX, y, z), new Vector3(maxX, maxY, z), new Vector3(x, maxY, z), new Vector3(x, y, z) },
+            _ => new[] { new Vector3(x, y, maxZ), new Vector3(x, maxY, maxZ), new Vector3(maxX, maxY, maxZ), new Vector3(maxX, y, maxZ) },
         };
         var shade = direction switch
         {
@@ -1846,7 +1851,31 @@ DockId=0x6A3C3007,0
             FaceDirection.Back => 0.86F,
             _ => 0.98F,
         };
+        var baseColor = Color.FromArgb(cell.Value.Color.A, cell.Value.Color.R, cell.Value.Color.G, cell.Value.Color.B);
         _cpuPreviewSurfaceFaces.Add(new CpuPreviewSurfaceFace(corners, Shade(baseColor, shade)));
+    }
+
+    private bool IsCpuPreviewBoxFaceExposed(VoxelCoord64 coordinate, int extentX, int extentY, int extentZ,
+        FaceDirection direction)
+    {
+        var width = direction is FaceDirection.Left or FaceDirection.Right ? extentZ : extentX;
+        var height = direction is FaceDirection.Top or FaceDirection.Bottom ? extentZ : extentY;
+        for (var u = 0; u < width; u++)
+        for (var v = 0; v < height; v++)
+        {
+            var neighbor = direction switch
+            {
+                FaceDirection.Left => new VoxelCoord64(coordinate.X - 1, coordinate.Y + v, coordinate.Z + u),
+                FaceDirection.Right => new VoxelCoord64(coordinate.X + extentX, coordinate.Y + v, coordinate.Z + u),
+                FaceDirection.Bottom => new VoxelCoord64(coordinate.X + u, coordinate.Y - 1, coordinate.Z + v),
+                FaceDirection.Top => new VoxelCoord64(coordinate.X + u, coordinate.Y + extentY, coordinate.Z + v),
+                FaceDirection.Back => new VoxelCoord64(coordinate.X + u, coordinate.Y + v, coordinate.Z - 1),
+                _ => new VoxelCoord64(coordinate.X + u, coordinate.Y + v, coordinate.Z + extentZ),
+            };
+            if (!_world.TryGet(neighbor, out var value) || value.IsEmpty) return true;
+        }
+
+        return false;
     }
 
     private enum FaceDirection
