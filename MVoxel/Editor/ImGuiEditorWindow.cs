@@ -45,6 +45,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private ThumbnailCache? _thumbnailCache;
     private nint _assetPreviewTextureId;
     private string _assetPreviewPath = string.Empty;
+    private string _lastAssetSelectionPath = string.Empty;
     private int _assetPreviewWidth;
     private int _assetPreviewHeight;
     private readonly BlockingOperationRunner _projectOperation = new();
@@ -1088,7 +1089,7 @@ DockId=0x6A3C3007,0
     /// <param name="active">当前是否允许选中</param>
     private static void DrawLockIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
     {
-        var center = (min + max) * 0.5F;
+        var center = (min + max) * 0.5F - new Vector2(0F, 2F);
         var size = Math.Min(max.X - min.X, max.Y - min.Y);
         var bodyWidth = Math.Max(8F, size * .56F);
         var bodyHeight = Math.Max(6F, size * .38F);
@@ -3146,10 +3147,15 @@ DockId=0x6A3C3007,0
         _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
             path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
-        if (_assetBrowser.SelectedAssetPath.Length > 0)
+        var selectedAssetPath = _assetBrowser.SelectedAssetPath;
+        if (!string.Equals(selectedAssetPath, _lastAssetSelectionPath, StringComparison.OrdinalIgnoreCase))
         {
-            _selectedSceneObjectId = null;
-            _selectedVoxel = null;
+            _lastAssetSelectionPath = selectedAssetPath;
+            if (selectedAssetPath.Length > 0)
+            {
+                _selectedSceneObjectId = null;
+                _selectedVoxel = null;
+            }
         }
 
         ImGui.End();
@@ -3630,6 +3636,7 @@ DockId=0x6A3C3007,0
         _project = project;
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _assetBrowser.Reset();
+        _lastAssetSelectionPath = string.Empty;
         RecentProjects.Record(project);
         LoadProjectSettings(project);
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
@@ -3675,6 +3682,7 @@ DockId=0x6A3C3007,0
         _renderCameraId = null;
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
+        _lastAssetSelectionPath = string.Empty;
         ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();
@@ -3832,6 +3840,7 @@ DockId=0x6A3C3007,0
     private void RefreshProjectAssets()
     {
         _assetBrowser.Reset();
+        _lastAssetSelectionPath = string.Empty;
         SetStatus(_project is null ? "资源视图已刷新：未打开项目" : "资产视图已刷新");
     }
 
