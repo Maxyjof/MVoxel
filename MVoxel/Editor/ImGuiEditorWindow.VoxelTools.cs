@@ -861,11 +861,31 @@ internal sealed partial class ImGuiEditorWindow
             var renderScale = Math.Clamp(_renderSettings.ResolutionScale, 0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
+            var nowMs = Environment.TickCount64;
             var signature = TraceSignature(size, scale);
             if (signature != _accumulationSignature)
             {
                 _accumulationSignature = signature;
                 pipeline.ResetAccumulation();
+            }
+
+            // 实时渲染是独立的基础路径：它不是“只显示上一张光追结果”。
+            // 因此关闭路径追踪后，每一帧都要重新提交当前相机、场景和配置，
+            // 否则首次画面虽然能出现，之后移动相机或编辑体素却会停在旧帧。
+            if (!effective.PathTracingEnabled)
+            {
+                var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
+                    pathMode: false, outlines: false);
+                if (!pipeline.RenderSceneView(effective, realtimeFrame, width, height))
+                {
+                    return false;
+                }
+
+                _lastRenderGpuSubmitMs = nowMs;
+                _renderViewNeedsInitialRender = false;
+                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                    Vector2.Zero, pipeline.DisplayUvMax);
+                return true;
             }
 
             var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
@@ -875,7 +895,6 @@ internal sealed partial class ImGuiEditorWindow
                              ImGui.IsAnyItemActive();
             // 交互时保留上一帧 GPU 结果，限制同步提交频率，避免每个鼠标事件都阻塞队列。
             // 这不是后端降级：下一次提交仍使用当前相机和同一条 Vulkan Compute 管线。
-            var nowMs = Environment.TickCount64;
             if (navigating && pipeline.DisplayTextureId != IntPtr.Zero &&
                 nowMs - _lastRenderGpuSubmitMs < 33)
             {
@@ -892,9 +911,7 @@ internal sealed partial class ImGuiEditorWindow
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                var submitted = _settingsTogglePath
-                    ? pipeline.RenderPathView(renderSettings, frame, width, height)
-                    : pipeline.RenderSceneView(renderSettings, frame, width, height);
+                var submitted = pipeline.RenderPathView(renderSettings, frame, width, height);
                 if (!submitted)
                 {
                     return false;

@@ -149,12 +149,13 @@ public static class ProjectTemplateCatalog
                 var terrain = TemplateScenes.BuildValleyTerrain();
                 LargeWorldFormat.Write(modelPath, terrain);
                 var trees = TemplateScenes.BuildValleyTrees(terrain);
-                var layerParts = new List<(string Name, string ModelAssetPath, int VoxelCount)>();
+                var layerParts = new List<(string Name, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position)>();
                 for (var index = 0; index < trees.Count; index++)
                 {
                     var treeFile = $"Minecraft山谷_树{index + 1}.mvmodel";
                     LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", treeFile), trees[index]);
-                    layerParts.Add(($"树 {index + 1}", "Assets/Worlds/" + treeFile, trees[index].OccupiedVoxelCount));
+                    layerParts.Add(($"树 {index + 1}", "Assets/Worlds/" + treeFile,
+                        trees[index].OccupiedVoxelCount, GetWorldOrigin(trees[index])));
                 }
 
                 WriteScene(project, Get(id), terrain.OccupiedVoxelCount,
@@ -180,7 +181,7 @@ public static class ProjectTemplateCatalog
                     var fileName = $"小屋与花园_{name}.mvmodel";
                     LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", fileName), partWorld);
                     modelParts.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
-                        partWorld.OccupiedVoxelCount, new VoxelCoord64(0, 0, 0)));
+                        partWorld.OccupiedVoxelCount, GetWorldOrigin(partWorld)));
                 }
 
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
@@ -294,6 +295,8 @@ public static class ProjectTemplateCatalog
     {
         var settings = ProjectSettingsDocument.CreateDefault();
         settings.TemplateId = id.ToString();
+        // 空项目和偏编辑/性能验证模板从实时渲染开始；需要展示光照、透明和景深的模板在各自分支显式开启。
+        settings.RenderSettings.PathTracingEnabled = false;
         switch (id)
         {
             case ProjectTemplateId.SparseWorld:
@@ -513,7 +516,7 @@ public static class ProjectTemplateCatalog
     /// <param name="voxelCount">体素数量</param>
     private static void WriteScene(ProjectHandle project, ProjectTemplateDefinition template, int voxelCount,
         string modelAssetPath = "Assets/Worlds/主世界.mvmodel", int cameraCount = 1,
-        IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount)>? layerParts = null,
+        IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position)>? layerParts = null,
         IReadOnlyList<SceneModelPart>? modelParts = null,
         VoxelWorld? framingWorld = null)
     {
@@ -533,11 +536,16 @@ public static class ProjectTemplateCatalog
         else
         {
             var parts = GetTemplateParts(template.Id);
+            var modelOrigin = GetWorldOrigin(framingWorld);
             for (var index = 0; index < parts.Count; index++)
             {
                 var (name, part, position) = parts[index];
+                var placement = new VoxelCoord64(
+                    position.X + modelOrigin.X,
+                    position.Y + modelOrigin.Y,
+                    position.Z + modelOrigin.Z);
                 var modelObject = graph.Add(name,
-                    transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
+                    transform: TransformComponent.FromGrid(new GridTransform(placement, OrthogonalRotation.Identity)));
                 modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
                     modelAssetPath, voxelCount, template.Id.ToString(), part));
             }
@@ -545,10 +553,10 @@ public static class ProjectTemplateCatalog
 
         if (layerParts is not null)
         {
-            foreach (var (name, assetPath, count) in layerParts)
+            foreach (var (name, assetPath, count, position) in layerParts)
             {
                 var layerObject = graph.Add(name,
-                    transform: TransformComponent.FromGrid(GridTransform.Identity));
+                    transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
                 layerObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
                     assetPath, count, template.Id.ToString(), "分层对象"));
             }
@@ -564,13 +572,16 @@ public static class ProjectTemplateCatalog
             new Double3(center.X - distance * 1.05D, center.Y + distance * .32D, center.Z + distance * .25D),
             new Double3(center.X + distance * .18D, center.Y + distance * .72D, center.Z - distance * 1.1D),
         };
+        var target = new Vector3((float)center.X, (float)center.Y, (float)center.Z);
         for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
         {
             var position = positions[index];
-            // 场景相机的既有约定使用 -Z 作为视线，并保留轻微俯视角；
-            // 不直接把完整三维中心差值传入，避免翻转旧文件的相机朝向语义。
-            var forward = Vector3.Normalize(new Vector3(
-                (float)(center.X - position.X), -3.5F, (float)(center.Z - position.Z)));
+            var cameraPosition = new Vector3((float)position.X, (float)position.Y, (float)position.Z);
+            var forward = target - cameraPosition;
+            if (forward.LengthSquared() < 0.0001F)
+                forward = -Vector3.UnitZ;
+            else
+                forward = Vector3.Normalize(forward);
             var cameraObject = graph.Add(index == 0 ? "主相机" : $"相机 {index + 1}",
                 transform: TransformComponent.FromFree(new FreeTransform(
                     position, CreateCameraRotation(forward, Vector3.UnitY))));
@@ -593,6 +604,17 @@ public static class ProjectTemplateCatalog
             (minimum.Z + maximum.Z) * .5D);
         var span = Math.Max(maximum.X - minimum.X, Math.Max(maximum.Y - minimum.Y, maximum.Z - minimum.Z));
         return (center, Math.Max(24D, span * 1.35D));
+    }
+
+    /// <summary>
+    /// 获取模型文件局部坐标对应的世界原点。
+    /// 大世界格式把负坐标平移到从零开始保存，场景对象必须用此偏移恢复原始世界位置。
+    /// </summary>
+    private static VoxelCoord64 GetWorldOrigin(VoxelWorld? world)
+    {
+        return world is not null && world.TryGetBounds(out var minimum, out _)
+            ? minimum
+            : VoxelCoord64.Zero;
     }
 
     private static IReadOnlyList<(string Name, string Part, VoxelCoord64 Position)> GetTemplateParts(ProjectTemplateId id)

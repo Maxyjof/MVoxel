@@ -237,12 +237,12 @@ public sealed class RenderSettings
     /// </summary>
     public bool Dither = true;
 
-    // 渲染视图参数，使用渐进式路径追踪
+    // 渲染视图参数。实时显卡渲染是基础路径，渐进式路径追踪是可选增强。
 
     /// <summary>
-    /// 路径追踪总开关，关闭后渲染页只呈现最后一次累积结果
+    /// 路径追踪总开关，默认关闭；关闭时渲染页逐帧使用实时显卡光照路径
     /// </summary>
-    public bool PathTracingEnabled = true;
+    public bool PathTracingEnabled;
 
     /// <summary>
     /// 是否使用 Vulkan 硬件光追管线

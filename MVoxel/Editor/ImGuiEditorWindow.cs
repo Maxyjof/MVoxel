@@ -2028,10 +2028,13 @@ DockId=0x6A3C3007,0
                              ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             if (!navigating)
             {
+                var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
                 ImGui.SetCursorScreenPos(origin + new Vector2(
-                    Math.Max(0F, (size.X - ImGui.CalcTextSize("显卡路径追踪不可用").X) / 2F), size.Y / 2F));
+                    Math.Max(0F, (size.X - ImGui.CalcTextSize("渲染管线不可用").X) / 2F), size.Y / 2F));
                 ImGui.TextDisabled(showVoxelWorld
-                    ? _pipelineStatus.Length > 0 ? "显卡路径追踪不可用 · 当前显示 CPU 预览" : "显卡路径追踪初始化中"
+                    ? activeRenderSettings.PathTracingEnabled
+                        ? _pipelineStatus.Length > 0 ? "显卡路径追踪不可用 · 当前显示 CPU 预览" : "显卡路径追踪初始化中"
+                        : _pipelineStatus.Length > 0 ? "实时渲染管线不可用 · 当前显示 CPU 预览" : "实时渲染管线初始化中"
                     : "体素世界已隐藏");
             }
         }
@@ -2121,11 +2124,16 @@ DockId=0x6A3C3007,0
         _ = drawList;
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
         var pipeline = _pipeline;
-        var backendName = _renderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
-            ? "CPU 渲染预览"
-            : pipeline?.UsingHardwareRayTracing == true
-                ? "硬件光追"
-                : "显卡计算路径追踪";
+        var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
+        var backendName = !activeRenderSettings.PathTracingEnabled
+            ? activeRenderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
+                ? "CPU 实时预览"
+                : "显卡实时渲染"
+            : activeRenderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
+                ? "CPU 光照预览"
+                : pipeline?.UsingHardwareRayTracing == true
+                    ? "硬件光追"
+                    : "显卡计算路径追踪";
         ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
         if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
         {
