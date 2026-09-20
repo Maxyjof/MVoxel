@@ -1025,7 +1025,7 @@ internal static class ProjectAssetCatalog
         "prefabs" => "保存 .prefab 预制体：可复用的对象子树和变体。通过层级右键创建。",
         "worlds" => "保存 .mvmodel/.mvworld 体素数据；外部 .vox 文件也会在这里显示。",
         "materials" => "保存 .material 材质槽覆盖，供渲染管线加载。",
-        "palettes" => "保存 .palette/.pal 调色板；项目打开时会自动维护主调色板。",
+        "palettes" => "保存多个 .palette/.pal 调色板；当前使用的调色板在项目设置中指定。",
         "environments" => "放置可被检视器加载的 .hdr/.exr 环境贴图。",
         "renderpresets" => "保存 .mvrenderpreset/.mvrender 渲染参数，可在检视器中应用。",
         "generators" => "保存 .mvgenerator 生成器脚本，可在生成器面板运行。",

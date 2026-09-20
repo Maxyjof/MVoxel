@@ -2,8 +2,10 @@ using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
+using MVoxel.Voxels;
 using System.Text.Json;
 using Vector2 = System.Numerics.Vector2;
+using Vector4 = System.Numerics.Vector4;
 
 namespace MVoxel.Editor;
 
@@ -19,6 +21,8 @@ internal sealed partial class ImGuiEditorWindow
     private int _selectedShortcutScheme;
     private string _newShortcutSchemeName = string.Empty;
     private string _renameShortcutScheme = string.Empty;
+    private string _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
+    private string _newProjectPaletteName = "新调色板";
 
     /// <summary>
     /// 获取当前场景实际使用的画面配置
@@ -55,6 +59,7 @@ internal sealed partial class ImGuiEditorWindow
     private void LoadProjectSettings(ProjectHandle project)
     {
         _projectSettings = SettingsStore.LoadProject(project);
+        _selectedProjectPalettePath = EditorPalettes.NormalizeProjectPalettePath(_projectSettings.ActivePalettePath);
         ApplyProjectSettingsToUi();
     }
 
@@ -293,14 +298,15 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectSettingsSurface()
     {
-        var categories = new[] { "项目", "画面", "资产" };
+        var categories = new[] { "项目", "画面", "资产", "调色板" };
         DrawSettingsSidebar(categories, ref _projectSettingsCategory, "##项目设置分类", () =>
         {
             switch (_projectSettingsCategory)
             {
                 case 0: DrawProjectGeneralSettings(); break;
                 case 1: DrawProjectVisualSettings(); break;
-                default: DrawProjectAssetSettings(); break;
+                case 2: DrawProjectAssetSettings(); break;
+                default: DrawProjectPaletteSettings(); break;
             }
         });
         _projectSettings.ShowGrid = _showGrid;
@@ -996,6 +1002,193 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             ImGui.EndTabBar();
+        }
+    }
+
+    /// <summary>
+    /// 项目级调色板管理：一个项目可以拥有多个调色板资产，项目设置只指定当前使用项。
+    /// 颜色编辑、创建、切换和保存集中在这里，不再混入渲染参数页面。
+    /// </summary>
+    private void DrawProjectPaletteSettings()
+    {
+        DrawSettingsPageHeader("调色板", "管理项目内的多个调色板，并指定建模笔刷当前使用的调色板");
+        if (_project is null)
+        {
+            ImGui.TextDisabled("打开项目后即可管理项目调色板。");
+            return;
+        }
+
+        var paths = EditorPalettes.EnumerateProjectPalettePaths(_project);
+        if (paths.Count == 0)
+        {
+            ImGui.TextDisabled("项目中还没有调色板资产。");
+            ImGui.InputText("新调色板名称", ref _newProjectPaletteName, 96);
+            if (ImGui.Button("创建默认调色板", new Vector2(170F, 30F)))
+                CreateProjectPaletteAsset(VoxelPalette.Build());
+            return;
+        }
+
+        var activePath = EditorPalettes.NormalizeProjectPalettePath(_projectSettings.ActivePalettePath);
+        if (!paths.Contains(activePath, StringComparer.OrdinalIgnoreCase))
+        {
+            activePath = paths[0];
+            _projectSettings.ActivePalettePath = activePath;
+            _selectedProjectPalettePath = activePath;
+            _ = TryLoadProjectPalette(activePath, true);
+        }
+
+        if (!paths.Contains(_selectedProjectPalettePath, StringComparer.OrdinalIgnoreCase))
+            _selectedProjectPalettePath = activePath;
+
+        ImGui.TextUnformatted("当前调色板");
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.BeginCombo("##当前项目调色板", PaletteDisplayName(_selectedProjectPalettePath)))
+        {
+            foreach (var path in paths)
+            {
+                var selected = string.Equals(path, _selectedProjectPalettePath, StringComparison.OrdinalIgnoreCase);
+                if (ImGui.Selectable(PaletteDisplayName(path), selected))
+                {
+                    _selectedProjectPalettePath = path;
+                    TryLoadProjectPalette(path, true);
+                }
+
+                if (selected) ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.TextDisabled($"项目配置当前指向：{_projectSettings.ActivePalettePath}");
+        ImGui.Separator();
+        ImGui.InputText("新调色板名称", ref _newProjectPaletteName, 96);
+        if (ImGui.Button("新建当前调色板副本", new Vector2(180F, 30F)))
+            CreateProjectPaletteAsset(_palette);
+        ImGui.SameLine();
+        if (ImGui.Button("保存调色板", new Vector2(128F, 30F)))
+        {
+            SetStatus(EditorPalettes.SaveProjectPalette(_project, _selectedProjectPalettePath, _palette)
+                ? $"已保存调色板：{PaletteDisplayName(_selectedProjectPalettePath)}"
+                : "调色板保存失败");
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("重新载入", new Vector2(112F, 30F)))
+            TryLoadProjectPalette(_selectedProjectPalettePath, false);
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(paths.Count <= 1);
+        if (ImGui.Button("删除调色板", new Vector2(128F, 30F)))
+            DeleteSelectedProjectPalette(paths);
+        ImGui.EndDisabled();
+
+        ImGui.SeparatorText($"颜色（{VoxelPalette.EntryCount} 色）");
+        DrawPaletteSelector();
+        var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
+        var editableColor = new Vector4(
+            paletteColor.R / 255F, paletteColor.G / 255F,
+            paletteColor.B / 255F, paletteColor.A / 255F);
+        if (ImGui.ColorEdit4($"编辑颜色 #{_paletteIndex}", ref editableColor,
+                ImGuiColorEditFlags.DisplayRGB | ImGuiColorEditFlags.Uint8))
+        {
+            _palette[_paletteIndex] = new Rgba32(
+                (byte)Math.Clamp((int)MathF.Round(editableColor.X * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.Y * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.Z * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.W * 255F), 0, 255));
+            SetStatus($"已修改调色板颜色 #{_paletteIndex}，请点击“保存调色板”写入项目资产");
+        }
+    }
+
+    private static string PaletteDisplayName(string relativePath) =>
+        Path.GetFileNameWithoutExtension(relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+    private bool TryLoadProjectPalette(string relativePath, bool activate)
+    {
+        if (_project is null) return false;
+        var normalized = EditorPalettes.NormalizeProjectPalettePath(relativePath);
+        try
+        {
+            _palette = PaletteFormat.Load(EditorPalettes.ProjectPaletteFilePath(_project, normalized));
+            _paletteIsProjectLevel = true;
+            _selectedProjectPalettePath = normalized;
+            if (activate)
+            {
+                _projectSettings.ActivePalettePath = normalized;
+                SaveProjectSettings();
+            }
+
+            _pipeline?.ResetAccumulation();
+            SetStatus($"已载入项目调色板：{PaletteDisplayName(normalized)}");
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            SetStatus($"调色板载入失败：{exception.Message}");
+            return false;
+        }
+    }
+
+    private void CreateProjectPaletteAsset(Rgba32[] source)
+    {
+        if (_project is null) return;
+        var name = _newProjectPaletteName.Trim();
+        foreach (var invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
+        if (name.Length == 0) name = "新调色板";
+        if (!name.EndsWith(".palette", StringComparison.OrdinalIgnoreCase) &&
+            !name.EndsWith(".pal", StringComparison.OrdinalIgnoreCase))
+            name += ".palette";
+
+        var relativePath = $"Palettes/{name}";
+        var absolutePath = EditorPalettes.ProjectPaletteFilePath(_project, relativePath);
+        if (File.Exists(absolutePath))
+        {
+            SetStatus($"调色板已存在：{name}");
+            return;
+        }
+
+        try
+        {
+            PaletteFormat.Save(absolutePath, (Rgba32[])source.Clone());
+            AssetMetaStore.EnsureMeta(absolutePath);
+            _selectedProjectPalettePath = relativePath;
+            _projectSettings.ActivePalettePath = relativePath;
+            SaveProjectSettings();
+            _assetBrowser.Reset();
+            TryLoadProjectPalette(relativePath, false);
+            SetStatus($"已创建项目调色板：{name}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            SetStatus($"创建调色板失败：{exception.Message}");
+        }
+    }
+
+    private void DeleteSelectedProjectPalette(IReadOnlyList<string> paths)
+    {
+        if (_project is null || paths.Count <= 1) return;
+        var deletedPath = _selectedProjectPalettePath;
+        var path = EditorPalettes.ProjectPaletteFilePath(_project, deletedPath);
+        try
+        {
+            File.Delete(path);
+            AssetMetaStore.DeleteMeta(path);
+            var next = paths.FirstOrDefault(item => !string.Equals(item, _selectedProjectPalettePath,
+                StringComparison.OrdinalIgnoreCase));
+            if (next is not null)
+            {
+                _selectedProjectPalettePath = next;
+                _projectSettings.ActivePalettePath = next;
+                SaveProjectSettings();
+                _assetBrowser.Reset();
+                TryLoadProjectPalette(next, false);
+            }
+
+            SetStatus($"已删除调色板：{PaletteDisplayName(deletedPath)}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            SetStatus($"删除调色板失败：{exception.Message}");
         }
     }
 }

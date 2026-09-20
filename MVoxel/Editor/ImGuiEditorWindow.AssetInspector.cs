@@ -150,11 +150,10 @@ internal sealed partial class ImGuiEditorWindow
         {
             var colors = PaletteFormat.Load(path);
             ImGui.TextDisabled($"256 色 · {new FileInfo(path).Length:N0} 字节 · BGRA");
-            if (ImGui.Button("在渲染配置中编辑", new Vector2(-1F, 30F)))
+            if (ImGui.Button("在项目设置中编辑", new Vector2(-1F, 30F)))
             {
-                _requestedRenderSettingsSection = "palette";
-                _requestedInspectorTab = 1;
-                SetStatus("已打开渲染配置的“材质与笔刷”，可编辑当前调色板颜色");
+                OpenSettings(1, 3);
+                SetStatus("已打开项目设置的“调色板”，可编辑当前调色板颜色");
             }
             var draw = ImGui.GetWindowDrawList();
             var start = ImGui.GetCursorScreenPos();
@@ -170,7 +169,7 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             ImGui.Dummy(new Vector2(16F * cell, 16F * cell));
-            ImGui.TextWrapped("该调色板可作为项目级调色板，并被调色板工坊和体素绘制工具使用。");
+            ImGui.TextWrapped("该调色板是项目内的独立资产；项目可以同时保存多个调色板，并在项目设置中指定当前使用项。");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException)
         {

@@ -145,13 +145,17 @@ public sealed class EditorSettingsDocument
 /// </summary>
 public sealed class ProjectSettingsDocument
 {
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public int FormatVersion = CurrentFormatVersion;
     public string TemplateId = "未指定";
     public bool ShowGrid = true;
     public bool ShowVoxelOutlines = true;
     public string VoxelUnit = "1 格 = 1 体素单位";
+    /// <summary>
+    /// 当前项目使用的调色板资产路径，相对于 Assets；Palettes 下可以存在多个调色板。
+    /// </summary>
+    public string ActivePalettePath = EditorPalettes.ProjectPaletteRelativePath;
     public string DefaultRenderPreset = "默认";
     public bool AutoSave = true;
     public int AutoSaveSeconds = 120;
@@ -170,6 +174,7 @@ public sealed class ProjectSettingsDocument
         TemplateId = string.IsNullOrWhiteSpace(TemplateId) ? "未指定" : TemplateId.Trim();
         AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
         VoxelUnit = string.IsNullOrWhiteSpace(VoxelUnit) ? "1 格 = 1 体素单位" : VoxelUnit.Trim();
+        ActivePalettePath = EditorPalettes.NormalizeProjectPalettePath(ActivePalettePath);
         DefaultRenderPreset = string.IsNullOrWhiteSpace(DefaultRenderPreset) ? "默认" : DefaultRenderPreset.Trim();
         SceneMoveSpeed = float.IsFinite(SceneMoveSpeed) ? Math.Clamp(SceneMoveSpeed, 0.1F, 256F) : 12F;
         SceneNearClip = float.IsFinite(SceneNearClip) ? Math.Clamp(SceneNearClip, 0.001F, 1000F) : 0.05F;
@@ -235,7 +240,7 @@ public static class SettingsStore
                 return document;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
         }
 
@@ -262,7 +267,7 @@ public static class SettingsStore
                 return document;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
         }
 

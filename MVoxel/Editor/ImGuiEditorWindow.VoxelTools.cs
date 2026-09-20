@@ -114,7 +114,16 @@ internal sealed partial class ImGuiEditorWindow
         _composedRenderWorld = null;
         _composedSignature = 0;
         _composedMask = uint.MaxValue;
-        _palette = EditorPalettes.ResolveProjectPalette(project);
+        _selectedProjectPalettePath = EditorPalettes.NormalizeProjectPalettePath(_projectSettings.ActivePalettePath);
+        var projectPalettePaths = EditorPalettes.EnumerateProjectPalettePaths(project);
+        if (projectPalettePaths.Count > 0 &&
+            !projectPalettePaths.Contains(_selectedProjectPalettePath, StringComparer.OrdinalIgnoreCase))
+        {
+            _selectedProjectPalettePath = projectPalettePaths[0];
+            _projectSettings.ActivePalettePath = _selectedProjectPalettePath;
+            SaveProjectSettings();
+        }
+        _palette = EditorPalettes.ResolveProjectPalette(project, _selectedProjectPalettePath);
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
         var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
@@ -1875,54 +1884,13 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SeparatorText("色板（256 色）");
         DrawPaletteSelector();
-        var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
-        var editableColor = new System.Numerics.Vector4(
-            paletteColor.R / 255F, paletteColor.G / 255F,
-            paletteColor.B / 255F, paletteColor.A / 255F);
-        if (ImGui.ColorEdit4($"编辑颜色 #{_paletteIndex}", ref editableColor,
-                ImGuiColorEditFlags.DisplayRGB | ImGuiColorEditFlags.Uint8))
-        {
-            _palette[_paletteIndex] = new Rgba32(
-                (byte)Math.Clamp((int)MathF.Round(editableColor.X * 255F), 0, 255),
-                (byte)Math.Clamp((int)MathF.Round(editableColor.Y * 255F), 0, 255),
-                (byte)Math.Clamp((int)MathF.Round(editableColor.Z * 255F), 0, 255),
-                (byte)Math.Clamp((int)MathF.Round(editableColor.W * 255F), 0, 255));
-            SetStatus($"已修改调色板颜色 #{_paletteIndex}，保存后写入项目");
-        }
-
-        ImGui.SeparatorText("调色板管理");
         ImGui.TextDisabled(_paletteIsProjectLevel
-            ? $"当前为项目级调色板：Assets/Palettes/{EditorPalettes.ProjectPaletteName}"
-            : "当前为编辑器级调色板（未打开项目）");
-        if (ImGui.Button("保存调色板到项目"))
+            ? $"当前项目调色板：{_selectedProjectPalettePath}"
+            : "当前为编辑器默认调色板（未打开项目）");
+        if (_project is not null)
         {
-            if (_project is null)
-            {
-                SetStatus("未打开项目，无法写入项目级调色板");
-            }
-            else
-            {
-                SetStatus(EditorPalettes.SaveProjectPalette(_project, _palette)
-                    ? "项目级调色板已保存"
-                    : "项目级调色板保存失败");
-            }
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("写回编辑器默认"))
-        {
-            SetStatus(EditorPalettes.SaveEditorPalette(_palette)
-                ? "当前色板已写回编辑器级，成为新项目默认"
-                : "编辑器级调色板写入失败");
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("重新载入"))
-        {
-            _palette = _paletteIsProjectLevel && _project is not null
-                ? EditorPalettes.ResolveProjectPalette(_project)
-                : EditorPalettes.ResolveEditorPalette();
-            SetStatus("调色板已按当前层级重新载入");
+            if (ImGui.Button("在项目设置中编辑调色板", new Vector2(-1F, 30F)))
+                OpenSettings(1, 3);
         }
     }
 

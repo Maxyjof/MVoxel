@@ -5,15 +5,20 @@ using MVoxel.Core;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// 调色板双层管理：编辑器级调色板是全局默认与恢复来源，项目级调色板随项目
-/// 文件夹独立演化。打开项目时若项目级缺失，就从编辑器级复制一份
+/// 调色板管理：编辑器级调色板只负责无项目时的默认值，项目级调色板是
+/// Assets/Palettes 下可同时存在的独立资产集合。项目配置只记录当前使用的资产路径。
 /// </summary>
 public static class EditorPalettes
 {
     /// <summary>
-    /// 项目级调色板在 Assets/Palettes 下的固定文件名
+    /// 新项目默认创建的调色板文件名；它不是项目内唯一调色板。
     /// </summary>
     public const string ProjectPaletteName = "主调色板.palette";
+
+    /// <summary>
+    /// 项目设置保存的默认调色板相对路径（相对于 Assets）。
+    /// </summary>
+    public const string ProjectPaletteRelativePath = "Palettes/" + ProjectPaletteName;
 
     /// <summary>
     /// 编辑器级调色板路径，位于程序目录的 MVoxelData/Config 下
@@ -51,32 +56,104 @@ public static class EditorPalettes
     public static string ProjectPalettePath(ProjectHandle project)
     {
         ArgumentNullException.ThrowIfNull(project);
-        return Path.Combine(project.AssetsPath, "Palettes", ProjectPaletteName);
+        return ProjectPaletteFilePath(project, ProjectPaletteRelativePath);
     }
 
     /// <summary>
-    /// 打开项目时解析其调色板：项目级存在则直接读取，缺失则从编辑器级复制一份，
-    /// 保证每个项目都拥有一份可独立修改的色板
+    /// 项目调色板目录。
+    /// </summary>
+    public static string ProjectPalettesDirectory(ProjectHandle project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        return Path.Combine(project.AssetsPath, "Palettes");
+    }
+
+    /// <summary>
+    /// 列出项目内全部调色板资产，允许 Palettes 下建立子目录。
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateProjectPalettePaths(ProjectHandle project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var directory = ProjectPalettesDirectory(project);
+        if (!Directory.Exists(directory)) return Array.Empty<string>();
+
+        try
+        {
+            return Directory.EnumerateFiles(directory, "*.*", SearchOption.AllDirectories)
+                .Where(path => IsPaletteExtension(Path.GetExtension(path)))
+                .Select(path => Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/'))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (IOException)
+        {
+            return Array.Empty<string>();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// 规范化项目设置中的调色板路径。项目设置只接受 Assets/Palettes 下的 .palette/.pal。
+    /// </summary>
+    public static string NormalizeProjectPalettePath(string? relativePath)
+    {
+        var normalized = (relativePath ?? string.Empty).Trim().Replace('\\', '/');
+        if (normalized.Length == 0) return ProjectPaletteRelativePath;
+        if (!normalized.StartsWith("Palettes/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("../", StringComparison.Ordinal) ||
+            normalized.Contains("/..", StringComparison.Ordinal) ||
+            normalized.Contains("./", StringComparison.Ordinal) ||
+            !IsPaletteExtension(Path.GetExtension(normalized)))
+            return ProjectPaletteRelativePath;
+        return normalized;
+    }
+
+    /// <summary>
+    /// 把项目调色板相对路径解析为 Assets 内的文件路径，并拒绝目录穿越。
+    /// </summary>
+    public static string ProjectPaletteFilePath(ProjectHandle project, string? relativePath)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var normalized = NormalizeProjectPalettePath(relativePath);
+        var assetsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(project.AssetsPath));
+        var path = Path.GetFullPath(Path.Combine(assetsRoot,
+            normalized.Replace('/', Path.DirectorySeparatorChar)));
+        var paletteRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ProjectPalettesDirectory(project)));
+        if (!path.StartsWith(paletteRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("调色板路径必须位于 Assets/Palettes 下", nameof(relativePath));
+        return path;
+    }
+
+    /// <summary>
+    /// 打开项目时解析指定的调色板资产。指定文件不可用时按项目资产顺序回退，
+    /// 最后才用编辑器级默认值创建默认项目调色板。
     /// </summary>
     /// <param name="project">正在打开的项目</param>
     /// <returns>项目生效的 256 项色表</returns>
-    public static Rgba32[] ResolveProjectPalette(ProjectHandle project)
+    public static Rgba32[] ResolveProjectPalette(ProjectHandle project, string? relativePath = null)
     {
-        var path = ProjectPalettePath(project);
-        try
+        var requested = NormalizeProjectPalettePath(relativePath);
+        var candidates = new[] { requested }
+            .Concat(EnumerateProjectPalettePaths(project))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
         {
-            if (File.Exists(path))
+            var path = ProjectPaletteFilePath(project, candidate);
+            try
             {
-                return PaletteFormat.Load(path);
+                if (File.Exists(path)) return PaletteFormat.Load(path);
             }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-        {
-            // 项目色板损坏时重建，不阻塞打开流程
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                // 单个损坏资产不阻塞项目打开，继续寻找其他项目调色板。
+            }
         }
 
         var seed = ResolveEditorPalette();
-        TrySave(path, seed);
+        TrySave(ProjectPalettePath(project), seed);
         return seed;
     }
 
@@ -87,7 +164,13 @@ public static class EditorPalettes
     /// <param name="colors">要保存的色表</param>
     /// <returns>写入成功返回 true，IO 失败返回 false</returns>
     public static bool SaveProjectPalette(ProjectHandle project, Rgba32[] colors) =>
-        TrySave(ProjectPalettePath(project), colors);
+        SaveProjectPalette(project, ProjectPaletteRelativePath, colors);
+
+    /// <summary>
+    /// 把指定项目调色板资产写回磁盘。
+    /// </summary>
+    public static bool SaveProjectPalette(ProjectHandle project, string relativePath, Rgba32[] colors) =>
+        TrySave(ProjectPaletteFilePath(project, relativePath), colors);
 
     /// <summary>
     /// 把当前色板写回编辑器级调色板，作为以后新项目的默认
@@ -95,6 +178,10 @@ public static class EditorPalettes
     /// <param name="colors">要保存的色表</param>
     /// <returns>写入成功返回 true，IO 失败返回 false</returns>
     public static bool SaveEditorPalette(Rgba32[] colors) => TrySave(EditorPalettePath, colors);
+
+    private static bool IsPaletteExtension(string? extension) =>
+        string.Equals(extension, ".palette", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(extension, ".pal", StringComparison.OrdinalIgnoreCase);
 
     private static bool TrySave(string path, Rgba32[] colors)
     {

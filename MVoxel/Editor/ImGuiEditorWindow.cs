@@ -3638,7 +3638,20 @@ DockId=0x6A3C3007,0
         _assetBrowser.Reset();
         _lastAssetSelectionPath = string.Empty;
         RecentProjects.Record(project);
-        LoadProjectSettings(project);
+        try
+        {
+            LoadProjectSettings(project);
+        }
+        catch (InvalidDataException exception)
+        {
+            _pluginRuntime.Dispose();
+            _pluginRuntime = null;
+            _project = null;
+            _statusText = $"项目设置格式不受支持：{exception.Message}";
+            SetStatus(_statusText);
+            RequestWelcomeWindow();
+            return;
+        }
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project);
@@ -3692,6 +3705,7 @@ DockId=0x6A3C3007,0
         _selectedSceneObjectId = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
+        _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
         _autoSaveCountdown = float.PositiveInfinity;
         _autoSaveQueued = false;
         ApplyEditorSettingsToUi();
