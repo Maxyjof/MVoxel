@@ -2385,6 +2385,14 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        // 检查器内容必须由外层统一滚动。组件自身不能用固定高度裁剪，
+        // 否则相机的图层、独立渲染配置等字段会在展开状态下直接消失。
+        if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None))
+        {
+            ImGui.EndChild();
+            return;
+        }
+
         var inspectorBefore = SceneSerializer.CloneObject(selectedObject);
 
         var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
@@ -2458,7 +2466,11 @@ DockId=0x6A3C3007,0
         {
             _inspectorExpansionObjectId = selectedObject.Id;
             _expandedInspectorComponents.Clear();
-            foreach (var component in selectedObject.Components) _expandedInspectorComponents.Add(component.TypeId);
+            for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
+            {
+                _expandedInspectorComponents.Add(GetInspectorComponentExpansionKey(
+                    selectedObject.Components[componentIndex], componentIndex));
+            }
         }
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 5F));
         for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
@@ -2478,11 +2490,12 @@ DockId=0x6A3C3007,0
             var headerHeight = ImGui.GetFrameHeight() + 6F;
             var headerClicked = ImGui.InvisibleButton("##InspectorComponentHeader", new Vector2(headerWidth, headerHeight));
             var headerMax = headerMin + new Vector2(totalHeaderWidth, headerHeight);
-            var expanded = _expandedInspectorComponents.Contains(component.TypeId);
+            var expansionKey = GetInspectorComponentExpansionKey(component, componentIndex);
+            var expanded = _expandedInspectorComponents.Contains(expansionKey);
             if (headerClicked)
             {
-                if (expanded) _expandedInspectorComponents.Remove(component.TypeId);
-                else _expandedInspectorComponents.Add(component.TypeId);
+                if (expanded) _expandedInspectorComponents.Remove(expansionKey);
+                else _expandedInspectorComponents.Add(expansionKey);
                 expanded = !expanded;
             }
             var draw = ImGui.GetWindowDrawList();
@@ -2556,7 +2569,7 @@ DockId=0x6A3C3007,0
                 ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4F);
                 ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
                 if (ImGui.BeginChild("##InspectorComponentBody", new Vector2(-1F, bodyHeight),
-                        ImGuiChildFlags.Borders, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+                        ImGuiChildFlags.Borders))
                 {
                     ImGui.Indent(8F);
                     DrawComponentSummary(selectedObject, component);
@@ -2650,7 +2663,12 @@ DockId=0x6A3C3007,0
                     _pipeline?.ResetAccumulation();
                 }));
         }
+
+        ImGui.EndChild();
     }
+
+    private static string GetInspectorComponentExpansionKey(ComponentRecord component, int componentIndex) =>
+        $"{componentIndex}:{component.TypeId}";
 
     private bool TryDrawSelectedPngInspector()
     {
@@ -2753,7 +2771,9 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsTransform(component))
             return sceneObject.Transform.Mode == TransformMode.Free ? 92F : 76F;
         if (SceneComponentTypes.IsVoxelModel(component)) return 150F;
-        if (SceneComponentTypes.IsCamera(component)) return 132F;
+        // 相机组件包含三个裁剪/视场字段、图层下拉框、独立配置开关和刷新按钮；
+        // 预留完整高度，超出检查器窗口时由外层 InspectorScroll 统一滚动。
+        if (SceneComponentTypes.IsCamera(component)) return 190F;
         if (SceneComponentTypes.IsLight(component)) return 124F;
         // 插件组件包含状态、类型、来源和 JSON 编辑区，固定留出完整显示空间；组件内部不滚动。
         return 190F;
