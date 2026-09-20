@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ImGuiNET;
+using MVoxel.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Shaderc;
@@ -15,6 +16,7 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 internal sealed unsafe class VulkanImGuiRenderer : IDisposable
 {
     private const int PushConstantSize = 16;
+    private const ulong MaximumDrawBufferCapacity = 256UL * 1024UL * 1024UL;
     private readonly VulkanWindowContext _context;
     private readonly Vk _api;
     private readonly Device _device;
@@ -30,13 +32,13 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     private readonly Image _fontImage;
     private readonly DeviceMemory _fontImageMemory;
     private readonly ImageView _fontImageView;
-    private readonly VkBuffer _vertexBuffer;
-    private readonly DeviceMemory _vertexMemory;
-    private readonly VkBuffer _indexBuffer;
-    private readonly DeviceMemory _indexMemory;
+    private VkBuffer _vertexBuffer;
+    private DeviceMemory _vertexMemory;
+    private VkBuffer _indexBuffer;
+    private DeviceMemory _indexMemory;
     private readonly Dictionary<nint, TextureResource> _textures = new();
-    private readonly ulong _vertexCapacity;
-    private readonly ulong _indexCapacity;
+    private ulong _vertexCapacity;
+    private ulong _indexCapacity;
     private long _nextTextureId = 1;
     private bool _disposed;
 
@@ -49,8 +51,8 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         _api = context.Api;
         _device = context.Device;
         _physicalDevice = context.PhysicalDevice;
-        _vertexCapacity = 8UL * 1024UL * 1024UL;
-        _indexCapacity = 4UL * 1024UL * 1024UL;
+        _vertexCapacity = 16UL * 1024UL * 1024UL;
+        _indexCapacity = 8UL * 1024UL * 1024UL;
         (_vertexBuffer, _vertexMemory) = CreateBuffer(
             _vertexCapacity,
             BufferUsageFlags.VertexBufferBit,
@@ -153,10 +155,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
 
         ulong vertexBytes = checked((ulong)drawData.TotalVtxCount * (ulong)Unsafe.SizeOf<ImDrawVert>());
         ulong indexBytes = checked((ulong)drawData.TotalIdxCount * sizeof(ushort));
-        if (vertexBytes > _vertexCapacity || indexBytes > _indexCapacity)
-        {
-            throw new InvalidOperationException("ImGui 绘制数据超过 Vulkan 上传缓冲区容量");
-        }
+        EnsureDrawBuffers(vertexBytes, indexBytes);
 
         UploadDrawData(drawData, vertexBytes, indexBytes);
         _api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Graphics, _pipeline);
@@ -296,6 +295,103 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         {
             _api.UnmapMemory(_device, _vertexMemory);
             _api.UnmapMemory(_device, _indexMemory);
+        }
+    }
+
+    /// <summary>
+    /// 返回不小于需求的二次幂容量。绘制数据偶尔暴增时只扩容，不在每帧反复分配。
+    /// </summary>
+    internal static ulong GrowBufferCapacity(ulong current, ulong required)
+    {
+        if (required <= current) return current;
+        var capacity = Math.Max(current, 1UL);
+        while (capacity < required)
+        {
+            capacity = checked(capacity * 2UL);
+        }
+
+        return capacity;
+    }
+
+    /// <summary>
+    /// 按当前 ImGui 绘制数据扩容上传缓冲区。扩容只发生在需求超过现有容量时，
+    /// 并在替换前等待设备完成，避免上一帧命令仍引用旧缓冲区。
+    /// </summary>
+    private void EnsureDrawBuffers(ulong vertexBytes, ulong indexBytes)
+    {
+        var nextVertexCapacity = GrowBufferCapacity(_vertexCapacity, vertexBytes);
+        var nextIndexCapacity = GrowBufferCapacity(_indexCapacity, indexBytes);
+        if (nextVertexCapacity == _vertexCapacity && nextIndexCapacity == _indexCapacity)
+        {
+            return;
+        }
+
+        if (nextVertexCapacity > MaximumDrawBufferCapacity || nextIndexCapacity > MaximumDrawBufferCapacity)
+        {
+            throw new InvalidOperationException(
+                $"ImGui 绘制数据超过 Vulkan 上传缓冲区上限（顶点 {vertexBytes:N0} 字节，索引 {indexBytes:N0} 字节）");
+        }
+
+        _api.DeviceWaitIdle(_device);
+        VkBuffer replacementVertex = default;
+        DeviceMemory replacementVertexMemory = default;
+        VkBuffer replacementIndex = default;
+        DeviceMemory replacementIndexMemory = default;
+        try
+        {
+            if (nextVertexCapacity != _vertexCapacity)
+            {
+                (replacementVertex, replacementVertexMemory) = CreateBuffer(
+                    nextVertexCapacity,
+                    BufferUsageFlags.VertexBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            }
+
+            if (nextIndexCapacity != _indexCapacity)
+            {
+                (replacementIndex, replacementIndexMemory) = CreateBuffer(
+                    nextIndexCapacity,
+                    BufferUsageFlags.IndexBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            }
+
+            if (nextVertexCapacity != _vertexCapacity)
+            {
+                _api.DestroyBuffer(_device, _vertexBuffer, null);
+                _api.FreeMemory(_device, _vertexMemory, null);
+                _vertexBuffer = replacementVertex;
+                _vertexMemory = replacementVertexMemory;
+                _vertexCapacity = nextVertexCapacity;
+                replacementVertex = default;
+                replacementVertexMemory = default;
+            }
+
+            if (nextIndexCapacity != _indexCapacity)
+            {
+                _api.DestroyBuffer(_device, _indexBuffer, null);
+                _api.FreeMemory(_device, _indexMemory, null);
+                _indexBuffer = replacementIndex;
+                _indexMemory = replacementIndexMemory;
+                _indexCapacity = nextIndexCapacity;
+                replacementIndex = default;
+                replacementIndexMemory = default;
+            }
+
+            MVoxelLog.Info($"ImGui Vulkan 上传缓冲区扩容：顶点 {_vertexCapacity / 1024 / 1024} MiB，索引 {_indexCapacity / 1024 / 1024} MiB");
+        }
+        finally
+        {
+            if (replacementVertex.Handle != 0)
+            {
+                _api.DestroyBuffer(_device, replacementVertex, null);
+                _api.FreeMemory(_device, replacementVertexMemory, null);
+            }
+
+            if (replacementIndex.Handle != 0)
+            {
+                _api.DestroyBuffer(_device, replacementIndex, null);
+                _api.FreeMemory(_device, replacementIndexMemory, null);
+            }
         }
     }
 

@@ -1788,26 +1788,40 @@ DockId=0x6A3C3007,0
         if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion)
             return;
 
-        const int maximumPreviewVoxels = 100_000;
+        const int maximumPreviewVoxels = 20_000;
+        const int maximumPreviewFaces = 48_000;
         _cpuPreviewSurfaceFaces.Clear();
-        foreach (var item in _world.EnumerateOccupied().Take(maximumPreviewVoxels))
+        var totalVoxels = _world.OccupiedVoxelCount;
+        var stride = totalVoxels <= maximumPreviewVoxels
+            ? 1
+            : (int)Math.Ceiling(totalVoxels / (double)maximumPreviewVoxels);
+        var sourceIndex = 0;
+        foreach (var item in _world.EnumerateOccupied())
         {
+            if (sourceIndex++ % stride != 0) continue;
             var coordinate = item.Coordinate;
             var color = Color.FromArgb(item.Value.Color.A, item.Value.Color.R, item.Value.Color.G, item.Value.Color.B);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z), FaceDirection.Left, color);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z), FaceDirection.Right, color);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z), FaceDirection.Bottom, color);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z), FaceDirection.Top, color);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1), FaceDirection.Back, color);
-            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1), FaceDirection.Front, color);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X - 1, coordinate.Y, coordinate.Z), FaceDirection.Left, color, maximumPreviewFaces);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X + 1, coordinate.Y, coordinate.Z), FaceDirection.Right, color, maximumPreviewFaces);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y - 1, coordinate.Z), FaceDirection.Bottom, color, maximumPreviewFaces);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y + 1, coordinate.Z), FaceDirection.Top, color, maximumPreviewFaces);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z - 1), FaceDirection.Back, color, maximumPreviewFaces);
+            AddCpuPreviewSurfaceFace(coordinate, new VoxelCoord64(coordinate.X, coordinate.Y, coordinate.Z + 1), FaceDirection.Front, color, maximumPreviewFaces);
         }
+
+        if (stride > 1 || _cpuPreviewSurfaceFaces.Count >= maximumPreviewFaces)
+        {
+            MVoxelLog.Info($"场景窗口 CPU 预览已限额：原始 {totalVoxels:N0} 体素，抽样步长 {stride}，表面 {_cpuPreviewSurfaceFaces.Count:N0} 面");
+        }
+
         _cpuPreviewWorld = _world;
         _cpuPreviewWorldVersion = _world.ContentVersion;
     }
 
     private void AddCpuPreviewSurfaceFace(VoxelCoord64 coordinate, VoxelCoord64 neighbor,
-        FaceDirection direction, Color baseColor)
+        FaceDirection direction, Color baseColor, int maximumFaces)
     {
+        if (_cpuPreviewSurfaceFaces.Count >= maximumFaces) return;
         if (_world.TryGet(neighbor, out var neighborValue) && !neighborValue.IsEmpty)
             return;
 
