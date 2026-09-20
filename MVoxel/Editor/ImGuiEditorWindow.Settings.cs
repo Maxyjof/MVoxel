@@ -338,8 +338,6 @@ internal sealed partial class ImGuiEditorWindow
             if (isSelected)
             {
                 ImGui.PopStyleColor(2);
-                ImGui.TextWrapped(GetSettingsCategoryDescription(categories[index]));
-                ImGui.Spacing();
             }
 
             ImGui.PopID();
@@ -352,24 +350,10 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.EndChild();
     }
 
-    private static string GetSettingsCategoryDescription(string category) => category switch
-    {
-        "常规" => "项目默认路径、撤回和启动行为",
-        "布局" => "面板停靠与工作区预设",
-        "输入" => "快捷键方案与鼠标操作",
-        "画面" => "视口、光照、色彩和导出",
-        "外观" => "主题和界面缩放",
-        "性能" => "导出队列与诊断选项",
-        "项目" => "项目身份、预设和自动保存",
-        "资产" => "目录职责、格式和图层",
-        _ => "相关设置",
-    };
-
     private static void DrawSettingsPageHeader(string title, string description)
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), title);
-        ImGui.SameLine();
-        ImGui.TextDisabled(description);
+        _ = description;
         ImGui.Separator();
     }
 

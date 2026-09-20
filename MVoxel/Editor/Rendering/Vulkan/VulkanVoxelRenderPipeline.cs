@@ -1919,9 +1919,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             // 体素颜色来自 RGBA8 调色板，是 sRGB；实时管线在光照前转换到线性空间，
             // 最后由 PostProcess 统一回到显示空间，避免整张画面发灰或过曝。
             vec3 baseColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
-            vec3 skyAmbient = Sky(hitNormal) * (0.52 + values[43] * 0.42);
-            skyAmbient += vec3(0.018, 0.022, 0.032) * (0.5 + max(hitNormal.y, 0.0));
-            vec3 diffuse = baseColor * skyAmbient;
+            vec3 skyAmbient = Sky(hitNormal);
+            // 给背光面保留稳定的环境填充，避免实时模式像只开了一盏聚光灯；
+            // 这不是把阴影抹平，而是把最低亮度托到可读范围，接近 Eevee 的世界光照。
+            vec3 ambientFill = mix(vec3(0.14, 0.16, 0.20), skyAmbient, 0.72);
+            ambientFill *= 0.82 + values[43] * 0.55;
+            ambientFill += vec3(0.035, 0.040, 0.050) * (0.5 + max(hitNormal.y, 0.0));
+            vec3 diffuse = baseColor * ambientFill;
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
             vec3 lightDirection = normalize(-sunDirection);
             float directAmount = max(dot(hitNormal, lightDirection), 0.0);
@@ -1934,7 +1938,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
 
             float ao = AmbientOcclusion(hitPoint, hitNormal, state);
-            diffuse *= mix(1.0, ao, 0.82);
+            diffuse *= mix(1.0, ao, 0.60);
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
             vec3 f0 = mix(vec3(values[75]), baseColor, metallic);
@@ -1953,7 +1957,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             {
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 // 实时 Bloom 需要 HDR 亮部，但限制极端亮度避免单个灯把整个画面冲成白块。
-                result += baseColor * min(values[80] * emissiveScale, 8.0);
+                result += baseColor * min(values[80] * emissiveScale, 4.5);
             }
             return max(result, vec3(0.0));
         }
