@@ -166,8 +166,6 @@ internal sealed class ProjectAssetBrowser
 
     private void DrawFolderTree(ProjectHandle? project)
     {
-        ImGui.TextDisabled(project is null ? "新项目资产目录" : "资产");
-        ImGui.Separator();
         DrawFolderNode(project, string.Empty, "资产", 0);
         if (project is null)
         {
