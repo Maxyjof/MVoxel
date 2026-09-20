@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Numerics;
 using MVoxel.Core;
@@ -459,22 +458,28 @@ public static class SceneSerializer
     public const int CurrentFormatVersion = 1;
 
     /// <summary>
-    /// 读取场景文档：先校验并升级格式版本，再反序列化并恢复对象不变量
+    /// 读取场景文档：先校验当前格式版本，再反序列化并恢复对象不变量
     /// </summary>
     /// <param name="path">.mvox 文件路径</param>
     /// <returns>解析后的文档</returns>
     public static SceneDocument Load(string path)
     {
-        return LoadFromJson(Migrate(File.ReadAllText(path), path));
+        return LoadFromJson(File.ReadAllText(path), path);
     }
 
     /// <summary>
-    /// 从已升级版本的 JSON 文本读取场景文档并恢复对象不变量
+    /// 从当前版本的 JSON 文本读取场景文档并恢复对象不变量
     /// </summary>
     /// <param name="json">场景 JSON 文本</param>
     /// <returns>解析后的文档</returns>
     public static SceneDocument LoadFromJson(string json)
     {
+        return LoadFromJson(json, "场景 JSON");
+    }
+
+    private static SceneDocument LoadFromJson(string json, string path)
+    {
+        ValidateCurrentFormatVersion(json, path);
         var scene = JsonSerializer.Deserialize<SceneDocument>(json, Options);
         if (scene is null) throw new InvalidDataException("场景 JSON 不是合法文档");
 
@@ -518,33 +523,20 @@ public static class SceneSerializer
     }
 
     /// <summary>
-    /// 执行版本迁移链：无 formatVersion 字段的历史文件视为 v0 并补章为 v1，
-    /// 高于当前支持的版本拒绝加载；后续每次格式演进在此追加逐级升级步骤
+    /// 校验场景文件必须明确声明当前格式版本
     /// </summary>
     /// <param name="json">原始文件文本</param>
     /// <param name="path">文件路径，用于诊断信息</param>
-    /// <returns>升级到当前版本后的 JSON 文本</returns>
-    private static string Migrate(string json, string path)
+    private static void ValidateCurrentFormatVersion(string json, string path)
     {
         using var document = JsonDocument.Parse(json);
-        var version = 0;
-        if (document.RootElement.ValueKind == JsonValueKind.Object &&
-            document.RootElement.TryGetProperty("formatVersion", out var versionElement) &&
-            versionElement.TryGetInt32(out var parsed))
-        {
-            version = parsed;
-        }
-
-        if (version > CurrentFormatVersion)
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("formatVersion", out var versionElement) ||
+            !versionElement.TryGetInt32(out var version) || version != CurrentFormatVersion)
         {
             throw new InvalidDataException(
-                $"场景 {path} 的格式版本 {version} 新于当前支持的 {CurrentFormatVersion}，请升级 MVoxel");
+                $"场景 {path} 的格式版本不受支持，当前只接受版本 {CurrentFormatVersion}，请在当前版本重新创建");
         }
-
-        if (version != 0) return json;
-        var root = JsonNode.Parse(json)?.AsObject() ?? throw new InvalidDataException($"场景 {path} 不是合法 JSON 对象");
-        root["formatVersion"] = 1;
-        return root.ToJsonString(Options);
     }
 
     /// <summary>

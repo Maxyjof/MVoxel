@@ -36,12 +36,14 @@ public sealed class ShortcutScheme
 /// </summary>
 public sealed class EditorSettingsDocument
 {
+    public const int CurrentFormatVersion = 2;
+
     /// <summary>
     /// 新建项目对话框默认使用的项目根目录
     /// </summary>
     public static string DefaultProjectRootPath => Path.Combine(AppPaths.BaseDirectory, "MVoxel_Workspace");
 
-    public int FormatVersion = 2;
+    public int FormatVersion = CurrentFormatVersion;
     public string ProjectRootPath = DefaultProjectRootPath;
     public string ActiveShortcutScheme = "标准";
     public List<ShortcutScheme> ShortcutSchemes = new();
@@ -85,7 +87,6 @@ public sealed class EditorSettingsDocument
             Theme = EditorPalette.DefaultThemeName;
         }
 
-        FormatVersion = 2;
         ExportParallelism = Math.Clamp(ExportParallelism, 1, 4);
         ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
             ? DefaultProjectRootPath
@@ -144,9 +145,9 @@ public sealed class EditorSettingsDocument
 /// </summary>
 public sealed class ProjectSettingsDocument
 {
-    public int FormatVersion = 1;
-    /// <summary>内置模板渲染配置版本，用于把旧示例项目升级到当前效果配置。</summary>
-    public int RenderProfileVersion;
+    public const int CurrentFormatVersion = 1;
+
+    public int FormatVersion = CurrentFormatVersion;
     public string TemplateId = "未指定";
     public bool ShowGrid = true;
     public bool ShowVoxelOutlines = true;
@@ -226,13 +227,15 @@ public static class SettingsStore
         {
             if (File.Exists(EditorSettingsPath))
             {
-                var document = JsonSerializer.Deserialize<EditorSettingsDocument>(File.ReadAllText(EditorSettingsPath), JsonOptions)
+                var json = File.ReadAllText(EditorSettingsPath);
+                EnsureCurrentFormatVersion(json, "编辑器设置", EditorSettingsDocument.CurrentFormatVersion);
+                var document = JsonSerializer.Deserialize<EditorSettingsDocument>(json, JsonOptions)
                                ?? EditorSettingsDocument.CreateDefault();
                 document.Normalize();
                 return document;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
         }
 
@@ -251,46 +254,31 @@ public static class SettingsStore
         {
             if (File.Exists(project.ProjectSettingsPath))
             {
-                var document = JsonSerializer.Deserialize<ProjectSettingsDocument>(
-                                   File.ReadAllText(project.ProjectSettingsPath), JsonOptions)
+                var json = File.ReadAllText(project.ProjectSettingsPath);
+                EnsureCurrentFormatVersion(json, "项目设置", ProjectSettingsDocument.CurrentFormatVersion);
+                var document = JsonSerializer.Deserialize<ProjectSettingsDocument>(json, JsonOptions)
                                ?? ProjectSettingsDocument.CreateDefault();
                 document.Normalize();
-                if (document.RenderProfileVersion < 1 &&
-                    Enum.TryParse<MVoxel.Editor.Templates.ProjectTemplateId>(document.TemplateId, out var templateId) &&
-                    templateId != MVoxel.Editor.Templates.ProjectTemplateId.Empty)
-                {
-                    var recommended = MVoxel.Editor.Templates.ProjectTemplateCatalog.CreateRecommendedSettings(templateId);
-                    document.SceneRenderSettings = recommended.SceneRenderSettings;
-                    document.RenderSettings = recommended.RenderSettings;
-                    document.ExportRenderSettings = recommended.ExportRenderSettings;
-                    document.DefaultRenderPreset = recommended.DefaultRenderPreset;
-                    document.RenderProfileVersion = 1;
-                    document.Normalize();
-                    SaveProject(project, document);
-                }
-                if (document.RenderProfileVersion < 2)
-                {
-                    UpgradePathDenoise(document.SceneRenderSettings);
-                    UpgradePathDenoise(document.RenderSettings);
-                    UpgradePathDenoise(document.ExportRenderSettings);
-                    document.RenderProfileVersion = 2;
-                    document.Normalize();
-                    SaveProject(project, document);
-                }
                 return document;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
         }
 
         return ProjectSettingsDocument.CreateDefault();
     }
 
-    private static void UpgradePathDenoise(RenderSettings settings)
+    private static void EnsureCurrentFormatVersion(string json, string description, int currentVersion)
     {
-        if (settings.PathDenoising && settings.PathDenoiseStrength < 0.5F)
-            settings.PathDenoiseStrength = 0.65F;
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("formatVersion", out var versionElement) ||
+            !versionElement.TryGetInt32(out var version) || version != currentVersion)
+        {
+            throw new InvalidDataException(
+                $"{description}格式版本不受支持，当前只接受版本 {currentVersion}，请在当前版本重新创建");
+        }
     }
 
     public static void SaveProject(ProjectHandle project, ProjectSettingsDocument document)

@@ -95,9 +95,6 @@ public sealed record ProjectTemplateDefinition(
 /// </summary>
 public static class ProjectTemplateCatalog
 {
-    /// <summary>返回当前模板的完整推荐配置，供模板创建和旧项目升级共用。</summary>
-    internal static ProjectSettingsDocument CreateRecommendedSettings(ProjectTemplateId id) => CreateSettings(id);
-
     /// <summary>
     /// 所有可选模板，顺序就是界面展示顺序
     /// </summary>
@@ -503,7 +500,6 @@ public static class ProjectTemplateCatalog
                 break;
         }
 
-        settings.RenderProfileVersion = 2;
         settings.Normalize();
         return settings;
     }
