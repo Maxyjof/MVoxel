@@ -1688,52 +1688,35 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        if (ImGui.BeginTabBar("##渲染配置分类"))
+        DrawRenderSettingsAccordion("lighting", "光照", "太阳、天空、AO 与雾", () => DrawSceneSection(settings), true);
+        DrawRenderSettingsAccordion("palette", "材质与笔刷", "调色板、笔刷与发光笔刷", () => DrawPaletteSection(settings));
+        DrawRenderSettingsAccordion("color", "色彩输出", "色调映射、曝光与显示校正", () => DrawPostSection(settings));
+        DrawRenderSettingsAccordion("path", "路径追踪", settings.PathTracingEnabled ? "渐进模式已开启" : "实时模式（推荐默认）", () => DrawPathTraceSection(settings));
+        DrawRenderSettingsAccordion("material", "全局材质", "GGX、金属度、透明与自发光", () => DrawGlobalMaterialSection(settings));
+        DrawRenderSettingsAccordion("camera", "相机", "视场角、景深与对焦", () => DrawCameraSection(settings));
+        DrawRenderSettingsAccordion("lod", "LOD", "场景窗口与渲染窗口的距离细节", () => DrawLodSection(settings));
+    }
+
+    /// <summary>
+    /// 渲染配置的纵向折叠分组：避免窄面板中的标签被截断，且允许用户只展开当前职责。
+    /// </summary>
+    private static void DrawRenderSettingsAccordion(string id, string title, string summary,
+        Action drawContent, bool defaultOpen = false)
+    {
+        ImGui.PushID($"render-accordion-{id}");
+        var flags = ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanAvailWidth;
+        if (defaultOpen) flags |= ImGuiTreeNodeFlags.DefaultOpen;
+        var open = ImGui.CollapsingHeader(title, flags);
+        ImGui.SameLine();
+        ImGui.TextDisabled(summary);
+        if (open)
         {
-            if (ImGui.BeginTabItem("光照"))
-            {
-                DrawSceneSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("材质与笔刷"))
-            {
-                DrawPaletteSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("色彩输出"))
-            {
-                DrawPostSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("路径追踪"))
-            {
-                DrawPathTraceSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("全局材质"))
-            {
-                DrawGlobalMaterialSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("相机"))
-            {
-                DrawCameraSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("LOD"))
-            {
-                DrawLodSection(settings);
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
+            ImGui.Indent(8F);
+            drawContent();
+            ImGui.Unindent(8F);
         }
+
+        ImGui.PopID();
     }
 
     private static void DrawColorSlider(string label, ref NumVector3 linearColor)

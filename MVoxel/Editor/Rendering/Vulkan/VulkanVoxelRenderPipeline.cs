@@ -1778,8 +1778,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             const int sampleCount = 4;
             for (int index = 0; index < sampleCount; index++)
             {
-                float angle = 6.28318530718 * (float(index) + Random(state)) / float(sampleCount);
-                float radius = mix(0.25, 2.0, Random(state));
+                // 实时模式使用固定的低差异采样，避免 AO 把“关闭路径追踪”的画面变成颗粒噪声。
+                float fraction = (float(index) + 0.5) / float(sampleCount);
+                float angle = 6.28318530718 * fraction;
+                float radius = mix(0.35, 1.75, fraction);
                 vec3 direction = normalize(normal * 0.65 + tangent * cos(angle) * radius
                     + bitangent * sin(angle) * radius);
                 if (TraceShadow(hitPoint + normal * 0.003, direction, radius)) blocked += 1.0;
@@ -1787,6 +1789,31 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             float visibility = 1.0 - blocked / float(sampleCount);
             return pow(clamp(visibility, 0.0, 1.0), max(values[61], 0.05))
                 * values[60] + (1.0 - values[60]);
+        }
+
+        float TraceSoftShadowVisibility(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
+        {
+            int sampleCount = clamp(int(values[32]), 1, 8);
+            if (values[31] <= 0.0001 || sampleCount == 1)
+                return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
+
+            vec3 tangent = normalize(abs(rayDirection.y) < 0.9
+                ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
+                : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
+            vec3 bitangent = cross(rayDirection, tangent);
+            float visible = 0.0;
+            for (int index = 0; index < 8; index++)
+            {
+                if (index >= sampleCount) break;
+                // 圆盘内固定采样，实时阴影稳定且不会出现随机颗粒。
+                float fraction = (float(index) + 0.5) / float(sampleCount);
+                float angle = 6.28318530718 * fraction;
+                float radius = values[31] * sqrt(fraction);
+                vec3 sampleDirection = normalize(rayDirection + tangent * cos(angle) * radius
+                    + bitangent * sin(angle) * radius);
+                visible += TraceShadow(rayOrigin, sampleDirection, maxDistance) ? 0.0 : 1.0;
+            }
+            return visible / float(sampleCount);
         }
 
         uint Hash(uint value)
@@ -1879,42 +1906,54 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
         // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
+        vec3 SrgbToLinear(vec3 color)
+        {
+            vec3 low = color / 12.92;
+            vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
+            return mix(low, high, step(vec3(0.04045), color));
+        }
+
         vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
             vec4 hitColor, uint hitFlags, MaterialSlotData material, inout uint state)
         {
-            vec3 baseColor = max(hitColor.rgb, vec3(0.0));
-            vec3 skyAmbient = Sky(hitNormal) * (0.45 + values[43] * 0.35);
+            // 体素颜色来自 RGBA8 调色板，是 sRGB；实时管线在光照前转换到线性空间，
+            // 最后由 PostProcess 统一回到显示空间，避免整张画面发灰或过曝。
+            vec3 baseColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+            vec3 skyAmbient = Sky(hitNormal) * (0.52 + values[43] * 0.42);
+            skyAmbient += vec3(0.018, 0.022, 0.032) * (0.5 + max(hitNormal.y, 0.0));
             vec3 diffuse = baseColor * skyAmbient;
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
             vec3 lightDirection = normalize(-sunDirection);
             float directAmount = max(dot(hitNormal, lightDirection), 0.0);
             if (values[33] > 0.5 && directAmount > 0.0)
             {
-                float blocked = values[31] > 0.0001
-                    ? (TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state) ? 1.0 : 0.0)
-                    : (TraceShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0) ? 1.0 : 0.0);
+                float shadowVisibility = TraceSoftShadowVisibility(
+                    hitPoint + hitNormal * 0.002, lightDirection, 10000.0);
                 diffuse += baseColor * vec3(values[28], values[29], values[30]) *
-                    values[27] * directAmount * (1.0 - blocked);
+                    values[27] * directAmount * shadowVisibility;
             }
 
             float ao = AmbientOcclusion(hitPoint, hitNormal, state);
-            diffuse *= ao;
+            diffuse *= mix(1.0, ao, 0.82);
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
-            float f0 = clamp(material.scalars.y >= 0.0
-                ? mix(values[75], 0.92, material.scalars.y) : values[75], 0.0, 0.98);
+            vec3 f0 = mix(vec3(values[75]), baseColor, metallic);
             vec3 viewDirection = normalize(-rayDirection);
             vec3 halfDirection = normalize(lightDirection + viewDirection);
             float specular = pow(max(dot(hitNormal, halfDirection), 0.0),
                 mix(12.0, 192.0, 1.0 - roughness));
-            float fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(viewDirection, hitNormal), 0.0), 5.0);
-            vec3 highlight = vec3(specular * fresnel * directAmount * values[27]) *
+            float viewFacing = max(dot(viewDirection, hitNormal), 0.0);
+            vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - viewFacing, 5.0);
+            vec3 highlight = vec3(specular * directAmount * values[27]) * fresnel *
                 vec3(values[28], values[29], values[30]);
-            vec3 result = mix(diffuse, diffuse * baseColor, metallic) + highlight;
+            vec3 reflectedSky = Sky(reflect(rayDirection, hitNormal));
+            vec3 environmentSpecular = reflectedSky * fresnel * (0.18 + metallic * 0.82);
+            vec3 result = diffuse * (1.0 - metallic * 0.78) + environmentSpecular + highlight;
             if ((hitFlags & 2u) != 0u)
             {
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
-                result += baseColor * values[80] * emissiveScale;
+                // 实时 Bloom 需要 HDR 亮部，但限制极端亮度避免单个灯把整个画面冲成白块。
+                result += baseColor * min(values[80] * emissiveScale, 8.0);
             }
             return max(result, vec3(0.0));
         }
@@ -2050,7 +2089,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                                 behindNormal, rayDirection, behindColor, behindFlags, behindMaterial, state);
                         }
                         float alpha = clamp(hitColor.a, 0.08, 0.82);
-                        radiance += mix(transmitted, realtime, alpha);
+                        float facing = max(dot(-rayDirection, hitNormal), 0.0);
+                        float glassWeight = clamp(alpha * 0.58 + (1.0 - facing) * 0.24, 0.12, 0.78);
+                        radiance += mix(transmitted, realtime, glassWeight);
                     }
                     else
                     {
