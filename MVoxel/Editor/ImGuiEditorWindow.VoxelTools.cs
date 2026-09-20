@@ -900,21 +900,22 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
 
-            var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
-                             ImGui.IsMouseDragging(ImGuiMouseButton.Middle) ||
-                             // 调整渲染配置时也必须使用轻量预览，否则每个滑块事件
-                             // 都会同步等待完整路径追踪，造成控件看起来无法点击。
-                             ImGui.IsAnyItemActive();
-            // 交互时保留上一帧 GPU 结果，限制同步提交频率，避免每个鼠标事件都阻塞队列。
-            // 这不是后端降级：下一次提交仍使用当前相机和同一条 Vulkan Compute 管线。
-            if (navigating && pipeline.DisplayTextureId != IntPtr.Zero &&
+            var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
+                                   ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            // 调整渲染配置时可以短暂复用上一张纹理，避免拖动滑块同步等待完整路径追踪；
+            // 相机导航绝不能走这条分支，否则新姿态刚写入就会被旧视角覆盖显示，
+            // 表现为右键环绕后视角瞬间弹回。
+            var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
+            if (settingsInteracting && pipeline.DisplayTextureId != IntPtr.Zero &&
                 nowMs - _lastRenderGpuSubmitMs < 33)
             {
                 drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
                     Vector2.Zero, pipeline.DisplayUvMax);
                 return true;
             }
-            var renderSettings = navigating ? effective.CreateInteractionPreview() : effective;
+            var renderSettings = cameraNavigating || settingsInteracting
+                ? effective.CreateInteractionPreview()
+                : effective;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
