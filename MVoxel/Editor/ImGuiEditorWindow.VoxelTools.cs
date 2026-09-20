@@ -618,7 +618,11 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void OpenWorldAsset(string relativePath)
     {
-        if (_project is null) return;
+        if (_project is null)
+        {
+            SetStatus("请先打开项目再打开体素数据");
+            return;
+        }
         var absolute = Path.GetFullPath(Path.Combine(_project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         if (!File.Exists(absolute))
         {

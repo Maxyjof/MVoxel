@@ -87,10 +87,6 @@ internal sealed class ProjectAssetBrowser
         };
 
         DrawToolbar(project);
-        if (string.IsNullOrEmpty(_selectedFolder))
-        {
-            ImGui.TextDisabled("场景 = 对象、镜头与摆放    ·    体素数据 = 实际模型内容    ·    预制体 = 可复用对象组合");
-        }
         ImGui.Separator();
 
         var bodyHeight = Math.Max(64F, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8F);
@@ -662,7 +658,11 @@ internal sealed class ProjectAssetBrowser
     private static void OpenWithShell(ProjectHandle? project, string relativePath, Action<string> reportStatus)
     {
         var path = ResolveAssetPath(project, relativePath);
-        if (path is null) return;
+        if (path is null)
+        {
+            reportStatus("请先打开项目再打开资产");
+            return;
+        }
         try
         {
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
@@ -673,7 +673,11 @@ internal sealed class ProjectAssetBrowser
     private static void RevealInExplorer(ProjectHandle? project, string relativePath, Action<string> reportStatus)
     {
         var path = ResolveAssetPath(project, relativePath);
-        if (path is null) return;
+        if (path is null)
+        {
+            reportStatus("请先打开项目再定位资产");
+            return;
+        }
         try
         {
             if (Directory.Exists(path))
@@ -690,7 +694,11 @@ internal sealed class ProjectAssetBrowser
     private void CreateMaterialAsset(ProjectHandle? project, Action<string> reportStatus,
         Action<ProjectAssetChange> assetChanged)
     {
-        if (project is null) return;
+        if (project is null)
+        {
+            reportStatus("请先打开项目再创建材质");
+            return;
+        }
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
         var usedSlots = new HashSet<int>();
@@ -737,7 +745,11 @@ internal sealed class ProjectAssetBrowser
     private void CreateGeneratorAsset(ProjectHandle? project, Action<string> reportStatus,
         Action<ProjectAssetChange> assetChanged, Action<string>? openGeneratorRequest, bool lua)
     {
-        if (project is null) return;
+        if (project is null)
+        {
+            reportStatus("请先打开项目再创建生成器");
+            return;
+        }
         var directory = Path.Combine(project.AssetsPath, "Generators");
         Directory.CreateDirectory(directory);
         string relativePath;

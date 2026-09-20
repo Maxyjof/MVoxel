@@ -741,8 +741,14 @@ internal partial class ImGuiEditorWindow
     /// <param name="relativePath">相对 Assets 的世界文件路径</param>
     private void ExportVoxAsset(string relativePath)
     {
-        if (_project is not { } project || relativePath.Length == 0)
+        if (_project is not { } project)
         {
+            SetStatus("请先打开项目再导出 .vox");
+            return;
+        }
+        if (relativePath.Length == 0)
+        {
+            SetStatus("未选择可导出的体素数据");
             return;
         }
 
@@ -775,8 +781,14 @@ internal partial class ImGuiEditorWindow
     /// <param name="relativePath">相对 Assets 的世界文件路径</param>
     private void ExportQubicleAsset(string relativePath)
     {
-        if (_project is not { } project || relativePath.Length == 0)
+        if (_project is not { } project)
         {
+            SetStatus("请先打开项目再导出 .qb");
+            return;
+        }
+        if (relativePath.Length == 0)
+        {
+            SetStatus("未选择可导出的体素数据");
             return;
         }
 
