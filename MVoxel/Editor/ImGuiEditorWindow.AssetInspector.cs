@@ -140,7 +140,7 @@ internal sealed partial class ImGuiEditorWindow
         return true;
     }
 
-    private static bool DrawPaletteAssetInspector(string relativePath, string path)
+    private bool DrawPaletteAssetInspector(string relativePath, string path)
     {
         ImGui.Text("调色板");
         ImGui.Separator();
@@ -150,6 +150,12 @@ internal sealed partial class ImGuiEditorWindow
         {
             var colors = PaletteFormat.Load(path);
             ImGui.TextDisabled($"256 色 · {new FileInfo(path).Length:N0} 字节 · BGRA");
+            if (ImGui.Button("在渲染配置中编辑", new Vector2(-1F, 30F)))
+            {
+                _requestedRenderSettingsSection = "palette";
+                _requestedInspectorTab = 1;
+                SetStatus("已打开渲染配置的“材质与笔刷”，可编辑当前调色板颜色");
+            }
             var draw = ImGui.GetWindowDrawList();
             var start = ImGui.GetCursorScreenPos();
             const float cell = 15F;

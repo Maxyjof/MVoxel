@@ -125,16 +125,18 @@ internal sealed partial class ImGuiEditorWindow
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                 : null);
         var modelPath = referencedNativePath ?? Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
+        var primaryObject = FindReferencedModelObject(project, _sceneDocument, modelPath);
+        var primaryOrigin = GetSceneModelOrigin(primaryObject);
         try
         {
             if (largeWorldPath is not null && File.Exists(largeWorldPath))
             {
-                _world = LargeWorldFormat.Read(largeWorldPath);
+                _world = LargeWorldFormat.Read(largeWorldPath, primaryOrigin);
                 SetStatus($"已载入体素世界：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
             }
             else if (File.Exists(modelPath))
             {
-                _world = LargeWorldFormat.Read(modelPath);
+                _world = LargeWorldFormat.Read(modelPath, primaryOrigin);
                 SetStatus($"已载入体素世界：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
             }
             else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
@@ -192,6 +194,33 @@ internal sealed partial class ImGuiEditorWindow
             ? candidate
             : null;
     }
+
+    /// <summary>
+    /// 找到实际作为当前工作世界入口的模型对象。模型文件按局部包围盒保存，
+    /// 读取时必须同时取得场景对象的格变换原点，否则首个分层模型会被错误放到世界原点。
+    /// </summary>
+    private static SceneObject? FindReferencedModelObject(ProjectHandle project, Scene.SceneDocument? document,
+        string absolutePath)
+    {
+        if (document is null) return null;
+        foreach (var sceneObject in document.Objects)
+        foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
+        {
+            var model = SceneComponentTypes.ReadVoxelModel(component).Model;
+            if (string.IsNullOrWhiteSpace(model)) continue;
+            var candidate = Path.GetFullPath(Path.Combine(project.RootPath,
+                model.Replace('/', Path.DirectorySeparatorChar)));
+            if (string.Equals(candidate, absolutePath, StringComparison.OrdinalIgnoreCase))
+                return sceneObject;
+        }
+
+        return null;
+    }
+
+    private static VoxelCoord64 GetSceneModelOrigin(SceneObject? sceneObject) =>
+        sceneObject?.Transform.Mode == TransformMode.Grid
+            ? sceneObject.Transform.Grid.Position
+            : VoxelCoord64.Zero;
 
     private static bool HasModelReference(Scene.SceneDocument? document) => document?.Objects
         .SelectMany(item => item.Components)
@@ -681,7 +710,7 @@ internal sealed partial class ImGuiEditorWindow
 
                 try
                 {
-                    var layerWorld = LargeWorldFormat.Read(absolute);
+                    var layerWorld = LargeWorldFormat.Read(absolute, GetSceneModelOrigin(sceneObject));
                     var owned = new HashSet<VoxelCoord64>();
                     foreach (var item in layerWorld.EnumerateOccupied())
                     {
@@ -1725,12 +1754,13 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 渲染配置的纵向折叠分组：避免窄面板中的标签被截断，且允许用户只展开当前职责。
     /// </summary>
-    private static void DrawRenderSettingsAccordion(string id, string title, string summary,
+    private void DrawRenderSettingsAccordion(string id, string title, string summary,
         Action drawContent, bool defaultOpen = false)
     {
         ImGui.PushID($"render-accordion-{id}");
         var flags = ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanAvailWidth;
-        if (defaultOpen) flags |= ImGuiTreeNodeFlags.DefaultOpen;
+        if (defaultOpen || string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
+            flags |= ImGuiTreeNodeFlags.DefaultOpen;
         var open = ImGui.CollapsingHeader(title, flags);
         ImGui.SameLine();
         ImGui.TextDisabled(summary);
@@ -1742,6 +1772,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.PopID();
+        if (string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
+            _requestedRenderSettingsSection = null;
     }
 
     private static void DrawColorSlider(string label, ref NumVector3 linearColor)
@@ -1839,6 +1871,20 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SeparatorText("色板（256 色）");
         DrawPaletteSelector();
+        var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
+        var editableColor = new System.Numerics.Vector4(
+            paletteColor.R / 255F, paletteColor.G / 255F,
+            paletteColor.B / 255F, paletteColor.A / 255F);
+        if (ImGui.ColorEdit4($"编辑颜色 #{_paletteIndex}", ref editableColor,
+                ImGuiColorEditFlags.DisplayRGB | ImGuiColorEditFlags.Uint8))
+        {
+            _palette[_paletteIndex] = new Rgba32(
+                (byte)Math.Clamp((int)MathF.Round(editableColor.X * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.Y * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.Z * 255F), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(editableColor.W * 255F), 0, 255));
+            SetStatus($"已修改调色板颜色 #{_paletteIndex}，保存后写入项目");
+        }
 
         ImGui.SeparatorText("调色板管理");
         ImGui.TextDisabled(_paletteIsProjectLevel

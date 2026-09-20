@@ -64,6 +64,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _centerTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
+    private string? _requestedRenderSettingsSection;
     private SceneDocument? _sceneDocument;
     private string _activeSceneRelativePath = "Scenes/主场景.mvox";
     private StableId? _renderCameraId;

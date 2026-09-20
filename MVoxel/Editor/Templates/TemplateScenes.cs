@@ -169,6 +169,102 @@ internal static class TemplateScenes
     }
 
     /// <summary>
+    /// 将每个示例模板按可编辑职责拆成独立模型资源。这里保留原世界坐标，
+    /// 由场景对象的格变换负责把局部文件重新组装回原位置；因此隐藏、移动或替换
+    /// 某个对象不会再影响同一份“完整模型”的其他对象。
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Part, VoxelWorld World)> BuildParts(
+        ProjectTemplateId id, VoxelWorld source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return id switch
+        {
+            ProjectTemplateId.Showcase => BuildCottageParts(source),
+            ProjectTemplateId.MaterialLab => SplitByRegions(source,
+                ("环境与地面", "环境", c => c.Y <= 1),
+                ("粗糙度阶梯", "粗糙度", c => c.Z is >= -8 and <= -4),
+                ("材质样品", "样品", c => c.X is >= -14 and <= 12 && c.Z is >= -3 and <= 10),
+                ("水池与灯环", "水池与灯环", _ => true)),
+            ProjectTemplateId.PaletteWorkshop => SplitByRegions(source,
+                ("展台底座", "底座", c => c.Y <= 1),
+                ("色卡看台", "色卡", c => c.Y <= 5),
+                ("中心样品", "中心样品", _ => true)),
+            ProjectTemplateId.SparseWorld => SplitByRegions(source,
+                ("信号塔", "信号塔", c => c.X < -200),
+                ("桥梁", "桥梁", c => c.X is >= 200 and <= 500),
+                ("灯塔岛", "灯塔岛", _ => true)),
+            ProjectTemplateId.LodPlayground => SplitByRegions(source,
+                ("完整细节", "LOD 0", c => c.Z > -3),
+                ("简化屋顶", "LOD 1", c => c.Z is <= -3 and > -33),
+                ("简化体块", "LOD 2", c => c.Z is <= -33 and > -63),
+                ("低模轮廓", "LOD 3", c => c.Z is <= -63 and > -93),
+                ("最低细节", "LOD 4", _ => true)),
+            ProjectTemplateId.RayTracingStudio => SplitByRegions(source,
+                ("暗室结构", "暗室", c => c.X is <= -20 or >= 20 || c.Z is <= -14 or >= 14),
+                ("玻璃砖墙", "玻璃砖墙", c => c.X is >= 5 and <= 20 && c.Z is >= -15 and <= -10),
+                ("材质球与灯槽", "材质球与灯槽", _ => true)),
+            ProjectTemplateId.ProceduralTerrain => SplitByRegions(source,
+                ("西北地形", "西北地形", c => c.X < 0 && c.Z < 0),
+                ("东北地形", "东北地形", c => c.X >= 0 && c.Z < 0),
+                ("西南地形", "西南地形", c => c.X < 0 && c.Z >= 0),
+                ("东南地形与林带", "东南地形与林带", _ => true)),
+            ProjectTemplateId.Architecture => SplitByRegions(source,
+                ("基座与台阶", "基座", c => c.Y <= 3),
+                ("柱廊", "柱廊", c => c.Y is >= 4 and <= 14 && Math.Abs(c.X) >= 9),
+                ("后殿与穹顶", "后殿与穹顶", c => c.Z <= -5),
+                ("拱门与水池", "拱门与水池", _ => true)),
+            ProjectTemplateId.CameraGallery => SplitByRegions(source,
+                ("摄影棚地面", "地面", c => c.Y <= 0),
+                ("螺旋雕塑", "主体雕塑", c => Math.Abs(c.X) <= 8 && Math.Abs(c.Z) <= 8),
+                ("景深参照物", "景深参照物", _ => true)),
+            ProjectTemplateId.LargeWorld => SplitByRegions(source,
+                ("中央阶梯圣坛", "中央圣坛", c => c.X is >= 400 and <= 624 && c.Z is >= 400 and <= 624),
+                ("四角高塔", "四角高塔", c => (Math.Abs(c.X - 160) <= 32 && Math.Abs(c.Z - 160) <= 32) ||
+                                                   (Math.Abs(c.X - 832) <= 32 && Math.Abs(c.Z - 160) <= 32) ||
+                                                   (Math.Abs(c.X - 160) <= 32 && Math.Abs(c.Z - 832) <= 32) ||
+                                                   (Math.Abs(c.X - 832) <= 32 && Math.Abs(c.Z - 832) <= 32)),
+                ("高空拱桥", "拱桥", c => c.Y >= 800),
+                ("环带街区与地基", "街区与地基", _ => true)),
+            ProjectTemplateId.RenderingGallery => SplitByRegions(source,
+                ("灯塔", "灯塔", c => c.X <= -35 && c.Z <= -35 && c.Y >= 4),
+                ("远景塔楼", "远景塔楼", c => c.X >= 55 && c.Z <= -50 && c.Y >= 3),
+                ("码头与船", "码头与船", c => c.X >= 38 && c.Z >= -10 && c.Y >= 5),
+                ("玻璃凉亭", "玻璃凉亭", c => Math.Abs(c.X) <= 10 && c.Z is >= 1 and <= 17 && c.Y >= 7),
+                ("小镇建筑", "小镇建筑", c => c.X is >= -36 and <= 36 && c.Z is >= -30 and <= -8 && c.Y >= 5),
+                ("林间小径与树木", "林间小径与树木", c => c.Z >= 0 && c.X is >= -50 and <= 32 && c.Y >= 5),
+                ("海湾地形", "海湾地形", _ => true)),
+            ProjectTemplateId.MinecraftValley => SplitByRegions(source,
+                ("地形", "湖盆与瀑布", c => c.X is >= -20 and <= 8 && c.Z is >= -30 and <= 15),
+                ("山谷西区", "山谷西区", c => c.X < 0),
+                ("山谷东区", "山谷东区", _ => true)),
+            _ => [("模型", "模型", source)],
+        };
+    }
+
+    private static IReadOnlyList<(string Name, string Part, VoxelWorld World)> SplitByRegions(
+        VoxelWorld source,
+        params (string Name, string Part, Func<VoxelCoord64, bool> Matches)[] regions)
+    {
+        if (regions.Length == 0) return [("模型", "模型", source)];
+        var parts = regions.Select(region => (region.Name, region.Part, World: new VoxelWorld())).ToArray();
+        source.TryGetBounds(out var minimum, out var maximum);
+        foreach (var (coordinate, value) in source.EnumerateOccupied())
+        {
+            // 首个对象承担模型局部原点的边界体素，确保场景对象位置仍能准确恢复
+            // 整个模板的包围盒原点；这些边界体素本来就属于环境/基座职责。
+            var index = coordinate.X == minimum.X || coordinate.Y == minimum.Y || coordinate.Z == minimum.Z ||
+                        coordinate.X == maximum.X || coordinate.Y == maximum.Y || coordinate.Z == maximum.Z
+                ? 0
+                : Array.FindIndex(regions, region => region.Matches(coordinate));
+            parts[index < 0 ? regions.Length - 1 : index].World.Set(coordinate, value);
+        }
+
+        return parts.Where(part => part.World.OccupiedVoxelCount > 0)
+            .Select(part => (part.Name, part.Part, part.World))
+            .ToArray();
+    }
+
+    /// <summary>
     /// 材质实验室：粗糙度阶梯、金属/玻璃/发光/水样品台与弧形背景屏
     /// </summary>
     public static VoxelWorld BuildMaterialLab()

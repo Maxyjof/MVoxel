@@ -146,17 +146,18 @@ public static class ProjectTemplateCatalog
                 var terrain = TemplateScenes.BuildValleyTerrain();
                 LargeWorldFormat.Write(modelPath, terrain);
                 var trees = TemplateScenes.BuildValleyTrees(terrain);
-                var layerParts = new List<(string Name, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position)>();
+                var modelParts = WriteTemplateModelParts(project, id, terrain);
                 for (var index = 0; index < trees.Count; index++)
                 {
                     var treeFile = $"Minecraft山谷_树{index + 1}.mvmodel";
                     LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", treeFile), trees[index]);
-                    layerParts.Add(($"树 {index + 1}", "Assets/Worlds/" + treeFile,
-                        trees[index].OccupiedVoxelCount, GetWorldOrigin(trees[index])));
+                    modelParts.Add(new SceneModelPart($"树 {index + 1}", "树木",
+                        "Assets/Worlds/" + treeFile, trees[index].OccupiedVoxelCount,
+                        GetWorldOrigin(trees[index])));
                 }
 
-                WriteScene(project, Get(id), terrain.OccupiedVoxelCount,
-                    "Assets/Worlds/主世界.mvmodel", layerParts: layerParts, framingWorld: terrain);
+                WriteScene(project, Get(id), terrain.OccupiedVoxelCount, "Assets/Worlds/主世界.mvmodel",
+                    modelParts: modelParts, framingWorld: terrain);
             }
             else if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
@@ -164,33 +165,19 @@ public static class ProjectTemplateCatalog
                 var largePath = Path.Combine(project.AssetsPath, "Worlds", largeFileName);
                 var world = BuildWorld(id, VoxelPalette.Build());
                 LargeWorldFormat.Write(largePath, world);
-                WriteScene(project, Get(id), world.OccupiedVoxelCount,
-                    $"Assets/Worlds/{largeFileName}", framingWorld: world);
-            }
-            else if (id == ProjectTemplateId.Showcase)
-            {
-                // 每个层级对象都绑定独立模型资产，确保它们可单独隐藏、选中、移动和编辑。
-                var world = BuildWorld(id, VoxelPalette.Build());
-                LargeWorldFormat.Write(modelPath, world);
-                var modelParts = new List<SceneModelPart>();
-                foreach (var (name, part, partWorld) in TemplateScenes.BuildCottageParts(world))
-                {
-                    var fileName = $"小屋与花园_{name}.mvmodel";
-                    LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", fileName), partWorld);
-                    modelParts.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
-                        partWorld.OccupiedVoxelCount, GetWorldOrigin(partWorld)));
-                }
-
-                WriteScene(project, Get(id), world.OccupiedVoxelCount,
-                    "Assets/Worlds/主世界.mvmodel", modelParts: modelParts, framingWorld: world);
+                var modelParts = WriteTemplateModelParts(project, id, world);
+                WriteScene(project, Get(id), world.OccupiedVoxelCount, $"Assets/Worlds/{largeFileName}",
+                    modelParts: modelParts, framingWorld: world);
             }
             else
             {
                 var world = BuildWorld(id, VoxelPalette.Build());
                 LargeWorldFormat.Write(modelPath, world);
+                var modelParts = WriteTemplateModelParts(project, id, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
                     $"Assets/Worlds/{Path.GetFileName(modelPath)}",
                     cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1,
+                    modelParts: modelParts,
                     framingWorld: world);
             }
         }
@@ -588,6 +575,27 @@ public static class ProjectTemplateCatalog
 
     private readonly record struct SceneModelPart(
         string Name, string Part, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position);
+
+    /// <summary>
+    /// 写入模板拆分后的独立模型，并返回场景层级所需的模型组件数据。
+    /// 主世界完整文件仍保留在 Worlds 下作为可导出/备份资产，但场景不再让多个对象重复引用它。
+    /// </summary>
+    private static List<SceneModelPart> WriteTemplateModelParts(ProjectHandle project,
+        ProjectTemplateId id, VoxelWorld world)
+    {
+        var result = new List<SceneModelPart>();
+        var prefix = id == ProjectTemplateId.Showcase ? "小屋与花园" : Get(id).Name;
+        foreach (var (name, part, partWorld) in TemplateScenes.BuildParts(id, world))
+        {
+            var fileName = $"{prefix}_{name}.mvmodel";
+            var path = Path.Combine(project.AssetsPath, "Worlds", fileName);
+            LargeWorldFormat.Write(path, partWorld);
+            result.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
+                partWorld.OccupiedVoxelCount, GetWorldOrigin(partWorld)));
+        }
+
+        return result;
+    }
 
     private static (Double3 Center, double Distance) GetFraming(VoxelWorld? world)
     {

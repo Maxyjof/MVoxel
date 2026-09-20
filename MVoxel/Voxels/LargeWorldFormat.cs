@@ -247,8 +247,9 @@ public static class LargeWorldFormat
     /// 不把整份文件载入内存
     /// </summary>
     /// <param name="path">模型文件路径</param>
+    /// <param name="origin">模型实例在场景中的世界原点</param>
     /// <returns>读取出的稀疏世界</returns>
-    public static VoxelWorld Read(string path)
+    public static VoxelWorld Read(string path, VoxelCoord64 origin = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
@@ -266,7 +267,7 @@ public static class LargeWorldFormat
             ReadFully(stream, buffer, bytes);
             for (var record = 0; record < records; record++)
             {
-                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, default, world);
+                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, origin, world);
             }
 
             remaining -= records;

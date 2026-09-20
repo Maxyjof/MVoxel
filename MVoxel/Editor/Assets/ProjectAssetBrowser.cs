@@ -239,30 +239,35 @@ internal sealed class ProjectAssetBrowser
             if (index % columns != 0) ImGui.SameLine(0F, 6F);
             ImGui.PushID(entry.RelativePath);
             var selected = _selectedAsset == entry.RelativePath;
-            if (ImGui.Selectable("##资源平铺项", selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(tileWidth, tileHeight)))
+            var activated = ImGui.Selectable("##资源平铺项", selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(tileWidth, tileHeight));
+            // 必须在 Selectable 返回后立即读取悬停和双击状态。后面的右键菜单、图标绘制
+            // 都会改变 ImGui 的 last-item，上移到后面读取会导致文件夹双击偶发失效。
+            var itemHovered = ImGui.IsItemHovered();
+            var doubleClicked = itemHovered && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left);
+            if (activated)
             {
                 _selectedAsset = entry.RelativePath;
                 reportStatus($"已选择{ProjectAssetCatalog.KindLabel(entry.Kind)}：{entry.DisplayName}");
             }
 
-            if (entry.IsFolder && ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            if (entry.IsFolder && doubleClicked)
             {
                 _selectedFolder = entry.RelativePath;
                 _selectedAsset = string.Empty;
                 reportStatus($"已打开文件夹：{entry.DisplayName}");
             }
             else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
-                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                     doubleClicked)
             {
                 openWorldRequest?.Invoke(entry.RelativePath);
             }
             else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Prefab &&
-                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                     doubleClicked)
             {
                 instantiatePrefabRequest?.Invoke(entry.RelativePath);
             }
             else if (!entry.IsFolder && entry.Kind == ProjectAssetKind.Generator &&
-                     ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+                     doubleClicked)
             {
                 openGeneratorRequest?.Invoke(entry.RelativePath);
             }

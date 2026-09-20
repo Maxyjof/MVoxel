@@ -479,12 +479,12 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private static void DrawEditorRenderConfiguration(RenderSettings settings, string context)
+    private void DrawEditorRenderConfiguration(RenderSettings settings, string context)
     {
         DrawFullRenderConfiguration(settings, context);
     }
 
-    private static void DrawFullRenderConfiguration(RenderSettings settings, string context)
+    private void DrawFullRenderConfiguration(RenderSettings settings, string context)
     {
         ImGui.PushID(context);
 
