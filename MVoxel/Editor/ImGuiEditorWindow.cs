@@ -989,7 +989,7 @@ DockId=0x6A3C3007,0
 
         ImGui.SameLine(0F, iconGap);
         var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
-            !sceneObject.Locked, DrawSelectableIcon, iconWidth);
+            !sceneObject.Locked, DrawLockIcon, iconWidth);
         if (selectableClicked)
         {
             sceneObject.Locked = !sceneObject.Locked;
@@ -1078,28 +1078,49 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 绘制对象可选中状态图标：使用“定位靶心”而不是手掌，
-    /// 在 16~20px 的层级行图标中轮廓更清楚，也不会产生多指误读。
+    /// 绘制对象锁定状态图标。active 表示对象当前允许选中，因此绘制开锁；
+    /// inactive 表示对象已锁定，因此绘制闭锁。图标只表达锁定语义，不再使用准星。
     /// </summary>
     /// <param name="drawList">目标绘制列表</param>
     /// <param name="min">图标左上角</param>
     /// <param name="max">图标右下角</param>
     /// <param name="color">图标颜色</param>
     /// <param name="active">当前是否允许选中</param>
-    private static void DrawSelectableIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
+    private static void DrawLockIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color, bool active)
     {
         var center = (min + max) * 0.5F;
-        var radius = Math.Max(4F, (max.X - min.X) * .28F);
-        drawList.AddCircle(center, radius, color, 16, 1.5F);
-        drawList.AddCircleFilled(center, 2F, color, 10);
-        drawList.AddLine(center + new Vector2(-radius - 2F, 0F), center + new Vector2(-radius + 1F, 0F), color, 1.5F);
-        drawList.AddLine(center + new Vector2(radius - 1F, 0F), center + new Vector2(radius + 2F, 0F), color, 1.5F);
-        drawList.AddLine(center + new Vector2(0F, -radius - 2F), center + new Vector2(0F, -radius + 1F), color, 1.5F);
-        drawList.AddLine(center + new Vector2(0F, radius - 1F), center + new Vector2(0F, radius + 2F), color, 1.5F);
-        if (!active)
+        var size = Math.Min(max.X - min.X, max.Y - min.Y);
+        var bodyWidth = Math.Max(8F, size * .56F);
+        var bodyHeight = Math.Max(6F, size * .38F);
+        var bodyMin = new Vector2(center.X - bodyWidth * .5F, center.Y + size * .08F);
+        var bodyMax = new Vector2(bodyMin.X + bodyWidth, bodyMin.Y + bodyHeight);
+        drawList.AddRect(bodyMin, bodyMax, color, 2F, ImDrawFlags.None, 1.6F);
+
+        var shackleLeft = bodyMin.X + bodyWidth * .2F;
+        var shackleRight = bodyMin.X + bodyWidth * .8F;
+        var shackleTop = bodyMin.Y - size * .32F;
+        var shackleBottom = bodyMin.Y + 1F;
+        if (active)
         {
-            drawList.AddLine(min + new Vector2(3F, 3F), max - new Vector2(3F, 3F), color, 1.8F);
+            // 开锁状态：右侧锁环打开并向右偏移，仍保持“锁”的形状。
+            var openRight = shackleRight + size * .18F;
+            drawList.AddBezierCubic(new Vector2(shackleLeft, shackleBottom),
+                new Vector2(shackleLeft, shackleTop), new Vector2(shackleRight, shackleTop),
+                new Vector2(openRight, shackleTop + size * .12F), color, 1.6F);
+            drawList.AddLine(new Vector2(openRight, shackleTop + size * .12F),
+                new Vector2(openRight, bodyMin.Y - size * .02F), color, 1.6F);
         }
+        else
+        {
+            drawList.AddBezierCubic(new Vector2(shackleLeft, shackleBottom),
+                new Vector2(shackleLeft, shackleTop), new Vector2(shackleRight, shackleTop),
+                new Vector2(shackleRight, shackleBottom), color, 1.6F);
+        }
+
+        var keyhole = new Vector2(center.X, bodyMin.Y + bodyHeight * .43F);
+        drawList.AddCircleFilled(keyhole, Math.Max(1.2F, size * .07F), color, 8);
+        drawList.AddLine(keyhole + new Vector2(0F, size * .06F),
+            keyhole + new Vector2(0F, size * .18F), color, 1.4F);
     }
 
     private void DrawCenter()
@@ -2169,27 +2190,7 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
         var pipeline = _pipeline;
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
-        var backendName = !activeRenderSettings.PathTracingEnabled
-            ? activeRenderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
-                ? "CPU 实时预览"
-                : "显卡实时渲染"
-            : activeRenderSettings.Backend == RenderBackend.Cpu || _gpuRenderingDisabled
-                ? "CPU 光照预览"
-                : pipeline?.UsingHardwareRayTracing == true
-                    ? "硬件光追"
-                    : "显卡计算路径追踪";
-        ImGui.TextColored(ToColor(EditorPalette.Accent), backendName);
-        if (activeRenderSettings.PathTracingEnabled && pipeline is not null)
-        {
-            ImGui.SameLine();
-            ImGui.TextDisabled($"· {pipeline.AccumulatedSamples}/{activeRenderSettings.PathMaxAccumulatedSamples} spp" +
-                               (activeRenderSettings.PathDenoising ? " · 降噪" : ""));
-        }
-        if (pipeline?.HardwareRayTracingError is { Length: > 0 } hardwareError && ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(hardwareError);
-        }
-        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetTextLineHeightWithSpacing()));
+        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
         if (ImGui.SmallButton("重新计算"))
         {
             _pipeline?.ResetAccumulation();
@@ -2468,7 +2469,7 @@ DockId=0x6A3C3007,0
             }
             ImGui.SameLine(0F, 4F);
             var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable", "允许选中对象", "禁止选中对象",
-                !selectedObject.Locked, DrawSelectableIcon);
+                !selectedObject.Locked, DrawLockIcon);
             if (selectableClicked)
             {
                 selectedObject.Locked = !selectedObject.Locked;
