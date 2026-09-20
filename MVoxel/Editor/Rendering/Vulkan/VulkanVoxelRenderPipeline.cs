@@ -2168,7 +2168,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             vec3 sunGlint = normalize(vec3(values[24], values[25], values[26]));
                             float glint = pow(max(dot(reflected, sunGlint), 0.0), glintExponent);
                             if (glint > 0.001 &&
-                                !TraceSoftShadow(hitPoint + hitNormal * 0.002, -sunGlint, 10000.0, state))
+                                !TraceSoftShadow(hitPoint + hitNormal * 0.002, sunGlint, 10000.0, state))
                                 radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27] * 6.0;
                         }
                         throughput *= 1.0 - fresnel * 0.85;
