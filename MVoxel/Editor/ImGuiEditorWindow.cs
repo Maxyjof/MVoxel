@@ -2072,6 +2072,7 @@ DockId=0x6A3C3007,0
         {
             var settings = _activeExport.Settings;
             var viewCamera = _activeExport.Camera ?? camera;
+            viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
             if (_activeExport.CullingMask is { } mask)
             {
                 _pipeline!.SyncWorld(GetRenderWorld(mask), 0, settings.RenderLod,

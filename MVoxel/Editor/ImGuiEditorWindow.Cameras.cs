@@ -57,7 +57,9 @@ internal sealed partial class ImGuiEditorWindow
     private SceneCamera GetRenderViewCamera()
     {
         var cameraObject = GetActiveRenderCameraObject();
-        return cameraObject is null ? GetSceneCamera() : ToSceneCamera(cameraObject);
+        var camera = cameraObject is null ? GetSceneCamera() : ToSceneCamera(cameraObject);
+        var settings = ResolveRenderSettings(cameraObject);
+        return camera with { FieldOfViewDegrees = settings.CameraFovDegrees };
     }
 
     /// <summary>
