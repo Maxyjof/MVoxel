@@ -117,7 +117,9 @@ public sealed class RenderSettings
     /// <summary>
     /// 软阴影的抖动采样数
     /// </summary>
-    public int ShadowSamples = 3;
+    // 实时阴影默认使用最高质量档位；着色器会将该档位映射为 32 次稳定采样，
+    // 避免默认画面出现明显的离散阴影色阶。
+    public int ShadowSamples = 8;
 
     /// <summary>
     /// 角点环境光遮蔽开关（MagicaVoxel 顶点 AO）

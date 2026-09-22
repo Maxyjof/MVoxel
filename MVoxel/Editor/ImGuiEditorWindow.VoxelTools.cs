@@ -110,6 +110,7 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocument = LoadSceneDocument(project);
         _sceneDocumentDirty = false;
         _renderCameraId = null;
+        _renderOrbitPivot = null;
         _renderCameraInitialFramePending = true;
         _composedRenderWorld = null;
         _composedSignature = 0;

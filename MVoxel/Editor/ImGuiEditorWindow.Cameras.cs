@@ -37,6 +37,7 @@ internal sealed partial class ImGuiEditorWindow
         if (cameras.Count == 0)
         {
             _renderCameraId = null;
+            _renderOrbitPivot = null;
             return null;
         }
 
@@ -47,6 +48,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _renderCameraId = cameras[0].Id;
+        _renderOrbitPivot = null;
+        _renderCameraInitialFramePending = true;
         return cameras[0];
     }
 
@@ -92,6 +95,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.Selectable(camera.Name, isSelected))
             {
                 _renderCameraId = camera.Id;
+                _renderOrbitPivot = null;
                 _renderCameraInitialFramePending = true;
                 _pipeline?.ResetAccumulation();
                 _accumulationSignature = string.Empty;
@@ -258,6 +262,7 @@ internal sealed partial class ImGuiEditorWindow
                 MathF.Max(orbitLimits.MinimumDistance, float.IsFinite(orbitDistance)
                     ? orbitDistance : orbitLimits.MinimumDistance) * 0.01F);
             var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
+            _renderOrbitPivot = pivot + pan;
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
 
@@ -280,6 +285,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var pivot = GetRenderOrbitPivot();
+        _renderOrbitPivot = pivot;
         var camera = ToSceneCamera(cameraObject);
         var offset = camera.Position - pivot;
         var distance = offset.Length;
@@ -331,6 +337,14 @@ internal sealed partial class ImGuiEditorWindow
 
     private Vector3 GetRenderOrbitPivot()
     {
+        if (_renderOrbitPivot is { } rememberedPivot &&
+            float.IsFinite(rememberedPivot.X) &&
+            float.IsFinite(rememberedPivot.Y) &&
+            float.IsFinite(rememberedPivot.Z))
+        {
+            return rememberedPivot;
+        }
+
         if (_world.TryGetBounds(out var min, out var max))
         {
             return new Vector3(

@@ -69,6 +69,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private SceneDocument? _sceneDocument;
     private string _activeSceneRelativePath = "Scenes/主场景.mvox";
     private StableId? _renderCameraId;
+    // 渲染窗口相机的轨道中心。中键平移后必须跟随相机一起移动，
+    // 否则下一次右键环绕会重新围绕世界包围盒中心，表现为视角跳回对象。
+    private Vector3? _renderOrbitPivot;
     private bool _applyPreset;
     private bool _editPanelLayout;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
@@ -3201,6 +3204,7 @@ DockId=0x6A3C3007,0
             _sceneDocumentDirty = false;
             _selectedSceneObjectId = null;
             _renderCameraId = null;
+            _renderOrbitPivot = null;
             _renderCameraInitialFramePending = true;
         }
         if (touchesScene || touchesModel)
@@ -3675,6 +3679,7 @@ DockId=0x6A3C3007,0
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _sceneDocumentDirty = false;
         _renderCameraId = null;
+        _renderOrbitPivot = null;
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
         _lastAssetSelectionPath = string.Empty;

@@ -1795,7 +1795,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 : cross(normal, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(normal, tangent);
             float blocked = 0.0;
-            const int sampleCount = 4;
+            const int sampleCount = 8;
             for (int index = 0; index < sampleCount; index++)
             {
                 // 实时模式使用固定的低差异采样，避免 AO 把“关闭路径追踪”的画面变成颗粒噪声。
@@ -1813,7 +1813,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         float TraceSoftShadowVisibility(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
-            int sampleCount = clamp(int(values[32]), 1, 8);
+            // UI 参数表示质量档位；实时阴影内部使用 4 倍采样，避免 1~8 个样本
+            // 直接映射成非常明显的离散色阶，同时仍然保持参数可控。
+            int sampleCount = clamp(int(values[32]) * 4, 1, 32);
             if (values[31] <= 0.0001 || sampleCount == 1)
                 return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
 
@@ -1822,7 +1824,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(rayDirection, tangent);
             float visible = 0.0;
-            for (int index = 0; index < 8; index++)
+            for (int index = 0; index < 32; index++)
             {
                 if (index >= sampleCount) break;
                 // 圆盘内固定采样，实时阴影稳定且不会出现随机颗粒。
@@ -2426,7 +2428,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (values[103] > 0.5 && useDenoise)
             {
                 vec3 color = DenoiseAt(pixel, width, height);
-                imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
+                imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
                 return;
             }
 
@@ -2436,7 +2438,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 base = useDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
                 vec3 color = base + BloomGather(pixel, width, height) * clamp(values[110], 0.0, 2.0);
-                imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), 1.0));
+                imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
                 return;
             }
 
@@ -2504,7 +2506,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
             }
             float outputAlpha = pathMode || primarySurfaceHit ? 1.0 : 0.0;
-            imageStore(outputImage, pixel, vec4(PostProcess(clamp(color, 0.0, 1.0), pixel, width, height), outputAlpha));
+            imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
         }
 
         vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height)
