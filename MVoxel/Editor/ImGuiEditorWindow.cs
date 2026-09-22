@@ -69,9 +69,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private SceneDocument? _sceneDocument;
     private string _activeSceneRelativePath = "Scenes/主场景.mvox";
     private StableId? _renderCameraId;
-    // 渲染窗口相机的轨道中心。中键平移后必须跟随相机一起移动，
-    // 否则下一次右键环绕会重新围绕世界包围盒中心，表现为视角跳回对象。
-    private Vector3? _renderOrbitPivot;
+    // 渲染窗口相机的临时导航锚点，不代表聚焦对象；中键平移时与相机同步移动。
+    private Vector3? _renderOrbitAnchor;
     private bool _applyPreset;
     private bool _editPanelLayout;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
@@ -131,6 +130,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _renderViewNeedsInitialRender = true;
     private bool _renderCameraInitialFramePending = true;
     private bool _renderViewWasFocused;
+    private Vector2 _lastSceneViewportSize;
     private Vector2 _lastRenderViewportSize;
     private Queue<ExportJob> _exportQueue = new();
     private ExportJob? _activeExport;
@@ -954,6 +954,8 @@ DockId=0x6A3C3007,0
             new Vector2(Math.Max(1F, rowWidth - 48F), rowMax.Y - rowMin.Y));
         var rowSelectableHovered = ImGui.IsItemHovered();
         ImGui.SetCursorScreenPos(treeCursor);
+        var rowDoubleClicked = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) &&
+                               (rowClicked || rowSelectableClicked);
 
         var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
         var rowHovered = rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax);
@@ -996,6 +998,10 @@ DockId=0x6A3C3007,0
         {
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
+            if (rowDoubleClicked)
+            {
+                FocusHierarchyObject(sceneObject);
+            }
         }
 
         if (ImGui.BeginPopupContextItem($"##SceneObjectRowMenu_{sceneObject.Id}"))
@@ -1164,13 +1170,15 @@ DockId=0x6A3C3007,0
 
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
-        _lastRenderViewportSize = size;
+        _lastSceneViewportSize = size;
         var drawList = ImGui.GetWindowDrawList();
         var sceneSettings = CurrentSceneRenderSettings;
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(sceneSettings)));
 
         var gizmoCenter = origin + new Vector2(size.X - 58F, 76F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.07F, 28F, 36F);
+        CancelFocusOnManualNavigation(origin, size, renderViewport: false);
+        AdvanceSceneCameraFocus(ImGui.GetIO().DeltaTime);
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
@@ -2059,6 +2067,13 @@ DockId=0x6A3C3007,0
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
         var io = ImGui.GetIO();
+        _lastRenderViewportSize = size;
+        CancelFocusOnManualNavigation(origin, size, renderViewport: true);
+        AdvanceRenderCameraFocus(io.DeltaTime);
+        if (GetActiveRenderCameraObject() is null)
+        {
+            AdvanceSceneCameraFocus(io.DeltaTime);
+        }
         MVoxelLog.SetRuntimeContext(
             $"RenderView 导航输入，鼠标=({io.MousePos.X:0.0},{io.MousePos.Y:0.0})，增量=({io.MouseDelta.X:0.0},{io.MouseDelta.Y:0.0})，" +
             $"左键={ImGui.IsMouseDown(ImGuiMouseButton.Left)}，中键={ImGui.IsMouseDown(ImGuiMouseButton.Middle)}，右键={ImGui.IsMouseDown(ImGuiMouseButton.Right)}，" +
@@ -3204,7 +3219,7 @@ DockId=0x6A3C3007,0
             _sceneDocumentDirty = false;
             _selectedSceneObjectId = null;
             _renderCameraId = null;
-            _renderOrbitPivot = null;
+            _renderOrbitAnchor = null;
             _renderCameraInitialFramePending = true;
         }
         if (touchesScene || touchesModel)
@@ -3679,7 +3694,7 @@ DockId=0x6A3C3007,0
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _sceneDocumentDirty = false;
         _renderCameraId = null;
-        _renderOrbitPivot = null;
+        _renderOrbitAnchor = null;
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
         _lastAssetSelectionPath = string.Empty;

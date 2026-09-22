@@ -37,7 +37,7 @@ internal sealed partial class ImGuiEditorWindow
         if (cameras.Count == 0)
         {
             _renderCameraId = null;
-            _renderOrbitPivot = null;
+            _renderOrbitAnchor = null;
             return null;
         }
 
@@ -48,7 +48,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _renderCameraId = cameras[0].Id;
-        _renderOrbitPivot = null;
+        _renderOrbitAnchor = null;
         _renderCameraInitialFramePending = true;
         return cameras[0];
     }
@@ -95,7 +95,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.Selectable(camera.Name, isSelected))
             {
                 _renderCameraId = camera.Id;
-                _renderOrbitPivot = null;
+                _renderOrbitAnchor = null;
                 _renderCameraInitialFramePending = true;
                 _pipeline?.ResetAccumulation();
                 _accumulationSignature = string.Empty;
@@ -228,7 +228,7 @@ internal sealed partial class ImGuiEditorWindow
             EndSceneMouseCapture(ViewportCaptureTarget.Render);
         }
 
-        var pivot = GetRenderOrbitPivot();
+        var pivot = GetRenderOrbitAnchor();
         var orbitLimits = GetRenderOrbitLimits();
         if (Math.Abs(io.MouseWheel) > float.Epsilon)
         {
@@ -262,7 +262,7 @@ internal sealed partial class ImGuiEditorWindow
                 MathF.Max(orbitLimits.MinimumDistance, float.IsFinite(orbitDistance)
                     ? orbitDistance : orbitLimits.MinimumDistance) * 0.01F);
             var pan = ViewportNavigationMath.Pan(camera, io.MouseDelta, panScale);
-            _renderOrbitPivot = pivot + pan;
+            _renderOrbitAnchor = pivot + pan;
             WriteCameraTransform(cameraObject, camera.Position + pan, camera.Forward, camera.Up);
         }
 
@@ -284,8 +284,8 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        var pivot = GetRenderOrbitPivot();
-        _renderOrbitPivot = pivot;
+        var pivot = GetRenderOrbitAnchor();
+        _renderOrbitAnchor = pivot;
         var camera = ToSceneCamera(cameraObject);
         var offset = camera.Position - pivot;
         var distance = offset.Length;
@@ -335,9 +335,9 @@ internal sealed partial class ImGuiEditorWindow
         WriteCameraTransform(cameraObject, position, forward, Vector3.Normalize(Vector3.Cross(right, forward)));
     }
 
-    private Vector3 GetRenderOrbitPivot()
+    private Vector3 GetRenderOrbitAnchor()
     {
-        if (_renderOrbitPivot is { } rememberedPivot &&
+        if (_renderOrbitAnchor is { } rememberedPivot &&
             float.IsFinite(rememberedPivot.X) &&
             float.IsFinite(rememberedPivot.Y) &&
             float.IsFinite(rememberedPivot.Z))
