@@ -47,10 +47,9 @@ internal static class SceneGrid
         var visibleExtent = EstimateVisibleGroundExtent(origin, size, camera, cameraDistance);
         var baselineStep = Spacing(cameraDistance, size);
         var coverageStep = NextPowerOfTwo(Math.Max(1F, visibleExtent / TargetHalfLineCount));
-        // 近景优先保持单体素网格，只有远景才允许覆盖范围参与降采样
-        var step = cameraDistance > SparseGridStartDistance
-            ? Math.Max(baselineStep, coverageStep)
-            : baselineStep;
+        // 线数预算不能用“裁掉远处”来满足：视口越远，必须先提升步长再扩大覆盖范围，
+        // 这样远景网格会变疏，但仍然延伸到视锥可见的地面，而不是在有限矩形边缘突然消失。
+        var step = Math.Max(baselineStep, coverageStep);
         var halfLineCount = Math.Clamp((int)MathF.Ceiling(visibleExtent / step) + 3, 16, MaximumHalfLineCount);
         return new SceneGridPlan(step, halfLineCount * step, halfLineCount);
     }
