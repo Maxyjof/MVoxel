@@ -1404,7 +1404,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!follow)
         {
             var value = current ?? (minimum + maximum) * 0.5F;
-            SetSettingsSliderWidth();
+            SetSettingsSliderWidth(sliderLabel);
             if (ImGui.SliderFloat(sliderLabel, ref value, minimum, maximum)) apply(value);
         }
     }
@@ -1991,8 +1991,9 @@ internal sealed partial class ImGuiEditorWindow
         for (var index = 0; index < Math.Max(lod.LevelCount - 1, 0); index++)
         {
             var value = index < lod.Distances.Length ? lod.Distances[index] : 64F * (index + 1);
-            SetSettingsSliderWidth();
-            if (ImGui.DragFloat($"{label}第 {index + 1} 级起始距离##lodDist{label}{index}", ref value,
+            var sliderLabel = $"{label}第 {index + 1} 级起始距离##lodDist{label}{index}";
+            SetSettingsSliderWidth(sliderLabel);
+            if (ImGui.DragFloat(sliderLabel, ref value,
                     1F, VoxelLodSettings.MinimumDistance, 100_000F, "%.0f 格"))
             {
                 var distances = (float[])lod.Distances.Clone();
@@ -2006,32 +2007,39 @@ internal sealed partial class ImGuiEditorWindow
 
     private static void SliderFloat(string label, ref float value, float minimum, float maximum, string format)
     {
-        SetSettingsSliderWidth();
+        SetSettingsSliderWidth(label);
         ImGui.SliderFloat(label, ref value, minimum, maximum, format);
     }
 
     private static void SliderInt(string label, ref int value, int minimum, int maximum)
     {
-        SetSettingsSliderWidth();
+        SetSettingsSliderWidth(label);
         ImGui.SliderInt(label, ref value, minimum, maximum);
     }
 
     private static void SliderInt(string label, ref int value, int minimum, int maximum, string format)
     {
-        SetSettingsSliderWidth();
+        SetSettingsSliderWidth(label);
         ImGui.SliderInt(label, ref value, minimum, maximum, format);
     }
 
     /// <summary>
-    /// 为配置面板中的滑动条保留右侧安全边距，避免控件铺满整行后裁掉同一行的内容。
-    /// 面板较宽时限制最大宽度，面板较窄时仍会随容器收缩。
+    /// 为配置面板中的滑动条按当前可用宽度布局：先为右侧标签文本预留空间，
+    /// 再把剩余空间分配给滑动条。这样长标签不会被滑动条挤出子窗口。
     /// </summary>
-    private static void SetSettingsSliderWidth()
+    private static void SetSettingsSliderWidth(string label = "")
     {
         const float maxWidth = 320F;
-        const float rightMargin = 16F;
-        var available = MathF.Max(120F, ImGui.GetContentRegionAvail().X - rightMargin);
-        ImGui.SetNextItemWidth(MathF.Min(maxWidth, available));
+        const float rightMargin = 6F;
+        var available = MathF.Max(1F, ImGui.GetContentRegionAvail().X);
+        var visibleLabel = label;
+        var labelSeparator = visibleLabel.IndexOf("##", StringComparison.Ordinal);
+        if (labelSeparator >= 0) visibleLabel = visibleLabel[..labelSeparator];
+        var labelWidth = visibleLabel.Length == 0
+            ? 0F
+            : ImGui.CalcTextSize(visibleLabel).X + ImGui.GetStyle().ItemInnerSpacing.X;
+        var sliderWidth = MathF.Max(1F, available - labelWidth - rightMargin);
+        ImGui.SetNextItemWidth(MathF.Min(maxWidth, sliderWidth));
     }
 
     private static void Toggle(string label, ref bool storage, Action<bool> apply)
