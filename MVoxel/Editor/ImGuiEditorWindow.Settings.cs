@@ -16,6 +16,8 @@ internal sealed partial class ImGuiEditorWindow
     private bool _useHardwareRayTracing;
     private bool _showSettingsWindow;
     private int _settingsScope;
+    private bool _settingsScopeSelectionPending;
+    private string? _requestedSettingsSubTab;
     private int _editorSettingsCategory;
     private int _projectSettingsCategory;
     private int _selectedShortcutScheme;
@@ -263,12 +265,28 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private void OpenSettings(int scope, int category = 0)
+    private void OpenSettings(int scope, int category = 0, string? subTab = null)
     {
+        if (scope == 1 && _project is null)
+            scope = 0;
+
         _settingsScope = scope;
         if (scope == 0) _editorSettingsCategory = category;
         else _projectSettingsCategory = category;
+        _settingsScopeSelectionPending = true;
+        _requestedSettingsSubTab = subTab;
         _showSettingsWindow = true;
+    }
+
+    private bool BeginSettingsSubTab(string label, string key)
+    {
+        var select = string.Equals(_requestedSettingsSubTab, key, StringComparison.Ordinal);
+        var tabOpen = true;
+        var opened = ImGui.BeginTabItem(label, ref tabOpen,
+            select ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None);
+        if (select && opened)
+            _requestedSettingsSubTab = null;
+        return opened;
     }
 
     private void DrawSettingsWindow()
@@ -294,7 +312,10 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Spacing();
             if (ImGui.BeginTabBar("##SettingsScopes"))
             {
-                if (ImGui.BeginTabItem("编辑器设置"))
+                var selectEditorSettings = _settingsScopeSelectionPending && _settingsScope == 0;
+                var editorSettingsTabOpen = true;
+                if (ImGui.BeginTabItem("编辑器设置", ref editorSettingsTabOpen,
+                        selectEditorSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None))
                 {
                     _settingsScope = 0;
                     DrawEditorSettingsSurface();
@@ -302,7 +323,10 @@ internal sealed partial class ImGuiEditorWindow
                 }
 
                 var projectEnabled = _project is not null;
-                if (projectEnabled && ImGui.BeginTabItem("项目设置"))
+                var selectProjectSettings = _settingsScopeSelectionPending && _settingsScope == 1;
+                var projectSettingsTabOpen = true;
+                if (projectEnabled && ImGui.BeginTabItem("项目设置", ref projectSettingsTabOpen,
+                        selectProjectSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None))
                 {
                     _settingsScope = 1;
                     DrawProjectSettingsSurface();
@@ -310,6 +334,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
 
                 ImGui.EndTabBar();
+                _settingsScopeSelectionPending = false;
             }
 
             ImGui.PopStyleVar();
@@ -319,6 +344,8 @@ internal sealed partial class ImGuiEditorWindow
         if (!open)
         {
             _showSettingsWindow = false;
+            _settingsScopeSelectionPending = false;
+            _requestedSettingsSubTab = null;
             SaveEditorSettings();
             SaveProjectSettings();
         }
@@ -428,7 +455,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("常规", "决定新项目、撤回和启动时的默认行为");
         if (ImGui.BeginTabBar("##EditorGeneralTabs"))
         {
-            if (ImGui.BeginTabItem("基本"))
+            if (BeginSettingsSubTab("基本", "editor.general.basic"))
             {
                 ImGui.SetNextItemWidth(-1F);
                 ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048);
@@ -446,7 +473,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("撤回"))
+            if (BeginSettingsSubTab("撤回", "editor.general.undo"))
             {
                 var changed = false;
                 SetSettingsSliderWidth("持续撤回间隔（毫秒）");
@@ -469,7 +496,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("布局", "工作区预设只改变面板摆布，不会修改项目数据");
         if (ImGui.BeginTabBar("##EditorLayoutTabs"))
         {
-            if (ImGui.BeginTabItem("面板"))
+            if (BeginSettingsSubTab("面板", "editor.layout.panels"))
             {
                 ImGui.TextDisabled("选择一个适合当前任务的工作区，之后仍可手动拖拽面板调整。");
                 var buttonWidth = Math.Max(120F, (ImGui.GetContentRegionAvail().X - 18F) / 3F);
@@ -481,7 +508,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("停靠"))
+            if (BeginSettingsSubTab("停靠", "editor.layout.docking"))
             {
                 if (ImGui.Button(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
                     _editPanelLayout = !_editPanelLayout;
@@ -498,7 +525,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("画面默认值", "未打开项目时使用；新项目会继承其中的场景与渲染初始值");
         if (ImGui.BeginTabBar("##EditorVisualTabs"))
         {
-            if (ImGui.BeginTabItem("场景画面"))
+            if (BeginSettingsSubTab("场景画面", "editor.visual.scene"))
             {
                 DrawSettingsSectionHeader("场景辅助显示", "网格与体素轮廓");
                 ImGui.Checkbox("显示场景网格", ref _editorSettings.ShowSceneGrid);
@@ -516,13 +543,13 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("渲染画面"))
+            if (BeginSettingsSubTab("渲染画面", "editor.visual.render"))
             {
                 DrawEditorRenderConfiguration(_editorSettings.RenderViewSettings, "渲染窗口");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("渲染导出画面"))
+            if (BeginSettingsSubTab("渲染导出画面", "editor.visual.export"))
             {
                 DrawEditorRenderConfiguration(_editorSettings.ExportRenderSettings, "导出画面");
                 ImGui.EndTabItem();
@@ -633,13 +660,13 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("输入", "快捷键方案与鼠标操作彼此独立，修改后立即生效");
         if (ImGui.BeginTabBar("##EditorInputTabs"))
         {
-            if (ImGui.BeginTabItem("快捷键方案"))
+            if (BeginSettingsSubTab("快捷键方案", "editor.input.shortcuts"))
             {
                 DrawShortcutSchemes();
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("鼠标与视角"))
+            if (BeginSettingsSubTab("鼠标与视角", "editor.input.mouse"))
             {
                 ImGui.Checkbox("MC 模式（交换左右键）", ref _editorSettings.McMode);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip(_editorSettings.McMode
@@ -768,14 +795,14 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("外观", "控制编辑器的视觉层级，不会改变项目渲染结果");
         if (ImGui.BeginTabBar("##EditorAppearanceTabs"))
         {
-            if (ImGui.BeginTabItem("字体"))
+            if (BeginSettingsSubTab("字体", "editor.appearance.font"))
             {
                 SliderFloat("界面缩放", ref _editorSettings.UiScale, 0.75F, 2F, "%.2fx");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("按 DPI 使用整数倍字体缩放，降低文字发虚");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("主题"))
+            if (BeginSettingsSubTab("主题", "editor.appearance.theme"))
             {
                 var theme = _editorSettings.Theme;
                 if (ImGui.BeginCombo("主题", theme))
@@ -815,14 +842,14 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前 GPU 管线按单任务安全执行；该设置为未来多管线并行保留上限，不会阻塞编辑器输入。");
         if (ImGui.BeginTabBar("##EditorPerformanceTabs"))
         {
-            if (ImGui.BeginTabItem("性能策略"))
+            if (BeginSettingsSubTab("性能策略", "editor.performance.strategy"))
             {
                 ImGui.TextUnformatted("LOD 与稀疏数据");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景视图使用 LOD 和稀疏区块，渲染与导出保留完整数据");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("诊断"))
+            if (BeginSettingsSubTab("诊断", "editor.performance.diagnostics"))
             {
                 ImGui.TextUnformatted("显卡诊断");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("检查字体缺字、显卡帧尺寸和绘制顶点数");
@@ -838,7 +865,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("项目", "项目身份、默认画面预设与自动保存");
         if (ImGui.BeginTabBar("##ProjectGeneralTabs"))
         {
-            if (ImGui.BeginTabItem("基本信息"))
+            if (BeginSettingsSubTab("基本信息", "project.general.info"))
             {
                 ImGui.Text("项目名称");
                 ImGui.SameLine(120F);
@@ -870,7 +897,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("自动保存"))
+            if (BeginSettingsSubTab("自动保存", "project.general.autosave"))
             {
                 ImGui.Checkbox("启用自动保存", ref _projectSettings.AutoSave);
                 SetSettingsSliderWidth("间隔（秒）");
@@ -888,7 +915,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("项目画面", "项目级配置覆盖编辑器默认值，并随项目保存");
         if (ImGui.BeginTabBar("##ProjectVisualTabs"))
         {
-            if (ImGui.BeginTabItem("场景画面"))
+            if (BeginSettingsSubTab("场景画面", "project.visual.scene"))
             {
                 DrawSettingsSectionHeader("场景辅助显示", "网格与体素轮廓");
                 ImGui.Checkbox("显示场景网格", ref _showGrid);
@@ -906,13 +933,13 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("渲染画面"))
+            if (BeginSettingsSubTab("渲染画面", "project.visual.render"))
             {
                 DrawFullRenderConfiguration(_projectSettings.RenderSettings, "渲染窗口");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("渲染导出画面"))
+            if (BeginSettingsSubTab("渲染导出画面", "project.visual.export"))
             {
                 DrawFullRenderConfiguration(_projectSettings.ExportRenderSettings, "导出画面");
                 ImGui.EndTabItem();
@@ -1003,21 +1030,21 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader("资产", "目录、导入格式和场景图层的职责说明");
         if (ImGui.BeginTabBar("##ProjectAssetTabs"))
         {
-            if (ImGui.BeginTabItem("目录"))
+            if (BeginSettingsSubTab("目录", "project.asset.directory"))
             {
                 ImGui.TextUnformatted("项目资源目录");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("Assets 下的项目资源由目录结构统一管理，体素材质使用调色板基础色");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("导入"))
+            if (BeginSettingsSubTab("导入", "project.asset.import"))
             {
                 ImGui.TextUnformatted("导入与导出格式");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入网格模型与 Minecraft 存档、读写 .palette");
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("图层"))
+            if (BeginSettingsSubTab("图层", "project.asset.layers"))
             {
                 DrawLayerManager();
                 ImGui.EndTabItem();

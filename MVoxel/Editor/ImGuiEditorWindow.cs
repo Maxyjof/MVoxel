@@ -244,7 +244,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         if (UiDiagnostics.TakeBlockingOperationRequest()) BeginDiagnosticLoad();
-        if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2);
+        if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2, "editor.input.shortcuts");
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         _projectOperation.Pump();
         EnsureWelcomeWindow();
@@ -775,7 +775,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (ImGui.BeginMenu("设置"))
         {
             if (ImGui.MenuItem("编辑器设置")) OpenSettings(0);
-            if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2);
+            if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
             if (ImGui.MenuItem("项目设置", enabled: _project is not null)) OpenSettings(1);
             ImGui.Separator();
             if (ImGui.MenuItem("快速画面设置"))
@@ -3109,7 +3109,8 @@ DockId=0x6A3C3007,0
             : "当前项目值 · 实时生效");
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
-            OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
+            OpenSettings(_project is null ? 0 : 1, _project is null ? 3 : 1,
+                _project is null ? "editor.visual.render" : "project.visual.render");
         DrawLodSection(activeRenderSettings);
 
         DrawSettingsSectionHeader("场景视图辅助显示");
