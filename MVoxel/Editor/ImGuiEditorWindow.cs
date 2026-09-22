@@ -60,6 +60,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _hierarchyLayerFilter = -1;
     private readonly HashSet<string> _expandedInspectorComponents = new(StringComparer.Ordinal);
     private StableId? _inspectorExpansionObjectId;
+    private IReadOnlyList<string> _voxelModelReferenceCache = Array.Empty<string>();
+    private string? _voxelModelReferenceCacheRoot;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
     private int _centerTab;
@@ -954,8 +956,6 @@ DockId=0x6A3C3007,0
             new Vector2(Math.Max(1F, rowWidth - 48F), rowMax.Y - rowMin.Y));
         var rowSelectableHovered = ImGui.IsItemHovered();
         ImGui.SetCursorScreenPos(treeCursor);
-        var rowDoubleClicked = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) &&
-                               (rowClicked || rowSelectableClicked);
 
         var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
         var rowHovered = rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax);
@@ -972,6 +972,8 @@ DockId=0x6A3C3007,0
         const float iconWidth = HierarchyRowIconSize;
         var iconGap = 2F;
         var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
+        var rowDoubleClicked = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) && rowHovered &&
+                               ImGui.GetIO().MousePos.X < iconsStart;
         ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + 1F));
         var visibilityClicked = DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
             sceneObject.Visible, DrawVisibilityIcon, iconWidth);
@@ -998,10 +1000,15 @@ DockId=0x6A3C3007,0
         {
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
-            if (rowDoubleClicked)
-            {
-                FocusHierarchyObject(sceneObject);
-            }
+        }
+
+        // 不依赖 TreeNodeEx/InvisibleButton 哪一个拿到本次点击：双击判定只看
+        // 当前行的实际悬停区域，避免树节点展开状态或 ImGui last-item 状态吞掉聚焦。
+        if (rowDoubleClicked && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
+        {
+            _selectedSceneObjectId = sceneObject.Id;
+            _selectedVoxel = null;
+            FocusHierarchyObject(sceneObject);
         }
 
         if (ImGui.BeginPopupContextItem($"##SceneObjectRowMenu_{sceneObject.Id}"))
@@ -2542,7 +2549,8 @@ DockId=0x6A3C3007,0
             ImGui.PushID($"InspectorComponent{componentIndex}");
             var headerMin = ImGui.GetCursorScreenPos();
             var totalHeaderWidth = ImGui.GetContentRegionAvail().X;
-            var headerWidth = Math.Max(120F, totalHeaderWidth - 64F);
+            var isTransformComponent = SceneComponentTypes.IsTransform(component);
+            var headerWidth = Math.Max(120F, totalHeaderWidth - (isTransformComponent ? 34F : 64F));
             var headerHeight = ImGui.GetFrameHeight() + 6F;
             var headerClicked = ImGui.InvisibleButton("##InspectorComponentHeader", new Vector2(headerWidth, headerHeight));
             var headerMax = headerMin + new Vector2(totalHeaderWidth, headerHeight);
@@ -2568,8 +2576,7 @@ DockId=0x6A3C3007,0
             draw.AddText(headerMin + new Vector2(25F, 5F), ToPackedColor(EditorPalette.Text), label);
 
             var resetComponent = false;
-            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - 58F, headerMin.Y + 3F));
-            var isTransformComponent = SceneComponentTypes.IsTransform(component);
+            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - (isTransformComponent ? 30F : 58F), headerMin.Y + 2F));
             var enabledClicked = false;
             if (!isTransformComponent)
             {
@@ -2584,7 +2591,19 @@ DockId=0x6A3C3007,0
                 }
             }
             if (!isTransformComponent) ImGui.SameLine(0F, 4F);
-            if (ImGui.SmallButton("...##InspectorComponentMenu")) ImGui.OpenPopup("##InspectorComponentMenuPopup");
+            var menuMin = ImGui.GetCursorScreenPos();
+            var menuWidth = 28F;
+            var menuClicked = ImGui.InvisibleButton("##InspectorComponentMenu", new Vector2(menuWidth, headerHeight - 4F));
+            var menuMax = ImGui.GetItemRectMax();
+            var menuDraw = ImGui.GetWindowDrawList();
+            if (ImGui.IsItemHovered())
+                menuDraw.AddRectFilled(menuMin, menuMax, ToPackedColor(EditorPalette.AccentSoft), 3F);
+            var menuCenter = (menuMin + menuMax) * 0.5F;
+            var menuDotColor = ToPackedColor(EditorPalette.Text);
+            menuDraw.AddCircleFilled(menuCenter + new Vector2(0F, -5F), 1.6F, menuDotColor, 8);
+            menuDraw.AddCircleFilled(menuCenter, 1.6F, menuDotColor, 8);
+            menuDraw.AddCircleFilled(menuCenter + new Vector2(0F, 5F), 1.6F, menuDotColor, 8);
+            if (menuClicked) ImGui.OpenPopup("##InspectorComponentMenuPopup");
             if (ImGui.BeginPopup("##InspectorComponentMenuPopup"))
             {
                 var canResetComponent = definition is not null || pluginDefinition is not null;
@@ -2621,19 +2640,15 @@ DockId=0x6A3C3007,0
             if (resetComponent) ResetInspectorComponent(selectedObject, component);
             if (expanded)
             {
-                var bodyHeight = GetInspectorComponentBodyHeight(selectedObject, component);
-                ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 4F);
-                ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
-                if (ImGui.BeginChild("##InspectorComponentBody", new Vector2(-1F, bodyHeight),
-                        ImGuiChildFlags.Borders))
-                {
-                    ImGui.Indent(8F);
-                    DrawComponentSummary(selectedObject, component);
-                    ImGui.Unindent(8F);
-                }
-                ImGui.EndChild();
-                ImGui.PopStyleColor();
-                ImGui.PopStyleVar();
+                var bodyMin = ImGui.GetCursorScreenPos();
+                ImGui.Indent(8F);
+                DrawComponentSummary(selectedObject, component);
+                ImGui.Unindent(8F);
+                var bodyMax = ImGui.GetCursorScreenPos();
+                var bodyDraw = ImGui.GetWindowDrawList();
+                bodyDraw.AddRect(bodyMin, new Vector2(headerMax.X, bodyMax.Y + 3F),
+                    ToPackedColor(EditorPalette.Border), 3F, ImDrawFlags.None, 1F);
+                ImGui.Dummy(new Vector2(0F, 5F));
             }
             ImGui.Dummy(new Vector2(0F, 2F));
             ImGui.PopID();
@@ -2822,17 +2837,87 @@ DockId=0x6A3C3007,0
         ImGui.SetNextItemWidth(-1F);
     }
 
-    private static float GetInspectorComponentBodyHeight(SceneObject sceneObject, ComponentRecord component)
+    /// <summary>
+    /// 绘制 Unity 风格的体素资产引用字段。字段本身不是文本框，资产路径只能通过项目中的可用资产选择。
+    /// </summary>
+    private bool DrawVoxelModelReference(string current, out string selected)
     {
-        if (SceneComponentTypes.IsTransform(component))
-            return sceneObject.Transform.Mode == TransformMode.Free ? 92F : 76F;
-        if (SceneComponentTypes.IsVoxelModel(component)) return 150F;
-        // 相机组件包含三个裁剪/视场字段、图层下拉框、独立配置开关和刷新按钮；
-        // 预留完整高度，超出检查器窗口时由外层 InspectorScroll 统一滚动。
-        if (SceneComponentTypes.IsCamera(component)) return 190F;
-        if (SceneComponentTypes.IsLight(component)) return 124F;
-        // 插件组件包含状态、类型、来源和 JSON 编辑区，固定留出完整显示空间；组件内部不滚动。
-        return 190F;
+        selected = current;
+        var references = GetVoxelModelReferences();
+        var known = references.Any(path => string.Equals(path, current, StringComparison.OrdinalIgnoreCase));
+        var display = string.IsNullOrWhiteSpace(current)
+            ? "无引用（选择体素资产）"
+            : known
+                ? Path.GetFileNameWithoutExtension(current)
+                : $"丢失引用 · {Path.GetFileName(current)}";
+        var changed = false;
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.BeginCombo("##InspectorVoxelModelReference", display))
+        {
+            if (!string.IsNullOrWhiteSpace(current) && !known)
+            {
+                ImGui.BeginDisabled();
+                ImGui.Selectable($"丢失引用 · {current}", true);
+                ImGui.EndDisabled();
+                ImGui.Separator();
+            }
+
+            if (ImGui.Selectable("无引用", string.IsNullOrWhiteSpace(current)))
+            {
+                selected = string.Empty;
+                changed = true;
+            }
+
+            foreach (var reference in references)
+            {
+                ImGui.PushID(reference);
+                var isSelected = string.Equals(reference, current, StringComparison.OrdinalIgnoreCase);
+                var name = Path.GetFileNameWithoutExtension(reference);
+                if (ImGui.Selectable(name, isSelected))
+                {
+                    selected = reference;
+                    changed = true;
+                }
+
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(reference);
+                ImGui.PopID();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(current))
+            ImGui.SetTooltip(known ? current : "引用的体素资产不存在，请重新选择。");
+        return changed;
+    }
+
+    private IReadOnlyList<string> GetVoxelModelReferences()
+    {
+        if (_project is null) return Array.Empty<string>();
+        var root = Path.GetFullPath(_project.AssetsPath);
+        if (string.Equals(_voxelModelReferenceCacheRoot, root, StringComparison.OrdinalIgnoreCase))
+            return _voxelModelReferenceCache;
+
+        _voxelModelReferenceCacheRoot = root;
+        try
+        {
+            var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".mvmodel", ".mvworld" };
+            _voxelModelReferenceCache = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(path => extensions.Contains(Path.GetExtension(path)))
+                .Select(path => "Assets/" + Path.GetRelativePath(root, path).Replace('\\', '/'))
+                .OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+        }
+        catch (IOException)
+        {
+            _voxelModelReferenceCache = Array.Empty<string>();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _voxelModelReferenceCache = Array.Empty<string>();
+        }
+
+        return _voxelModelReferenceCache;
     }
 
     private static void DrawInspectorIcon(bool rotation, string tooltip)
@@ -2917,12 +3002,10 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsVoxelModel(component))
         {
             var data = SceneComponentTypes.ReadVoxelModel(component);
-            var model = data.Model;
-            var part = data.Part;
-            BeginInspectorField("模型", "对象引用的体素世界文件路径。");
-            var changed = ImGui.InputText("##InspectorVoxelModel", ref model, 260);
-            BeginInspectorField("部件", "模型中的部件名称；留空表示使用默认部件。");
-            changed |= ImGui.InputText("##InspectorVoxelPart", ref part, 128);
+            BeginInspectorField("模型", "对象引用的体素资产；点击字段后从项目资产中选择，不能直接输入路径。");
+            var changed = DrawVoxelModelReference(data.Model, out var model);
+            BeginInspectorField("部件", "引用资产中的部件信息；由资产数据提供，不能直接输入字符串。");
+            ImGui.TextDisabled(string.IsNullOrWhiteSpace(data.Part) ? "默认部件" : data.Part);
             BeginInspectorField("体素数量", "当前模型包含的体素数量。");
             ImGui.TextDisabled($"{data.VoxelCount:N0}");
             BeginInspectorField("模板", "生成当前模型的示例模板名称。");
@@ -2930,7 +3013,7 @@ DockId=0x6A3C3007,0
             if (changed)
             {
                 SceneComponentTypes.WriteVoxelModel(component,
-                    data with { Model = model, Part = part });
+                    data with { Model = model });
                 MarkSceneDocumentDirty();
             }
             return;
@@ -3167,6 +3250,8 @@ DockId=0x6A3C3007,0
     private void HandleAssetChanged(ProjectAssetChange change)
     {
         _assetPreviewPath = string.Empty;
+        _voxelModelReferenceCacheRoot = null;
+        _voxelModelReferenceCache = Array.Empty<string>();
         if (_assetPreviewTextureId != 0)
         {
             _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
@@ -3637,6 +3722,8 @@ DockId=0x6A3C3007,0
         _project = project;
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _assetBrowser.Reset();
+        _voxelModelReferenceCacheRoot = null;
+        _voxelModelReferenceCache = Array.Empty<string>();
         _lastAssetSelectionPath = string.Empty;
         RecentProjects.Record(project);
         try
