@@ -1791,20 +1791,44 @@ DockId=0x6A3C3007,0
     {
         EnsureCpuPreviewSurface();
         var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
-        foreach (var surface in _cpuPreviewSurfaceFaces)
+        for (var surfaceIndex = 0; surfaceIndex < _cpuPreviewSurfaceFaces.Count; surfaceIndex++)
         {
+            var surface = _cpuPreviewSurfaceFaces[surfaceIndex];
+            var center = (surface.Corners[0] + surface.Corners[1] + surface.Corners[2] + surface.Corners[3]) / 4F;
+            // CPU 回退没有硬件深度缓冲；先剔除背向面，避免模型背面的面片在
+            // 斜视角被错误排到前景。法线来自体素外露面的固定朝向，和顶点绕序无关。
+            if (Vector3.Dot(surface.Normal, camera.Position - center) <= 0.0001F) continue;
+
             var points = new Vector2[4];
-            var depths = new float[4];
+            var nearestDepth = float.PositiveInfinity;
+            var farthestDepth = float.NegativeInfinity;
+            var totalDepth = 0F;
             for (var index = 0; index < surface.Corners.Length; index++)
             {
-                if (!TryProject(surface.Corners[index], origin, size, camera, out points[index], out depths[index]))
+                if (!TryProject(surface.Corners[index], origin, size, camera, out points[index], out var depth))
                     goto nextFace;
+                nearestDepth = Math.Min(nearestDepth, depth);
+                farthestDepth = Math.Max(farthestDepth, depth);
+                totalDepth += depth;
             }
-            faces.Add(new CpuPreviewFace(points, surface.Color, depths.Average()));
+            faces.Add(new CpuPreviewFace(points, surface.Color, nearestDepth, totalDepth / 4F,
+                farthestDepth, surfaceIndex));
             nextFace:;
         }
 
-        foreach (var face in faces.OrderByDescending(face => face.Depth))
+        // 平均深度在“地面横面”和“建筑竖面”相交的投影中会发生次序反转；
+        // 先以最远顶点深度排序，能让跨越更大深度范围的远面优先落笔，
+        // 再用平均/最近深度和稳定序号打破平局，避免微小转角时闪烁或穿模。
+        faces.Sort(static (left, right) =>
+        {
+            var comparison = right.FarthestDepth.CompareTo(left.FarthestDepth);
+            if (comparison != 0) return comparison;
+            comparison = right.MeanDepth.CompareTo(left.MeanDepth);
+            if (comparison != 0) return comparison;
+            comparison = right.NearestDepth.CompareTo(left.NearestDepth);
+            return comparison != 0 ? comparison : left.StableOrder.CompareTo(right.StableOrder);
+        });
+        foreach (var face in faces)
         {
             var polygon = face.Points;
             drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(face.Color));
@@ -1887,7 +1911,16 @@ DockId=0x6A3C3007,0
             _ => 0.98F,
         };
         var baseColor = Color.FromArgb(cell.Value.Color.A, cell.Value.Color.R, cell.Value.Color.G, cell.Value.Color.B);
-        _cpuPreviewSurfaceFaces.Add(new CpuPreviewSurfaceFace(corners, Shade(baseColor, shade)));
+        var normal = direction switch
+        {
+            FaceDirection.Left => -Vector3.UnitX,
+            FaceDirection.Right => Vector3.UnitX,
+            FaceDirection.Bottom => -Vector3.UnitY,
+            FaceDirection.Top => Vector3.UnitY,
+            FaceDirection.Back => -Vector3.UnitZ,
+            _ => Vector3.UnitZ,
+        };
+        _cpuPreviewSurfaceFaces.Add(new CpuPreviewSurfaceFace(corners, normal, Shade(baseColor, shade)));
     }
 
     private bool IsCpuPreviewBoxFaceExposed(VoxelCoord64 coordinate, int extentX, int extentY, int extentZ,
@@ -1918,9 +1951,10 @@ DockId=0x6A3C3007,0
         Left, Right, Bottom, Top, Back, Front,
     }
 
-    private readonly record struct CpuPreviewFace(Vector2[] Points, Color Color, float Depth);
+    private readonly record struct CpuPreviewFace(Vector2[] Points, Color Color, float NearestDepth,
+        float MeanDepth, float FarthestDepth, int StableOrder);
 
-    private readonly record struct CpuPreviewSurfaceFace(Vector3[] Corners, Color Color);
+    private readonly record struct CpuPreviewSurfaceFace(Vector3[] Corners, Vector3 Normal, Color Color);
 
     private static void DrawVoxelCube(ImDrawListPtr drawList, Vector3 center, float side, Color baseColor,
         Vector2 origin, Vector2 size, SceneCamera camera, bool showOutline)
