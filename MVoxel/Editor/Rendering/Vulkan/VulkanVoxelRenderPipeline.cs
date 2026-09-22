@@ -1910,12 +1910,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             // 两种模式都在 PostProcess 的最后一步转为显示空间；实时模式不能提前
             // LinearToDisplay，否则背景和地面会被 Gamma/色调曲线重复处理而发灰。
             vec3 groundColor = vec3(values[36], values[37], values[38]);
-            float groundFadeDistance = max(values[34], 0.0);
-            if (groundFadeDistance > 0.0)
+            float groundHorizonTransition = max(values[34], 0.0);
+            if (groundHorizonTransition > 0.0)
             {
-                float groundRadialDistance = length(point.xz - rayOrigin.xz);
-                float groundFade = smoothstep(groundFadeDistance * 0.65, groundFadeDistance,
-                    groundRadialDistance);
+                // 地面是无限平面，不能按命中点的 XZ 半径淡出；那会制造一个以相机为中心的
+                // 白色圆盘，并在拉远镜头时让地面看起来消失。只在视线接近地平线时做可选过渡。
+                float horizonBand = clamp(0.05 + groundHorizonTransition / 4096.0 * 0.45,
+                    0.05, 0.50);
+                float horizonFade = 1.0 - smoothstep(0.0, horizonBand, abs(rayDirection.y));
+                float groundFade = horizonFade * clamp(groundHorizonTransition / 1024.0, 0.0, 1.0);
                 vec3 horizon = pathMode
                     ? Sky(rayDirection)
                     : vec3(values[98], values[99], values[100]);

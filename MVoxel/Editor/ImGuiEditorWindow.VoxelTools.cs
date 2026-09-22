@@ -1863,7 +1863,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             Toggle("显示地面平面", ref _settingsToggleGround, value => settings.ShowGround = value);
             DrawColorSlider("地面颜色", ref settings.GroundColor);
-            SliderFloat("地面远淡距离（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f 格");
+            SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
             DrawColorSlider("天顶色", ref settings.SkyTop);
             DrawColorSlider("地平线色", ref settings.SkyHorizon);
             SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
