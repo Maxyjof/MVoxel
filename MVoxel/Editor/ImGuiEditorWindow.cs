@@ -3101,18 +3101,14 @@ DockId=0x6A3C3007,0
             ? "编辑器默认值 · 实时生效"
             : "当前项目值 · 实时生效");
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
-        ImGui.TextDisabled($"{(activeRenderSettings.Backend == RenderBackend.Gpu ? "显卡计算" : "CPU 计算")}  ·  " +
-                           $"路径追踪 {(activeRenderSettings.PathTracingEnabled ? "开启" : "关闭")}  ·  " +
-                           $"网格 {(_showGrid ? "显示" : "隐藏")}  ·  " +
-                           $"体素轮廓 {(_showVoxelOutlines ? "显示" : "隐藏")}");
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
             OpenSettings(_project is null ? 0 : 1, _project is null ? 0 : 1);
         DrawLodSection(activeRenderSettings);
 
-        DrawSettingsSectionHeader("场景视图辅助显示", "只影响视口辅助元素，不改变导出画面");
+        DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        DrawSettingsSectionHeader("渲染参数", "实时预览与导出配置的快捷入口");
+        DrawSettingsSectionHeader("渲染参数");
         var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
         if (_renderSettings.ToJson() != before)

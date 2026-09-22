@@ -497,9 +497,8 @@ internal sealed partial class ImGuiEditorWindow
         DrawSettingsPageHeader(context, settings.Backend == RenderBackend.Gpu
             ? "显卡计算 · 修改后实时生效"
             : "CPU 计算 · 适合调试和无显卡环境");
-        ImGui.TextDisabled($"路径追踪 {(settings.PathTracingEnabled ? "开启" : "关闭")}  ·  地面 {(settings.ShowGround ? "开启" : "关闭")}  ·  景深 {(settings.DepthOfField ? "开启" : "关闭")}");
 
-        DrawRenderSettingsAccordion("backend", "后端", settings.Backend == RenderBackend.Gpu ? "显卡计算" : "CPU 调试", () =>
+        DrawRenderSettingsAccordion("backend", "后端", () =>
         {
                 DrawSettingsSectionHeader("计算后端", "决定实时预览使用的计算路径");
                 var backend = (int)settings.Backend;
@@ -515,36 +514,12 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndDisabled();
                 settings.UseHardwareRayTracing = hardwareRayTracing;
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持，不可用时回退显卡计算路径");
-        }, true);
-
-        DrawRenderSettingsAccordion("lighting", "光照", "太阳、天空、AO 与雾", () =>
-        {
-                DrawSettingsSectionHeader("太阳与阴影", "主光源、阴影柔和度和采样质量");
-                ImGui.Checkbox("太阳平行光", ref settings.SunEnabled);
-                SliderFloat("太阳方位角", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
-                SliderFloat("太阳仰角", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
-                SliderFloat("太阳强度", ref settings.SunIntensity, 0F, 8F, "%.2f");
-                DrawColorSlider("太阳颜色", ref settings.SunColor);
-                SliderFloat("阴影柔和度", ref settings.ShadowSoftness, 0F, 0.5F, "%.3f");
-                SliderInt("阴影采样数", ref settings.ShadowSamples, 1, 8);
-                DrawSettingsSectionHeader("环境 · 天空与地面", "背景、地面和环境补光");
-                ImGui.Checkbox("显示地面平面", ref settings.ShowGround);
-                DrawColorSlider("地面颜色", ref settings.GroundColor);
-                SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
-                DrawColorSlider("天空顶部颜色", ref settings.SkyTop);
-                DrawColorSlider("天空地平线颜色", ref settings.SkyHorizon);
-                SliderFloat("天空环境光", ref settings.SkyAmbient, 0F, 2F, "%.2f");
-                SliderFloat("暖色环境补光", ref settings.AmbientTint, 0F, 1F, "%.2f");
-                DrawSettingsSectionHeader("接触阴影与雾", "近处细节与远处层次");
-                ImGui.Checkbox("环境光遮蔽 AO", ref settings.AmbientOcclusionEnabled);
-                SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
-                SliderFloat("AO 对比度", ref settings.AoPower, 0.2F, 4F, "%.2f");
-                DrawColorSlider("雾颜色", ref settings.FogColor);
-                SliderFloat("雾浓度", ref settings.FogDensity, 0F, 0.02F, "%.4f");
-                SliderFloat("近处淡入距离", ref settings.NearFade, 0F, 256F, "%.0f 格");
         });
 
-        DrawRenderSettingsAccordion("color", "色彩输出", "调色、曝光、色调映射与 Bloom", () =>
+        DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
+        DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
+
+        DrawRenderSettingsAccordion("color", "色彩输出", () =>
         {
                 DrawSettingsSectionHeader("颜色与输出", "调色板、色调映射和输出观感");
                 ImGui.Checkbox("调色板着色", ref settings.PaletteShading);
@@ -569,7 +544,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("辉光半径", ref settings.BloomRadius, 1F, 64F, "%.0f px");
         });
 
-        DrawRenderSettingsAccordion("path", "路径追踪", settings.PathTracingEnabled ? "渐进模式已开启" : "实时模式（推荐默认）", () =>
+        DrawRenderSettingsAccordion("path", "路径追踪", () =>
         {
                 DrawSettingsSectionHeader("路径追踪质量", "只在启用路径追踪时产生明显影响");
                 ImGui.Checkbox("启用路径追踪", ref settings.PathTracingEnabled);
@@ -583,7 +558,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
         });
 
-        DrawRenderSettingsAccordion("material", "全局材质", "GGX、金属度、透明与自发光", () =>
+        DrawRenderSettingsAccordion("material", "全局材质", () =>
         {
                 SliderFloat("材质粗糙度", ref settings.PathRoughness, 0.01F, 1F, "%.3f");
                 SliderFloat("材质金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
@@ -594,7 +569,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("直接光 MIS 采样", ref settings.DirectLightingMIS);
         });
 
-        DrawRenderSettingsAccordion("camera", "相机", "视场角、景深与对焦", () =>
+        DrawRenderSettingsAccordion("camera", "相机", () =>
         {
                 DrawSettingsSectionHeader("渲染相机", "仅影响渲染画面，不改变场景相机");
                 SliderFloat("视场角 FOV", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");

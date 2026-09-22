@@ -1787,29 +1787,29 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        DrawRenderSettingsAccordion("lighting", "光照", "太阳、天空、AO 与雾", () => DrawSceneSection(settings), true);
-        DrawRenderSettingsAccordion("palette", "材质与笔刷", "调色板、笔刷与发光笔刷", () => DrawPaletteSection(settings));
-        DrawRenderSettingsAccordion("color", "色彩输出", "色调映射、曝光与显示校正", () => DrawPostSection(settings));
-        DrawRenderSettingsAccordion("path", "路径追踪", settings.PathTracingEnabled ? "渐进模式已开启" : "实时模式（推荐默认）", () => DrawPathTraceSection(settings));
-        DrawRenderSettingsAccordion("material", "全局材质", "GGX、金属度、透明与自发光", () => DrawGlobalMaterialSection(settings));
-        DrawRenderSettingsAccordion("camera", "相机", "视场角、景深与对焦", () => DrawCameraSection(settings));
-        DrawRenderSettingsAccordion("lod", "LOD", "场景窗口与渲染窗口的距离细节", () => DrawLodSection(settings));
+        DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
+        DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
+        DrawRenderSettingsAccordion("palette", "材质与笔刷", () => DrawPaletteSection(settings));
+        DrawRenderSettingsAccordion("color", "色彩输出", () => DrawPostSection(settings));
+        DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
+        DrawRenderSettingsAccordion("material", "全局材质", () => DrawGlobalMaterialSection(settings));
+        DrawRenderSettingsAccordion("camera", "相机", () => DrawCameraSection(settings));
+        DrawRenderSettingsAccordion("lod", "LOD", () => DrawLodSection(settings));
         SaveEditableRenderSettings(settings, before);
     }
 
     /// <summary>
     /// 渲染配置的纵向折叠分组：避免窄面板中的标签被截断，且允许用户只展开当前职责。
     /// </summary>
-    private void DrawRenderSettingsAccordion(string id, string title, string summary,
-        Action drawContent, bool defaultOpen = false)
+    private void DrawRenderSettingsAccordion(string id, string title, Action drawContent)
     {
-        ImGui.PushID($"render-accordion-{id}");
+        // v2 ID deliberately avoids restoring the old layout's open state. Every
+        // render-settings group therefore starts collapsed after this UI redesign.
+        ImGui.PushID($"render-accordion-v2-{id}");
         var flags = ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanAvailWidth;
-        if (defaultOpen || string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
-            flags |= ImGuiTreeNodeFlags.DefaultOpen;
+        if (string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
+            ImGui.SetNextItemOpen(true, ImGuiCond.Always);
         var open = ImGui.CollapsingHeader(title, flags);
-        ImGui.SameLine();
-        ImGui.TextDisabled(summary);
         if (open)
         {
             ImGui.Indent(8F);
@@ -1849,6 +1849,12 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawSceneSection(RenderSettings settings)
     {
+        DrawLightingSection(settings);
+        DrawEnvironmentSection(settings);
+    }
+
+    private void DrawLightingSection(RenderSettings settings)
+    {
         ImGui.SeparatorText("太阳与阴影");
         Toggle("太阳平行光", ref _settingsToggleSun, value => settings.SunEnabled = value);
         SliderFloat("方位角##sun", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
@@ -1859,17 +1865,6 @@ internal sealed partial class ImGuiEditorWindow
         SliderInt("阴影采样数##sun", ref settings.ShadowSamples, 1, 8);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("0 = 硬阴影；增大模拟太阳圆盘带来的柔和半影（每像素多次阴影射线）。");
-        if (ImGui.CollapsingHeader("环境 · 天空与地面"))
-        {
-            Toggle("显示地面平面", ref _settingsToggleGround, value => settings.ShowGround = value);
-            DrawColorSlider("地面颜色", ref settings.GroundColor);
-            SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
-            DrawColorSlider("天顶色", ref settings.SkyTop);
-            DrawColorSlider("地平线色", ref settings.SkyHorizon);
-            SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
-            SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
-        }
-
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
             Toggle("角点环境光遮蔽", ref _settingsToggleAo, value => settings.AmbientOcclusionEnabled = value);
@@ -1877,12 +1872,22 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
         }
 
-        if (ImGui.CollapsingHeader("雾与景深提示"))
-        {
-            DrawColorSlider("雾颜色", ref settings.FogColor);
-            SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
-            SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
-        }
+    }
+
+    private void DrawEnvironmentSection(RenderSettings settings)
+    {
+        ImGui.SeparatorText("天空与地面");
+        Toggle("显示地面平面", ref _settingsToggleGround, value => settings.ShowGround = value);
+        DrawColorSlider("地面颜色", ref settings.GroundColor);
+        SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
+        DrawColorSlider("天顶色", ref settings.SkyTop);
+        DrawColorSlider("地平线色", ref settings.SkyHorizon);
+        SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
+        SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
+        ImGui.SeparatorText("雾与景深提示");
+        DrawColorSlider("雾颜色", ref settings.FogColor);
+        SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
+        SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
     }
 
     private void DrawPaletteSection(RenderSettings settings)

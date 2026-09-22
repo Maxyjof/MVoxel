@@ -1945,11 +1945,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
         // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
         vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
-            vec4 hitColor, uint hitFlags, MaterialSlotData material, inout uint state)
+            vec4 hitColor, uint hitFlags, MaterialSlotData material,
+            bool groundHit, vec3 groundLinearColor, inout uint state)
         {
             // 体素颜色来自 RGBA8 调色板，是 sRGB；实时管线在光照前转换到线性空间，
             // 最后由 PostProcess 统一回到显示空间，避免整张画面发灰或过曝。
-            vec3 baseColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+            vec3 baseColor = groundHit
+                ? max(groundLinearColor, vec3(0.0))
+                : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
             vec3 skyAmbient = Sky(hitNormal);
             // 给背光面保留稳定的环境填充，避免实时模式像只开了一盏聚光灯；
             // 这不是把阴影抹平，而是把最低亮度托到可读范围，接近 Eevee 的世界光照。
@@ -2037,6 +2040,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 uint hitSlot;
                 ivec3 hitCell;
                 ivec3 hitExtent;
+                bool groundHit = false;
                 if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false))
                 {
                     float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5)) && abs(rayDirection.y) > 0.00001
@@ -2044,13 +2048,25 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     if (groundDistance > 0.0 && groundDistance < values[97])
                     {
                         if (bounce == 0) primarySurfaceHit = true;
-                        radiance += throughput * Ground(rayOrigin, rayDirection, groundDistance, pathMode);
+                        // 把无限地面作为真正的表面命中，而不是背景颜色。
+                        // 这样它会复用体素表面的太阳阴影、AO、环境高光和路径弹射，
+                        // 远离模型时也不会出现只剩一块背景色的假地面。
+                        groundHit = true;
+                        hitDistance = groundDistance;
+                        hitNormal = vec3(0.0, 1.0, 0.0);
+                        hitColor = vec4(0.0, 0.0, 0.0, 1.0);
+                        hitFlags = 0u;
+                        hitSlot = 0u;
+                        hitCell = ivec3(0);
+                        hitExtent = ivec3(1);
                     }
                     else
+                    {
                         radiance += pathMode
                             ? throughput * Sky(rayDirection)
                             : vec3(values[98], values[99], values[100]);
-                    break;
+                        break;
+                    }
                 }
 
                 if (bounce == 0 && (hitDistance < values[96] || hitDistance > values[97]))
@@ -2088,7 +2104,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 hasPendingInterface = false;
                 if (bounce == 0) primarySurfaceHit = true;
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
-                vec3 hitLinearColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+                vec3 hitLinearColor = groundHit
+                    ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
+                    : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
                 if (!pathMode && values[115] > 0.5 && values[57] <= 0.5)
                 {
                     // 场景窗口的 GPU 基础显示：只做确定性的面向明暗，不进入实时特效路径。
@@ -2133,7 +2151,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (!pathMode)
                 {
                     vec3 realtime = RealtimeShade(hitPoint, hitNormal, rayDirection,
-                        hitColor, hitFlags, material, state);
+                        hitColor, hitFlags, material, groundHit, hitLinearColor, state);
                     if ((hitFlags & 1u) != 0u)
                     {
                         // 实时模式采用一层确定性透射：玻璃/水显示后方不透明体，
@@ -2152,7 +2170,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         {
                             MaterialSlotData behindMaterial = materialSlots[int(behindSlot) % 64];
                             transmitted = RealtimeShade(hitPoint + rayDirection * (0.01 + behindDistance),
-                                behindNormal, rayDirection, behindColor, behindFlags, behindMaterial, state);
+                                behindNormal, rayDirection, behindColor, behindFlags, behindMaterial,
+                                false, SrgbToLinear(clamp(behindColor.rgb, vec3(0.0), vec3(1.0))), state);
                         }
                         float alpha = clamp(hitColor.a, 0.08, 0.82);
                         float facing = max(dot(-rayDirection, hitNormal), 0.0);
