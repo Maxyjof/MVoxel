@@ -67,87 +67,95 @@ internal static class SceneGrid
     {
         if (size.X <= 0 || size.Y <= 0) return;
         var plan = Plan(origin, size, camera, distance);
-        var step = plan.Step;
         var extent = plan.Extent;
-        // 补丁对齐到世界网格倍数：平移不移动格坐标，远离原点时网格依然连续
-        var centerX = MathF.Floor(camera.Target.X / step) * step;
-        var centerZ = MathF.Floor(camera.Target.Z / step) * step;
-        var fineCenterX = MathF.Floor(camera.Target.X);
-        var fineCenterZ = MathF.Floor(camera.Target.Z);
+        // 步长只由相机距离决定，不再由低角度视锥的最远交点决定。
+        // 可见范围通过同心环带逐级加粗覆盖，避免轻微转动就让整张网格换档。
+        var detailStep = Spacing(distance, size);
+        var baseRadius = Math.Min(FineGridRadius, extent);
         draw.PushClipRect(origin, origin + size, true);
 
-        // 低角度视锥的远处交点可能非常远，不能为了覆盖它们而把整张网格
-        // 统一粗化。靠近当前目标的区域必须始终按 1x1x1 体素单位显示，
-        // 否则网格线无法与体素边界对应；远处再由下面的粗网格负责覆盖。
-        var fineExtent = Math.Min(extent, FineGridRadius);
-        var fineGridActive = step > 1F && distance <= SparseGridStartDistance && fineExtent >= 1F;
-        var blendStart = fineExtent * 0.55F;
-        var blendEnd = fineExtent * 1.15F;
-        if (fineGridActive)
+        if (baseRadius >= 1F)
         {
-            var fineHalfLineCount = Math.Clamp((int)MathF.Ceiling(fineExtent), 1, 96);
-            for (var i = -fineHalfLineCount; i <= fineHalfLineCount; i++)
+            for (var level = 0; ; level++)
             {
-                var x = fineCenterX + i;
-                var z = fineCenterZ + i;
-                var xHalfLength = MathF.Sqrt(Math.Max(0F, fineExtent * fineExtent -
-                    (x - fineCenterX) * (x - fineCenterX)));
-                var zHalfLength = MathF.Sqrt(Math.Max(0F, fineExtent * fineExtent -
-                    (z - fineCenterZ) * (z - fineCenterZ)));
-                if (xHalfLength > 0.001F)
-                    DrawGroundLine(new Vector3(x, 0, fineCenterZ - xHalfLength), Vector3.UnitZ,
-                        IsMajor(x, 1F), 1F, xHalfLength, fineLayer: true);
-                if (zHalfLength > 0.001F)
-                    DrawGroundLine(new Vector3(fineCenterX - zHalfLength, 0, z), Vector3.UnitX,
-                        IsMajor(z, 1F), 1F, zHalfLength, fineLayer: true);
+                var step = detailStep * MathF.Pow(2F, level);
+                var logicalInner = level == 0 ? 0F : baseRadius * MathF.Pow(2F, level - 1);
+                var outer = Math.Min(extent, baseRadius * MathF.Pow(2F, level));
+                var geometryInner = level == 0 ? 0F : logicalInner * 0.55F;
+                DrawGridBand(step, geometryInner, logicalInner, outer);
+                if (outer >= extent - 0.001F) break;
             }
-        }
-
-        for (var i = -plan.HalfLineCount; i <= plan.HalfLineCount; i++)
-        {
-            var x = centerX + i * step;
-            var z = centerZ + i * step;
-            DrawGroundLine(new Vector3(x, 0, centerZ - extent), Vector3.UnitZ,
-                IsMajor(x, step), step, extent, fineLayer: false);
-            DrawGroundLine(new Vector3(centerX - extent, 0, z), Vector3.UnitX,
-                IsMajor(z, step), step, extent, fineLayer: false);
         }
         draw.PopClipRect();
 
-        void DrawGroundLine(Vector3 start, Vector3 direction, bool major,
-            float lineStep, float lineExtent, bool fineLayer)
+        void DrawGridBand(float lineStep, float geometryInner, float logicalInner, float outer)
         {
-            // 分段用于平滑淡出，覆盖范围来自视锥与地面交点
-            var segments = Math.Clamp((int)MathF.Ceiling(2F * lineExtent / (lineStep * 8F)), 8, 24);
+            if (outer <= 0.001F) return;
+            var centerX = MathF.Floor(camera.Target.X / lineStep) * lineStep;
+            var centerZ = MathF.Floor(camera.Target.Z / lineStep) * lineStep;
+            var first = (int)MathF.Ceiling(-outer / lineStep) - 1;
+            var last = (int)MathF.Floor(outer / lineStep) + 1;
+            for (var index = first; index <= last; index++)
+            {
+                var x = centerX + index * lineStep;
+                var xOffset = Math.Abs(x - camera.Target.X);
+                if (xOffset <= outer)
+                {
+                    var outerHalf = MathF.Sqrt(Math.Max(0F, outer * outer - xOffset * xOffset));
+                    var innerHalf = xOffset < geometryInner
+                        ? MathF.Sqrt(Math.Max(0F, geometryInner * geometryInner - xOffset * xOffset))
+                        : 0F;
+                    DrawGridSegment(new Vector3(x, 0F, camera.Target.Z - outerHalf),
+                        new Vector3(x, 0F, camera.Target.Z - innerHalf), lineStep,
+                        IsMajor(x, lineStep), logicalInner, outer);
+                    DrawGridSegment(new Vector3(x, 0F, camera.Target.Z + innerHalf),
+                        new Vector3(x, 0F, camera.Target.Z + outerHalf), lineStep,
+                        IsMajor(x, lineStep), logicalInner, outer);
+                }
+
+                var z = centerZ + index * lineStep;
+                var zOffset = Math.Abs(z - camera.Target.Z);
+                if (zOffset <= outer)
+                {
+                    var outerHalf = MathF.Sqrt(Math.Max(0F, outer * outer - zOffset * zOffset));
+                    var innerHalf = zOffset < geometryInner
+                        ? MathF.Sqrt(Math.Max(0F, geometryInner * geometryInner - zOffset * zOffset))
+                        : 0F;
+                    DrawGridSegment(new Vector3(camera.Target.X - outerHalf, 0F, z),
+                        new Vector3(camera.Target.X - innerHalf, 0F, z), lineStep,
+                        IsMajor(z, lineStep), logicalInner, outer);
+                    DrawGridSegment(new Vector3(camera.Target.X + innerHalf, 0F, z),
+                        new Vector3(camera.Target.X + outerHalf, 0F, z), lineStep,
+                        IsMajor(z, lineStep), logicalInner, outer);
+                }
+            }
+        }
+
+        void DrawGridSegment(Vector3 start, Vector3 end, float lineStep, bool major,
+            float logicalInner, float outer)
+        {
+            var length = (end - start).Length;
+            if (length <= 0.001F) return;
+            var segments = Math.Clamp((int)MathF.Ceiling(length / (lineStep * 8F)), 2, 16);
             for (var index = 0; index < segments; index++)
             {
-                var a = start + direction * (2 * lineExtent * index / segments);
-                var b = start + direction * (2 * lineExtent * (index + 1) / segments);
+                var a = Vector3.Lerp(start, end, index / (float)segments);
+                var b = Vector3.Lerp(start, end, (index + 1) / (float)segments);
                 var mid = (a + b) / 2F;
                 var depth = Vector3.Dot(mid - camera.Position, camera.Forward);
-                // 地平线附近一格可能小于一个像素：副线淡出，
-                // 保留克制的主线，让远景保持可读
                 var spacingPixels = lineStep * SceneProjection.FocalLength(size, camera) /
                                     Math.Max(camera.NearClip, depth);
-                // 远处允许降低副线密度，但不能把整片地面淡出成空白：
-                // 主线始终作为空间参照，副线保留最低可见度，避免缩放到某个距离后网格突然消失。
                 var densityFade = major
                     ? 0.72F + 0.28F * SmoothStep(0.08F, 0.55F, spacingPixels)
                     : 0.16F + 0.84F * SmoothStep(0.55F, 1.45F, spacingPixels);
-                var radial = Math.Max(Math.Abs(mid.X - camera.Target.X), Math.Abs(mid.Z - camera.Target.Z)) / lineExtent;
-                var edgeFade = 0.42F + 0.58F * (1F - SmoothStep(0.985F, 1F, radial));
-                var transitionFade = 1F;
-                if (fineGridActive)
-                {
-                    var radialDistance = MathF.Sqrt(
-                        (mid.X - fineCenterX) * (mid.X - fineCenterX) +
-                        (mid.Z - fineCenterZ) * (mid.Z - fineCenterZ));
-                    transitionFade = fineLayer
-                        ? 1F - SmoothStep(blendStart, blendEnd, radialDistance)
-                        : SmoothStep(blendStart, blendEnd, radialDistance);
-                }
-
-                var fade = densityFade * edgeFade * transitionFade;
+                var radialDistance = MathF.Sqrt(
+                    (mid.X - camera.Target.X) * (mid.X - camera.Target.X) +
+                    (mid.Z - camera.Target.Z) * (mid.Z - camera.Target.Z));
+                var innerFade = logicalInner <= 0F
+                    ? 1F
+                    : SmoothStep(logicalInner * 0.62F, logicalInner * 0.96F, radialDistance);
+                var outerFade = 1F - SmoothStep(outer * 0.72F, outer, radialDistance);
+                var fade = densityFade * innerFade * outerFade;
                 if (fade < (major ? 0.08F : 0.025F)) continue;
                 if (SceneProjection.ClipLine(a, b, origin, size, camera, out var p, out var q))
                 {
