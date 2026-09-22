@@ -282,7 +282,6 @@ public static class ProjectTemplateCatalog
         {
             case ProjectTemplateId.SparseWorld:
                 settings.DefaultRenderPreset = "大世界稀疏预览";
-                settings.RenderSettings.GroundFade = 240F;
                 settings.RenderSettings.SunElevationDegrees = 26F;
                 settings.RenderSettings.SunAzimuthDegrees = 118F;
                 settings.RenderSettings.SkyAmbient = .5F;
@@ -387,7 +386,6 @@ public static class ProjectTemplateCatalog
                 break;
             case ProjectTemplateId.ProceduralTerrain:
                 settings.DefaultRenderPreset = "程序化地形";
-                settings.RenderSettings.GroundFade = 180F;
                 settings.RenderSettings.SunElevationDegrees = 30F;
                 settings.RenderSettings.SunAzimuthDegrees = 118F;
                 settings.RenderSettings.PathTracingEnabled = true;
@@ -441,7 +439,6 @@ public static class ProjectTemplateCatalog
                 settings.DefaultRenderPreset = "全效果展示";
                 settings.RenderSettings.ShowGround = true;
                 settings.RenderSettings.GroundColor = new Vector3(.18F, .24F, .30F);
-                settings.RenderSettings.GroundFade = 220F;
                 settings.RenderSettings.SunElevationDegrees = 24F;
                 settings.RenderSettings.SunAzimuthDegrees = 122F;
                 settings.RenderSettings.SkyTop = new Vector3(.08F, .18F, .38F);

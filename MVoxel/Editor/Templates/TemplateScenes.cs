@@ -532,17 +532,16 @@ internal static class TemplateScenes
     public static VoxelWorld BuildColonnade()
     {
         var world = new VoxelWorld();
-        const int seed = 88;
-        TemplateKit.Box(world, -22, 0, -18, 22, 0, 18, Paint(GrassGreen), seed);
+        TemplateKit.Box(world, -22, 0, -18, 22, 0, 18, Paint(GrassGreen));
         // 两级基座
-        TemplateKit.Box(world, -20, 1, -16, 20, 2, 16, Paint(Limestone), seed);
-        TemplateKit.Box(world, -18, 3, -14, 18, 3, 14, Paint(Limestone), seed);
+        TemplateKit.Box(world, -20, 1, -16, 20, 2, 16, Paint(Limestone));
+        TemplateKit.Box(world, -18, 3, -14, 18, 3, 14, Paint(Limestone));
         // 柱廊：柱基 + 凹槽柱身 + 柱头
         foreach (var x in new[] { -15L, -9L, -3L, 3L, 9L, 15L })
         {
             foreach (var z in new[] { -11L, 11L })
             {
-                Column(world, x, z, 4, 12, Paint(Plaster), seed);
+                Column(world, x, z, 4, 12, Paint(Plaster));
             }
         }
 
@@ -550,15 +549,15 @@ internal static class TemplateScenes
         {
             foreach (var x in new[] { -15L, 15L })
             {
-                Column(world, x, z, 4, 12, Paint(Plaster), seed);
+                Column(world, x, z, 4, 12, Paint(Plaster));
             }
         }
 
         // 檐带
-        TemplateKit.Box(world, -17, 13, -13, 17, 14, 13, Paint(Limestone), seed);
+        TemplateKit.Box(world, -17, 13, -13, 17, 14, 13, Paint(Limestone));
         // 后殿与穹顶
-        TemplateKit.Box(world, -8, 4, -13, 8, 12, -6, Paint(Plaster), seed);
-        TemplateKit.Shell(world, -8, 4, -13, 8, 12, -6, Paint(Plaster), seed);
+        TemplateKit.Box(world, -8, 4, -13, 8, 12, -6, Paint(Plaster));
+        TemplateKit.Shell(world, -8, 4, -13, 8, 12, -6, Paint(Plaster));
         TemplateKit.Ellipsoid(world, .5, 14, -9.5, 6.5, 4.6, 4.6, Paint(Copper), hollow: true);
         TemplateKit.Box(world, 0, 18, -10, 0, 19, -10, Glow(new Rgba32(255, 224, 150)));
         // 正面圆拱门
@@ -575,7 +574,7 @@ internal static class TemplateScenes
         return world;
     }
 
-    private static void Column(VoxelWorld world, long x, long z, long baseY, long topY, VoxelValue value, int seed)
+    private static void Column(VoxelWorld world, long x, long z, long baseY, long topY, VoxelValue value)
     {
         TemplateKit.Box(world, x - 1, baseY, z - 1, x + 1, baseY, z + 1, Paint(Rock));
         for (var y = baseY + 1; y <= topY - 1; y++)
@@ -585,12 +584,11 @@ internal static class TemplateScenes
             {
                 if (Math.Abs(dx) + Math.Abs(dz) == 2) continue;
                 world.Set(new VoxelCoord64(x + dx, y, z + dz),
-                    new VoxelValue(TemplateKit.Jitter(value.Color, (int)(x + dx), (int)y, (int)(z + dz), seed),
-                        value.MaterialSlot, value.Flags));
+                    value);
             }
         }
 
-        TemplateKit.Box(world, x - 1, topY, z - 1, x + 1, topY, z + 1, Paint(Limestone), seed);
+        TemplateKit.Box(world, x - 1, topY, z - 1, x + 1, topY, z + 1, Paint(Limestone));
     }
 
     /// <summary>
@@ -736,7 +734,7 @@ internal static class TemplateScenes
                 else if (height <= waterLevel + 2) value = y == height - 1 ? Paint(Sand) : y >= height - 3 ? Paint(Soil) : Paint(Rock);
                 else value = y == height - 1 ? height > 17 ? Paint(Rock) : Paint(GrassGreen) : y >= height - 3 ? Paint(Soil) : Paint(Rock);
                 world.Set(new VoxelCoord64(x, y, z), new VoxelValue(
-                    TemplateKit.Jitter(value.Color, x, y, z, seed), value.MaterialSlot, value.Flags));
+                    TemplateKit.Jitter(value.Color, x, y, z, seed, .04F), value.MaterialSlot, value.Flags));
             }
 
             if (underWater)
@@ -752,7 +750,7 @@ internal static class TemplateScenes
         for (var y = 1; y <= 8; y++)
         for (var z = 8; z <= 11; z++)
         {
-            world.Set(new VoxelCoord64(-3, y, z), Paint(TemplateKit.Jitter(Rock, -3, y, z, seed)));
+            world.Set(new VoxelCoord64(-3, y, z), Paint(TemplateKit.Jitter(Rock, -3, y, z, seed, .04F)));
             world.Set(new VoxelCoord64(-4, y, z), Water());
         }
 
@@ -837,7 +835,7 @@ internal static class TemplateScenes
                 if (height <= waterLevel + 1) value = y == height - 1 ? Paint(Sand) : Paint(new Rgba32(150, 138, 116));
                 else value = y == height - 1 ? Paint(GrassGreen) : y >= height - 3 ? Paint(Soil) : Paint(Rock);
                 world.Set(new VoxelCoord64(x, y, z), new VoxelValue(
-                    TemplateKit.Jitter(value.Color, x, y, z, seed), value.MaterialSlot, value.Flags));
+                    TemplateKit.Jitter(value.Color, x, y, z, seed, .04F), value.MaterialSlot, value.Flags));
             }
 
             if (inBay)

@@ -530,7 +530,7 @@ internal sealed partial class ImGuiEditorWindow
                 DrawSettingsSectionHeader("环境 · 天空与地面", "背景、地面和环境补光");
                 ImGui.Checkbox("显示地面平面", ref settings.ShowGround);
                 DrawColorSlider("地面颜色", ref settings.GroundColor);
-                SliderFloat("地面淡出距离", ref settings.GroundFade, 8F, 1024F, "%.0f 格");
+                SliderFloat("地面淡出距离（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f 格");
                 DrawColorSlider("天空顶部颜色", ref settings.SkyTop);
                 DrawColorSlider("天空地平线颜色", ref settings.SkyHorizon);
                 SliderFloat("天空环境光", ref settings.SkyAmbient, 0F, 2F, "%.2f");

@@ -76,12 +76,13 @@ public sealed class RenderSettings
     /// <summary>
     /// 地面颜色（线性空间存储，面板按 sRGB 编辑）
     /// </summary>
-    public Vector3 GroundColor = new(0.42F, 0.46F, 0.52F);
+    public Vector3 GroundColor = Vector3.One;
 
     /// <summary>
     /// 地面淡入天空的距离，格数
     /// </summary>
-    public float GroundFade = 90F;
+    /// <remarks>0 表示关闭淡出，保持纯色的无限地面。</remarks>
+    public float GroundFade = 0F;
 
     /// <summary>
     /// 太阳平行光开关
@@ -486,7 +487,7 @@ public sealed class RenderSettings
         HueCycleSpeed = Math.Clamp(HueCycleSpeed, 0F, 180F);
         FogDensity = Math.Clamp(FogDensity, 0F, 0.05F);
         NearFade = Math.Clamp(NearFade, 0F, 512F);
-        GroundFade = Math.Clamp(GroundFade, 4F, 4096F);
+        GroundFade = Math.Clamp(GroundFade, 0F, 4096F);
         Exposure = Math.Clamp(Exposure, -6F, 6F);
         Gamma = Math.Clamp(Gamma, 1F, 3.5F);
         WhiteBalance = Math.Clamp(WhiteBalance, 1500F, 12000F);
@@ -597,7 +598,7 @@ public sealed class RenderSettings
         HueCycleSpeed = Safe(HueCycleSpeed, 20F);
         FogDensity = Safe(FogDensity, 0F);
         NearFade = Safe(NearFade, 0F);
-        GroundFade = Safe(GroundFade, 90F);
+        GroundFade = Safe(GroundFade, 0F);
         Exposure = Safe(Exposure, 0F);
         Gamma = Safe(Gamma, 2.2F);
         WhiteBalance = Safe(WhiteBalance, 6500F);
@@ -617,7 +618,7 @@ public sealed class RenderSettings
         ApertureRadius = Safe(ApertureRadius, 0.08F);
         FocusDistance = Safe(FocusDistance, 18F);
         CameraFovDegrees = Safe(CameraFovDegrees, 50F);
-        GroundColor = SafeChannel(GroundColor, new Vector3(0.42F, 0.46F, 0.52F));
+        GroundColor = SafeChannel(GroundColor, Vector3.One);
         SceneBackgroundColor = SafeChannel(SceneBackgroundColor, new Vector3(0.025F, 0.035F, 0.05F));
         SunColor = SafeChannel(SunColor, Vector3.One);
         SkyTop = SafeChannel(SkyTop, new Vector3(0.24F, 0.45F, 0.78F));

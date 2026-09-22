@@ -68,9 +68,9 @@ internal static class TemplateKit
     }
 
     /// <summary>
-    /// 给颜色加确定性明度抖动，让大面积同色材质有呼吸感
+    /// 给自然表面加确定性明度抖动。规则建筑默认不抖色，调用方必须显式传入幅度。
     /// </summary>
-    public static Rgba32 Jitter(Rgba32 color, int x, int y, int z, int seed, float amount = .06F)
+    public static Rgba32 Jitter(Rgba32 color, int x, int y, int z, int seed, float amount = 0F)
     {
         var factor = 1F + (Hash(x, y, z, seed) / (float)0x7FFFFFFF * 2F - 1F) * amount;
         return new Rgba32(
@@ -349,7 +349,7 @@ internal static class TemplateKit
         {
             var value = layerSelector(x, y, z);
             world.Set(new VoxelCoord64(x, y, z), new VoxelValue(
-                Jitter(value.Color, x, y, z, jitterSeed), value.MaterialSlot, value.Flags));
+                Jitter(value.Color, x, y, z, jitterSeed, .04F), value.MaterialSlot, value.Flags));
         }
     }
 }
