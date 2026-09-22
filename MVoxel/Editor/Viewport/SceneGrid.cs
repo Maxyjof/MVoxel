@@ -78,7 +78,10 @@ internal static class SceneGrid
         // 统一粗化。靠近当前目标的区域必须始终按 1x1x1 体素单位显示，
         // 否则网格线无法与体素边界对应；远处再由下面的粗网格负责覆盖。
         var fineExtent = Math.Min(extent, FineGridRadius);
-        if (step > 1F && distance <= SparseGridStartDistance && fineExtent >= 1F)
+        var fineGridActive = step > 1F && distance <= SparseGridStartDistance && fineExtent >= 1F;
+        var blendStart = fineExtent * 0.55F;
+        var blendEnd = fineExtent * 1.15F;
+        if (fineGridActive)
         {
             var fineCenterX = MathF.Floor(camera.Target.X);
             var fineCenterZ = MathF.Floor(camera.Target.Z);
@@ -88,9 +91,11 @@ internal static class SceneGrid
                 var x = fineCenterX + i;
                 var z = fineCenterZ + i;
                 DrawGroundLine(new Vector3(x, 0, fineCenterZ - fineExtent), Vector3.UnitZ,
-                    IsMajor(x, 1F), 1F, fineExtent);
+                    IsMajor(x, 1F), 1F, fineExtent,
+                    1F - SmoothStep(blendStart, blendEnd, Math.Abs(x - fineCenterX)));
                 DrawGroundLine(new Vector3(fineCenterX - fineExtent, 0, z), Vector3.UnitX,
-                    IsMajor(z, 1F), 1F, fineExtent);
+                    IsMajor(z, 1F), 1F, fineExtent,
+                    1F - SmoothStep(blendStart, blendEnd, Math.Abs(z - fineCenterZ)));
             }
         }
 
@@ -98,22 +103,24 @@ internal static class SceneGrid
         {
             var x = centerX + i * step;
             var z = centerZ + i * step;
-            // 粗网格与细网格重叠时会变暗并造成双线，局部区域交给细网格。
-            if (step > 1F && distance <= SparseGridStartDistance &&
-                (Math.Abs(x - camera.Target.X) <= fineExtent + step ||
-                 Math.Abs(z - camera.Target.Z) <= fineExtent + step))
-                continue;
-
+            var coarseFadeX = fineGridActive
+                ? SmoothStep(blendStart, blendEnd, Math.Abs(x - MathF.Floor(camera.Target.X)))
+                : 1F;
+            var coarseFadeZ = fineGridActive
+                ? SmoothStep(blendStart, blendEnd, Math.Abs(z - MathF.Floor(camera.Target.Z)))
+                : 1F;
             DrawGroundLine(new Vector3(x, 0, centerZ - extent), Vector3.UnitZ,
-                IsMajor(x, step), step, extent);
+                IsMajor(x, step), step, extent, coarseFadeX);
             DrawGroundLine(new Vector3(centerX - extent, 0, z), Vector3.UnitX,
-                IsMajor(z, step), step, extent);
+                IsMajor(z, step), step, extent, coarseFadeZ);
         }
         draw.PopClipRect();
 
         void DrawGroundLine(Vector3 start, Vector3 direction, bool major,
-            float lineStep, float lineExtent)
+            float lineStep, float lineExtent, float layerFade)
         {
+            if (layerFade <= 0.001F) return;
+
             // 分段用于平滑淡出，覆盖范围来自视锥与地面交点
             var segments = Math.Clamp((int)MathF.Ceiling(2F * lineExtent / (lineStep * 40F)), 4, 10);
             for (var index = 0; index < segments; index++)
@@ -133,7 +140,7 @@ internal static class SceneGrid
                     : 0.16F + 0.84F * SmoothStep(0.55F, 1.45F, spacingPixels);
                 var radial = Math.Max(Math.Abs(mid.X - camera.Target.X), Math.Abs(mid.Z - camera.Target.Z)) / lineExtent;
                 var edgeFade = 0.42F + 0.58F * (1F - SmoothStep(0.985F, 1F, radial));
-                var fade = densityFade * edgeFade;
+                var fade = densityFade * edgeFade * layerFade;
                 if (fade < (major ? 0.08F : 0.025F)) continue;
                 if (SceneProjection.ClipLine(a, b, origin, size, camera, out var p, out var q))
                 {
