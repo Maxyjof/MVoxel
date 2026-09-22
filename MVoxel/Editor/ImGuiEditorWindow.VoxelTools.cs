@@ -1772,21 +1772,6 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("已恢复默认渲染参数");
         }
 
-        ImGui.SameLine();
-        if (ImGui.Button("保存配置", new Vector2(112F, 30F)))
-        {
-            try
-            {
-                if (_project is null) SaveEditorSettings();
-                else SaveProjectSettings();
-                SetStatus(_project is null ? "编辑器渲染设置已保存" : "项目渲染设置已保存");
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                SetStatus($"配置保存失败：{exception.Message}");
-            }
-        }
-
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
         DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
         DrawRenderSettingsAccordion("palette", "材质与笔刷", () => DrawPaletteSection(settings));

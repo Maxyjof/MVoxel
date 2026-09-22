@@ -23,6 +23,10 @@ internal sealed partial class ImGuiEditorWindow
     private string _renameShortcutScheme = string.Empty;
     private string _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
     private string _newProjectPaletteName = "新调色板";
+    private string _lastEditorSettingsSnapshot = string.Empty;
+    private string _lastProjectSettingsSnapshot = string.Empty;
+    private bool _configurationAutoSavePending;
+    private float _configurationAutoSaveCountdown;
 
     /// <summary>
     /// 获取当前场景实际使用的画面配置
@@ -35,6 +39,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         _editorSettings = SettingsStore.LoadEditor();
         ApplyEditorSettingsToUi();
+        _lastEditorSettingsSnapshot = SettingsStore.Snapshot(_editorSettings);
         _selectedShortcutScheme = Math.Clamp(
             _editorSettings.ShortcutSchemes.FindIndex(scheme => string.Equals(
                 scheme.Name, _editorSettings.ActiveShortcutScheme, StringComparison.OrdinalIgnoreCase)),
@@ -61,6 +66,7 @@ internal sealed partial class ImGuiEditorWindow
         _projectSettings = SettingsStore.LoadProject(project);
         _selectedProjectPalettePath = EditorPalettes.NormalizeProjectPalettePath(_projectSettings.ActivePalettePath);
         ApplyProjectSettingsToUi();
+        _lastProjectSettingsSnapshot = SettingsStore.Snapshot(_projectSettings);
     }
 
     private void ApplyProjectSettingsToUi()
@@ -117,6 +123,64 @@ internal sealed partial class ImGuiEditorWindow
         catch (UnauthorizedAccessException)
         {
         }
+    }
+
+    /// <summary>
+    /// 配置编辑采用变更即自动保存，不依赖设置窗口中的手动保存按钮。
+    /// 使用很短的防抖时间，避免拖动滑条时每一帧都写磁盘。
+    /// </summary>
+    private void TrackConfigurationChanges()
+    {
+        if (_project is null)
+        {
+            _editorSettings.ShowSceneGrid = _showGrid;
+            _editorSettings.ShowVoxelOutlines = _showVoxelOutlines;
+            _editorSettings.SceneMoveSpeed = _sceneMoveSpeed;
+            _editorSettings.SceneNearClip = _sceneNearClip;
+            _editorSettings.SceneFarClip = _sceneFarClip;
+            _editorSettings.SceneFieldOfView = _sceneFieldOfView;
+            _editorSettings.RenderViewSettings = _renderSettings;
+            _editorSettings.Normalize();
+            _lastProjectSettingsSnapshot = string.Empty;
+        }
+        else
+        {
+            CaptureProjectSettingsFromUi();
+            var projectSnapshot = SettingsStore.Snapshot(_projectSettings);
+            if (_lastProjectSettingsSnapshot.Length > 0 &&
+                !string.Equals(projectSnapshot, _lastProjectSettingsSnapshot, StringComparison.Ordinal))
+            {
+                QueueConfigurationAutoSave();
+            }
+
+            _lastProjectSettingsSnapshot = projectSnapshot;
+        }
+
+        var editorSnapshot = SettingsStore.Snapshot(_editorSettings);
+        if (_lastEditorSettingsSnapshot.Length > 0 &&
+            !string.Equals(editorSnapshot, _lastEditorSettingsSnapshot, StringComparison.Ordinal))
+        {
+            QueueConfigurationAutoSave();
+        }
+
+        _lastEditorSettingsSnapshot = editorSnapshot;
+    }
+
+    private void QueueConfigurationAutoSave()
+    {
+        _configurationAutoSavePending = true;
+        _configurationAutoSaveCountdown = 0.25F;
+    }
+
+    private void ProcessConfigurationAutoSave(float elapsedSeconds)
+    {
+        if (!_configurationAutoSavePending ||
+            (_configurationAutoSaveCountdown -= Math.Max(elapsedSeconds, 0.01F)) > 0F)
+            return;
+
+        _configurationAutoSavePending = false;
+        if (_project is null) SaveEditorSettings();
+        else SaveProjectSettings();
     }
 
     private IReadOnlyList<string> GetProjectRenderPresetNames()
@@ -223,24 +287,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextColored(ToColor(EditorPalette.Accent), "配置中心");
                 ImGui.SameLine();
                 ImGui.TextDisabled(_project is null ? "编辑器级设置" : "编辑器级设置 · 当前项目级设置");
-                ImGui.SameLine(Math.Max(250F, ImGui.GetWindowWidth() - 330F));
-                if (ImGui.Button("保存编辑器设置", new Vector2(138F, 30F)))
-                {
-                    SaveEditorSettings();
-                    SetStatus("编辑器设置已保存");
-                }
-
-                if (_project is not null)
-                {
-                    ImGui.SameLine();
-                    if (ImGui.Button("保存项目设置", new Vector2(128F, 30F)))
-                    {
-                        SaveProjectSettings();
-                        SetStatus("项目设置已保存");
-                    }
-                }
-
-                ImGui.TextDisabled("按职责进入分类；画面、输入和布局修改会立即作用于当前编辑器。");
+                ImGui.TextDisabled("按职责进入分类；修改会自动保存并立即作用于当前编辑器。");
             }
 
             ImGui.EndChild();

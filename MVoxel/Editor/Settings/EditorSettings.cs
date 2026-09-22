@@ -253,6 +253,8 @@ public static class SettingsStore
         AtomicFile.WriteText(EditorSettingsPath, JsonSerializer.Serialize(document, JsonOptions));
     }
 
+    internal static string Snapshot<T>(T document) => JsonSerializer.Serialize(document, JsonOptions);
+
     public static ProjectSettingsDocument LoadProject(ProjectHandle project)
     {
         try

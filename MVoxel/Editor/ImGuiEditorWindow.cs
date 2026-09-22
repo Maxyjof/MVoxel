@@ -255,19 +255,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 _pendingActions.Enqueue(TryAutoSaveProject);
             }
         }
-        if (_renderSettingsDirty && (_renderSettingsSaveCountdown -= (float)Math.Max(args.Time, 0.01F)) <= 0F)
-        {
-            _renderSettingsDirty = false;
-            try
-            {
-                if (_project is null) SaveEditorSettings();
-                else SaveProjectSettings();
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                SetStatus($"渲染配置自动保存失败：{exception.Message}");
-            }
-        }
+        ProcessConfigurationAutoSave((float)Math.Max(args.Time, 0.01F));
     }
 
     protected override void OnRenderFrame(FrameEventArgs args)
@@ -665,6 +653,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawMeshImportWindow();
         if (inputBlocked) ImGui.EndDisabled();
         if (!inputBlocked) DrawSettingsWindow();
+        TrackConfigurationChanges();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
         else if (operation is { } snapshot)
         {
@@ -3109,18 +3098,9 @@ DockId=0x6A3C3007,0
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
         DrawSettingsSectionHeader("渲染参数");
-        var before = _renderSettings.ToJson();
         DrawRenderSettingsPanel();
-        if (_renderSettings.ToJson() != before)
-        {
-            _renderSettings.ClampAll();
-            _renderSettingsDirty = true;
-            _renderSettingsSaveCountdown = 2F;
-        }
     }
 
-    private bool _renderSettingsDirty;
-    private float _renderSettingsSaveCountdown;
     private int _projectPathDialogMode;
     private string _projectPathText = string.Empty;
     private string _projectPathError = string.Empty;
@@ -3690,6 +3670,7 @@ DockId=0x6A3C3007,0
         _pluginRuntime = null;
         SaveProjectSettings();
         _project = null;
+        _lastProjectSettingsSnapshot = string.Empty;
         _sceneDocument = null;
         _activeSceneRelativePath = "Scenes/主场景.mvox";
         _sceneDocumentDirty = false;
