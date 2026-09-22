@@ -130,17 +130,7 @@ public sealed class VoxelBrickWorkset
             index =>
             {
                 var (coordinate, chunk) = chunks[index];
-                var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
-                var pairIndex = 0;
-                foreach (var pair in chunk.Snapshot)
-                {
-                    pairs[pairIndex++] = (pair.Key, pair.Value);
-                }
-
-                Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
-                var merged = new List<VoxelGpuCell>(pairs.Length);
-                VoxelGpuWorkset.GreedyMergeChunk(pairs, coordinate, minimum, merged);
-                perChunkCells[index] = merged.ToArray();
+                perChunkCells[index] = BuildChunkCells(world, chunk, coordinate, minimum);
             });
 
         // 拼接格池并记录每区块格片边界
@@ -268,7 +258,7 @@ public sealed class VoxelBrickWorkset
     /// <summary>
     /// 构建单个区块的合并格片（坐标相对锚点，贪心合并，稳定序）
     /// </summary>
-    internal static VoxelGpuCell[] BuildChunkCells(SparseVoxelChunk chunk, ChunkCoord64 coordinate,
+    internal static VoxelGpuCell[] BuildChunkCells(VoxelWorld world, SparseVoxelChunk chunk, ChunkCoord64 coordinate,
         VoxelCoord64 anchor)
     {
         var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
@@ -279,6 +269,7 @@ public sealed class VoxelBrickWorkset
         }
 
         Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+        pairs = VoxelGpuWorkset.CullFullyOccludedPairs(world, pairs, coordinate, preserveUniformSolids: true);
         var merged = new List<VoxelGpuCell>(pairs.Length);
         VoxelGpuWorkset.GreedyMergeChunk(pairs, coordinate, anchor, merged);
         return merged.ToArray();

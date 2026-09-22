@@ -134,7 +134,7 @@ public sealed class BrickResidency
             index =>
             {
                 var (coordinate, chunk) = chunks[index];
-                var cells = VoxelBrickWorkset.BuildChunkCells(chunk, coordinate, minimum);
+                var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, minimum);
                 var inner = VoxelBrickWorkset.BuildInnerBvh(cells);
                 perChunk[index] = new ChunkData(coordinate, cells, inner.Nodes, inner.Order);
             });
@@ -220,7 +220,8 @@ public sealed class BrickResidency
     }
 
     /// <summary>
-    /// 尝试按脏区块增量更新；结构变化、脏区块未知或容量溢出时返回 false，调用方回退全量
+    /// 尝试按脏区块增量更新；结构变化、脏区块未知或容量溢出时返回 false，调用方回退全量。
+    /// 可见性会查询六个相邻体素，所以还必须同步重建相邻区块的边界格片。
     /// </summary>
     public bool TryUpdate(VoxelWorld world, IReadOnlySet<ChunkCoord64> dirty, out UploadPlan plan)
     {
@@ -238,15 +239,33 @@ public sealed class BrickResidency
             return false;
         }
 
-        var cellRanges = new List<(int, int)>();
-        var nodeRanges = new List<(int, int)> { (0, OuterCount) };
         foreach (var coordinate in dirty)
         {
-            if (!_slotByCoord.TryGetValue(coordinate, out var slotIndex))
+            if (!_slotByCoord.ContainsKey(coordinate))
             {
                 LastRejectReason = $"chunk {coordinate} not in slots";
                 return false;
             }
+        }
+
+        // 内部体素剔除依赖六邻域。编辑恰好落在区块边界时，邻区的一个体素也可能
+        // 从“完全遮挡”变成“可见”（或反过来），因此不能只更新原始脏区块。
+        var affected = new HashSet<ChunkCoord64>(dirty);
+        foreach (var coordinate in dirty)
+        {
+            foreach (var (x, y, z) in NeighborChunkOffsets)
+            {
+                var neighbor = new ChunkCoord64(coordinate.X + x, coordinate.Y + y, coordinate.Z + z);
+                if (_slotByCoord.ContainsKey(neighbor)) affected.Add(neighbor);
+            }
+        }
+
+        var cellRanges = new List<(int, int)>();
+        var nodeRanges = new List<(int, int)> { (0, OuterCount) };
+        foreach (var coordinate in affected.OrderBy(static item => item.Z)
+                     .ThenBy(static item => item.Y).ThenBy(static item => item.X))
+        {
+            var slotIndex = _slotByCoord[coordinate];
 
             if (!world.TryGetChunk(coordinate, out var chunk))
             {
@@ -255,7 +274,7 @@ public sealed class BrickResidency
             }
 
             var slot = _slots[slotIndex];
-            var cells = VoxelBrickWorkset.BuildChunkCells(chunk, coordinate, Anchor);
+            var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, Anchor);
             var inner = VoxelBrickWorkset.BuildInnerBvh(cells);
             if (cells.Length > slot.CellCapacity || inner.Nodes.Count > slot.NodeCapacity)
             {
@@ -328,6 +347,11 @@ public sealed class BrickResidency
     }
 
     private static int CapacityFor(int count) => count + Math.Max(64, count / 2);
+
+    private static readonly (long X, long Y, long Z)[] NeighborChunkOffsets =
+    [
+        (-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1),
+    ];
 
     private static int CountEmissive(VoxelGpuCell[] cells)
     {

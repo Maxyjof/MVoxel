@@ -135,21 +135,10 @@ public sealed class VoxelGpuWorkset
         var chunkCount = chunks.Count;
         var lodActive = lod is { Enabled: true } && cameraPosition.HasValue;
 
-        // 预算采样必须作用于原始体素而不是合并后的盒：丢一个采样点只是散洞，
-        // 丢一个合并盒则是整块大洞。先按原始全局序号采样、再对采样子集合并，
-        // 保持与合并前完全一致的稀疏语义；LOD 激活时由其自身控制规模，预算让位
-        var rawStarts = new long[chunkCount + 1];
-        for (var index = 0; index < chunkCount; index++)
-        {
-            rawStarts[index + 1] = rawStarts[index] + chunks[index].Chunk.OccupiedCount;
-        }
-
-        var rawTotal = (int)rawStarts[chunkCount];
-        var sampleStride = !lodActive && maximumCells > 0 && rawTotal > maximumCells
-            ? (rawTotal + maximumCells - 1) / maximumCells
-            : 1;
-
-        var perChunk = new List<VoxelGpuCell>[chunkCount];
+        // 所有显示和导出路径均先经过这一层的全封闭体素剔除。源世界并不修改；
+        // 这里只消除永远不能从外部射线命中的不透明内部格。随后预算采样作用于
+        // 已剔除的可见工作集，而不是合并后的盒，避免把一个合并盒整块挖空。
+        var visiblePairs = new (int Key, VoxelValue Value)[chunkCount][];
         System.Threading.Tasks.Parallel.For(0, chunkCount,
             new System.Threading.Tasks.ParallelOptions
             {
@@ -166,6 +155,30 @@ public sealed class VoxelGpuWorkset
                 }
 
                 Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
+                visiblePairs[chunkIndex] = CullFullyOccludedPairs(world, pairs, coordinate, greedyMerge);
+            });
+
+        var rawStarts = new long[chunkCount + 1];
+        for (var index = 0; index < chunkCount; index++)
+        {
+            rawStarts[index + 1] = rawStarts[index] + visiblePairs[index].Length;
+        }
+
+        var rawTotal = (int)rawStarts[chunkCount];
+        var sampleStride = !lodActive && maximumCells > 0 && rawTotal > maximumCells
+            ? (rawTotal + maximumCells - 1) / maximumCells
+            : 1;
+
+        var perChunk = new List<VoxelGpuCell>[chunkCount];
+        System.Threading.Tasks.Parallel.For(0, chunkCount,
+            new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+            },
+            chunkIndex =>
+            {
+                var (coordinate, chunk) = chunks[chunkIndex];
+                var pairs = visiblePairs[chunkIndex];
                 if (sampleStride != 1)
                 {
                     var kept = new List<(int Key, VoxelValue Value)>(pairs.Length / sampleStride + 1);
@@ -234,6 +247,38 @@ public sealed class VoxelGpuWorkset
         }
 
         return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
+    }
+
+    /// <summary>
+    /// 从已排序的区块体素中移除完全不可见的内部不透明格。该方法也由砖块工作集调用，
+    /// 确保场景预览、实时/路径渲染和导出使用同一条可见性规则。
+    /// </summary>
+    internal static (int Key, VoxelValue Value)[] CullFullyOccludedPairs(VoxelWorld world,
+        (int Key, VoxelValue Value)[] pairs, ChunkCoord64 chunkCoordinate, bool preserveUniformSolids)
+    {
+        List<(int Key, VoxelValue Value)>? retained = null;
+        for (var index = 0; index < pairs.Length; index++)
+        {
+            var pair = pairs[index];
+            var local = SparseVoxelChunk.FromIndex(pair.Key);
+            var coordinate = new VoxelCoord64(
+                chunkCoordinate.X * VoxelWorld.ChunkSize + local.X,
+                chunkCoordinate.Y * VoxelWorld.ChunkSize + local.Y,
+                chunkCoordinate.Z * VoxelWorld.ChunkSize + local.Z);
+            if (!VoxelRenderVisibility.CanCullInterior(world, coordinate, pair.Value, preserveUniformSolids))
+            {
+                retained?.Add(pair);
+                continue;
+            }
+
+            if (retained is null)
+            {
+                retained = new List<(int Key, VoxelValue Value)>(pairs.Length);
+                for (var previous = 0; previous < index; previous++) retained.Add(pairs[previous]);
+            }
+        }
+
+        return retained is null ? pairs : [.. retained];
     }
 
     /// <summary>
