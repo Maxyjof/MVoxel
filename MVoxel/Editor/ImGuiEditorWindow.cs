@@ -1811,11 +1811,12 @@ DockId=0x6A3C3007,0
         if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion)
             return;
 
-        const int maximumPreviewFaces = 80_000;
+        const int maximumPreviewFaces = 250_000;
         _cpuPreviewSurfaceFaces.Clear();
-        // 场景窗口不使用渲染窗口的光照或路径追踪，但几何必须来自同一份完整世界数据。
-        // 通过与 GPU 工作集一致的贪心盒合并减少 ImGui 面片数量，避免抽样造成“散点化”结构。
-        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: true);
+        // 场景窗口不使用渲染窗口的光照或路径追踪，且在关闭场景 LOD 时必须保持
+        // 一体素一格的几何语义。这里不能使用渲染/导出路径的贪心盒合并，否则相邻
+        // 体素会变成长方体，靠近模型时尤其明显。仅绘制外露面，仍能控制 ImGui 面片量。
+        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: false);
         foreach (var cell in workset.Cells)
         {
             AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Left, maximumPreviewFaces);

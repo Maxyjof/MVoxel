@@ -1862,6 +1862,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 + normal * sqrt(max(0.0, 1.0 - radius * radius)));
         }
 
+        // 面板中的天空颜色按 sRGB 显示值保存，参与光照前必须转为线性空间；
+        // 环境贴图由 SetEnvironment 明确按线性 RGB 上传，因此不经过此转换。
+        vec3 SrgbToLinear(vec3 color)
+        {
+            vec3 low = color / 12.92;
+            vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
+            return mix(low, high, step(vec3(0.04045), color));
+        }
+
         vec3 Sky(vec3 rayDirection)
         {
             if (values[104] > 0.5)
@@ -1887,25 +1896,20 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 return sampled * max(values[107], 0.0);
             }
 
-            vec3 skyTop = vec3(values[40], values[41], values[42]);
-            vec3 skyHorizon = vec3(values[44], values[45], values[46]);
+            vec3 skyTop = SrgbToLinear(clamp(vec3(values[40], values[41], values[42]),
+                vec3(0.0), vec3(1.0)));
+            vec3 skyHorizon = SrgbToLinear(clamp(vec3(values[44], values[45], values[46]),
+                vec3(0.0), vec3(1.0)));
             vec3 sky = mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
             return sky * max(values[43], 0.0) + vec3(values[47] * 0.08, values[47] * 0.06, values[47] * 0.03);
-        }
-
-        vec3 LinearToDisplay(vec3 value)
-        {
-            vec3 low = value * 12.92;
-            vec3 high = 1.055 * pow(max(value, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-            return mix(low, high, step(vec3(0.0031308), value));
         }
 
         vec3 Ground(vec3 rayOrigin, vec3 rayDirection, float hitDistance, bool pathMode)
         {
             vec3 point = rayOrigin + rayDirection * hitDistance;
-            vec3 groundColor = pathMode
-                ? vec3(values[36], values[37], values[38])
-                : LinearToDisplay(vec3(values[98], values[99], values[100]));
+            // 两种模式都在 PostProcess 的最后一步转为显示空间；实时模式不能提前
+            // LinearToDisplay，否则背景和地面会被 Gamma/色调曲线重复处理而发灰。
+            vec3 groundColor = vec3(values[36], values[37], values[38]);
             float groundFadeDistance = max(values[34], 0.0);
             if (groundFadeDistance > 0.0)
             {
@@ -1914,7 +1918,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     groundRadialDistance);
                 vec3 horizon = pathMode
                     ? Sky(rayDirection)
-                    : LinearToDisplay(vec3(values[98], values[99], values[100]));
+                    : vec3(values[98], values[99], values[100]);
                 groundColor = mix(groundColor, horizon, groundFade);
             }
             if (values[90] > 0.5)
@@ -1937,13 +1941,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
         // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
-        vec3 SrgbToLinear(vec3 color)
-        {
-            vec3 low = color / 12.92;
-            vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
-            return mix(low, high, step(vec3(0.04045), color));
-        }
-
         vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
             vec4 hitColor, uint hitFlags, MaterialSlotData material, inout uint state)
         {
@@ -2003,7 +2000,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             {
                 float fogAmount = 1.0 - exp(-fogDensity * cameraDistance);
                 vec3 fogColor = mix(Sky(rayDirection),
-                    vec3(values[48], values[49], values[50]), 0.55);
+                    SrgbToLinear(clamp(vec3(values[48], values[49], values[50]),
+                        vec3(0.0), vec3(1.0))), 0.55);
                 result = mix(result, fogColor, clamp(fogAmount, 0.0, 0.92));
             }
             return max(result, vec3(0.0));
@@ -2048,7 +2046,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     else
                         radiance += pathMode
                             ? throughput * Sky(rayDirection)
-                            : LinearToDisplay(vec3(values[98], values[99], values[100]));
+                            : vec3(values[98], values[99], values[100]);
                     break;
                 }
 
@@ -2056,7 +2054,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     if (!pathMode)
                     {
-                        radiance += LinearToDisplay(vec3(values[98], values[99], values[100]));
+                        radiance += vec3(values[98], values[99], values[100]);
                     }
                     else
                     {
@@ -2087,6 +2085,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 hasPendingInterface = false;
                 if (bounce == 0) primarySurfaceHit = true;
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
+                vec3 hitLinearColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
                 if (!pathMode && values[57] > 0.5)
                 {
                     // 只有编辑器场景预览显式要求描边时才绘制纯色体素轮廓；
@@ -2104,7 +2103,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.y, remainPoint.y));
                     float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
                     float outlineAmount = 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance);
-                    vec3 faceColor = hitColor.rgb;
+                    vec3 faceColor = hitLinearColor;
                     if (values[113] > 0.5)
                     {
                         vec3 sceneSun = normalize(vec3(values[24], values[25], values[26]));
@@ -2158,7 +2157,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     // 否则高强度小发光体（提灯等）在漫弹射中偶发命中会产生白点火噪，
                     // 低采样累积阶段表现为亮斑周围的蓝白噪点
                     float emissiveCeil = max(values[77] * 0.1, 1.0);
-                    radiance += throughput * min(hitColor.rgb * values[80] * emissiveScale,
+                    radiance += throughput * min(hitLinearColor * values[80] * emissiveScale,
                         vec3(emissiveCeil));
                 }
 
@@ -2204,7 +2203,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     // 长出与体素网格锁定、不随采样收敛的规则点阵阴影
                     vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
                         ? material.absorption.rgb
-                        : hitColor.rgb;
+                        : hitLinearColor;
                     float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
@@ -2254,7 +2253,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     // 均匀层闭式解：透射 = exp(-σ·弦长)，内散射 = 体色·(1 - 透射)，
                     // 与逐层几何级数极限同值，但完全不含网格相位项
                     vec3 layerTransmittance = exp(-sigma * chord);
-                    vec3 bodyAmbient = hitColor.rgb * (Sky(vec3(0.0, 1.0, 0.0))
+                    vec3 bodyAmbient = hitLinearColor * (Sky(vec3(0.0, 1.0, 0.0))
                         + (values[33] > 0.5 ? vec3(values[27] * 0.35) : vec3(0.0)));
                     radiance += throughput * (vec3(1.0) - layerTransmittance) * bodyAmbient;
                     throughput *= layerTransmittance;
@@ -2277,14 +2276,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
                 if (values[85] > 0.5 && lightAmount > 0.0 &&
                     !TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state))
-                    radiance += throughput * hitColor.rgb * lightAmount * values[27];
+                    radiance += throughput * hitLinearColor * lightAmount * values[27];
 
                 float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
                 float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
                 // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
                 // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
                 float alpha = max(roughness * roughness, 0.002);
-                vec3 f0 = mix(vec3(0.04), hitColor.rgb, metalness);
+                vec3 f0 = mix(vec3(0.04), hitLinearColor, metalness);
                 vec3 viewDir = -rayDirection;
                 float xi1 = max(Random(state), 1e-4);
                 float xi2 = Random(state);
@@ -2308,7 +2307,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 else
                 {
                     rayDirection = CosineHemisphere(hitNormal, state);
-                    throughput *= hitColor.rgb * (1.0 - fresnelStrength) * 2.0;
+                    throughput *= hitLinearColor * (1.0 - fresnelStrength) * 2.0;
                 }
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
