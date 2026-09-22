@@ -91,8 +91,10 @@ public sealed class VoxelRenderParameters
     public const int SceneShading = 113;
     /// <summary>Brick 两级求交开关（1 = cells/bvh 缓冲承载砖结构）</summary>
     public const int BrickMode = 114;
+    /// <summary>场景窗口基础体素显示开关（不使用实时特效）</summary>
+    public const int ScenePreview = 115;
     /// <summary>参数槽总数</summary>
-    public const int SlotCount = 115;
+    public const int SlotCount = 116;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
@@ -138,6 +140,7 @@ public sealed class VoxelRenderParameters
             ("P_BLOOM_RADIUS", BloomRadius),
             ("P_SCENE_SHADING", SceneShading),
             ("P_BRICK_MODE", BrickMode),
+            ("P_SCENE_PREVIEW", ScenePreview),
         };
 
         var builder = new StringBuilder();
@@ -320,6 +323,7 @@ public sealed class VoxelRenderParameters
         parameters[BloomThreshold] = settings.BloomThreshold;
         parameters[BloomRadius] = settings.BloomRadius;
         parameters[SceneShading] = settings.SceneShading ? 1F : 0F;
+        parameters[ScenePreview] = frame.ScenePreview ? 1F : 0F;
 
         for (var index = 0; index < parameters.Length; index++)
         {
@@ -350,6 +354,7 @@ public sealed class VoxelRenderParameters
     /// <param name="PathMode">true 为渲染视图相机模型</param>
     /// <param name="GridStep">编辑器网格世界步长</param>
     /// <param name="ShowGrid">是否绘制网格</param>
+    /// <param name="ScenePreview">是否使用场景窗口的基础体素显示模式</param>
     public readonly record struct FrameState(
         Vector3 CameraPosition,
         Vector3 CameraForward,
@@ -368,7 +373,8 @@ public sealed class VoxelRenderParameters
         int AccumulatedSamples,
         bool PathMode,
         float GridStep = 0F,
-        bool ShowGrid = false)
+        bool ShowGrid = false,
+        bool ScenePreview = false)
     {
         /// <summary>
         /// 相机近平面距离

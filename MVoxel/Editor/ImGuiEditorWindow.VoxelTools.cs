@@ -779,7 +779,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
-        bool showGrid = false, float gridStep = 0F)
+        bool showGrid = false, float gridStep = 0F, bool scenePreview = false)
     {
         NumVector3 Convert(Vector3 value) => new(value.X, value.Y, value.Z);
         var width = Math.Max(16, widthOverride);
@@ -799,7 +799,8 @@ internal sealed partial class ImGuiEditorWindow
             AccumulatedSamples: _pipeline?.AccumulatedSamples ?? 0,
             PathMode: pathMode,
             GridStep: gridStep,
-            ShowGrid: showGrid)
+            ShowGrid: showGrid,
+            ScenePreview: scenePreview)
         {
             NearClip = camera.NearClip,
             FarClip = float.IsFinite(camera.FarClip) ? camera.FarClip : 100_000_000F,
@@ -866,6 +867,38 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return buffer.ToString();
+    }
+
+    /// <summary>
+    /// 用 Vulkan Compute 绘制场景窗口的基础体素几何；特殊渲染效果由场景预览配置关闭。
+    /// </summary>
+    private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (_gpuRenderingDisabled || _pipeline is not { } pipeline) return false;
+        try
+        {
+            var settings = CurrentSceneRenderSettings.CreateScenePreview();
+            pipeline.SyncWorld(_world, 0, settings.SceneLod,
+                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                greedyMerge: false);
+            if (!pipeline.IsAvailable) return false;
+
+            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            var width = Math.Max(16, (int)(size.X * scale));
+            var height = Math.Max(16, (int)(size.Y * scale));
+            var frame = BuildFrameState(camera, size, scale, width, height,
+                pathMode: false, outlines: _showVoxelOutlines, scenePreview: true);
+            if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
+
+            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                Vector2.Zero, pipeline.DisplayUvMax);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DisableGpuRendering(exception);
+            return false;
+        }
     }
 
     /// <summary>

@@ -403,6 +403,37 @@ public sealed class RenderSettings
         return preview;
     }
 
+    /// <summary>
+    /// 创建场景窗口使用的 GPU 基础显示配置：只保留体素颜色、轮廓和场景明暗，
+    /// 不让渲染窗口的路径追踪、Bloom、AO、雾和色彩特效污染编辑器视口。
+    /// </summary>
+    internal RenderSettings CreateScenePreview()
+    {
+        var preview = (RenderSettings)MemberwiseClone();
+        preview.Backend = RenderBackend.Gpu;
+        preview.PathTracingEnabled = false;
+        preview.ShowGround = false;
+        preview.AmbientOcclusionEnabled = false;
+        preview.EmissiveVoxels = false;
+        preview.FogDensity = 0F;
+        preview.NearFade = 0F;
+        preview.BloomEnabled = false;
+        preview.PaletteShading = false;
+        preview.Saturation = 1F;
+        preview.HueShiftDegrees = 0F;
+        preview.ColorContrast = 1F;
+        preview.Brightness = 1F;
+        preview.Tone = ToneCurve.Linear;
+        preview.Exposure = 0F;
+        preview.Gamma = 2.2F;
+        preview.WhiteBalance = 6500F;
+        preview.Vignette = 0F;
+        preview.Dither = false;
+        preview.SceneLod = SceneLod.Clone();
+        preview.RenderLod = RenderLod.Clone();
+        return preview;
+    }
+
     /// <summary>创建导出任务使用的独立参数快照，避免用户继续编辑配置时改变排队任务。</summary>
     internal RenderSettings CloneForExport()
     {

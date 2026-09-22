@@ -2086,6 +2086,19 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (bounce == 0) primarySurfaceHit = true;
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
                 vec3 hitLinearColor = SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+                if (!pathMode && values[115] > 0.5 && values[57] <= 0.5)
+                {
+                    // 场景窗口的 GPU 基础显示：只做确定性的面向明暗，不进入实时特效路径。
+                    vec3 faceColor = hitLinearColor;
+                    if (values[113] > 0.5 && values[33] > 0.5)
+                    {
+                        vec3 sceneSun = normalize(vec3(values[24], values[25], values[26]));
+                        float sunFace = max(dot(hitNormal, -sceneSun), 0.0);
+                        faceColor *= 0.52 + 0.38 * sunFace + 0.14 * max(hitNormal.y, 0.0);
+                    }
+                    radiance += faceColor;
+                    break;
+                }
                 if (!pathMode && values[57] > 0.5)
                 {
                     // 只有编辑器场景预览显式要求描边时才绘制纯色体素轮廓；

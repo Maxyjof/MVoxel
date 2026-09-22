@@ -1193,12 +1193,16 @@ DockId=0x6A3C3007,0
             SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
         }
 
-        // 场景窗口是编辑器预览，不参与渲染窗口的实时光照或路径追踪。
-        // 这样网格、坐标轴和体素编辑反馈不会被渲染管线的累积结果污染。
+        // 场景窗口使用 GPU 绘制基础体素几何，但不启用渲染窗口的路径追踪、Bloom、AO
+        // 等特殊效果；GPU 不可用时才回退到 CPU 表面预览，网格、坐标轴和编辑反馈仍由
+        // 编辑器绘制层独立负责。
         var showVoxelWorld = IsVoxelWorldVisible();
+        var gpuRendered = false;
         if (showVoxelWorld && _project is not null)
         {
-            DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
+            gpuRendered = TryRenderGpuSceneView(drawList, origin, size, camera);
+            if (!gpuRendered)
+                DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
         }
 
         if (_project is not null && showVoxelWorld)
