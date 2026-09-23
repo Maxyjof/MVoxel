@@ -122,6 +122,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 当前工作集是否按贪心合并构建（场景视图 false），纳入同步跳过判定
     /// </summary>
     private bool _worksetGreedyMerge = true;
+    private bool _worksetIncludesInterior;
     private VoxelWorld? _lastSyncSource;
     private VoxelLodSettings? _activeLod;
     private System.Numerics.Vector3? _lodCamera;
@@ -242,8 +243,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="lod">距离 LOD 配置</param>
     /// <param name="camera">LOD 判距相机</param>
     /// <param name="greedyMerge">是否贪心盒体合并：场景视图 false，渲染与导出 true</param>
+    /// <param name="includeInterior">是否保留完全被包围的内部体素；仅用于相机进入模型内部的场景编辑预览</param>
     internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
-        VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true)
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true,
+        bool includeInterior = false)
     {
         ArgumentNullException.ThrowIfNull(world);
         // 编辑类同步不带相机与 LOD：沿用上一次的活动配置，避免笔刷提交把 LOD 分档重置
@@ -262,7 +265,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         // 必须靠引用差异触发重建，仅比版本号会让两次不同遮罩的组成撞车
         if (ReferenceEquals(_lastSyncSource, world) && world.ContentVersion == _workset.SourceVersion &&
             maximumCells == _worksetMaximumCells && lodSignature == _worksetLodSignature &&
-            greedyMerge == _worksetGreedyMerge)
+            greedyMerge == _worksetGreedyMerge && includeInterior == _worksetIncludesInterior)
         {
             return;
         }
@@ -287,7 +290,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         LastSyncWasBudgeted = requestedFull;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge);
+        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior);
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         SyncPackMs = 0;
         SyncUploadMs = 0;
@@ -310,6 +313,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
         _worksetGreedyMerge = greedyMerge;
+        _worksetIncludesInterior = includeInterior;
         SyncTotalCells = next.Cells.Count;
         ResetAccumulation();
     }
@@ -2820,6 +2824,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
         _worksetGreedyMerge = true;
+        _worksetIncludesInterior = false;
         SyncTotalCells = residency.OccupiedCount;
         ResetAccumulation();
     }

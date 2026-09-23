@@ -106,7 +106,8 @@ public sealed class VoxelGpuWorkset
     /// <exception cref="ArgumentNullException">世界为空时抛出</exception>
     /// <exception cref="InvalidDataException">包围盒尺寸超出 GPU 局部坐标范围时抛出</exception>
     public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0,
-        VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null, bool greedyMerge = true)
+        VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null, bool greedyMerge = true,
+        bool includeInterior = false)
     {
         ArgumentNullException.ThrowIfNull(world);
         if (!world.TryGetBounds(out var minimum, out var maximum))
@@ -155,7 +156,9 @@ public sealed class VoxelGpuWorkset
                 }
 
                 Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
-                visiblePairs[chunkIndex] = CullFullyOccludedPairs(world, pairs, coordinate, greedyMerge);
+                visiblePairs[chunkIndex] = includeInterior
+                    ? pairs
+                    : CullFullyOccludedPairs(world, pairs, coordinate, greedyMerge);
             });
 
         var rawStarts = new long[chunkCount + 1];

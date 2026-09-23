@@ -142,6 +142,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private readonly List<CpuPreviewSurfaceFace> _cpuPreviewSurfaceFaces = [];
     private VoxelWorld? _cpuPreviewWorld;
     private int _cpuPreviewWorldVersion = -1;
+    private bool _cpuPreviewIncludesInterior;
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
     private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
@@ -1789,7 +1790,7 @@ DockId=0x6A3C3007,0
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
     {
-        EnsureCpuPreviewSurface();
+        EnsureCpuPreviewSurface(IsCameraWithinWorldBounds(camera));
         var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
         for (var surfaceIndex = 0; surfaceIndex < _cpuPreviewSurfaceFaces.Count; surfaceIndex++)
         {
@@ -1841,9 +1842,10 @@ DockId=0x6A3C3007,0
         }
     }
 
-    private void EnsureCpuPreviewSurface()
+    private void EnsureCpuPreviewSurface(bool includeInterior)
     {
-        if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion)
+        if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion &&
+            _cpuPreviewIncludesInterior == includeInterior)
             return;
 
         const int maximumPreviewFaces = 250_000;
@@ -1851,7 +1853,7 @@ DockId=0x6A3C3007,0
         // 场景窗口不使用渲染窗口的光照或路径追踪，且在关闭场景 LOD 时必须保持
         // 一体素一格的几何语义。这里不能使用渲染/导出路径的贪心盒合并，否则相邻
         // 体素会变成长方体，靠近模型时尤其明显。仅绘制外露面，仍能控制 ImGui 面片量。
-        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: false);
+        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: false, includeInterior: includeInterior);
         foreach (var cell in workset.Cells)
         {
             AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Left, maximumPreviewFaces);
@@ -1869,6 +1871,7 @@ DockId=0x6A3C3007,0
 
         _cpuPreviewWorld = _world;
         _cpuPreviewWorldVersion = _world.ContentVersion;
+        _cpuPreviewIncludesInterior = includeInterior;
     }
 
     private void AddCpuPreviewBoxSurfaceFace(VoxelCoord64 worksetOrigin, VoxelGpuCell cell,

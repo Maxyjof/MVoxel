@@ -881,7 +881,8 @@ internal sealed partial class ImGuiEditorWindow
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             pipeline.SyncWorld(_world, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                greedyMerge: false);
+                greedyMerge: false,
+                includeInterior: IsCameraWithinWorldBounds(camera));
             if (!pipeline.IsAvailable) return false;
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
@@ -900,6 +901,21 @@ internal sealed partial class ImGuiEditorWindow
             DisableGpuRendering(exception);
             return false;
         }
+    }
+
+    /// <summary>
+    /// 编辑器相机进入模型包围盒后，内部体素不再是从当前视点不可见的几何，
+    /// 因此临时保留它们以保证从模型内部观察时不会出现缺面。相机在模型外时
+    /// 仍使用强制内部体素剔除，渲染与导出路径始终保持剔除。
+    /// </summary>
+    private bool IsCameraWithinWorldBounds(SceneCamera camera)
+    {
+        if (!_world.TryGetBounds(out var minimum, out var maximum)) return false;
+
+        const float epsilon = 0.001F;
+        return camera.Position.X >= minimum.X - epsilon && camera.Position.X <= maximum.X + 1F + epsilon &&
+            camera.Position.Y >= minimum.Y - epsilon && camera.Position.Y <= maximum.Y + 1F + epsilon &&
+            camera.Position.Z >= minimum.Z - epsilon && camera.Position.Z <= maximum.Z + 1F + epsilon;
     }
 
     /// <summary>
