@@ -1790,7 +1790,7 @@ DockId=0x6A3C3007,0
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
     {
-        EnsureCpuPreviewSurface(IsCameraWithinWorldBounds(camera));
+        EnsureCpuPreviewSurface(IsCameraInsideOccupiedVoxel(camera));
         var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
         for (var surfaceIndex = 0; surfaceIndex < _cpuPreviewSurfaceFaces.Count; surfaceIndex++)
         {
