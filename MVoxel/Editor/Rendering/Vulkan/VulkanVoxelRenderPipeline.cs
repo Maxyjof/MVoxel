@@ -2603,11 +2603,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float fade = 1.0 / (1.0 + level * 0.22);
                     float horizon = smoothstep(0.0, 0.025, abs(normalize(ray).y));
                     float alpha = mix(fine, coarse, blend) * fade * horizon * 0.65;
-                    // 与场景窗口底色使用相同的线性到 sRGB 转换，直接合成便于回读验证。
+                    // 网格只在实际线条覆盖到的像素参与遮挡；不能将无限地面当作
+                    // 不透明色板，否则相机位于地面下方时整座模型会被背景色盖住。
                     vec3 background = max(vec3(values[98], values[99], values[100]), vec3(0.0));
                     background = mix(1.055 * pow(background, vec3(1.0 / 2.4)) - 0.055,
                         background * 12.92, lessThanEqual(background, vec3(0.0031308)));
-                    imageStore(outputImage, pixel, vec4(mix(background, vec3(0.38, 0.47, 0.59), alpha), 1.0));
+                    vec3 baseColor = primarySurfaceHit
+                        ? PostProcess(color, pixel, width, height)
+                        : background;
+                    vec3 composite = mix(baseColor, vec3(0.38, 0.47, 0.59), alpha);
+                    imageStore(outputImage, pixel, vec4(composite, 1.0));
                     return;
                 }
             }
