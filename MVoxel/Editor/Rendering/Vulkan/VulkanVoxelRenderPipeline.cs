@@ -1702,14 +1702,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return true;
         }
 
-        bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+        bool TraceClosestWithin(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
-            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent)
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance)
         {
             int stack[64];
             int stackSize = 1;
             stack[0] = 0;
-            closestDistance = 3.402823e+38;
+            closestDistance = maxDistance;
             hitNormal = vec3(0.0, 1.0, 0.0);
             hitColor = vec4(0.0);
             hitFlags = 0u;
@@ -1769,6 +1769,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return hitColor.a > 0.0;
         }
 
+        bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent)
+        {
+            return TraceClosestWithin(rayOrigin, rayDirection, closestDistance, hitNormal,
+                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, 3.402823e+38);
+        }
+
         bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
             float distance;
@@ -1778,7 +1786,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             uint slot;
             ivec3 cell;
             ivec3 cellExtent;
-            return TraceClosest(rayOrigin, rayDirection, distance, normal, color, flags, slot, cell, cellExtent, true) && distance < maxDistance;
+            return TraceClosestWithin(rayOrigin, rayDirection, distance, normal, color, flags,
+                slot, cell, cellExtent, true, maxDistance);
         }
 
         float Random(inout uint state);
@@ -1812,16 +1821,28 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 : cross(normal, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(normal, tangent);
             float blocked = 0.0;
-            const int sampleCount = 8;
+            const int sampleCount = 64;
+            const float radius = 1.75;
+            // 全屏共用的 8 个二值方向会把遮挡体轮廓复制成三角形/条带。
+            // 余弦半球积分 + 像素固定旋转消除这种空间相关性；距离连续衰减，
+            // 不再在探测半径边界突然从全遮挡跳到无遮挡。种子不含实时帧号。
+            float rotation = 6.28318530718 * Random(state);
             for (int index = 0; index < sampleCount; index++)
             {
-                // 实时模式使用固定的低差异采样，避免 AO 把“关闭路径追踪”的画面变成颗粒噪声。
                 float fraction = (float(index) + 0.5) / float(sampleCount);
-                float angle = 6.28318530718 * fraction;
-                float radius = mix(0.35, 1.75, fraction);
-                vec3 direction = normalize(normal * 0.65 + tangent * cos(angle) * radius
-                    + bitangent * sin(angle) * radius);
-                if (TraceShadow(hitPoint + normal * 0.003, direction, radius)) blocked += 1.0;
+                float angle = rotation + float(index) * 2.39996323;
+                vec3 direction = normal * sqrt(1.0 - fraction)
+                    + (tangent * cos(angle) + bitangent * sin(angle)) * sqrt(fraction);
+                float distance;
+                vec3 hitNormal;
+                vec4 hitColor;
+                uint hitFlags;
+                uint hitSlot;
+                ivec3 hitCell;
+                ivec3 hitExtent;
+                if (TraceClosestWithin(hitPoint + normal * 0.003, direction, distance,
+                    hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, true, radius))
+                    blocked += 1.0 - smoothstep(0.0, radius, distance);
             }
             float visibility = 1.0 - blocked / float(sampleCount);
             return pow(clamp(visibility, 0.0, 1.0), max(values[61], 0.05))
@@ -1978,7 +1999,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 ambientFill = mix(vec3(0.14, 0.16, 0.20), skyAmbient, 0.72);
             ambientFill *= 0.82 + values[43] * 0.55;
             ambientFill += vec3(0.035, 0.040, 0.050) * (0.5 + max(hitNormal.y, 0.0));
-            vec3 diffuse = baseColor * ambientFill;
+            // AO 只衰减环境补光；太阳已经有可见度阴影，不能被重复压暗。
+            float ao = AmbientOcclusion(hitPoint, hitNormal, state);
+            vec3 diffuse = baseColor * ambientFill * mix(1.0, ao, 0.60);
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
             // SunDirection 表示从表面指向太阳，正方向才是受光方向。
             vec3 lightDirection = sunDirection;
@@ -1991,8 +2014,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     values[27] * directAmount * shadowVisibility;
             }
 
-            float ao = AmbientOcclusion(hitPoint, hitNormal, state);
-            diffuse *= mix(1.0, ao, 0.60);
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
             vec3 f0 = mix(vec3(values[75]), baseColor, metallic);
@@ -2488,7 +2509,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             // 实时模式保持屏幕空间效果稳定，不把毫秒级帧号带入 AO/阴影随机种子；
             // 路径模式才使用帧号做时间去相关并交给累积缓冲收敛。
             uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
-                (pathMode ? uint(values[7]) * 26699u : 0u) + uint(values[88]));
+                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u));
             vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
             vec3 forward = vec3(values[4], values[5], values[6]);
