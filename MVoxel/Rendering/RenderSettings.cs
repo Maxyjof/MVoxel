@@ -276,6 +276,9 @@ public sealed class RenderSettings
     /// </summary>
     public float ResolutionScale = 1.0F;
 
+    /// <summary>超大渲染工作集自动降低视口分辨率和实时采样，导出质量不受影响</summary>
+    public bool AutoPerformanceScaling = true;
+
     /// <summary>
     /// 最大弹射次数
     /// </summary>
@@ -409,6 +412,38 @@ public sealed class RenderSettings
         preview.RenderLod = RenderLod.Clone();
         return preview;
     }
+
+    /// <summary>
+    /// 为大型渲染工作集创建仅用于视口显示的性能副本；项目设置与导出参数保持原样。
+    /// 视口像素量按面积缩放，实时 AO/软阴影样本同步设上限，减少每像素求交成本。
+    /// </summary>
+    internal RenderSettings CreateLargeScenePreview(int worksetCells)
+    {
+        var preview = (RenderSettings)MemberwiseClone();
+        var scale = LargeSceneScaleFactor(worksetCells);
+        if (!AutoPerformanceScaling || scale >= 1F) return preview;
+
+        preview.ResolutionScale = Math.Clamp(ResolutionScale * scale, 0.25F, 1F);
+        if (!PathTracingEnabled)
+        {
+            preview.AoSamples = Math.Min(AoSamples, worksetCells > 250_000 ? 4 : worksetCells > 80_000 ? 6 : 8);
+            preview.ShadowSamples = Math.Min(ShadowSamples, worksetCells > 250_000 ? 1 : worksetCells > 80_000 ? 2 : 3);
+            if (worksetCells > 700_000) preview.AmbientOcclusionEnabled = false;
+        }
+
+        preview.SceneLod = SceneLod.Clone();
+        preview.RenderLod = RenderLod.Clone();
+        return preview;
+    }
+
+    /// <summary>按合并后 GPU 工作集规模计算视口内部渲染分辨率倍率</summary>
+    internal static float LargeSceneScaleFactor(int worksetCells) => worksetCells switch
+    {
+        > 250_000 => 0.35F,
+        > 80_000 => 0.5F,
+        > 20_000 => 0.75F,
+        _ => 1F,
+    };
 
     /// <summary>
     /// 创建场景窗口使用的 GPU 基础显示配置：只保留体素颜色、轮廓和场景明暗，

@@ -2381,7 +2381,11 @@ DockId=0x6A3C3007,0
             ImGui.SetTooltip("当前显卡显示结果尚未准备好");
         }
         ImGui.SameLine();
-        ImGui.TextDisabled($"{(int)activeRenderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}");
+        var scaleFactor = activeRenderSettings.AutoPerformanceScaling
+            ? RenderSettings.LargeSceneScaleFactor(pipeline?.SyncTotalCells ?? 0)
+            : 1F;
+        var performanceLabel = scaleFactor < 1F ? $" · 大场景 {scaleFactor:0.##}×" : string.Empty;
+        ImGui.TextDisabled($"{(int)activeRenderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}{performanceLabel}");
     }
 
     private void ExportRenderPng()

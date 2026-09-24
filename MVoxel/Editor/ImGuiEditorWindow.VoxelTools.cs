@@ -47,6 +47,7 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleEmissive;
     private bool _settingsToggleDither;
     private bool _settingsToggleHueCycle;
+    private bool _settingsToggleAutoPerformance;
     private bool _brushPreviewErase;
     private VoxelCoord64? _toolDragAnchor;
     private VoxelCoord64? _toolDragCurrent;
@@ -91,6 +92,7 @@ internal sealed partial class ImGuiEditorWindow
         _settingsToggleEmissive = settings.EmissiveVoxels;
         _settingsToggleDither = settings.Dither;
         _settingsToggleHueCycle = settings.HueCycle;
+        _settingsToggleAutoPerformance = settings.AutoPerformanceScaling;
     }
 
     private void ShutdownVoxelPipeline()
@@ -946,6 +948,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
             .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither).Append(',').Append(settings.PathDenoising)
             .Append(',').Append(settings.PathDenoiseStrength)
+            .Append(',').Append(settings.AutoPerformanceScaling)
             .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
             .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
             .Append(',').Append(settings.SceneShading)
@@ -1041,13 +1044,14 @@ internal sealed partial class ImGuiEditorWindow
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
             if (!pipeline.IsAvailable) return false;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
             var interactivePreview = cameraNavigating || settingsInteracting;
             // 交互时降到四分之一线性分辨率（约 1/16 像素），停止操作后下一帧
             // 自动恢复项目分辨率。ImGui 负责放大预览，完整质量只在最终视角计算。
-            var renderScale = Math.Clamp(effective.ResolutionScale * (interactivePreview ? 0.25F : 1F),
+            var renderScale = Math.Clamp(previewSettings.ResolutionScale * (interactivePreview ? 0.25F : 1F),
                 0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
@@ -1063,7 +1067,7 @@ internal sealed partial class ImGuiEditorWindow
             // 相机、场景或配置改变时仍会重绘。
             if (!effective.PathTracingEnabled)
             {
-                var realtimeSettings = interactivePreview ? effective.CreateInteractionPreview() : effective;
+                var realtimeSettings = interactivePreview ? previewSettings.CreateInteractionPreview() : previewSettings;
                 var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
                     pathMode: false, outlines: false);
                 if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
@@ -1089,8 +1093,8 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
             var renderSettings = cameraNavigating || settingsInteracting
-                ? effective.CreateInteractionPreview()
-                : effective;
+                ? previewSettings.CreateInteractionPreview()
+                : previewSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
@@ -1911,6 +1915,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("material", "全局材质", () => DrawGlobalMaterialSection(settings));
         DrawRenderSettingsAccordion("camera", "相机", () => DrawCameraSection(settings));
         DrawRenderSettingsAccordion("lod", "LOD", () => DrawLodSection(settings));
+        DrawRenderSettingsAccordion("performance", "性能", () => DrawPerformanceSection(settings));
         SaveEditableRenderSettings(settings, before);
     }
 
@@ -2117,6 +2122,16 @@ internal sealed partial class ImGuiEditorWindow
         Toggle("景深", ref _settingsToggleDof, value => settings.DepthOfField = value);
         SliderFloat("光圈半径##dof", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
         SliderFloat("对焦距离##dof", ref settings.FocusDistance, 1F, 256F, "%.1f");
+    }
+
+    private void DrawPerformanceSection(RenderSettings settings)
+    {
+        ImGui.SeparatorText("大型场景视口优化");
+        Toggle("自动性能优化（仅视口）", ref _settingsToggleAutoPerformance,
+            value => settings.AutoPerformanceScaling = value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("按合并后的 GPU 工作集规模逐级降低内部渲染分辨率，并限制实时 AO/阴影采样；导出分辨率和质量不变。");
+        ImGui.TextWrapped("工作集超过 2 万 / 8 万 / 25 万格时，视口内部倍率依次降至 0.75× / 0.5× / 0.35×；超 70 万格时关闭实时 AO。可随时关闭此优化。");
     }
 
     /// <summary>
