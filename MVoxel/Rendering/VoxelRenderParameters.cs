@@ -53,8 +53,8 @@ public sealed class VoxelRenderParameters
     public const int Saturation = 52, HueShift = 53, Contrast = 54, Brightness = 55;
     /// <summary>调色开关、棱线开关、色相相位、AO 开关</summary>
     public const int PaletteShading = 56, Outlines = 57, HuePhase = 58, AoEnabled = 59;
-    /// <summary>AO 强度与曲线</summary>
-    public const int AoStrength = 60, AoPower = 61, Reserved1 = 62, Reserved2 = 63;
+    /// <summary>AO 强度、曲线与实时采样数</summary>
+    public const int AoStrength = 60, AoPower = 61, AoSamples = 62, Reserved2 = 63;
 
     // 后期
     /// <summary>色调曲线、曝光、Gamma、暗角</summary>
@@ -119,7 +119,7 @@ public sealed class VoxelRenderParameters
             ("P_FOG_R", FogR), ("P_FOG_G", FogG), ("P_FOG_B", FogB), ("P_FOG_DENSITY", FogDensity),
             ("P_SATURATION", Saturation), ("P_HUE_SHIFT", HueShift), ("P_CONTRAST", Contrast), ("P_BRIGHTNESS", Brightness),
             ("P_PALETTE_SHADING", PaletteShading), ("P_OUTLINES", Outlines), ("P_HUE_PHASE", HuePhase), ("P_AO_ENABLED", AoEnabled),
-            ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower),
+            ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower), ("P_AO_SAMPLES", AoSamples),
             ("P_TONE_MODE", ToneMode), ("P_EXPOSURE", Exposure), ("P_GAMMA", Gamma), ("P_VIGNETTE", Vignette),
             ("P_WB_R", WhiteBalanceR), ("P_WB_G", WhiteBalanceG), ("P_WB_B", WhiteBalanceB), ("P_DITHER", Dither),
             ("P_MAX_BOUNCES", MaxBounces), ("P_ROUGHNESS", Roughness), ("P_METALNESS", Metalness), ("P_SPECULAR_F0", SpecularF0),
@@ -276,6 +276,7 @@ public sealed class VoxelRenderParameters
         parameters[AoEnabled] = settings.AmbientOcclusionEnabled ? 1F : 0F;
         parameters[AoStrength] = settings.AoStrength;
         parameters[AoPower] = settings.AoPower;
+        parameters[AoSamples] = settings.AoSamples;
 
         parameters[ToneMode] = (float)(int)settings.Tone;
         parameters[Exposure] = settings.Exposure;

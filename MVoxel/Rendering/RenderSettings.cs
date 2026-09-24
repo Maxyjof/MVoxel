@@ -117,9 +117,8 @@ public sealed class RenderSettings
     /// <summary>
     /// 软阴影的抖动采样数
     /// </summary>
-    // 实时阴影默认使用最高质量档位；着色器会将该档位映射为 32 次稳定采样，
-    // 避免默认画面出现明显的离散阴影色阶。
-    public int ShadowSamples = 8;
+    // 默认用少量采样优先保证交互速度，想要更柔和的半影可在渲染配置提高。
+    public int ShadowSamples = 4;
 
     /// <summary>
     /// 角点环境光遮蔽开关（MagicaVoxel 顶点 AO）
@@ -135,6 +134,11 @@ public sealed class RenderSettings
     /// AO 曲线对比度
     /// </summary>
     public float AoPower = 1.2F;
+
+    /// <summary>
+    /// 实时环境光遮蔽射线数；每增加一次采样都会执行一次限距 BVH 查询
+    /// </summary>
+    public int AoSamples = 16;
 
     /// <summary>
     /// 天顶颜色（sRGB 数值，着色时转线性）
@@ -478,6 +482,7 @@ public sealed class RenderSettings
         SunIntensity = Math.Clamp(SunIntensity, 0F, 8F);
         ShadowSoftness = Math.Clamp(ShadowSoftness, 0F, 0.5F);
         ShadowSamples = Math.Clamp(ShadowSamples, 1, 8);
+        AoSamples = Math.Clamp(AoSamples, 4, 64);
         AoStrength = Math.Clamp(AoStrength, 0F, 1F);
         AoPower = Math.Clamp(AoPower, 0.2F, 4F);
         SkyAmbient = Math.Clamp(SkyAmbient, 0F, 2F);

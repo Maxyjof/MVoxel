@@ -1821,7 +1821,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 : cross(normal, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(normal, tangent);
             float blocked = 0.0;
-            const int sampleCount = 64;
+            int sampleCount = clamp(int(values[62]), 4, 64);
             const float radius = 1.75;
             // 全屏共用的 8 个二值方向会把遮挡体轮廓复制成三角形/条带。
             // 余弦半球积分 + 像素固定旋转消除这种空间相关性；距离连续衰减，
@@ -1851,9 +1851,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         float TraceSoftShadowVisibility(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
-            // UI 参数表示质量档位；实时阴影内部使用 4 倍采样，避免 1~8 个样本
-            // 直接映射成非常明显的离散色阶，同时仍然保持参数可控。
-            int sampleCount = clamp(int(values[32]) * 4, 1, 32);
+            // 配置值就是每像素的阴影射线数，默认值偏向实时性能。
+            int sampleCount = clamp(int(values[32]), 1, 8);
             if (values[31] <= 0.0001 || sampleCount == 1)
                 return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
 
@@ -1862,7 +1861,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(rayDirection, tangent);
             float visible = 0.0;
-            for (int index = 0; index < 32; index++)
+            for (int index = 0; index < 8; index++)
             {
                 if (index >= sampleCount) break;
                 // 圆盘内固定采样，实时阴影稳定且不会出现随机颗粒。
