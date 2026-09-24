@@ -940,7 +940,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
             .Append(',').Append(settings.DirectLightingMIS).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
-            .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower)
+            .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
             .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees)
             .Append(',').Append(settings.ColorContrast).Append(',').Append(settings.Brightness).Append(',').Append(settings.Tone)
             .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
@@ -1980,12 +1980,15 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("阴影柔和度（半影锥）##sun", ref settings.ShadowSoftness, 0F, 0.3F, "%.3f");
         SliderInt("阴影采样数##sun", ref settings.ShadowSamples, 1, 8);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("0 = 硬阴影；增大模拟太阳圆盘带来的柔和半影（每像素多次阴影射线）。");
+            ImGui.SetTooltip("每像素阴影射线数。较低值性能更好，较高值可降低半影噪点；默认值偏向性能。");
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
             Toggle("角点环境光遮蔽", ref _settingsToggleAo, value => settings.AmbientOcclusionEnabled = value);
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
+            SliderInt("AO 射线采样数", ref settings.AoSamples, 4, 64);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("每个可见表面像素发出的 AO 射线数；更多采样更平滑但更耗时。默认 16，优先保证性能。");
         }
 
     }
