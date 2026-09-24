@@ -892,7 +892,9 @@ internal sealed partial class ImGuiEditorWindow
             Convert(camera.Position), Convert(camera.Forward), Convert(camera.Right), Convert(camera.Up),
             SceneProjection.FocalLength(viewLogical, camera) * deviceScale,
             width, height,
-            FrameIndex: (int)(Environment.TickCount & 0x3FFFFFFF),
+            // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
+            // 路径追踪仍需帧号驱动样本去相关。
+            FrameIndex: pathMode ? (int)(Environment.TickCount & 0x3FFFFFFF) : 0,
             _pipeline?.RegionMin ?? default,
             _pipeline?.RegionSize ?? default,
             _pipeline?.StepBudget ?? 8192,
@@ -1039,9 +1041,14 @@ internal sealed partial class ImGuiEditorWindow
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
             if (!pipeline.IsAvailable) return false;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-            // 内部渲染分辨率倍率：路径视图按缩放后的缓冲渲染并由 ImGui 拉伸呈现，
-            // 0.5 即四分之一像素量，是交互帧与低配设备的主要性能杠杆
-            var renderScale = Math.Clamp(effective.ResolutionScale, 0.25F, 1F);
+            var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
+                                   ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
+            var interactivePreview = cameraNavigating || settingsInteracting;
+            // 交互时降到四分之一线性分辨率（约 1/16 像素），停止操作后下一帧
+            // 自动恢复项目分辨率。ImGui 负责放大预览，完整质量只在最终视角计算。
+            var renderScale = Math.Clamp(effective.ResolutionScale * (interactivePreview ? 0.25F : 1F),
+                0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
             var nowMs = Environment.TickCount64;
@@ -1052,14 +1059,14 @@ internal sealed partial class ImGuiEditorWindow
                 pipeline.ResetAccumulation();
             }
 
-            // 实时渲染是独立的基础路径：它不是“只显示上一张光追结果”。
-            // 因此关闭路径追踪后，每一帧都要重新提交当前相机、场景和配置，
-            // 否则首次画面虽然能出现，之后移动相机或编辑体素却会停在旧帧。
+            // 实时帧是确定性的；参数未变时管线会直接复用上一张 GPU 图像，
+            // 相机、场景或配置改变时仍会重绘。
             if (!effective.PathTracingEnabled)
             {
+                var realtimeSettings = interactivePreview ? effective.CreateInteractionPreview() : effective;
                 var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
                     pathMode: false, outlines: false);
-                if (!pipeline.RenderSceneView(effective, realtimeFrame, width, height))
+                if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
                 {
                     return false;
                 }
@@ -1071,12 +1078,9 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
 
-            var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
-                                   ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             // 调整渲染配置时可以短暂复用上一张纹理，避免拖动滑块同步等待完整路径追踪；
             // 相机导航绝不能走这条分支，否则新姿态刚写入就会被旧视角覆盖显示，
             // 表现为右键环绕后视角瞬间弹回。
-            var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
             if (settingsInteracting && pipeline.DisplayTextureId != IntPtr.Zero &&
                 nowMs - _lastRenderGpuSubmitMs < 33)
             {
