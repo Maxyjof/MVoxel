@@ -21,9 +21,10 @@ public static class RenderWorldComposer
     /// <returns>只含允许图层且可见内容的新世界</returns>
     public static VoxelWorld Compose(VoxelWorld merged, StableId primaryId,
         IReadOnlyList<SceneObject> objects, IReadOnlyDictionary<StableId, HashSet<VoxelCoord64>> ownership,
-        uint cullingMask)
+        uint cullingMask, IReadOnlyList<string>? layerNames = null, IReadOnlyCollection<string>? hiddenLayers = null)
     {
         var result = new VoxelWorld();
+        var objectsById = objects.ToDictionary(item => item.Id);
         var ownedUnion = new HashSet<VoxelCoord64>();
         foreach (var owned in ownership.Values)
         {
@@ -31,7 +32,8 @@ public static class RenderWorldComposer
         }
 
         var primary = objects.FirstOrDefault(item => item.Id == primaryId);
-        if (primary is null || (primary.Visible && LayerAllowed(cullingMask, primary.LayerIndex)))
+        if (primary is null || (IsObjectVisible(primary, objectsById) && LayerAllowed(cullingMask, primary.LayerIndex) &&
+                                IsLayerVisible(primary.LayerIndex, layerNames, hiddenLayers)))
         {
             foreach (var item in merged.EnumerateOccupied())
             {
@@ -44,8 +46,9 @@ public static class RenderWorldComposer
 
         foreach (var sceneObject in objects)
         {
-            if (sceneObject.Id == primaryId || !sceneObject.Visible ||
+            if (sceneObject.Id == primaryId || !IsObjectVisible(sceneObject, objectsById) ||
                 !LayerAllowed(cullingMask, sceneObject.LayerIndex) ||
+                !IsLayerVisible(sceneObject.LayerIndex, layerNames, hiddenLayers) ||
                 !ownership.TryGetValue(sceneObject.Id, out var owned))
             {
                 continue;
@@ -71,4 +74,18 @@ public static class RenderWorldComposer
     /// <returns>是否允许渲染</returns>
     public static bool LayerAllowed(uint mask, int layerIndex) =>
         layerIndex is >= 0 and < 32 && (mask & (1u << layerIndex)) != 0;
+
+    private static bool IsLayerVisible(int index, IReadOnlyList<string>? names, IReadOnlyCollection<string>? hidden) =>
+        names is null || index < 0 || index >= names.Count || hidden is null || !hidden.Contains(names[index]);
+
+    private static bool IsObjectVisible(SceneObject sceneObject, IReadOnlyDictionary<StableId, SceneObject> objects)
+    {
+        var visited = new HashSet<StableId>();
+        for (SceneObject? current = sceneObject; current is not null;)
+        {
+            if (!current.Visible || !visited.Add(current.Id)) return false;
+            current = current.ParentId is { } parent && objects.TryGetValue(parent, out var found) ? found : null;
+        }
+        return true;
+    }
 }

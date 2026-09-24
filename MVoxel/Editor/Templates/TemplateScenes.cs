@@ -237,6 +237,21 @@ internal static class TemplateScenes
                 ("地形", "湖盆与瀑布", c => c.X is >= -20 and <= 8 && c.Z is >= -30 and <= 15),
                 ("山谷西区", "山谷西区", c => c.X < 0),
                 ("山谷东区", "山谷东区", _ => true)),
+            ProjectTemplateId.MoonbaseOutpost => SplitByRegions(source,
+                ("环形坑与着陆坪", "月面地形", c => c.Y <= 2),
+                ("气密穹舱", "主基地", c => c.X is >= -12 and <= 12 && c.Z is >= -10 and <= 10),
+                ("太阳能阵列", "能源阵列", c => c.X <= -22 || c.X >= 22),
+                ("月面车与信标", "探索设备", _ => true)),
+            ProjectTemplateId.ClockworkConservatory => SplitByRegions(source,
+                ("石质基座与水渠", "基座", c => c.Y <= 2),
+                ("玻璃穹顶与机械肋骨", "穹顶", c => c.Y >= 4 && (Math.Abs(c.X) >= 18 || Math.Abs(c.Z) >= 18)),
+                ("中央古树", "植物", c => Math.Abs(c.X) <= 9 && Math.Abs(c.Z) <= 9),
+                ("花床与齿轮展台", "花园", _ => true)),
+            ProjectTemplateId.DesertCaravanserai => SplitByRegions(source,
+                ("沙丘与商路", "沙漠地形", c => c.Y <= 5),
+                ("驿站围墙与角楼", "主体建筑", c => Math.Abs(c.X) >= 16 || Math.Abs(c.Z) >= 16),
+                ("织棚与驼队", "市集", c => c.Z <= -24),
+                ("庭院绿洲", "庭院", _ => true)),
             _ => [("模型", "模型", source)],
         };
     }
@@ -809,6 +824,257 @@ internal static class TemplateScenes
         }
 
         return trees;
+    }
+
+    /// <summary>月面前哨：陨坑台地、气密舱、穹顶、太阳能阵列、月面车与信标。</summary>
+    public static VoxelWorld BuildMoonbaseOutpost()
+    {
+        var world = new VoxelWorld();
+        const int seed = 421;
+        var regolith = new Rgba32(142, 145, 151);
+        var regolithLight = new Rgba32(184, 184, 178);
+        var basalt = new Rgba32(70, 78, 94);
+        var hull = new Rgba32(208, 216, 218);
+        var orange = new Rgba32(224, 116, 58);
+        var cyan = new Rgba32(72, 211, 226);
+
+        // Circular crater shelf with a shallow bowl and deterministic mineral flecks.
+        for (var z = -38; z <= 38; z++)
+        for (var x = -38; x <= 38; x++)
+        {
+            var radius = MathF.Sqrt(x * x + z * z);
+            if (radius > 38) continue;
+            var crater = MathF.Max(0F, 1F - MathF.Abs(radius - 25F) / 13F) * 5F;
+            var height = -3 + (int)MathF.Round(crater + TemplateKit.Fbm(x, z, seed, 3, .09F) * 2F);
+            for (var y = -5; y <= height; y++)
+                world.Set(new VoxelCoord64(x, y, z), new VoxelValue(y == height
+                    // 月面地形只保留轻微自然色差；较大的逐体素明度抖动会在近景渲染中
+                    // 变成明显的棋盘色块，并被强 AO/低角度阳光进一步放大。
+                    ? TemplateKit.Jitter(regolithLight, x, y, z, seed, .018F)
+                    : TemplateKit.Jitter(basalt, x, y, z, seed, .012F)));
+        }
+
+        // Landing apron and a concentric warning ring.
+        TemplateKit.Box(world, -19, 1, -18, 19, 1, 18, new VoxelValue(new Rgba32(87, 100, 116)));
+        for (var x = -18; x <= 18; x += 2)
+        {
+            TemplateKit.Box(world, x, 2, -17, x, 2, -17, new VoxelValue(orange));
+            TemplateKit.Box(world, x, 2, 17, x, 2, 17, new VoxelValue(orange));
+        }
+        for (var z = -15; z <= 15; z += 2)
+        {
+            TemplateKit.Box(world, -18, 2, z, -18, 2, z, new VoxelValue(orange));
+            TemplateKit.Box(world, 18, 2, z, 18, 2, z, new VoxelValue(orange));
+        }
+
+        // Main pressure module with a visible glazed observation bay.
+        TemplateKit.Box(world, -10, 2, -8, 10, 3, 8, Metal(new Rgba32(120, 137, 151)));
+        TemplateKit.Shell(world, -9, 4, -7, 9, 11, 7, new VoxelValue(hull), seed);
+        TemplateKit.Box(world, -8, 5, 7, 8, 9, 7, Glass(148));
+        for (var x = -8; x <= 8; x += 4)
+            TemplateKit.Box(world, x, 4, 7, x, 10, 7, Metal(new Rgba32(94, 117, 133)));
+        TemplateKit.Box(world, -11, 11, -9, 11, 11, 9, Metal(new Rgba32(91, 112, 128)));
+        TemplateKit.Ellipsoid(world, 0, 11, 0, 8, 5, 8, Glass(104), hollow: true);
+        for (var y = 12; y <= 15; y += 2)
+            TemplateKit.Cylinder(world, .5, y, .5, 7 - (y - 12) * 1.5, 7 - (y - 12) * 1.5,
+                .5, Metal(new Rgba32(194, 148, 87)), hollow: true);
+
+        // Twin solar farms, with supports and bright collector-cell bands.
+        foreach (var side in new[] { -1, 1 })
+        {
+            var x0 = side < 0 ? -34 : 23;
+            TemplateKit.Box(world, x0, 3, -10, x0 + 11, 3, 10, Metal(new Rgba32(44, 73, 117)));
+            for (var x = x0; x <= x0 + 11; x += 3)
+                TemplateKit.Box(world, x, 4, -10, x, 4, 10, new VoxelValue(new Rgba32(72, 142, 194)));
+            foreach (var z in new[] { -8, 8 })
+                TemplateKit.Box(world, x0 + 5, 0, z, x0 + 5, 2, z, Metal(hull));
+            TemplateKit.Box(world, x0 + 4, 0, 0, x0 + 6, 8, 0, Metal(new Rgba32(138, 148, 151)));
+            TemplateKit.Box(world, x0 + 5, 8, -2, x0 + 5, 9, 2, Glow(cyan));
+        }
+
+        // Compact rover: six wheels, orange pressure cabin, head lamps and instrument mast.
+        TemplateKit.Box(world, -5, 2, 20, 6, 4, 27, Metal(new Rgba32(157, 165, 164)));
+        TemplateKit.Box(world, -3, 5, 21, 4, 8, 26, new VoxelValue(orange));
+        TemplateKit.Box(world, -2, 6, 26, 3, 7, 26, Glass(180));
+        foreach (var x in new[] { -4, 0, 5 })
+        foreach (var z in new[] { 20, 27 })
+            TemplateKit.Cylinder(world, x + .5, 3.5, z + .5, 1.4, .7, 1.5,
+                Metal(new Rgba32(47, 54, 65)), hollow: true);
+        TemplateKit.Box(world, 1, 9, 23, 1, 13, 23, Metal(new Rgba32(153, 158, 160)));
+        TemplateKit.Box(world, 0, 13, 22, 2, 14, 24, Glow(new Rgba32(255, 216, 130)));
+
+        // Direction beacons and a sparse scatter of impact stones make the scale legible.
+        foreach (var (x, z) in new[] { (-25, -22), (25, -22), (-25, 22), (25, 22) })
+        {
+            var y = TemplateKit.FindSurfaceY(world, x, z);
+            if (y == int.MinValue) continue;
+            TemplateKit.Box(world, x, y + 1, z, x, y + 6, z, Metal(hull));
+            TemplateKit.Box(world, x - 1, y + 7, z - 1, x + 1, y + 8, z + 1, Glow(cyan));
+        }
+        foreach (var (x, z, r) in new[] { (-23, 9, 3.2), (26, 13, 4.1), (-31, -5, 2.5), (29, -7, 2.8) })
+            TemplateKit.Ellipsoid(world, x, TemplateKit.FindSurfaceY(world, x, z) + 1, z, r, r * .55, r * .8,
+                new VoxelValue(TemplateKit.Jitter(new Rgba32(102, 107, 117), x, 0, z, seed, .035F)));
+        return world;
+    }
+
+    /// <summary>齿轮温室：玻璃穹顶、黄铜环肋、中央古树、花床和环形水渠。</summary>
+    public static VoxelWorld BuildClockworkConservatory()
+    {
+        var world = new VoxelWorld();
+        const int seed = 438;
+        var brass = new Rgba32(190, 137, 63);
+        var glass = Glass(86);
+        var darkGreen = new Rgba32(52, 98, 67);
+        var water = Water(138);
+
+        TemplateKit.Cylinder(world, .5, 0, .5, 34, 34, .5, Metal(new Rgba32(65, 77, 78)));
+        TemplateKit.Cylinder(world, .5, 1, .5, 31, 31, .5, new VoxelValue(new Rgba32(194, 184, 151)));
+        TemplateKit.Cylinder(world, .5, 2, .5, 28, 28, .5, new VoxelValue(new Rgba32(221, 211, 180)));
+        // Transparent elliptical dome shell with layered brass rings and meridian ribs.
+        TemplateKit.Ellipsoid(world, .5, 13, .5, 24, 12, 24, glass, hollow: true);
+        for (var y = 4; y <= 22; y += 3)
+        {
+            var normalized = (y - 13) / 12.0;
+            var radius = Math.Sqrt(Math.Max(0, 1 - normalized * normalized)) * 24;
+            if (radius > 1) TemplateKit.Cylinder(world, .5, y, .5, radius, radius, .45,
+                Metal(brass), hollow: true);
+        }
+        for (var angle = 0; angle < 360; angle += 30)
+        {
+            var radians = angle * Math.PI / 180;
+            var x = (long)Math.Round(Math.Cos(radians) * 23);
+            var z = (long)Math.Round(Math.Sin(radians) * 23);
+            TemplateKit.Line(world, (0, 2, 0), (x, 13, z), Metal(new Rgba32(163, 119, 61)), thickness: 1);
+        }
+        TemplateKit.Cylinder(world, .5, 2, .5, 29, 29, .6, Metal(brass), hollow: true);
+
+        // Raised planting beds arranged as a four-petal garden around the water ring.
+        foreach (var (x, z) in new[] { (-13, -13), (13, -13), (-13, 13), (13, 13) })
+        {
+            TemplateKit.Box(world, x - 6, 3, z - 6, x + 6, 3, z + 6, Metal(new Rgba32(100, 69, 48)));
+            TemplateKit.Box(world, x - 5, 4, z - 5, x + 5, 4, z + 5, new VoxelValue(new Rgba32(75, 91, 59)));
+            TemplateKit.Bush(world, x, 4, z, new VoxelValue(darkGreen), 4.2);
+            foreach (var (dx, dz) in new[] { (-3, -2), (3, 2), (-2, 3), (2, -3) })
+                TemplateKit.Box(world, x + dx, 5, z + dz, x + dx, 6, z + dz,
+                    new VoxelValue((dx + dz) % 2 == 0 ? AccentGold : new Rgba32(211, 103, 142)));
+        }
+
+        // Central specimen tree and a still-water reflecting channel.
+        TemplateKit.Cylinder(world, .5, 4, .5, 7, 7, .7, water, hollow: true);
+        TemplateKit.Taper(world, .5, .5, 4, 18, 2.2, .8, Paint(Bark), seed);
+        TemplateKit.Ellipsoid(world, .5, 20, .5, 8, 6, 8, new VoxelValue(new Rgba32(66, 132, 82)));
+        TemplateKit.Ellipsoid(world, -4, 19, 2, 4.5, 4, 5, new VoxelValue(new Rgba32(82, 151, 88)));
+        TemplateKit.Ellipsoid(world, 4, 18, -3, 4.5, 3.8, 4.5, new VoxelValue(new Rgba32(56, 117, 78)));
+        TemplateKit.Ellipsoid(world, .5, 24, .5, 1.2, 1.2, 1.2, Glow(new Rgba32(255, 225, 151)));
+
+        // Brass clockwork at the four cardinal points and warm floor lamps.
+        foreach (var (x, z) in new[] { (0, -25), (25, 0), (0, 25), (-25, 0) })
+        {
+            TemplateKit.Cylinder(world, x, 5, z, 2.8, 2.8, 1.2, Metal(brass), hollow: true);
+            TemplateKit.Cylinder(world, x, 6, z, 1.2, 1.2, 1.4, Metal(new Rgba32(80, 88, 78)));
+            TemplateKit.Box(world, x - 1, 8, z - 1, x + 1, 10, z + 1, Glow(new Rgba32(255, 196, 104)));
+        }
+        foreach (var (x, z) in new[] { (-22, -4), (-4, -22), (22, 4), (4, 22), (-22, 5), (22, -5) })
+        {
+            TemplateKit.Box(world, x, 3, z, x, 6, z, Metal(new Rgba32(112, 80, 48)));
+            TemplateKit.Box(world, x - 1, 7, z - 1, x + 1, 8, z + 1, Glow(new Rgba32(255, 215, 137)));
+        }
+        return world;
+    }
+
+    /// <summary>沙漠绿洲驿站：风蚀沙丘、围合客院、圆拱门、池水、棕榈和织棚。</summary>
+    public static VoxelWorld BuildDesertCaravanserai()
+    {
+        var world = new VoxelWorld();
+        const int seed = 457;
+        var sandstone = new Rgba32(202, 151, 99);
+        var sunlit = new Rgba32(232, 190, 128);
+        var shadow = new Rgba32(119, 82, 63);
+        var teal = new Rgba32(49, 143, 151);
+
+        // Wind-shaped dune shelf; soil strata remain visible along the cut edges.
+        for (var z = -44; z <= 44; z++)
+        for (var x = -44; x <= 44; x++)
+        {
+            var dune = TemplateKit.Fbm(x + 130, z - 70, seed, 4, .045F) * 5F;
+            var ridge = MathF.Sin((x + z * .55F) * .09F) * 1.4F;
+            var height = 1 + (int)MathF.Round(dune + ridge);
+            for (var y = -2; y <= height; y++)
+                world.Set(new VoxelCoord64(x, y, z), new VoxelValue(y == height
+                    ? TemplateKit.Jitter(new Rgba32(220, 185, 128), x, y, z, seed, .06F)
+                    : y >= height - 2 ? sandstone : new Rgba32(139, 92, 63)));
+        }
+
+        // Courtyard paving, pool, and deep-set colonnade walls.
+        TemplateKit.Box(world, -20, 5, -20, 20, 5, 20, new VoxelValue(new Rgba32(219, 190, 146)));
+        TemplateKit.Box(world, -8, 6, -7, 8, 6, 8, Metal(new Rgba32(120, 101, 81)));
+        TemplateKit.Box(world, -7, 7, -6, 7, 7, 7, Water(160));
+        TemplateKit.Box(world, -20, 6, -20, 20, 11, -18, new VoxelValue(sandstone));
+        TemplateKit.Box(world, -20, 6, 18, 20, 11, 20, new VoxelValue(sandstone));
+        TemplateKit.Box(world, -20, 6, -17, -18, 11, 17, new VoxelValue(sandstone));
+        TemplateKit.Box(world, 18, 6, -17, 20, 11, 17, new VoxelValue(sandstone));
+
+        // Repeated arcades, corner watch towers, and striped canopy produce a readable skyline.
+        foreach (var x in new[] { -16, -8, 0, 8, 16 })
+        {
+            TemplateKit.Box(world, x, 6, -17, x + 1, 13, -17, new VoxelValue(sunlit));
+            TemplateKit.Box(world, x, 6, 17, x + 1, 13, 17, new VoxelValue(sunlit));
+            TemplateKit.Box(world, x, 13, -19, x + 1, 13, -16, Metal(new Rgba32(118, 79, 59)));
+            TemplateKit.Box(world, x, 13, 16, x + 1, 13, 19, Metal(new Rgba32(118, 79, 59)));
+        }
+        foreach (var (x, z) in new[] { (-18, -18), (18, -18), (-18, 18), (18, 18) })
+        {
+            TemplateKit.Box(world, x - 2, 6, z - 2, x + 2, 18, z + 2, new VoxelValue(sunlit));
+            TemplateKit.Box(world, x - 3, 18, z - 3, x + 3, 19, z + 3, Metal(new Rgba32(145, 91, 65)));
+            TemplateKit.Box(world, x - 1, 20, z - 1, x + 1, 23, z + 1, Glow(new Rgba32(255, 179, 92)));
+        }
+
+        // Four textile shades above the guest stalls, held by slender timber poles.
+        foreach (var (x, z, color) in new[]
+                 { (-10, -9, new Rgba32(172, 74, 59)), (10, -9, new Rgba32(52, 132, 142)),
+                   (-10, 10, new Rgba32(177, 128, 70)), (10, 10, new Rgba32(128, 75, 105)) })
+        {
+            foreach (var (dx, dz) in new[] { (-4, -3), (4, -3), (-4, 3), (4, 3) })
+                TemplateKit.Box(world, x + dx, 6, z + dz, x + dx, 12, z + dz, Paint(Timber));
+            for (var dx = -4; dx <= 4; dx++)
+                TemplateKit.Box(world, x + dx, 12, z - 3, x + dx, 12, z + 3,
+                    new VoxelValue(dx % 2 == 0 ? color : sunlit));
+            TemplateKit.Box(world, x - 3, 7, z - 2, x + 3, 9, z + 2, new VoxelValue(shadow));
+            TemplateKit.Box(world, x - 2, 10, z - 1, x + 2, 11, z + 1, new VoxelValue(color));
+        }
+
+        // Palm-lined approach, date palms, and a low caravan of pack animals.
+        for (var z = -38; z <= -23; z += 7)
+        foreach (var x in new[] { -27, 27 })
+        {
+            TemplateKit.Taper(world, x, z, 2, 11, 1.6, .8, Paint(new Rgba32(118, 82, 50)), seed);
+            for (var angle = 0; angle < 360; angle += 60)
+            {
+                var radians = angle * Math.PI / 180;
+                var endX = x + (long)Math.Round(Math.Cos(radians) * 7);
+                var endZ = z + (long)Math.Round(Math.Sin(radians) * 7);
+                TemplateKit.Line(world, (x, 10, z), (endX, 13, endZ),
+                    new VoxelValue(new Rgba32(73, 119, 70)), thickness: 2);
+            }
+            TemplateKit.Ellipsoid(world, x, 13, z, 2.5, 1.8, 2.5, new VoxelValue(new Rgba32(93, 137, 74)));
+        }
+        foreach (var (x, z) in new[] { (-5, -31), (1, -33), (7, -30) })
+        {
+            TemplateKit.Ellipsoid(world, x, 6, z, 3.4, 2.4, 2.2, new VoxelValue(new Rgba32(166, 118, 75)));
+            TemplateKit.Box(world, x + 2, 7, z, x + 3, 10, z, new VoxelValue(new Rgba32(166, 118, 75)));
+            TemplateKit.Box(world, x - 2, 3, z - 1, x - 2, 6, z - 1, Metal(new Rgba32(62, 54, 49)));
+            TemplateKit.Box(world, x + 1, 3, z + 1, x + 1, 6, z + 1, Metal(new Rgba32(62, 54, 49)));
+            TemplateKit.Box(world, x, 8, z - 2, x, 9, z - 2, Glow(teal));
+        }
+        // A stepped road and turquoise lanterns guide the eye from foreground to courtyard.
+        TemplateKit.Box(world, -3, 5, -42, 3, 5, -21, new VoxelValue(new Rgba32(177, 139, 96)));
+        foreach (var z in new[] { -37, -30, -23 })
+        foreach (var x in new[] { -5, 5 })
+        {
+            TemplateKit.Box(world, x, 5, z, x, 9, z, Metal(new Rgba32(93, 67, 50)));
+            TemplateKit.Box(world, x - 1, 10, z - 1, x + 1, 12, z + 1, Glow(teal));
+        }
+        return world;
     }
 
     /// <summary>

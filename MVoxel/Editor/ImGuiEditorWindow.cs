@@ -58,6 +58,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     /// <summary>层级面板的图层过滤，-1 表示全部图层</summary>
     private int _hierarchyLayerFilter = -1;
+    private string _newSceneLayerName = string.Empty;
+    private int _renamingSceneLayer = -1;
+    private string _sceneLayerRenameBuffer = string.Empty;
     private readonly HashSet<string> _expandedInspectorComponents = new(StringComparer.Ordinal);
     private StableId? _inspectorExpansionObjectId;
     private IReadOnlyList<string> _voxelModelReferenceCache = Array.Empty<string>();
@@ -277,6 +280,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
                 DrawEditorFrame();
+                if (_activeExport is not null || _exportQueue.Count > 0)
+                    ProcessExportQueue(GetRenderViewCamera(), _lastRenderViewportSize);
                 _controller.Render();
                 UiDiagnostics.Capture(this, "editor");
             }
@@ -320,6 +325,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _pluginRuntime = null;
         ImGui.SetCurrentContext(_imguiContext);
         ShutdownVoxelPipeline();
+        _exportPipeline?.Dispose();
+        _exportPipeline = null;
         if (_assetPreviewTextureId != 0) _imguiRenderer?.UnregisterTexture(_assetPreviewTextureId);
         _assetPreviewTextureId = 0;
         _assetBrowser.Thumbnails = null;
@@ -880,7 +887,83 @@ DockId=0x6A3C3007,0
                 }
             }
 
-            ImGui.EndCombo();
+        ImGui.EndCombo();
+        }
+
+        if (ImGui.CollapsingHeader("图层管理", ImGuiTreeNodeFlags.None) && _sceneDocument is { } layerDocument)
+        {
+            ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 66F));
+            ImGui.InputTextWithHint("##新建场景图层", "新图层名称", ref _newSceneLayerName, 64);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("添加##新场景图层"))
+            {
+                var added = layerDocument.AddLayer(_newSceneLayerName);
+                if (added >= 0)
+                {
+                    _newSceneLayerName = string.Empty;
+                    MarkSceneDocumentDirty();
+                    SetStatus($"已添加图层：{layerDocument.LayerNames[added]}");
+                }
+                else SetStatus("图层名称为空、重复或已达到 32 层上限");
+            }
+
+            var layerUsageCounts = layerDocument.LayerUsageCounts();
+            for (var i = 0; i < layerDocument.LayerNames.Count; i++)
+            {
+                ImGui.PushID($"LayerRow{i}");
+                var visible = layerDocument.IsLayerVisible(i);
+                if (ImGui.Checkbox("##图层显隐", ref visible))
+                {
+                    layerDocument.SetLayerVisible(i, visible);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
+                    _accumulationSignature = string.Empty;
+                }
+                ImGui.SameLine();
+                ImGui.TextUnformatted($"{layerDocument.LayerNames[i]} ({layerUsageCounts[i]})");
+                ImGui.SameLine();
+                ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - 42F));
+                var removeLayer = false;
+                if (ImGui.SmallButton("...##图层操作")) ImGui.OpenPopup("##图层操作菜单");
+                if (ImGui.BeginPopup("##图层操作菜单"))
+                {
+                    if (ImGui.MenuItem("重命名"))
+                    {
+                        _renamingSceneLayer = i;
+                        _sceneLayerRenameBuffer = layerDocument.LayerNames[i];
+                    }
+                    if (i > 0)
+                    {
+                        if (ImGui.MenuItem("上移", null, false, i > 1) && layerDocument.MoveLayer(i, -1)) MarkSceneDocumentDirty();
+                        if (ImGui.MenuItem("下移", null, false, i < layerDocument.LayerNames.Count - 1) && layerDocument.MoveLayer(i, 1)) MarkSceneDocumentDirty();
+                        ImGui.Separator();
+                        removeLayer = ImGui.MenuItem("删除图层");
+                    }
+                    ImGui.EndPopup();
+                }
+
+                if (_renamingSceneLayer == i)
+                {
+                    ImGui.SetNextItemWidth(Math.Max(90F, ImGui.GetContentRegionAvail().X - 95F));
+                    ImGui.InputText("##图层新名称", ref _sceneLayerRenameBuffer, 64);
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("确定##图层改名"))
+                    {
+                        if (layerDocument.RenameLayer(i, _sceneLayerRenameBuffer)) MarkSceneDocumentDirty();
+                        else SetStatus("图层名称不能为空或与其他图层重复");
+                        _renamingSceneLayer = -1;
+                    }
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("取消##图层改名")) _renamingSceneLayer = -1;
+                }
+                if (removeLayer && layerDocument.RemoveLayer(i))
+                {
+                    if (_hierarchyLayerFilter == i) _hierarchyLayerFilter = -1;
+                    else if (_hierarchyLayerFilter > i) _hierarchyLayerFilter--;
+                    MarkSceneDocumentDirty();
+                }
+                ImGui.PopID();
+            }
         }
 
         ImGui.Separator();
@@ -981,6 +1064,7 @@ DockId=0x6A3C3007,0
         if (visibilityClicked)
         {
             sceneObject.Visible = !sceneObject.Visible;
+            MarkSceneDocumentDirty();
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
         }
@@ -991,6 +1075,7 @@ DockId=0x6A3C3007,0
         if (selectableClicked)
         {
             sceneObject.Locked = !sceneObject.Locked;
+            MarkSceneDocumentDirty();
             if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
             {
                 _selectedSceneObjectId = null;
@@ -1176,6 +1261,8 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        DrawSceneSliceControls();
+
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
         _lastSceneViewportSize = size;
@@ -1196,21 +1283,19 @@ DockId=0x6A3C3007,0
 
         // 辅助图层与模型内容是两个独立系统。空场景仍必须显示网格，
         // 否则用户无法判断原点、比例和编辑位置。
-        if (_showGrid)
-        {
-            SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-        }
 
-        // 场景窗口使用 GPU 绘制基础体素几何，但不启用渲染窗口的路径追踪、Bloom、AO
-        // 等特殊效果；GPU 不可用时才回退到 CPU 表面预览，网格、坐标轴和编辑反馈仍由
-        // 编辑器绘制层独立负责。
+        // 场景窗口使用 GPU 绘制基础体素几何和无限解析网格，不启用路径追踪、Bloom、AO。
+        // GPU 不可用时保留 CPU 兼容预览；坐标轴和编辑反馈仍由编辑器绘制层负责。
         var showVoxelWorld = IsVoxelWorldVisible();
-        var gpuRendered = false;
-        if (showVoxelWorld && _project is not null)
+        var gpuRendered = TryRenderGpuSceneView(drawList, origin, size, camera,
+            showGeometry: showVoxelWorld && _project is not null);
+
+        if (!gpuRendered)
         {
-            gpuRendered = TryRenderGpuSceneView(drawList, origin, size, camera);
-            if (!gpuRendered)
-                DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines);
+            if (_showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+            if (showVoxelWorld && _project is not null)
+                DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
+                    GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)));
         }
 
         if (_project is not null && showVoxelWorld)
@@ -1750,9 +1835,24 @@ DockId=0x6A3C3007,0
         var modelObjects = _sceneDocument?.Objects
             .Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel))
             .ToArray();
+        var sceneObjectsById = _sceneDocument?.Objects.ToDictionary(item => item.Id);
         return modelObjects is { Length: > 0 } && modelObjects.Any(modelObject =>
-            modelObject.Visible && modelObject.Components.Any(component =>
+            modelObject.Visible && IsSceneObjectAncestorsVisible(modelObject, sceneObjectsById) &&
+            (_sceneDocument?.IsLayerVisible(modelObject.LayerIndex) ?? true) && modelObject.Components.Any(component =>
                 SceneComponentTypes.IsVoxelModel(component) && component.Enabled));
+    }
+
+    private static bool IsSceneObjectAncestorsVisible(SceneObject sceneObject,
+        IReadOnlyDictionary<StableId, SceneObject>? byId)
+    {
+        if (byId is null) return sceneObject.Visible;
+        var visited = new HashSet<StableId>();
+        for (SceneObject? current = sceneObject; current is not null;)
+        {
+            if (!current.Visible || !visited.Add(current.Id)) return false;
+            current = current.ParentId is { } parent && byId.TryGetValue(parent, out var found) ? found : null;
+        }
+        return true;
     }
 
     /// <summary>
@@ -1788,9 +1888,10 @@ DockId=0x6A3C3007,0
     /// <param name="camera">观察相机</param>
     /// <param name="showOutlines">是否绘制体素黑色描边</param>
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
-        bool showOutlines)
+        bool showOutlines, VoxelWorld? previewWorld = null)
     {
-        EnsureCpuPreviewSurface(IsCameraInsideOccupiedVoxel(camera));
+        previewWorld ??= _world;
+        EnsureCpuPreviewSurface(IsCameraInsideOccupiedVoxel(camera, previewWorld), previewWorld);
         var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
         for (var surfaceIndex = 0; surfaceIndex < _cpuPreviewSurfaceFaces.Count; surfaceIndex++)
         {
@@ -1842,9 +1943,9 @@ DockId=0x6A3C3007,0
         }
     }
 
-    private void EnsureCpuPreviewSurface(bool includeInterior)
+    private void EnsureCpuPreviewSurface(bool includeInterior, VoxelWorld previewWorld)
     {
-        if (ReferenceEquals(_cpuPreviewWorld, _world) && _cpuPreviewWorldVersion == _world.ContentVersion &&
+        if (ReferenceEquals(_cpuPreviewWorld, previewWorld) && _cpuPreviewWorldVersion == previewWorld.ContentVersion &&
             _cpuPreviewIncludesInterior == includeInterior)
             return;
 
@@ -1853,7 +1954,7 @@ DockId=0x6A3C3007,0
         // 场景窗口不使用渲染窗口的光照或路径追踪，且在关闭场景 LOD 时必须保持
         // 一体素一格的几何语义。这里不能使用渲染/导出路径的贪心盒合并，否则相邻
         // 体素会变成长方体，靠近模型时尤其明显。仅绘制外露面，仍能控制 ImGui 面片量。
-        var workset = VoxelGpuWorkset.Build(_world, greedyMerge: false, includeInterior: includeInterior);
+        var workset = VoxelGpuWorkset.Build(previewWorld, greedyMerge: false, includeInterior: includeInterior);
         foreach (var cell in workset.Cells)
         {
             AddCpuPreviewBoxSurfaceFace(workset.Origin, cell, FaceDirection.Left, maximumPreviewFaces);
@@ -1866,11 +1967,11 @@ DockId=0x6A3C3007,0
 
         if (_cpuPreviewSurfaceFaces.Count >= maximumPreviewFaces)
         {
-            MVoxelLog.Info($"场景窗口 CPU 预览已限额：原始 {_world.OccupiedVoxelCount:N0} 体素，合并盒 {workset.Cells.Count:N0}，表面 {_cpuPreviewSurfaceFaces.Count:N0} 面");
+            MVoxelLog.Info($"场景窗口 CPU 预览已限额：原始 {previewWorld.OccupiedVoxelCount:N0} 体素，合并盒 {workset.Cells.Count:N0}，表面 {_cpuPreviewSurfaceFaces.Count:N0} 面");
         }
 
-        _cpuPreviewWorld = _world;
-        _cpuPreviewWorldVersion = _world.ContentVersion;
+        _cpuPreviewWorld = previewWorld;
+        _cpuPreviewWorldVersion = previewWorld.ContentVersion;
         _cpuPreviewIncludesInterior = includeInterior;
     }
 
@@ -1943,7 +2044,8 @@ DockId=0x6A3C3007,0
                 FaceDirection.Back => new VoxelCoord64(coordinate.X + u, coordinate.Y + v, coordinate.Z - 1),
                 _ => new VoxelCoord64(coordinate.X + u, coordinate.Y + v, coordinate.Z + extentZ),
             };
-            if (!_world.TryGet(neighbor, out var value) || value.IsEmpty) return true;
+            var neighborWorld = _cpuPreviewWorld ?? _world;
+            if (!neighborWorld.TryGet(neighbor, out var value) || value.IsEmpty) return true;
         }
 
         return false;
@@ -2126,17 +2228,7 @@ DockId=0x6A3C3007,0
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(Color.FromArgb(255, 14, 18, 24)));
         var showVoxelWorld = IsVoxelWorldVisible();
-        var exporting = _activeExport is not null || _exportQueue.Count > 0;
         var gpuRendered = false;
-        if (exporting && showVoxelWorld && _project is not null)
-        {
-            ProcessExportQueue(camera, size);
-            if (_pipeline?.DisplayTextureId is { } exportTexture && exportTexture != IntPtr.Zero)
-            {
-                drawList.AddImage(exportTexture, origin, origin + size, Vector2.Zero, _pipeline.DisplayUvMax);
-                gpuRendered = true;
-            }
-        }
         if (!gpuRendered)
             gpuRendered = showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
@@ -2174,7 +2266,10 @@ DockId=0x6A3C3007,0
 
     private void ProcessExportQueue(SceneCamera camera, Vector2 size)
     {
-        if (_pipeline is not { IsAvailable: true } pipeline) return;
+        if (_activeExport is null && _exportQueue.Count == 0) return;
+        if (_vulkan is null) return;
+        _exportPipeline ??= new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+        var pipeline = _exportPipeline;
         if (_cancelActiveExportRequested)
         {
             _cancelActiveExportRequested = false;
@@ -2188,6 +2283,7 @@ DockId=0x6A3C3007,0
         {
             _activeExport = _exportQueue.Dequeue();
             pipeline.ResetAccumulation();
+            if (_activeExport.Materials is { } materials) pipeline.SetMaterialTable(materials);
         }
         if (_activeExport is null) return;
         try
@@ -2195,13 +2291,13 @@ DockId=0x6A3C3007,0
             var settings = _activeExport.Settings;
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
-            if (_activeExport.CullingMask is { } mask)
-            {
-                _pipeline!.SyncWorld(GetRenderWorld(mask), 0, settings.RenderLod,
-                    new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
-            }
+            var mask = _activeExport.CullingMask ?? uint.MaxValue;
+            pipeline.SyncWorld(_activeExport.World ?? GetRenderWorld(mask), 0, settings.RenderLod,
+                new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
+            if (!pipeline.IsAvailable) return;
 
-            var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+            size = _activeExport.Size;
+            var scale = _activeExport.Scale;
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(viewCamera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
@@ -2302,7 +2398,7 @@ DockId=0x6A3C3007,0
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
         var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
             .CloneForExport();
-        _exportQueue.Enqueue(new ExportJob(path, exportSettings));
+        EnqueueExport(new ExportJob(path, exportSettings) { Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask() });
         SetStatus($"已加入导出队列：{fileName}");
     }
 
@@ -2322,7 +2418,8 @@ DockId=0x6A3C3007,0
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
         var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
             .CloneForExport();
-        _exportQueue.Enqueue(new ExportJob(path, exportSettings, ExportImageFormat.Hdr));
+        exportSettings.PathTracingEnabled = true; // HDR 必须有线性累积缓冲。
+        EnqueueExport(new ExportJob(path, exportSettings, ExportImageFormat.Hdr) { Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask() });
         SetStatus($"已加入导出队列：{fileName}");
     }
 
@@ -2359,7 +2456,7 @@ DockId=0x6A3C3007,0
             var settings = baseSettings.CloneForExport();
             settings.CameraFovDegrees = cameraData.FieldOfViewDegrees;
             var fileName = $"渲染-{SanitizeFileName(cameraObject.Name)}-{stamp}-{++_exportSequence:000}.png";
-            _exportQueue.Enqueue(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
+            EnqueueExport(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
             {
                 Camera = ToSceneCamera(cameraObject),
                 CullingMask = cameraData.CullingMask,
@@ -2371,6 +2468,19 @@ DockId=0x6A3C3007,0
 
     internal enum ExportImageFormat { Png, Hdr }
 
+    private VulkanVoxelRenderPipeline? _exportPipeline;
+
+    private void EnqueueExport(ExportJob job)
+    {
+        // Composer 返回独立快照，批量相机任务共享它，避免按相机数复制整份体素数据。
+        job.World = GetRenderWorld(job.CullingMask ?? uint.MaxValue);
+        job.Size = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
+            ? _lastRenderViewportSize : new Vector2(1280, 720);
+        job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+        job.Materials = _project is null ? null : MaterialAsset.PackTable(MaterialAsset.LoadFromProject(_project));
+        _exportQueue.Enqueue(job);
+    }
+
     private sealed class ExportJob
     {
         internal ExportJob(string path, RenderSettings settings, ExportImageFormat format = ExportImageFormat.Png)
@@ -2378,6 +2488,10 @@ DockId=0x6A3C3007,0
         internal string Path { get; }
         internal RenderSettings Settings { get; }
         internal ExportImageFormat Format { get; }
+        internal VoxelWorld? World { get; set; }
+        internal Vector2 Size { get; set; }
+        internal float Scale { get; set; }
+        internal float[]? Materials { get; set; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
         internal SceneCamera? Camera { get; init; }
@@ -2457,10 +2571,10 @@ DockId=0x6A3C3007,0
 
     private float ExportProgress(ExportJob job)
     {
-        if (_pipeline is null) return 0F;
+        if (_exportPipeline is null) return 0F;
         if (!job.Settings.PathTracingEnabled) return 1F;
         if (job.Settings.PathMaxAccumulatedSamples <= 0) return 0F;
-        return Math.Clamp((float)_pipeline.AccumulatedSamples / job.Settings.PathMaxAccumulatedSamples, 0F, 1F);
+        return Math.Clamp((float)_exportPipeline.AccumulatedSamples / job.Settings.PathMaxAccumulatedSamples, 0F, 1F);
     }
 
     /// <summary>

@@ -36,6 +36,21 @@ public sealed class SceneDocument
     /// </summary>
     public List<string> LayerNames { get; set; } = ["默认"];
 
+    /// <summary>按名称记录被隐藏的图层；使用名称保证图层重排时状态不串位。</summary>
+    public List<string> HiddenLayerNames { get; set; } = [];
+
+    public bool IsLayerVisible(int index) => index >= 0 && index < LayerNames.Count &&
+        !HiddenLayerNames.Contains(LayerNames[index], StringComparer.Ordinal);
+
+    public bool SetLayerVisible(int index, bool visible)
+    {
+        if (index < 0 || index >= LayerNames.Count) return false;
+        var name = LayerNames[index];
+        if (visible) HiddenLayerNames.RemoveAll(item => string.Equals(item, name, StringComparison.Ordinal));
+        else if (!HiddenLayerNames.Contains(name, StringComparer.Ordinal)) HiddenLayerNames.Add(name);
+        return true;
+    }
+
     /// <summary>
     /// 图层总数上限
     /// </summary>
@@ -75,7 +90,11 @@ public sealed class SceneDocument
             return false;
         }
 
+        var oldName = LayerNames[index];
         LayerNames[index] = trimmed;
+        for (var hidden = 0; hidden < HiddenLayerNames.Count; hidden++)
+            if (string.Equals(HiddenLayerNames[hidden], oldName, StringComparison.Ordinal))
+                HiddenLayerNames[hidden] = trimmed;
         return true;
     }
 
@@ -127,7 +146,9 @@ public sealed class SceneDocument
             return false;
         }
 
+        var removedName = LayerNames[index];
         LayerNames.RemoveAt(index);
+        HiddenLayerNames.RemoveAll(item => string.Equals(item, removedName, StringComparison.Ordinal));
         foreach (var sceneObject in Objects)
         {
             if (sceneObject.LayerIndex == index)
@@ -505,6 +526,12 @@ public static class SceneSerializer
             var layerName = (scene.LayerNames[nameIndex] ?? string.Empty).Trim();
             scene.LayerNames[nameIndex] = layerName.Length == 0 ? $"图层 {nameIndex}" : layerName;
         }
+        scene.HiddenLayerNames ??= [];
+        var knownLayerNames = scene.LayerNames.ToHashSet(StringComparer.Ordinal);
+        scene.HiddenLayerNames = scene.HiddenLayerNames
+            .Where(name => !string.IsNullOrWhiteSpace(name) && knownLayerNames.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         foreach (var sceneObject in scene.Objects)
         {
             sceneObject.LayerIndex = Math.Clamp(sceneObject.LayerIndex, 0, scene.LayerNames.Count - 1);

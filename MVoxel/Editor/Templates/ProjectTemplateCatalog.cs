@@ -77,6 +77,15 @@ public enum ProjectTemplateId
     /// 展示小型花园、中型建筑群和大型远景塔楼的完整渲染效果
     /// </summary>
     RenderingGallery,
+
+    /// <summary>展示月面基地、穹顶舱、漫游车与太阳能阵列</summary>
+    MoonbaseOutpost,
+
+    /// <summary>展示玻璃穹顶、机械骨架与温室植物</summary>
+    ClockworkConservatory,
+
+    /// <summary>展示沙漠绿洲、商队驿站、拱廊与夜间灯火</summary>
+    DesertCaravanserai,
 }
 
 /// <summary>
@@ -113,6 +122,9 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.CameraGallery, "多相机构图室", "螺旋雕塑、参照柱和三条不同视线组成小型摄影棚，每台相机都有明确任务。", "相机 · 构图 · 景深", "中型", "学习相机、构图和景深"),
         new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区组成真正用于性能验证的远景建筑群。", "大世界 · LOD · 建筑 · 性能压力", "超大型", "验证大坐标、LOD 和 GPU 工作集"),
         new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "从近处玻璃凉亭、码头船队到远处灯塔和塔楼，形成有前景、中景、远景的海湾小镇。", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪", "小—大型", "用一个完整场景体验最终渲染链路"),
+        new(ProjectTemplateId.MoonbaseOutpost, "月背前哨 · 科幻基地", "玄武岩环形坑、气密穹舱、太阳能阵列、月面车与导航信标构成一座可拆解的月球科研站。", "科幻建模 · 玻璃 · 金属 · 发光 · 分层", "中型", "练习复杂硬表面结构与多材质场景组织"),
+        new(ProjectTemplateId.ClockworkConservatory, "齿轮温室 · 机械花园", "黄铜肋骨托起玻璃穹顶，中央古树、环形水渠、花床与机械钟芯形成冷暖交织的展示庭园。", "有机造型 · 玻璃 · 金属 · 自发光 · 剖切", "中型", "组合曲面、规则结构与可独立编辑的场景部件"),
+        new(ProjectTemplateId.DesertCaravanserai, "沙海驿站 · 绿洲商路", "风蚀岩台上的拱门驿站围绕水池展开，棕榈、织棚、驮队与暖色灯笼铺出一段商路故事。", "建筑 · 地形 · 水体 · 场景叙事 · 发光", "中型", "练习建筑构图、重复模块和地形材质过渡"),
     ];
 
     /// <summary>
@@ -206,6 +218,9 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.CameraGallery => TemplateScenes.BuildSculptureHall(),
             ProjectTemplateId.LargeWorld => TemplateScenes.BuildMegastructure(),
             ProjectTemplateId.RenderingGallery => TemplateScenes.BuildHarborTown(),
+            ProjectTemplateId.MoonbaseOutpost => TemplateScenes.BuildMoonbaseOutpost(),
+            ProjectTemplateId.ClockworkConservatory => TemplateScenes.BuildClockworkConservatory(),
+            ProjectTemplateId.DesertCaravanserai => TemplateScenes.BuildDesertCaravanserai(),
             _ => new VoxelWorld(),
         };
     }
@@ -434,6 +449,50 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.ResolutionScale = .65F;
                 settings.RenderSettings.PathMaxAccumulatedSamples = 64;
                 settings.RenderSettings.EmissiveIntensity = 12F;
+                break;
+            case ProjectTemplateId.MoonbaseOutpost:
+                settings.DefaultRenderPreset = "月面冷光";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 512;
+                settings.RenderSettings.SunElevationDegrees = 28F;
+                settings.RenderSettings.SunAzimuthDegrees = 208F;
+                settings.RenderSettings.SkyAmbient = .26F;
+                settings.RenderSettings.AmbientTint = .16F;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .48F;
+                settings.RenderSettings.EmissiveIntensity = 10F;
+                settings.RenderSettings.TransmissiveAbsorption = .32F;
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.Exposure = .18F;
+                break;
+            case ProjectTemplateId.ClockworkConservatory:
+                settings.DefaultRenderPreset = "温室午后";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 512;
+                settings.RenderSettings.SunElevationDegrees = 48F;
+                settings.RenderSettings.SunAzimuthDegrees = 136F;
+                settings.RenderSettings.SkyAmbient = .48F;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .78F;
+                settings.RenderSettings.EmissiveIntensity = 16F;
+                settings.RenderSettings.TransmissiveAbsorption = .25F;
+                settings.RenderSettings.Tone = ToneCurve.Reinhard;
+                break;
+            case ProjectTemplateId.DesertCaravanserai:
+                settings.DefaultRenderPreset = "绿洲蓝调时刻";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 512;
+                settings.RenderSettings.SunElevationDegrees = 8F;
+                settings.RenderSettings.SunAzimuthDegrees = 252F;
+                settings.RenderSettings.SkyTop = new Vector3(.055F, .09F, .2F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.72F, .39F, .23F);
+                settings.RenderSettings.SkyAmbient = .36F;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .9F;
+                settings.RenderSettings.EmissiveIntensity = 22F;
+                settings.RenderSettings.TransmissiveAbsorption = .24F;
+                settings.RenderSettings.Tone = ToneCurve.Filmic;
+                settings.RenderSettings.Exposure = .28F;
                 break;
             case ProjectTemplateId.RenderingGallery:
                 settings.DefaultRenderPreset = "全效果展示";

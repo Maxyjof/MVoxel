@@ -342,7 +342,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var primaryId = GetVoxelWorldObject()?.Id ?? default;
         var composed = Scene.RenderWorldComposer.Compose(_world, primaryId, _sceneDocument.Objects,
-            _layerOwnership, cullingMask);
+            _layerOwnership, cullingMask, _sceneDocument.LayerNames, _sceneDocument.HiddenLayerNames);
         _composedRenderWorld = composed;
         _composedSignature = signature;
         _composedMask = cullingMask;
@@ -362,6 +362,9 @@ internal sealed partial class ImGuiEditorWindow
                 hash = hash * 31 + (sceneObject.Visible ? 7 : 3);
                 hash = hash * 31 + sceneObject.LayerIndex;
             }
+
+            foreach (var layer in _sceneDocument?.HiddenLayerNames ?? [])
+                hash = hash * 31 + StringComparer.Ordinal.GetHashCode(layer);
 
             foreach (var owned in _layerOwnership.Values)
             {
@@ -423,6 +426,101 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>按图层遮罩组成的渲染世界缓存</summary>
     private VoxelWorld? _composedRenderWorld;
 
+    private bool _sceneSliceEnabled;
+    private int _sceneSliceAxis;
+    private int _sceneSliceCoordinate;
+    private bool _sceneSliceKeepGreater;
+    private VoxelWorld? _sceneSliceWorld;
+    private VoxelWorld? _sceneSliceSource;
+    private int _sceneSliceSourceVersion = -1;
+    private int _sceneSliceCachedAxis = -1;
+    private int _sceneSliceCachedCoordinate;
+    private bool _sceneSliceCachedKeepGreater;
+    private VoxelWorld? _sceneSliceBoundsSource;
+    private int _sceneSliceBoundsVersion = -1;
+    private VoxelCoord64 _sceneSliceMinimum;
+    private VoxelCoord64 _sceneSliceMaximum;
+
+    private bool TryGetSceneSliceBounds(VoxelWorld world, out VoxelCoord64 minimum, out VoxelCoord64 maximum)
+    {
+        if (ReferenceEquals(_sceneSliceBoundsSource, world) && _sceneSliceBoundsVersion == world.ContentVersion)
+        {
+            minimum = _sceneSliceMinimum;
+            maximum = _sceneSliceMaximum;
+            return true;
+        }
+
+        if (!world.TryGetBounds(out minimum, out maximum)) return false;
+        _sceneSliceBoundsSource = world;
+        _sceneSliceBoundsVersion = world.ContentVersion;
+        _sceneSliceMinimum = minimum;
+        _sceneSliceMaximum = maximum;
+        return true;
+    }
+
+    private VoxelWorld GetSceneInspectionWorld(VoxelWorld source)
+    {
+        if (!_sceneSliceEnabled) return source;
+        if (_sceneSliceWorld is not null && ReferenceEquals(_sceneSliceSource, source)
+            && _sceneSliceSourceVersion == source.ContentVersion && _sceneSliceCachedAxis == _sceneSliceAxis
+            && _sceneSliceCachedCoordinate == _sceneSliceCoordinate && _sceneSliceCachedKeepGreater == _sceneSliceKeepGreater)
+            return _sceneSliceWorld;
+
+        _sceneSliceWorld = VoxelWorldSlice.CreateHalfSpace(source, _sceneSliceAxis, _sceneSliceCoordinate, _sceneSliceKeepGreater);
+        _sceneSliceSource = source;
+        _sceneSliceSourceVersion = source.ContentVersion;
+        _sceneSliceCachedAxis = _sceneSliceAxis;
+        _sceneSliceCachedCoordinate = _sceneSliceCoordinate;
+        _sceneSliceCachedKeepGreater = _sceneSliceKeepGreater;
+        return _sceneSliceWorld;
+    }
+
+    private void DrawSceneSliceControls()
+    {
+        var enabled = _sceneSliceEnabled;
+        if (ImGui.Checkbox("剖切查看", ref enabled))
+        {
+            _sceneSliceEnabled = enabled;
+            _sceneSliceWorld = null;
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("非破坏性 · 仅影响场景视图");
+        if (!_sceneSliceEnabled) return;
+
+        var world = GetRenderWorld(uint.MaxValue);
+        if (!TryGetSceneSliceBounds(world, out var min, out var max))
+        {
+            ImGui.TextDisabled("场景中没有体素");
+            return;
+        }
+
+        ImGui.SetNextItemWidth(72F);
+        if (ImGui.Combo("轴##SceneSliceAxis", ref _sceneSliceAxis, "X\0Y\0Z\0", 3)) _sceneSliceWorld = null;
+        ImGui.SameLine();
+        var keepGreater = _sceneSliceKeepGreater;
+        if (ImGui.Checkbox("保留正侧（坐标 ≥ 切面）##SceneSliceSide", ref keepGreater))
+        {
+            _sceneSliceKeepGreater = keepGreater;
+            _sceneSliceWorld = null;
+        }
+
+        var minimum = _sceneSliceAxis switch { 0 => min.X, 1 => min.Y, _ => min.Z };
+        var maximum = _sceneSliceAxis switch { 0 => max.X, 1 => max.Y, _ => max.Z };
+        var low = (int)Math.Clamp(minimum, int.MinValue, int.MaxValue);
+        var high = (int)Math.Clamp(maximum, int.MinValue, int.MaxValue);
+        if (_sceneSliceCoordinate < low || _sceneSliceCoordinate > high)
+            _sceneSliceCoordinate = (int)Math.Clamp(minimum + (maximum - minimum) / 2, int.MinValue, int.MaxValue);
+        ImGui.SetNextItemWidth(Math.Max(120F, ImGui.GetContentRegionAvail().X - 100F));
+        if (low < high && ImGui.SliderInt("切面位置##SceneSlicePosition", ref _sceneSliceCoordinate, low, high))
+            _sceneSliceWorld = null;
+        ImGui.SameLine();
+        if (ImGui.SmallButton("关闭剖切##SceneSliceReset"))
+        {
+            _sceneSliceEnabled = false;
+            _sceneSliceWorld = null;
+        }
+    }
+
     /// <summary>缓存对应的渲染状态指纹</summary>
     private long _composedSignature;
 
@@ -480,7 +578,7 @@ internal sealed partial class ImGuiEditorWindow
                 SaveOwnedLayers(project);
             }
 
-            var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
+            var scenePath = Path.Combine(project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar));
             var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
             var graph = new Scene.SceneGraph(document);
             var modelObject = document.Objects.FirstOrDefault(item =>
@@ -640,7 +738,11 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (_sceneDocumentDirty) SaveProject();
+        if (_sceneDocumentDirty)
+        {
+            SaveProject();
+            if (_sceneDocumentDirty) return;
+        }
         try
         {
             var workingRelativePath = relativePath.Replace('\\', '/');
@@ -680,7 +782,7 @@ internal sealed partial class ImGuiEditorWindow
             if (_sceneDocument is not null)
             {
                 Scene.SceneSerializer.Save(
-                    Path.Combine(_project.AssetsPath, "Scenes", "主场景.mvox"), _sceneDocument);
+                    Path.Combine(_project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar)), _sceneDocument);
             }
 
             _voxelHistory.Clear();
@@ -870,16 +972,19 @@ internal sealed partial class ImGuiEditorWindow
         return buffer.ToString();
     }
 
+    private readonly VoxelWorld _emptyScenePreviewWorld = new();
+
     /// <summary>
-    /// 用 Vulkan Compute 绘制场景窗口的基础体素几何；特殊渲染效果由场景预览配置关闭。
+    /// 用 Vulkan Compute 绘制场景基础几何和无限网格，空场景也保留网格。
     /// </summary>
-    private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+    private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        bool showGeometry = true)
     {
         if (_gpuRenderingDisabled || _pipeline is not { } pipeline) return false;
         try
         {
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
-            pipeline.SyncWorld(_world, 0, settings.SceneLod,
+            pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 greedyMerge: false,
                 includeInterior: IsCameraInsideOccupiedVoxel(camera));
@@ -889,7 +994,8 @@ internal sealed partial class ImGuiEditorWindow
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(camera, size, scale, width, height,
-                pathMode: false, outlines: _showVoxelOutlines, scenePreview: true);
+                pathMode: false, outlines: _showVoxelOutlines, scenePreview: true,
+                showGrid: _showGrid, gridStep: 1F);
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
 
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
@@ -909,13 +1015,13 @@ internal sealed partial class ImGuiEditorWindow
     /// 仅位于 AABB 内并不代表相机在模型内部，否则近距离观察会突然显示整块内部结构。
     /// 相机在实体外时仍使用强制内部体素剔除，渲染与导出路径始终保持剔除。
     /// </summary>
-    private bool IsCameraInsideOccupiedVoxel(SceneCamera camera)
+    private bool IsCameraInsideOccupiedVoxel(SceneCamera camera, VoxelWorld? world = null)
     {
         var coordinate = new VoxelCoord64(
             (long)MathF.Floor(camera.Position.X),
             (long)MathF.Floor(camera.Position.Y),
             (long)MathF.Floor(camera.Position.Z));
-        return _world.TryGet(coordinate, out var value) && !value.IsEmpty;
+        return (world ?? _world).TryGet(coordinate, out var value) && !value.IsEmpty;
     }
 
     /// <summary>
@@ -1178,7 +1284,7 @@ internal sealed partial class ImGuiEditorWindow
         var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
         var flags = (byte)((_brushEmissive ? VoxelFlags.Emissive : VoxelFlags.None) |
                            (paletteColor.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
-        return new VoxelValue(paletteColor, Flags: flags);
+        return new VoxelValue(paletteColor, _brushMaterialSlot, flags);
     }
 
     /// <summary>
@@ -1310,6 +1416,8 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             var materials = Project.MaterialAsset.LoadFromProject(_project);
+            _brushMaterials = materials;
+            if (!materials.Any(item => item.Slot == _brushMaterialSlot)) _brushMaterialSlot = 0;
             _pipeline?.SetMaterialTable(Project.MaterialAsset.PackTable(materials));
             if (materials.Count > 0)
                 MVoxelLog.Info($"已加载 {materials.Count} 个材质槽定义");
@@ -1322,6 +1430,8 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     private Project.MaterialAsset? _editingMaterial;
+    private ushort _brushMaterialSlot;
+    private IReadOnlyList<MaterialAsset> _brushMaterials = Array.Empty<MaterialAsset>();
     private string _editingMaterialPath = string.Empty;
 
     /// <summary>
@@ -1905,6 +2015,15 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("色相环速度##cycle", ref settings.HueCycleSpeed, 0F, 90F, "%.0f°/秒");
         ImGui.SeparatorText("笔刷");
         DrawBrushToolbarRow();
+        var selectedMaterial = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
+        if (ImGui.BeginCombo("笔刷材质", selectedMaterial?.Name ?? "默认材质（槽 0）"))
+        {
+            if (ImGui.Selectable("默认材质（槽 0）", _brushMaterialSlot == 0)) _brushMaterialSlot = 0;
+            foreach (var material in _brushMaterials)
+                if (ImGui.Selectable($"{material.Name}（槽 {material.Slot}）", _brushMaterialSlot == material.Slot))
+                    _brushMaterialSlot = (ushort)material.Slot;
+            ImGui.EndCombo();
+        }
         var shape = _brushShape == VoxelBrushShape.Cube ? "立方" : "球";
         if (ImGui.BeginCombo("形状", shape))
         {
