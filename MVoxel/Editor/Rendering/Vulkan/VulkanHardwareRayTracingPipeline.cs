@@ -329,19 +329,22 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// </summary>
     /// <param name="destination">目标字节区</param>
     /// <param name="cell">体素数据</param>
-    private static void WritePackedCell(Span<byte> destination, VoxelGpuCell cell)
+    internal static void WritePackedCell(Span<byte> destination, VoxelGpuCell cell)
     {
         MemoryMarshal.Write(destination[0..4], cell.X);
         MemoryMarshal.Write(destination[4..8], cell.Y);
         MemoryMarshal.Write(destination[8..12], cell.Z);
         var extent = cell.ExtentX | (cell.ExtentY << 8) | (cell.ExtentZ << 16);
         MemoryMarshal.Write(destination[12..16], extent);
-        destination[16] = cell.Value.Color.R;
-        destination[17] = cell.Value.Color.G;
-        destination[18] = cell.Value.Color.B;
-        destination[19] = cell.Value.Color.A;
-        destination[20] = destination[21] = destination[22] = 0;
-        destination[23] = 0;
+        // ClosestHitShader declares `color` as vec4 in std430. Store normalized
+        // float channels just like VulkanVoxelRenderPipeline.PackCellInto; raw
+        // RGBA bytes here were interpreted as four tiny/subnormal floats by GLSL.
+        var color = new System.Numerics.Vector4(
+            cell.Value.Color.R / 255F,
+            cell.Value.Color.G / 255F,
+            cell.Value.Color.B / 255F,
+            cell.Value.Color.A / 255F);
+        MemoryMarshal.Write(destination[16..32], in color);
         MemoryMarshal.Write(destination[32..36], (uint)cell.Value.MaterialSlot | ((uint)cell.Value.Flags << 16));
     }
 

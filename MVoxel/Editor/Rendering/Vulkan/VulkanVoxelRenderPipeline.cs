@@ -1783,23 +1783,26 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         float Random(inout uint state);
 
-        bool TraceSoftShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
+        float TraceSoftShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
         {
             int sampleCount = clamp(int(values[32]), 1, 8);
             if (values[31] <= 0.0001 || sampleCount == 1)
-                return TraceShadow(rayOrigin, rayDirection, maxDistance);
+                return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
             vec3 tangent = normalize(abs(rayDirection.y) < 0.9 ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
                 : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(rayDirection, tangent);
+            float visible = 0.0;
             for (int index = 0; index < sampleCount; index++)
             {
                 float angle = 6.28318530718 * (float(index) + Random(state)) / float(sampleCount);
                 float radius = values[31] * sqrt(Random(state));
                 vec3 sampleDirection = normalize(rayDirection + tangent * cos(angle) * radius
                     + bitangent * sin(angle) * radius);
-                if (TraceShadow(rayOrigin, sampleDirection, maxDistance)) return true;
+                visible += TraceShadow(rayOrigin, sampleDirection, maxDistance) ? 0.0 : 1.0;
             }
-            return false;
+            // 面光源的半影是可见方向的比例；“任一采样被挡就全黑”会把软阴影
+            // 系统性加深成块状脏色，并且采样数越高偏差越严重。
+            return visible / float(sampleCount);
         }
 
         float AmbientOcclusion(vec3 hitPoint, vec3 normal, inout uint state)
@@ -2245,9 +2248,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             float glintExponent = clamp(2.0 / (interfaceRoughness * interfaceRoughness) - 2.0, 32.0, 1024.0);
                             vec3 sunGlint = normalize(vec3(values[24], values[25], values[26]));
                             float glint = pow(max(dot(reflected, sunGlint), 0.0), glintExponent);
-                            if (glint > 0.001 &&
-                                !TraceSoftShadow(hitPoint + hitNormal * 0.002, sunGlint, 10000.0, state))
-                                radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27] * 6.0;
+                            if (glint > 0.001)
+                            {
+                                float glintVisibility = TraceSoftShadow(
+                                    hitPoint + hitNormal * 0.002, sunGlint, 10000.0, state);
+                                radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27]
+                                    * 6.0 * glintVisibility;
+                            }
                         }
                         throughput *= 1.0 - fresnel * 0.85;
                     }
@@ -2333,9 +2340,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
                 vec3 lightDirection = sunDirection;
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
-                if (values[85] > 0.5 && lightAmount > 0.0 &&
-                    !TraceSoftShadow(hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state))
-                    radiance += throughput * hitLinearColor * lightAmount * values[27];
+                if (values[85] > 0.5 && lightAmount > 0.0)
+                {
+                    float shadowVisibility = TraceSoftShadow(
+                        hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state);
+                    radiance += throughput * hitLinearColor * lightAmount * values[27] * shadowVisibility;
+                }
 
                 float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
                 float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
