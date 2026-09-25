@@ -58,7 +58,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void InitializeVoxelPipeline()
     {
-        _pipeline?.Dispose();
+        if (_pipelineInitializationAttempted) return;
+        _pipelineInitializationAttempted = true;
         _gpuRenderingDisabled = false;
         _pipelineStatus = "显卡体素管线正在初始化";
         try
@@ -73,7 +74,6 @@ internal sealed partial class ImGuiEditorWindow
             MVoxelLog.Error("Vulkan Compute 管线初始化失败，已切换 CPU 预览", exception);
         }
 
-        _renderSettings = _editorSettings.RenderViewSettings;
         SyncSettingsToggles();
     }
 
@@ -985,7 +985,9 @@ internal sealed partial class ImGuiEditorWindow
     private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showGeometry = true)
     {
-        if (_gpuRenderingDisabled || _pipeline is not { } pipeline) return false;
+        if (_project is null || _gpuRenderingDisabled) return false;
+        if (_pipeline is null) InitializeVoxelPipeline();
+        if (_pipeline is not { } pipeline) return false;
         try
         {
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
@@ -1035,8 +1037,9 @@ internal sealed partial class ImGuiEditorWindow
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
-        if (_gpuRenderingDisabled || effective.Backend == RenderBackend.Cpu ||
-            _pipeline is not { } pipeline) return false;
+        if (_gpuRenderingDisabled || effective.Backend == RenderBackend.Cpu) return false;
+        if (_pipeline is null) InitializeVoxelPipeline();
+        if (_pipeline is not { } pipeline) return false;
         try
         {
             pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));

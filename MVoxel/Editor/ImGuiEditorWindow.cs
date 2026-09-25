@@ -131,6 +131,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _accumulationSignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
+    private bool _pipelineInitializationAttempted;
     private long _lastRenderGpuSubmitMs;
     private bool _renderViewNeedsInitialRender = true;
     private bool _renderCameraInitialFramePending = true;
@@ -205,10 +206,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         _controlServer = new EditorControlServer(HandleControlCommand);
         _controlServer.Start();
         _palette = EditorPalettes.ResolveEditorPalette();
-        InitializeVoxelPipeline();
-        if (!string.IsNullOrWhiteSpace(_startupProjectPath))
+        var startupProjectPath = _startupProjectPath;
+        if (!string.IsNullOrWhiteSpace(startupProjectPath))
         {
-            TryOpenProject(_startupProjectPath, true);
+            RequestWelcomeWindow();
+            EnsureWelcomeWindow();
+            _pendingActions.Enqueue(() => BeginOpenProject(startupProjectPath, fromWelcome: true));
         }
         else
         {

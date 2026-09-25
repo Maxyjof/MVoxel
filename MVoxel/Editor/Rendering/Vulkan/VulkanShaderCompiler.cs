@@ -1,4 +1,8 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using MVoxel.Core;
 using Silk.NET.Shaderc;
 
 namespace MVoxel.Editor.Rendering.Vulkan;
@@ -15,6 +19,15 @@ internal static unsafe class VulkanShaderCompiler
     {
         ArgumentException.ThrowIfNullOrEmpty(source);
         ArgumentException.ThrowIfNullOrEmpty(sourceName);
+        byte[] sourceBytes = Encoding.UTF8.GetBytes(source);
+        var cachePath = GetCachePath(sourceBytes, sourceName, shaderKind, rayTracing);
+        if (TryReadCache(cachePath, out var cached))
+        {
+            MVoxelLog.Info($"Vulkan Shader SPIR-V 缓存命中：{sourceName}");
+            return cached;
+        }
+
+        var watch = Stopwatch.StartNew();
         Shaderc compilerApi = Shaderc.GetApi();
         Compiler* compiler = compilerApi.CompilerInitialize();
         if (compiler is null)
@@ -29,7 +42,6 @@ internal static unsafe class VulkanShaderCompiler
             throw new InvalidOperationException("无法创建 shaderc 编译选项");
         }
 
-        byte[] sourceBytes = System.Text.Encoding.UTF8.GetBytes(source);
         try
         {
             compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan,
@@ -70,7 +82,10 @@ internal static unsafe class VulkanShaderCompiler
                     }
 
                     var byteSpan = new ReadOnlySpan<byte>(resultBytes, checked((int)byteLength));
-                    return MemoryMarshal.Cast<byte, uint>(byteSpan).ToArray();
+                    var words = MemoryMarshal.Cast<byte, uint>(byteSpan).ToArray();
+                    TryWriteCache(cachePath, words);
+                    MVoxelLog.Info($"Vulkan Shader 编译完成：{sourceName}，{watch.ElapsedMilliseconds}ms");
+                    return words;
                 }
                 finally
                 {
@@ -82,6 +97,47 @@ internal static unsafe class VulkanShaderCompiler
         {
             compilerApi.CompileOptionsRelease(options);
             compilerApi.CompilerRelease(compiler);
+        }
+    }
+
+    private static string GetCachePath(byte[] sourceBytes, string sourceName, ShaderKind shaderKind, bool rayTracing)
+    {
+        var sourceHash = Convert.ToHexString(SHA256.HashData(sourceBytes));
+        var compilerVersion = typeof(Shaderc).Assembly.GetName().Version?.ToString() ?? "unknown";
+        var identity = $"MVoxel-SPIRV-v1|{compilerVersion}|{shaderKind}|{rayTracing}|{sourceName}|{sourceHash}";
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+        return Path.Combine(AppPaths.ShaderCacheDirectory, key + ".spv");
+    }
+
+    private static bool TryReadCache(string path, out uint[] words)
+    {
+        words = [];
+        try
+        {
+            if (!File.Exists(path)) return false;
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length < sizeof(uint) || bytes.Length % sizeof(uint) != 0 ||
+                MemoryMarshal.Read<uint>(bytes) != 0x07230203U)
+                return false;
+
+            words = MemoryMarshal.Cast<byte, uint>(bytes).ToArray();
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void TryWriteCache(string path, uint[] words)
+    {
+        try
+        {
+            AtomicFile.WriteBytes(path, MemoryMarshal.AsBytes(words.AsSpan()).ToArray(), backupExtension: null);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MVoxelLog.Warn($"无法保存 Vulkan Shader 缓存：{exception.Message}");
         }
     }
 }

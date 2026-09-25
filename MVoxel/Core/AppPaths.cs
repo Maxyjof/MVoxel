@@ -25,6 +25,9 @@ public static class AppPaths
     /// </summary>
     public static string PluginDirectory => Path.Combine(DataDirectory, "Plugins");
 
+    /// <summary>可重建的 Vulkan SPIR-V 编译缓存</summary>
+    public static string ShaderCacheDirectory => Path.Combine(DataDirectory, "Cache", "Shaders");
+
     /// <summary>
     /// 运行中编辑器的本机控制端点文件
     /// </summary>
