@@ -67,6 +67,15 @@ internal static class SceneProjection
     }
 
     /// <summary>
+    /// 内部图像缩放时同步缩放焦距，保证降分辨率不改变视场角。
+    /// </summary>
+    internal static float FocalLengthForOutput(Vector2 logicalSize, SceneCamera camera, int outputHeight)
+    {
+        return FocalLength(logicalSize, camera) * Math.Max(outputHeight, 1) /
+               MathF.Max(logicalSize.Y, 1F);
+    }
+
+    /// <summary>
     /// 先在相机空间裁剪线段再做透视除法。仅因某个端点在相机背后就整条丢弃
     /// 会让脚下的地面网格凭空消失，所以必须保留可见部分
     /// </summary>

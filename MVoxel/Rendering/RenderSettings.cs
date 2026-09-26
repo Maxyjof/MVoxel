@@ -445,6 +445,15 @@ public sealed class RenderSettings
         _ => 1F,
     };
 
+    /// <summary>场景窗口导航时按逐体素工作集规模降低内部像素数；静止后恢复完整分辨率。</summary>
+    internal static float SceneNavigationScaleFactor(int worksetCells) => worksetCells switch
+    {
+        > 1_000_000 => 0.35F,
+        > 250_000 => 0.5F,
+        > 80_000 => 0.75F,
+        _ => 1F,
+    };
+
     /// <summary>
     /// 创建场景窗口使用的 GPU 基础显示配置：只保留体素颜色、轮廓和场景明暗，
     /// 不让渲染窗口的路径追踪、Bloom、AO、雾和色彩特效污染编辑器视口。

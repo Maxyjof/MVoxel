@@ -91,6 +91,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneNearClip = 0.05F;
     private float _sceneFarClip = 100000F;
     private float _sceneFieldOfView = 50F;
+    private SceneCamera? _lastScenePreviewCamera;
+    private float _sceneNavigationPreviewTime;
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
     private bool _sceneMouseCaptured;
@@ -2314,7 +2316,7 @@ DockId=0x6A3C3007,0
             var scale = _activeExport.Scale;
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
-            var frame = BuildFrameState(viewCamera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
+            var frame = BuildFrameState(viewCamera, size, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
             var submitted = settings.PathTracingEnabled
                 ? pipeline.RenderPathView(settings, frame, width, height)
                 : pipeline.RenderSceneView(settings, frame, width, height);
