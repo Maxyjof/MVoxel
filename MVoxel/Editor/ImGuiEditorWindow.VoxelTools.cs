@@ -428,6 +428,20 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>按图层遮罩组成的渲染世界缓存</summary>
     private VoxelWorld? _composedRenderWorld;
 
+    private VoxelWorld? _axisOcclusionBoundsWorld;
+    private int _axisOcclusionBoundsVersion = -1;
+    private VoxelCoord64 _axisOcclusionMinimum;
+    private VoxelCoord64 _axisOcclusionMaximum;
+
+    private void UpdateAxisOcclusionBounds()
+    {
+        if (ReferenceEquals(_axisOcclusionBoundsWorld, _world) &&
+            _axisOcclusionBoundsVersion == _world.ContentVersion) return;
+        if (!_world.TryGetBounds(out _axisOcclusionMinimum, out _axisOcclusionMaximum)) return;
+        _axisOcclusionBoundsWorld = _world;
+        _axisOcclusionBoundsVersion = _world.ContentVersion;
+    }
+
     private bool _sceneSliceEnabled;
     private int _sceneSliceAxis;
     private int _sceneSliceCoordinate;

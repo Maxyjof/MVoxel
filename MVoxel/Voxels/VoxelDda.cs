@@ -84,6 +84,43 @@ public static class VoxelDda
     }
 
     /// <summary>
+    /// 仅在已知占用包围盒内执行 DDA；供大量遮挡探针复用预先计算的世界边界。
+    /// 包围盒为空气时提前返回，远处相机不再为每条射线遍历整段空白空间。
+    /// </summary>
+    public static bool HasHitInBounds(VoxelWorld world, Vector3 origin, Vector3 direction,
+        float maximumDistance, VoxelCoord64 minimum, VoxelCoord64 maximum, bool ignoreOriginCell = false)
+    {
+        if (maximumDistance <= 0F || direction.LengthSquared() < 1e-12F) return false;
+        var ray = Vector3.Normalize(direction);
+        var enter = 0F;
+        var exit = maximumDistance;
+        if (!ClipAxis(origin.X, ray.X, minimum.X, maximum.X + 1D, ref enter, ref exit) ||
+            !ClipAxis(origin.Y, ray.Y, minimum.Y, maximum.Y + 1D, ref enter, ref exit) ||
+            !ClipAxis(origin.Z, ray.Z, minimum.Z, maximum.Z + 1D, ref enter, ref exit))
+            return false;
+
+        // 在入射点之前保留半格空气，让原有 DDA 精确判定边界格。
+        var start = MathF.Max(0F, enter - 0.5F);
+        var end = MathF.Min(maximumDistance, exit);
+        if (end <= start) return false;
+        return RayCast(world, origin + ray * start, ray, end - start,
+            ignoreOriginCell && start == 0F) is not null;
+    }
+
+    private static bool ClipAxis(float origin, float direction, double minimum, double maximum,
+        ref float enter, ref float exit)
+    {
+        if (MathF.Abs(direction) < 1e-7F)
+            return origin >= minimum && origin <= maximum;
+        var near = (float)((minimum - origin) / direction);
+        var far = (float)((maximum - origin) / direction);
+        if (near > far) (near, far) = (far, near);
+        enter = MathF.Max(enter, near);
+        exit = MathF.Min(exit, far);
+        return enter <= exit;
+    }
+
+    /// <summary>
     /// 射线与无限地面（y = 0）求交，拾取落空时让第一笔能落在空画布上
     /// </summary>
     /// <param name="origin">射线起点</param>

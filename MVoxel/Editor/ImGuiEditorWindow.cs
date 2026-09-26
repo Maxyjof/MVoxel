@@ -1676,6 +1676,8 @@ DockId=0x6A3C3007,0
 
     private void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
+        if (_world.OccupiedVoxelCount > 0 && IsVoxelWorldVisible())
+            UpdateAxisOcclusionBounds();
         var axisLength = GetInfiniteAxisLength(camera);
         DrawBidirectionalAxis(drawList, Vector3.UnitX, axisLength, origin, size, camera,
             Color.FromArgb(235, 230, 78, 84));
@@ -1815,9 +1817,9 @@ DockId=0x6A3C3007,0
         }
 
         // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
-        var hit = VoxelDda.RayCast(_world, cameraPosition, direction,
-            MathF.Max(pointDistance - 0.01F, near), ignoreOriginCell: true);
-        return hit is null;
+        return !VoxelDda.HasHitInBounds(_world, cameraPosition, direction,
+            MathF.Max(pointDistance - 0.01F, near), _axisOcclusionMinimum, _axisOcclusionMaximum,
+            ignoreOriginCell: true);
     }
 
     /// <summary>
