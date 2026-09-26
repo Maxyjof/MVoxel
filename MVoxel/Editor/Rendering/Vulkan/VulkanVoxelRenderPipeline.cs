@@ -2185,6 +2185,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.y, remainPoint.y));
                     float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
                     float outlineAmount = 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance);
+                    // 一格体素缩到几个像素时，固定像素宽的四周棱线会盖住整个面。
+                    // 使用命中面的最小世界跨度换算到屏幕像素，远处逐渐减弱描边，
+                    // 避免大场景俯视时所有体素叠成一片黑色。
+                    float faceSpan = abs(hitNormal.x) > 0.5
+                        ? min(outlineExtent.y, outlineExtent.z)
+                        : abs(hitNormal.y) > 0.5
+                            ? min(outlineExtent.x, outlineExtent.z)
+                            : min(outlineExtent.x, outlineExtent.y);
+                    float projectedSpan = faceSpan * max(values[3], 1.0) / max(hitDistance, 1.0);
+                    outlineAmount *= smoothstep(2.0, 9.0, projectedSpan);
                     vec3 faceColor = hitLinearColor;
                     if (values[113] > 0.5)
                     {

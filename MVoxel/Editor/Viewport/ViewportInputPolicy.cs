@@ -90,6 +90,15 @@ internal static class ViewportInputPolicy
     }
 
     /// <summary>
+    /// 缩放只能由独立滚轮手势触发，右键环绕期间屏蔽滚轮增量，避免输入设备
+    /// 将拖动时残留的滚轮状态合并进相机推拉。
+    /// </summary>
+    public static bool ShouldApplyWheelZoom(float wheelDelta, bool rightButtonDown)
+    {
+        return !rightButtonDown && float.IsFinite(wheelDelta) && MathF.Abs(wheelDelta) > float.Epsilon;
+    }
+
+    /// <summary>
     /// 判断指定视口是否允许改变体素数据
     /// </summary>
     /// <param name="isRenderViewport">是否为渲染视口</param>

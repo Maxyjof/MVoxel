@@ -126,28 +126,43 @@ internal sealed class BlockingOperationRunner : IDisposable
             succeeded = _onSucceeded;
             failed = _onFailed;
             cancelled = _onCancelled;
-            _task = null;
-            _cancellation = null;
-            _snapshot = null;
-            _onSucceeded = null;
-            _onFailed = null;
-            _onCancelled = null;
         }
 
         var result = task.GetAwaiter().GetResult();
-        cancellation?.Dispose();
-        if (result.Cancelled)
+        try
         {
-            cancelled?.Invoke();
-            return;
-        }
-        if (result.Error is not null)
-        {
-            failed?.Invoke(result.Error);
-            return;
-        }
+            // 保持快照直到 UI 完成回调结束。项目打开的最后阶段会在此应用场景、
+            // 体素数据和材质；若提前清空，进度弹窗会在 UI 短暂停顿前消失。
+            if (result.Cancelled)
+            {
+                cancelled?.Invoke();
+                return;
+            }
+            if (result.Error is not null)
+            {
+                failed?.Invoke(result.Error);
+                return;
+            }
 
-        succeeded?.Invoke(result.Value);
+            succeeded?.Invoke(result.Value);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (ReferenceEquals(_task, task))
+                {
+                    _task = null;
+                    _cancellation = null;
+                    _snapshot = null;
+                    _onSucceeded = null;
+                    _onFailed = null;
+                    _onCancelled = null;
+                }
+            }
+
+            cancellation?.Dispose();
+        }
     }
 
     /// <summary>

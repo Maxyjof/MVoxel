@@ -230,7 +230,8 @@ internal sealed partial class ImGuiEditorWindow
 
         var pivot = GetRenderOrbitAnchor();
         var orbitLimits = GetRenderOrbitLimits();
-        if (Math.Abs(io.MouseWheel) > float.Epsilon)
+        if (ViewportInputPolicy.ShouldApplyWheelZoom(
+                io.MouseWheel, ImGui.IsMouseDown(ImGuiMouseButton.Right)))
         {
             // 渲染相机的推拉必须围绕同一个场景 pivot 计算，不能沿着
             // ToSceneCamera 的临时 Target（前方 100 格）移动，否则相机穿过原点后

@@ -1481,7 +1481,8 @@ DockId=0x6A3C3007,0
             return false;
         }
 
-        if (Math.Abs(io.MouseWheel) > float.Epsilon && !gizmoHovered)
+        if (ViewportInputPolicy.ShouldApplyWheelZoom(
+                io.MouseWheel, ImGui.IsMouseDown(ImGuiMouseButton.Right)) && !gizmoHovered)
         {
             var limits = GetSceneZoomLimits();
             var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
@@ -1939,9 +1940,19 @@ DockId=0x6A3C3007,0
             drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(face.Color));
             if (showOutlines)
             {
+                var shortestEdge = float.PositiveInfinity;
                 for (var index = 0; index < polygon.Length; index++)
-                    drawList.AddLine(polygon[index], polygon[(index + 1) % polygon.Length],
-                        ToPackedColor(Color.FromArgb(245, 4, 7, 11)), 1.2F);
+                    shortestEdge = MathF.Min(shortestEdge,
+                        Vector2.Distance(polygon[index], polygon[(index + 1) % polygon.Length]));
+                var fade = Math.Clamp((shortestEdge - 2F) / 7F, 0F, 1F);
+                fade = fade * fade * (3F - 2F * fade);
+                var alpha = (int)(245F * fade);
+                if (alpha > 0)
+                {
+                    var outline = ToPackedColor(Color.FromArgb(alpha, 4, 7, 11));
+                    for (var index = 0; index < polygon.Length; index++)
+                        drawList.AddLine(polygon[index], polygon[(index + 1) % polygon.Length], outline, 1.2F);
+                }
             }
         }
     }
@@ -3357,6 +3368,7 @@ DockId=0x6A3C3007,0
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("近处显示体素棱线，远处随屏幕上的体素尺寸逐渐淡出");
         DrawSettingsSectionHeader("渲染参数");
         DrawRenderSettingsPanel();
     }
@@ -3792,7 +3804,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
-                    project => _pendingActions.Enqueue(() => OpenProject(project)),
+                    OpenProject,
                     exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, path),
                     () => SetStatus("已取消创建项目")))
             {
@@ -3834,7 +3846,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: true));
                         return project;
                     },
-                    project => _pendingActions.Enqueue(() => OpenProject(project)),
+                    OpenProject,
                     exception => ShowProjectOperationError("打开项目失败", exception, fromWelcome, 2, path),
                     () => SetStatus("已取消加载项目")))
             {
