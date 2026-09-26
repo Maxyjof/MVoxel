@@ -883,7 +883,7 @@ internal sealed partial class ImGuiEditorWindow
     // 渲染视口 GPU 管线
 
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
-        int widthOverride, int heightOverride, bool pathMode, bool outlines,
+        float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
         bool showGrid = false, float gridStep = 0F, bool scenePreview = false)
     {
         NumVector3 Convert(Vector3 value) => new(value.X, value.Y, value.Z);
@@ -892,7 +892,7 @@ internal sealed partial class ImGuiEditorWindow
         var effectiveSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         return new VoxelRenderParameters.FrameState(
             Convert(camera.Position), Convert(camera.Forward), Convert(camera.Right), Convert(camera.Up),
-            SceneProjection.FocalLengthForOutput(viewLogical, camera, height),
+            SceneProjection.FocalLength(viewLogical, camera) * deviceScale,
             width, height,
             // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
             // 路径追踪仍需帧号驱动样本去相关。
@@ -998,18 +998,9 @@ internal sealed partial class ImGuiEditorWindow
             if (!pipeline.IsAvailable) return false;
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-            var cameraChanged = _lastScenePreviewCamera is { } previous && previous != camera;
-            var activelyNavigating = _sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Scene;
-            _lastScenePreviewCamera = camera;
-            _sceneNavigationPreviewTime = cameraChanged || activelyNavigating
-                ? 0.18F
-                : MathF.Max(0F, _sceneNavigationPreviewTime - ImGui.GetIO().DeltaTime);
-            var navigationScale = settings.AutoPerformanceScaling && _sceneNavigationPreviewTime > 0F
-                ? RenderSettings.SceneNavigationScaleFactor(pipeline.SyncTotalCells)
-                : 1F;
-            var width = Math.Max(16, (int)(size.X * scale * navigationScale));
-            var height = Math.Max(16, (int)(size.Y * scale * navigationScale));
-            var frame = BuildFrameState(camera, size, width, height,
+            var width = Math.Max(16, (int)(size.X * scale));
+            var height = Math.Max(16, (int)(size.Y * scale));
+            var frame = BuildFrameState(camera, size, scale, width, height,
                 pathMode: false, outlines: _showVoxelOutlines, scenePreview: true,
                 showGrid: _showGrid, gridStep: 1F);
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
@@ -1080,7 +1071,7 @@ internal sealed partial class ImGuiEditorWindow
             if (!effective.PathTracingEnabled)
             {
                 var realtimeSettings = interactivePreview ? previewSettings.CreateInteractionPreview() : previewSettings;
-                var realtimeFrame = BuildFrameState(camera, size, width, height,
+                var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
                     pathMode: false, outlines: false);
                 if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
                 {
@@ -1107,7 +1098,7 @@ internal sealed partial class ImGuiEditorWindow
             var renderSettings = cameraNavigating || settingsInteracting
                 ? previewSettings.CreateInteractionPreview()
                 : previewSettings;
-            var frame = BuildFrameState(camera, size, width, height, pathMode: true, outlines: false);
+            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
                               pipeline.DisplayTextureId == IntPtr.Zero;
@@ -2142,8 +2133,8 @@ internal sealed partial class ImGuiEditorWindow
         Toggle("自动性能优化（仅视口）", ref _settingsToggleAutoPerformance,
             value => settings.AutoPerformanceScaling = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("场景窗口移动时按逐体素工作集降低内部像素数，静止后恢复；渲染窗口按合并后的工作集降低内部像素数和实时采样。导出质量不变。");
-        ImGui.TextWrapped("场景窗口移动时：工作集超过 8 万 / 25 万 / 100 万格，内部倍率依次为 0.75× / 0.5× / 0.35×，停下后恢复。渲染窗口仍按合并工作集自动调整；导出不受影响。");
+            ImGui.SetTooltip("按合并后的 GPU 工作集规模逐级降低内部渲染分辨率，并限制实时 AO/阴影采样；导出分辨率和质量不变。");
+        ImGui.TextWrapped("工作集超过 2 万 / 8 万 / 25 万格时，视口内部倍率依次降至 0.75× / 0.5× / 0.35×；超 70 万格时关闭实时 AO。可随时关闭此优化。");
     }
 
     /// <summary>
