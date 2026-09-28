@@ -117,9 +117,20 @@ internal sealed class ImGuiWelcomeContent
     internal void Draw()
     {
         var screen = ImGui.GetIO().DisplaySize;
-        var panelSize = new Vector2(
-            Math.Min(780F, Math.Max(520F, screen.X - 32F)),
-            Math.Min(940F, Math.Max(560F, screen.Y - 48F)));
+        var panelWidth = Math.Min(780F, Math.Max(520F, screen.X - 32F));
+        var recent = RecentProjects.Load();
+        const float recentRowHeight = 52F;
+        const float recentRowGap = 4F;
+        var recentContentHeight = recent.Count == 0
+            ? 60F
+            : recent.Count * (recentRowHeight + recentRowGap + ImGui.GetStyle().ItemSpacing.Y * 2F) + 8F +
+              ImGui.GetStyle().WindowPadding.Y * 2F + 4F;
+        var crashNoticeHeight = MeasureCrashNoticeHeight(new Vector2(panelWidth, screen.Y));
+        var contentHeight = ImGui.GetStyle().WindowPadding.Y * 2F + TitleBarHeight + crashNoticeHeight +
+                            8F + 80F + 16F + 40F + 12F + ImGui.GetTextLineHeightWithSpacing() +
+                            5F + recentContentHeight + ImGui.GetTextLineHeightWithSpacing() * 2F + 16F +
+                            ImGui.GetStyle().ItemSpacing.Y * 6F;
+        var panelSize = new Vector2(panelWidth, Math.Min(contentHeight, Math.Max(320F, screen.Y - 48F)));
         var operation = _editor.ProjectOperationSnapshot;
         if (operation is not null) ImGui.BeginDisabled();
         ImGui.SetNextWindowPos(screen / 2F, ImGuiCond.Always, new Vector2(.5F, .5F));
@@ -140,7 +151,7 @@ internal sealed class ImGuiWelcomeContent
             ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Text)), "欢迎使用 MVoxel");
         ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight));
 
-        var crashNoticeHeight = DrawCrashNotice(display);
+        DrawCrashNotice(display);
         ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight + crashNoticeHeight));
 
         var contentWidth = Math.Min(660F, display.X - 68F);
@@ -175,17 +186,11 @@ internal sealed class ImGuiWelcomeContent
         ImGui.TextColored(ToColor(EditorPalette.Text), "最近打开的项目");
         ImGui.Separator();
 
-        var recent = RecentProjects.Load();
         ImGui.SetCursorPosX(contentLeft);
         var footerHeight = ImGui.GetTextLineHeightWithSpacing() * 2F + 16F;
-        var pathHeight = _pathMode == 0
-            ? 0F
-            : ImGui.GetTextLineHeightWithSpacing() * (_pathMode == 1 ? 11F : 3F) + 112F;
-        const float recentRowHeight = 52F;
-        const float recentRowGap = 4F;
-        var desiredRecentHeight = recent.Count == 0 ? 60F : recent.Count * (recentRowHeight + recentRowGap) + 8F;
+        var desiredRecentHeight = recentContentHeight;
         var recentHeight = Math.Min(desiredRecentHeight,
-            Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight - pathHeight));
+            Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight));
         var recentWindowFlags = recentHeight >= desiredRecentHeight
             ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
             : ImGuiWindowFlags.None;
@@ -258,7 +263,7 @@ internal sealed class ImGuiWelcomeContent
     /// </summary>
     /// <param name="display">欢迎窗口尺寸</param>
     /// <returns>提示区域占用高度</returns>
-    private static float DrawCrashNotice(Vector2 display)
+    private static float MeasureCrashNoticeHeight(Vector2 display)
     {
         var crash = MVoxelLog.PreviousCrash;
         if (crash is null)
@@ -276,7 +281,20 @@ internal sealed class ImGuiWelcomeContent
                             ImGui.CalcTextSize(summary, false, textWidth).Y +
                             ImGui.CalcTextSize(logPath, false, textWidth).Y +
                             ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y * 3F + 2F;
-        var height = Math.Max(92F, contentHeight);
+        return Math.Max(92F, contentHeight) + 20F;
+    }
+
+    private static void DrawCrashNotice(Vector2 display)
+    {
+        var crash = MVoxelLog.PreviousCrash;
+        if (crash is null) return;
+
+        const float margin = 22F;
+        var width = display.X - margin * 2F;
+        var height = MeasureCrashNoticeHeight(display) - 20F;
+        var textWidth = Math.Max(1F, width - ImGui.GetStyle().WindowPadding.X * 2F - 2F);
+        var summary = $"时间：{crash.OccurredAt:yyyy-MM-dd HH:mm:ss}  ·  {crash.Summary}";
+        var logPath = $"详细日志：{crash.ReportPath}";
         var childFlags = height <= display.Y - TitleBarHeight - 20F
             ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
             : ImGuiWindowFlags.None;
@@ -293,7 +311,6 @@ internal sealed class ImGuiWelcomeContent
         }
 
         ImGui.EndChild();
-        return height + 20F;
     }
 
     private void BeginPathDialog(int mode)

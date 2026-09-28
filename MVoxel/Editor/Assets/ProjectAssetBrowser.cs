@@ -21,7 +21,7 @@ internal sealed class ProjectAssetBrowser
     private string _searchText = string.Empty;
     private ProjectAssetKind? _filter;
     private bool _searchAll = true;
-    private float _treeWidth = 216F;
+    private float _treeWidth = 280F;
     private float _tileSize = 76F;
     private string? _renamePath;
 
@@ -98,7 +98,7 @@ internal sealed class ProjectAssetBrowser
         ImGui.InvisibleButton("##资源面板分隔条", new Vector2(5F, bodyHeight));
         if (ImGui.IsItemActive())
         {
-            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 150F, 360F);
+            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 220F, 400F);
         }
         if (ImGui.IsItemHovered() || ImGui.IsItemActive())
         {
@@ -192,7 +192,7 @@ internal sealed class ProjectAssetBrowser
         }
 
         if (children.Count == 0 || !opened) return;
-        if (isRoot && ImGui.BeginTable("##资源根目录网格", 2,
+        if (isRoot && ImGui.GetContentRegionAvail().X >= 250F && ImGui.BeginTable("##资源根目录网格", 2,
                 ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
         {
             foreach (var child in children)
