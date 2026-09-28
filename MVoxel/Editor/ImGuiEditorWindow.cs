@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -97,6 +98,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _sceneMouseCaptured;
     private ViewportCaptureTarget _capturedViewport;
     private bool _sceneDocumentDirty;
+    private bool _exitConfirmationRequested;
+    private bool _allowWindowClose;
     private float _autoSaveCountdown = float.PositiveInfinity;
     private bool _autoSaveQueued;
 
@@ -194,7 +197,28 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     public void CancelProjectOperation() => _projectOperation.RequestCancel();
 
-    public void CloseEditor() => Close();
+    public void CloseEditor() => RequestExit();
+
+    private void RequestExit()
+    {
+        if (_project is not null && _sceneDocumentDirty)
+        {
+            _exitConfirmationRequested = true;
+            return;
+        }
+
+        _allowWindowClose = true;
+        Close();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (e.Cancel || _allowWindowClose || _project is null || !_sceneDocumentDirty) return;
+
+        e.Cancel = true;
+        _exitConfirmationRequested = true;
+    }
 
     internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
 
@@ -315,6 +339,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             MVoxelLog.SetRuntimeContext($"编辑器帧渲染，项目={_project?.Manifest.Name ?? "未打开项目"}，体素={_world.OccupiedVoxelCount}");
             MVoxelLog.RecordCrash("编辑器帧渲染异常", exception);
             _gpuRenderingDisabled = true;
+            _allowWindowClose = true;
             Close();
         }
     }
@@ -679,6 +704,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawMinecraftImportWindow();
         DrawMeshImportWindow();
         if (inputBlocked) ImGui.EndDisabled();
+        DrawExitConfirmationDialog();
         if (!inputBlocked) DrawSettingsWindow();
         TrackConfigurationChanges();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
@@ -705,7 +731,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("导入体素数据（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
             if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
-            if (ImGui.MenuItem("退出", "Alt+F4")) Close();
+            if (ImGui.MenuItem("退出", "Alt+F4")) RequestExit();
             ImGui.EndMenu();
         }
 
@@ -4060,6 +4086,39 @@ DockId=0x6A3C3007,0
     }
 
     private bool _closeProjectDialogRequested;
+
+    private void DrawExitConfirmationDialog()
+    {
+        if (_exitConfirmationRequested)
+        {
+            ImGui.OpenPopup("退出编辑器##UnsavedScene");
+            _exitConfirmationRequested = false;
+        }
+
+        if (!ImGui.BeginPopupModal("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        ImGui.TextWrapped("当前项目有未保存的修改。退出前要保存吗？");
+        ImGui.Spacing();
+        if (ImGui.Button("保存并退出", new Vector2(120F, 30F)))
+        {
+            SaveProject();
+            if (!_sceneDocumentDirty)
+            {
+                ImGui.CloseCurrentPopup();
+                _allowWindowClose = true;
+                Close();
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("不保存退出", new Vector2(120F, 30F)))
+        {
+            ImGui.CloseCurrentPopup();
+            _allowWindowClose = true;
+            Close();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("取消", new Vector2(90F, 30F))) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
+    }
 
     private void RequestCloseProject()
     {

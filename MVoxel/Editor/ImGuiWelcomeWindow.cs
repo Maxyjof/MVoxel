@@ -119,7 +119,7 @@ internal sealed class ImGuiWelcomeContent
         var screen = ImGui.GetIO().DisplaySize;
         var panelSize = new Vector2(
             Math.Min(780F, Math.Max(520F, screen.X - 32F)),
-            Math.Min(620F, Math.Max(420F, screen.Y - 64F)));
+            Math.Min(940F, Math.Max(560F, screen.Y - 48F)));
         var operation = _editor.ProjectOperationSnapshot;
         if (operation is not null) ImGui.BeginDisabled();
         ImGui.SetNextWindowPos(screen / 2F, ImGuiCond.Always, new Vector2(.5F, .5F));
@@ -147,15 +147,15 @@ internal sealed class ImGuiWelcomeContent
         var contentLeft = MathF.Floor(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.BeginGroup();
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 13F);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 8F);
         if (_logoTextureId != IntPtr.Zero)
         {
-            ImGui.Image(_logoTextureId, new Vector2(96F, 96F));
-            ImGui.SameLine(0F, 18F);
+            ImGui.Image(_logoTextureId, new Vector2(80F, 80F));
+            ImGui.SameLine(0F, 14F);
         }
 
         ImGui.BeginGroup();
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 14F);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 10F);
         if (_fonts is not null) ImGui.PushFont(_fonts.Title);
         ImGui.TextColored(ToColor(EditorPalette.Text), "MVoxel");
         if (_fonts is not null) ImGui.PopFont();
@@ -164,13 +164,13 @@ internal sealed class ImGuiWelcomeContent
         ImGui.EndGroup();
         ImGui.EndGroup();
 
-        ImGui.Dummy(new Vector2(0F, 28F));
+        ImGui.Dummy(new Vector2(0F, 16F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
-        if (ImGui.Button("新建项目", new Vector2(210F, 48F))) BeginPathDialog(1);
+        if (ImGui.Button("新建项目", new Vector2(210F, 40F))) BeginPathDialog(1);
         ImGui.SameLine();
-        if (ImGui.Button("打开项目", new Vector2(210F, 48F))) BeginPathDialog(2);
+        if (ImGui.Button("打开项目", new Vector2(210F, 40F))) BeginPathDialog(2);
 
-        ImGui.Dummy(new Vector2(0F, 24F));
+        ImGui.Dummy(new Vector2(0F, 12F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.TextColored(ToColor(EditorPalette.Text), "最近打开的项目");
         ImGui.Separator();
@@ -181,8 +181,16 @@ internal sealed class ImGuiWelcomeContent
         var pathHeight = _pathMode == 0
             ? 0F
             : ImGui.GetTextLineHeightWithSpacing() * (_pathMode == 1 ? 11F : 3F) + 112F;
-        var recentHeight = Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight - pathHeight);
-        ImGui.BeginChild("##RecentProjects", new Vector2(contentWidth, recentHeight), ImGuiChildFlags.Borders);
+        const float recentRowHeight = 52F;
+        const float recentRowGap = 4F;
+        var desiredRecentHeight = recent.Count == 0 ? 60F : recent.Count * (recentRowHeight + recentRowGap) + 8F;
+        var recentHeight = Math.Min(desiredRecentHeight,
+            Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight - pathHeight));
+        var recentWindowFlags = recentHeight >= desiredRecentHeight
+            ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
+            : ImGuiWindowFlags.None;
+        ImGui.BeginChild("##RecentProjects", new Vector2(contentWidth, recentHeight), ImGuiChildFlags.Borders,
+            recentWindowFlags);
         if (recent.Count == 0)
         {
             ImGui.Dummy(new Vector2(0F, 18F));
@@ -195,7 +203,7 @@ internal sealed class ImGuiWelcomeContent
             {
                 ImGui.PushID(entry.Path);
                 var rowWidth = ImGui.GetContentRegionAvail().X;
-                const float rowHeight = 70F;
+                const float rowHeight = recentRowHeight;
                 var rowMin = ImGui.GetCursorScreenPos();
                 var clicked = ImGui.InvisibleButton("##RecentProjectCard", new Vector2(rowWidth, rowHeight));
                 var rowMax = rowMin + new Vector2(rowWidth, rowHeight);
@@ -208,17 +216,17 @@ internal sealed class ImGuiWelcomeContent
                 draw.AddRect(rowMin, rowMax, ToPackedColor(border), 6F, ImDrawFlags.None, 1F);
                 draw.AddRectFilled(rowMin, rowMin + new Vector2(4F, rowHeight), ToPackedColor(EditorPalette.Accent), 6F,
                     ImDrawFlags.RoundCornersLeft);
-                draw.AddText(rowMin + new Vector2(16F, 10F), textColor, entry.Name);
+                draw.AddText(rowMin + new Vector2(12F, 5F), textColor, entry.Name);
                 var date = entry.LastOpenedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                 var dateWidth = ImGui.CalcTextSize(date).X;
-                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 16F, 10F), mutedColor, date);
-                draw.AddText(rowMin + new Vector2(16F, 39F), mutedColor, entry.Path);
+                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 12F, 5F), mutedColor, date);
+                draw.AddText(rowMin + new Vector2(12F, 28F), mutedColor, entry.Path);
                 if (clicked)
                 {
                     _errorText = string.Empty;
                     _editor.OpenRecentProject(entry.Path);
                 }
-                ImGui.Dummy(new Vector2(0F, 8F));
+                ImGui.Dummy(new Vector2(0F, recentRowGap));
                 ImGui.PopID();
             }
         }
@@ -259,12 +267,26 @@ internal sealed class ImGuiWelcomeContent
         }
 
         const float margin = 22F;
-        const float height = 92F;
+        var width = display.X - margin * 2F;
+        var textWidth = Math.Max(1F, width - ImGui.GetStyle().WindowPadding.X * 2F - 2F);
+        var summary = $"时间：{crash.OccurredAt:yyyy-MM-dd HH:mm:ss}  ·  {crash.Summary}";
+        var logPath = $"详细日志：{crash.ReportPath}";
+        var lineSpacing = ImGui.GetTextLineHeightWithSpacing();
+        var contentHeight = ImGui.GetStyle().WindowPadding.Y * 2F + lineSpacing +
+                            ImGui.CalcTextSize(summary, false, textWidth).Y +
+                            ImGui.CalcTextSize(logPath, false, textWidth).Y +
+                            ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y * 3F + 2F;
+        var height = Math.Max(92F, contentHeight);
+        var childFlags = height <= display.Y - TitleBarHeight - 20F
+            ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
+            : ImGuiWindowFlags.None;
         ImGui.SetCursorPos(new Vector2(margin, TitleBarHeight + 10F));
-        ImGui.BeginChild("##PreviousCrashNotice", new Vector2(display.X - margin * 2F, height), ImGuiChildFlags.Borders);
+        ImGui.BeginChild("##PreviousCrashNotice", new Vector2(width, height), ImGuiChildFlags.Borders, childFlags);
         ImGui.TextColored(ToColor(EditorPalette.Error), "检测到上次运行异常退出");
-        ImGui.TextWrapped($"时间：{crash.OccurredAt:yyyy-MM-dd HH:mm:ss}  ·  {crash.Summary}");
-        ImGui.TextDisabled($"详细日志：{crash.ReportPath}");
+        ImGui.TextWrapped(summary);
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + textWidth);
+        ImGui.TextDisabled(logPath);
+        ImGui.PopTextWrapPos();
         if (ImGui.Button("我知道了##PreviousCrash"))
         {
             MVoxelLog.AcknowledgePreviousCrash();

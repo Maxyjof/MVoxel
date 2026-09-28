@@ -168,12 +168,10 @@ internal sealed class ProjectAssetBrowser
 
     private void DrawFolderTree(ProjectHandle? project)
     {
+        var framePadding = ImGui.GetStyle().FramePadding;
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(framePadding.X, Math.Min(1F, framePadding.Y)));
         DrawFolderNode(project, string.Empty, "资产", 0);
-        if (project is null)
-        {
-            ImGui.Dummy(new Vector2(0F, 6F));
-            ImGui.TextDisabled("打开项目后显示实际文件");
-        }
+        ImGui.PopStyleVar();
     }
 
     private void DrawFolderNode(ProjectHandle? project, string relativePath, string displayName, int depth)
@@ -194,9 +192,23 @@ internal sealed class ProjectAssetBrowser
         }
 
         if (children.Count == 0 || !opened) return;
-        foreach (var child in children)
+        if (isRoot && ImGui.BeginTable("##资源根目录网格", 2,
+                ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
         {
-            DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
+            foreach (var child in children)
+            {
+                ImGui.TableNextColumn();
+                DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
+            }
+
+            ImGui.EndTable();
+        }
+        else
+        {
+            foreach (var child in children)
+            {
+                DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
+            }
         }
 
         ImGui.TreePop();
