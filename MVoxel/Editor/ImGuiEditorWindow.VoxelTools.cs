@@ -1212,10 +1212,9 @@ internal sealed partial class ImGuiEditorWindow
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
             var interactivePreview = cameraNavigating || settingsInteracting;
-            // 交互时降到四分之一线性分辨率（约 1/16 像素），停止操作后下一帧
-            // 自动恢复项目分辨率。ImGui 负责放大预览，完整质量只在最终视角计算。
-            var renderScale = Math.Clamp(previewSettings.ResolutionScale * (interactivePreview ? 0.25F : 1F),
-                0.25F, 1F);
+            // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
+            // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
+            var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
             var nowMs = Environment.TickCount64;
@@ -2308,6 +2307,8 @@ internal sealed partial class ImGuiEditorWindow
         SliderInt("每帧样本数", ref settings.PathSamplesPerFrame, 1, 8);
         SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192, "%d spp");
         SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("仅在你主动调整时改变路径追踪视口分辨率；1.00 为完整窗口分辨率。相机交互和大型场景优化不会自动降低分辨率。");
         SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
         SliderFloat("光线终止阈值（RR）", ref settings.RussianRouletteThreshold, 0.0005F, 0.05F, "%.4f");
         if (ImGui.IsItemHovered())
@@ -2346,8 +2347,8 @@ internal sealed partial class ImGuiEditorWindow
         Toggle("自动性能优化（仅视口）", ref _settingsToggleAutoPerformance,
             value => settings.AutoPerformanceScaling = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("按合并后的 GPU 工作集规模逐级降低内部渲染分辨率，并限制实时 AO/阴影采样；导出分辨率和质量不变。");
-        ImGui.TextWrapped("工作集超过 2 万 / 8 万 / 25 万格时，视口内部倍率依次降至 0.75× / 0.5× / 0.35×；超 70 万格时关闭实时 AO。可随时关闭此优化。");
+            ImGui.SetTooltip("只限制大型场景的实时 AO、阴影采样；不会降低场景窗口或渲染窗口的像素分辨率，也不会影响导出质量。");
+        ImGui.TextWrapped("保持完整像素分辨率；大型工作集自动限制实时 AO/阴影采样，超过 70 万格时关闭实时 AO。相机交互不使用低分辨率放大。");
     }
 
     /// <summary>

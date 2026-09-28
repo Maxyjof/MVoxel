@@ -272,11 +272,11 @@ public sealed class RenderSettings
     public int PathMaxAccumulatedSamples = 1024;
 
     /// <summary>
-    /// 内部分辨率倍率，低倍率用于交互预览
+    /// 内部分辨率倍率，仅响应渲染配置中的用户显式设置；交互和大型场景优化不得自动降低
     /// </summary>
     public float ResolutionScale = 1.0F;
 
-    /// <summary>超大渲染工作集自动降低视口分辨率和实时采样，导出质量不受影响</summary>
+    /// <summary>超大渲染工作集只自动限制实时 AO/阴影采样，不改变视口分辨率</summary>
     public bool AutoPerformanceScaling = true;
 
     /// <summary>
@@ -414,19 +414,16 @@ public sealed class RenderSettings
     }
 
     /// <summary>
-    /// 为大型渲染工作集创建仅用于视口显示的性能副本；项目设置与导出参数保持原样。
-    /// 视口像素量按面积缩放，实时 AO/软阴影样本同步设上限，减少每像素求交成本。
+    /// 为大型渲染工作集创建仅用于视口显示的性能副本；项目设置、视口分辨率与导出参数保持原样。
+    /// 只为实时 AO/阴影采样设置上限，避免通过缩小图像再放大牺牲空间精度。
     /// </summary>
     internal RenderSettings CreateLargeScenePreview(int worksetCells)
     {
         var preview = (RenderSettings)MemberwiseClone();
-        var scale = LargeSceneScaleFactor(worksetCells);
-        if (!AutoPerformanceScaling || scale >= 1F) return preview;
-
-        preview.ResolutionScale = Math.Clamp(ResolutionScale * scale, 0.25F, 1F);
+        if (!AutoPerformanceScaling || worksetCells <= 20_000) return preview;
         if (!PathTracingEnabled)
         {
-            preview.AoSamples = Math.Min(AoSamples, worksetCells > 250_000 ? 4 : worksetCells > 80_000 ? 6 : 8);
+            preview.AoSamples = Math.Min(AoSamples, LargeSceneAoSampleLimit(worksetCells));
             preview.ShadowSamples = Math.Min(ShadowSamples, worksetCells > 250_000 ? 1 : worksetCells > 80_000 ? 2 : 3);
             if (worksetCells > 700_000) preview.AmbientOcclusionEnabled = false;
         }
@@ -436,13 +433,13 @@ public sealed class RenderSettings
         return preview;
     }
 
-    /// <summary>按合并后 GPU 工作集规模计算视口内部渲染分辨率倍率</summary>
-    internal static float LargeSceneScaleFactor(int worksetCells) => worksetCells switch
+    /// <summary>按合并后 GPU 工作集规模计算实时 AO 样本上限，不改变渲染图像尺寸</summary>
+    internal static int LargeSceneAoSampleLimit(int worksetCells) => worksetCells switch
     {
-        > 250_000 => 0.35F,
-        > 80_000 => 0.5F,
-        > 20_000 => 0.75F,
-        _ => 1F,
+        > 250_000 => 4,
+        > 80_000 => 6,
+        > 20_000 => 8,
+        _ => int.MaxValue,
     };
 
     /// <summary>
