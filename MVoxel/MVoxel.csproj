@@ -4,6 +4,7 @@
         <OutputType>WinExe</OutputType>
         <AssemblyName>MVoxel</AssemblyName>
         <RootNamespace>MVoxel</RootNamespace>
+        <ApplicationIcon>Editor\Brand\MVoxelLogo.ico</ApplicationIcon>
     </PropertyGroup>
 
     <ItemGroup>
@@ -17,6 +18,7 @@
         <PackageReference Include="Jint" />
         <Content Include="Editor\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Brand\*.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Editor\Brand\*.ico" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Fonts\*.ttf" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Rendering\LICENSE.Bytesized.txt" CopyToOutputDirectory="PreserveNewest" />

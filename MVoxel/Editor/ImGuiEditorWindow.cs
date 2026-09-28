@@ -93,6 +93,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _sceneFieldOfView = 50F;
     private bool _showGrid = true;
     private bool _showVoxelOutlines = true;
+    private bool _showSceneStatistics;
     private bool _sceneMouseCaptured;
     private ViewportCaptureTarget _capturedViewport;
     private bool _sceneDocumentDirty;
@@ -124,6 +125,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string? _componentWarning;
     private VoxelDda.Hit? _selectedVoxel;
     private StableId? _selectedSceneObjectId;
+    private StableId? _pinnedVoxelModelId;
     private VoxelDda.Hit? _brushPreview;
     private float _elapsedSeconds;
     private float _undoHeldSeconds;
@@ -154,8 +156,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     public ImGuiEditorWindow(string[] args)
         : base(GameWindowSettings.Default, CreateWindowSettings(args))
     {
+        // 显式在原生窗口创建后再应用图标，确保标题栏和任务栏使用品牌图，
+        // 避免部分 Windows/GLFW 初始化顺序下保留默认应用图标。
+        Icon = AppBranding.LoadWindowIcon();
+        ApplyWindowsTaskbarBranding();
+        IsVisible = true;
         _startupProjectPath = ResolveStartupProjectPath(args);
     }
+
+    private unsafe void ApplyWindowsTaskbarBranding() =>
+        AppBranding.ApplyWindowsTaskbarIcon(GLFW.GetWin32Window(WindowPtr));
 
     internal static ImGuiEditorWindow Create(string[] args) => new(args);
 
@@ -547,12 +557,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private static NativeWindowSettings CreateWindowSettings(string[] args)
     {
+        AppBranding.ConfigureWindowsApplicationId();
         return new NativeWindowSettings
         {
             Title = "MVoxel 体素建模",
             ClientSize = new Vector2i(1440, 900),
             MinimumClientSize = new Vector2i(1000, 680),
-            StartVisible = true,
+            StartVisible = false,
             StartFocused = true,
             API = ContextAPI.NoAPI,
             Vsync = VSyncMode.On,
@@ -1073,36 +1084,39 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SameLine(0F, iconGap);
-        var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}", "允许选中对象", "禁止选中对象",
+        var modelObject = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel);
+        var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}",
+            modelObject ? "固定为体素编辑目标" : "允许选中对象",
+            modelObject ? "解除固定编辑目标" : "禁止选中对象",
             !sceneObject.Locked, DrawLockIcon, iconWidth);
         if (selectableClicked)
         {
-            sceneObject.Locked = !sceneObject.Locked;
-            MarkSceneDocumentDirty();
-            if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
-            {
-                _selectedSceneObjectId = null;
-            }
+            ToggleSceneObjectLock(sceneObject);
         }
 
-        if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
+        if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked &&
+            (!sceneObject.Locked || modelObject))
         {
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
+            if (modelObject) _activeTool = EditorTool.Draw;
         }
 
         // 不依赖 TreeNodeEx/InvisibleButton 哪一个拿到本次点击：双击判定只看
         // 当前行的实际悬停区域，避免树节点展开状态或 ImGui last-item 状态吞掉聚焦。
-        if (rowDoubleClicked && !visibilityClicked && !selectableClicked && !sceneObject.Locked)
+        if (rowDoubleClicked && !visibilityClicked && !selectableClicked &&
+            (!sceneObject.Locked || modelObject))
         {
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
+            if (modelObject) _activeTool = EditorTool.Draw;
             FocusHierarchyObject(sceneObject);
         }
 
         if (ImGui.BeginPopupContextItem($"##SceneObjectRowMenu_{sceneObject.Id}"))
         {
             _selectedSceneObjectId = sceneObject.Id;
+            if (modelObject) _activeTool = EditorTool.Draw;
             DrawSceneObjectContextMenu(sceneObject);
             ImGui.EndPopup();
         }
@@ -1264,6 +1278,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        DrawSceneToolbar();
         DrawSceneSliceControls();
 
         var origin = ImGui.GetCursorScreenPos();
@@ -1306,7 +1321,8 @@ DockId=0x6A3C3007,0
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
-        else if (!gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+        else if (!gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
+                 ImGui.IsMouseHoveringRect(origin, origin + size))
         {
             RequestWelcomeWindow();
         }
@@ -1315,22 +1331,12 @@ DockId=0x6A3C3007,0
         DrawSceneWorldAxes(drawList, origin, size, camera);
 
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
+        if (_showSceneStatistics) DrawSceneStatistics(drawList, origin);
         if (_sceneMouseCaptured && _capturedViewport == ViewportCaptureTarget.Scene)
         {
             DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
 
-        var hintLineHeight = ImGui.GetTextLineHeightWithSpacing();
-        ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight * 2F - 8F)));
-        ImGui.TextDisabled($"视角 {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  观察距离 {_sceneCameraDistance:0.0}");
-        ImGui.SetCursorPos(new Vector2(12F, Math.Max(12F, size.Y - hintLineHeight - 8F)));
-        ImGui.TextDisabled(IsCapsLockEnabled()
-            ? _editorSettings.McMode
-                ? "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键破坏 · 右键放置 · Shift 加速 · 中键平移"
-                : "Caps Lock：WASD 移动 · Q/E 升降 · 鼠标转向 · 左键放置 · 右键破坏 · Shift 加速 · 中键平移"
-            : "左键放置 · 右键环绕 · 中键平移 · Shift+左键破坏 · 滚轮缩放 · 点击右上角 XYZ 定向");
-        DrawSceneCameraButton(origin, size);
-        DrawSceneCameraPopup();
         ImGui.EndChild();
     }
 
@@ -1374,18 +1380,69 @@ DockId=0x6A3C3007,0
         };
     }
 
-    /// <summary>
-    /// 绘制场景右上角的相机设置按钮
-    /// </summary>
-    /// <param name="origin">视口左上角屏幕坐标</param>
-    /// <param name="size">视口尺寸</param>
-    private static void DrawSceneCameraButton(Vector2 origin, Vector2 size)
+    /// <summary>场景窗口顶部工具栏：切面、相机、信息依次靠右，统一按钮尺寸与状态色。</summary>
+    private void DrawSceneToolbar()
     {
-        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(8F, size.X - 112F), 8F));
-        if (ImGui.Button("相机##SceneCameraButton", new Vector2(96F, 24F)))
+        const float buttonWidth = 82F;
+        const float buttonHeight = 24F;
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var left = ImGui.GetCursorPosX();
+        var available = ImGui.GetContentRegionAvail().X;
+        ImGui.SetCursorPosX(left + MathF.Max(0F, available - buttonWidth * 3F - spacing * 2F));
+
+        if (SceneToolbarButton("切面查看##SceneSlice", _sceneSliceEnabled, buttonWidth, buttonHeight,
+                "非破坏性切面，仅影响场景窗口；启用后可选择轴和位置。"))
         {
-            ImGui.OpenPopup("##SceneCameraPopup");
+            _sceneSliceEnabled = !_sceneSliceEnabled;
+            _sceneSliceWorld = null;
         }
+
+        ImGui.SameLine(0F, spacing);
+        var cameraTip = IsCapsLockEnabled()
+            ? _editorSettings.McMode
+                ? "相机设置。Caps Lock：WASD 移动、Q/E 升降、鼠标转向；左键破坏、右键放置、Shift 加速、中键平移。"
+                : "相机设置。Caps Lock：WASD 移动、Q/E 升降、鼠标转向；左键放置、右键破坏、Shift 加速、中键平移。"
+            : "相机设置。左键放置、右键环绕、中键平移、Shift+左键破坏、滚轮缩放；点击 XYZ 控件定向。";
+        if (SceneToolbarButton("相机##SceneCameraButton", ImGui.IsPopupOpen("##SceneCameraPopup"),
+                buttonWidth, buttonHeight, cameraTip))
+            ImGui.OpenPopup("##SceneCameraPopup");
+
+        ImGui.SameLine(0F, spacing);
+        if (SceneToolbarButton("信息##SceneInformation", _showSceneStatistics, buttonWidth, buttonHeight,
+                "显示或隐藏帧率、帧耗时、体素数量和当前视角。"))
+            _showSceneStatistics = !_showSceneStatistics;
+
+        DrawSceneCameraPopup();
+    }
+
+    private static bool SceneToolbarButton(string label, bool active, float width, float height, string tooltip)
+    {
+        if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
+        var clicked = ImGui.Button(label, new Vector2(width, height));
+        if (active) ImGui.PopStyleColor();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
+        return clicked;
+    }
+
+    private void DrawSceneStatistics(ImDrawListPtr drawList, Vector2 origin)
+    {
+        var fps = MathF.Max(0F, ImGui.GetIO().Framerate);
+        var milliseconds = fps > 0F ? 1000F / fps : 0F;
+        var gpuCells = _project is null ? 0 : _pipeline?.SyncTotalCells ?? 0;
+        var lines = new[]
+        {
+            $"帧率  {fps:0.0} FPS  ·  {milliseconds:0.0} ms",
+            $"体素  {_world.OccupiedVoxelCount:N0}  ·  GPU 工作集  {gpuCells:N0}",
+            $"视角  {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  距离  {_sceneCameraDistance:0.0}",
+        };
+        var lineHeight = ImGui.GetTextLineHeightWithSpacing();
+        var width = lines.Max(line => ImGui.CalcTextSize(line).X) + 16F;
+        var panelMin = origin + new Vector2(8F, 8F);
+        drawList.AddRectFilled(panelMin, panelMin + new Vector2(width, lineHeight * lines.Length + 12F),
+            ToPackedColor(Color.FromArgb(205, 24, 29, 36)), 4F);
+        for (var index = 0; index < lines.Length; index++)
+            drawList.AddText(panelMin + new Vector2(8F, 6F + lineHeight * index),
+                ToPackedColor(Color.FromArgb(255, 230, 235, 241)), lines[index]);
     }
 
     /// <summary>
@@ -1862,10 +1919,42 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 判断体素模型对象是否允许选中和编辑
+    /// 当前固定的模型编辑目标；模型的锁图标固定归属，不再禁止体素笔刷。
     /// </summary>
-    /// <returns>锁定时返回 true</returns>
-    private bool IsVoxelWorldLocked() => GetVoxelWorldObject()?.Locked ?? false;
+    private SceneObject? GetPinnedVoxelModelObject()
+    {
+        var objects = _sceneDocument?.Objects;
+        if (objects is null) return null;
+        var pinned = objects.FirstOrDefault(item => item.Id == _pinnedVoxelModelId && item.Locked &&
+            item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        pinned ??= objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId && item.Locked &&
+            item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        return pinned ?? objects.FirstOrDefault(item => item.Locked &&
+            item.Components.Any(SceneComponentTypes.IsVoxelModel));
+    }
+
+    private void ToggleSceneObjectLock(SceneObject sceneObject)
+    {
+        var modelObject = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel);
+        sceneObject.Locked = !sceneObject.Locked;
+        if (modelObject)
+        {
+            if (sceneObject.Locked)
+            {
+                foreach (var other in _sceneDocument?.Objects ?? [])
+                    if (other.Id != sceneObject.Id && other.Components.Any(SceneComponentTypes.IsVoxelModel))
+                        other.Locked = false;
+                _pinnedVoxelModelId = sceneObject.Id;
+                _selectedSceneObjectId = sceneObject.Id;
+                _activeTool = EditorTool.Draw;
+            }
+            else if (_pinnedVoxelModelId == sceneObject.Id)
+                _pinnedVoxelModelId = null;
+        }
+        else if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
+            _selectedSceneObjectId = null;
+        MarkSceneDocumentDirty();
+    }
 
     private static void DrawVoxelPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines)
@@ -2537,8 +2626,10 @@ DockId=0x6A3C3007,0
         else
         {
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8F, 8F));
+            ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,
+                new Vector2(6F, MathF.Max(5F, ImGui.GetFontSize() * .2F)));
             DrawInspectorProperties();
-            ImGui.PopStyleVar();
+            ImGui.PopStyleVar(2);
         }
         ImGui.End();
     }
@@ -2635,13 +2726,19 @@ DockId=0x6A3C3007,0
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "警告：模型组件与相机组件不能同时挂载");
         else if (!string.IsNullOrWhiteSpace(_componentWarning))
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Panel));
-        ImGui.PushStyleColor(ImGuiCol.Border, ToColor(EditorPalette.Border));
-        if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, 70F), ImGuiChildFlags.Borders))
+        var objectRowHeight = ImGui.GetFrameHeight();
+        var objectRowGap = ImGui.GetStyle().ItemSpacing.Y;
+        const float objectPadding = 7F;
+        var objectHeaderHeight = objectRowHeight * 2F + objectRowGap + objectPadding * 2F;
+        var objectIconSize = objectRowHeight;
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.PanelHeader));
+        if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, objectHeaderHeight),
+                ImGuiChildFlags.None, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
+            ImGui.SetCursorPos(new Vector2(8F, objectPadding));
             var visible = selectedObject.Visible;
             var visibilityClicked = DrawHierarchyIconButton("##InspectorObjectVisibility", "对象可见", "对象隐藏",
-                visible, DrawVisibilityIcon);
+                visible, DrawVisibilityIcon, objectIconSize);
             if (visibilityClicked)
             {
                 selectedObject.Visible = !visible;
@@ -2651,7 +2748,7 @@ DockId=0x6A3C3007,0
             }
             ImGui.SameLine();
             var objectName = selectedObject.Name;
-            ImGui.SetNextItemWidth(Math.Max(96F, ImGui.GetContentRegionAvail().X - 30F));
+            ImGui.SetNextItemWidth(Math.Max(40F, ImGui.GetContentRegionAvail().X - objectIconSize - 12F));
             if (ImGui.InputText("##InspectorObjectName", ref objectName, 128) &&
                 !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
             {
@@ -2659,20 +2756,24 @@ DockId=0x6A3C3007,0
                 MarkSceneDocumentDirty();
             }
             ImGui.SameLine(0F, 4F);
-            var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable", "允许选中对象", "禁止选中对象",
-                !selectedObject.Locked, DrawLockIcon);
+            var modelObject = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
+            var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
+                modelObject ? "固定为体素编辑目标" : "允许选中对象",
+                modelObject ? "解除固定编辑目标" : "禁止选中对象",
+                !selectedObject.Locked, DrawLockIcon, objectIconSize);
             if (selectableClicked)
             {
-                selectedObject.Locked = !selectedObject.Locked;
-                MarkSceneDocumentDirty();
-                if (selectedObject.Locked) _selectedSceneObjectId = null;
+                ToggleSceneObjectLock(selectedObject);
             }
             if (_sceneDocumentDirty && ImGui.IsItemHovered()) ImGui.SetTooltip("当前场景有未保存修改");
+            ImGui.SetCursorPos(new Vector2(8F, objectPadding + objectRowHeight + objectRowGap));
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextDisabled("图层");
             ImGui.SameLine();
             var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
             var currentLayer = Math.Clamp(selectedObject.LayerIndex, 0, layerNames.Count - 1);
-            ImGui.SetNextItemWidth(Math.Min(220F, ImGui.GetContentRegionAvail().X));
-            if (ImGui.BeginCombo("##InspectorObjectLayer", $"图层：{layerNames[currentLayer]}"))
+            ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 8F));
+            if (ImGui.BeginCombo("##InspectorObjectLayer", layerNames[currentLayer]))
             {
                 for (var layerIndex = 0; layerIndex < layerNames.Count; layerIndex++)
                 {
@@ -2691,8 +2792,8 @@ DockId=0x6A3C3007,0
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；渲染窗口中相机的图层遮罩决定本对象是否被该相机渲染");
         }
         ImGui.EndChild();
-        ImGui.PopStyleColor(2);
-        ImGui.Dummy(new Vector2(0F, 6F));
+        ImGui.PopStyleColor();
+        ImGui.Dummy(new Vector2(0F, 3F));
         DrawPrefabInspectorSection(selectedObject);
 
         var removeComponentIndex = -1;
@@ -2706,7 +2807,7 @@ DockId=0x6A3C3007,0
                     selectedObject.Components[componentIndex], componentIndex));
             }
         }
-        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 5F));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 3F));
         for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
         {
             var component = selectedObject.Components[componentIndex];
@@ -2721,8 +2822,11 @@ DockId=0x6A3C3007,0
             var headerMin = ImGui.GetCursorScreenPos();
             var totalHeaderWidth = ImGui.GetContentRegionAvail().X;
             var isTransformComponent = SceneComponentTypes.IsTransform(component);
-            var headerWidth = Math.Max(120F, totalHeaderWidth - (isTransformComponent ? 34F : 64F));
-            var headerHeight = ImGui.GetFrameHeight() + 6F;
+            var controlHeight = ImGui.GetFrameHeight();
+            var menuWidth = Math.Max(28F, ImGui.GetFontSize() * 1.1F);
+            var actionWidth = menuWidth + (isTransformComponent ? 8F : controlHeight + 12F);
+            var headerWidth = Math.Max(40F, totalHeaderWidth - actionWidth);
+            var headerHeight = controlHeight + 8F;
             var headerClicked = ImGui.InvisibleButton("##InspectorComponentHeader", new Vector2(headerWidth, headerHeight));
             var headerMax = headerMin + new Vector2(totalHeaderWidth, headerHeight);
             var expansionKey = GetInspectorComponentExpansionKey(component, componentIndex);
@@ -2735,8 +2839,9 @@ DockId=0x6A3C3007,0
             }
             var draw = ImGui.GetWindowDrawList();
             var headerColor = ImGui.IsItemHovered() ? EditorPalette.AccentSoft : EditorPalette.PanelHeader;
-            draw.AddRectFilled(headerMin, headerMax, ToPackedColor(headerColor), 3F);
-            draw.AddRect(headerMin, headerMax, ToPackedColor(EditorPalette.Border), 3F, ImDrawFlags.None, 1F);
+            draw.AddRectFilled(headerMin, headerMax, ToPackedColor(headerColor));
+            draw.AddLine(new Vector2(headerMin.X, headerMax.Y), headerMax,
+                ToPackedColor(EditorPalette.Border));
             var triangleCenter = new Vector2(headerMin.X + 12F, headerMin.Y + headerHeight / 2F);
             if (expanded)
                 draw.AddTriangleFilled(triangleCenter + new Vector2(-4F, -2F), triangleCenter + new Vector2(4F, -2F),
@@ -2744,10 +2849,12 @@ DockId=0x6A3C3007,0
             else
                 draw.AddTriangleFilled(triangleCenter + new Vector2(-2F, -4F), triangleCenter + new Vector2(-2F, 4F),
                     triangleCenter + new Vector2(4F, 0F), ToPackedColor(EditorPalette.Text));
-            draw.AddText(headerMin + new Vector2(25F, 5F), ToPackedColor(EditorPalette.Text), label);
+            draw.AddText(headerMin + new Vector2(25F,
+                (headerHeight - ImGui.GetTextLineHeight()) * .5F), ToPackedColor(EditorPalette.Text), label);
 
             var resetComponent = false;
-            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - (isTransformComponent ? 30F : 58F), headerMin.Y + 2F));
+            ImGui.SetCursorScreenPos(new Vector2(headerMax.X - actionWidth,
+                headerMin.Y + (headerHeight - controlHeight) * .5F));
             var enabledClicked = false;
             if (!isTransformComponent)
             {
@@ -2763,8 +2870,7 @@ DockId=0x6A3C3007,0
             }
             if (!isTransformComponent) ImGui.SameLine(0F, 4F);
             var menuMin = ImGui.GetCursorScreenPos();
-            var menuWidth = 28F;
-            var menuClicked = ImGui.InvisibleButton("##InspectorComponentMenu", new Vector2(menuWidth, headerHeight - 4F));
+            var menuClicked = ImGui.InvisibleButton("##InspectorComponentMenu", new Vector2(menuWidth, controlHeight));
             var menuMax = ImGui.GetItemRectMax();
             var menuDraw = ImGui.GetWindowDrawList();
             if (ImGui.IsItemHovered())
@@ -2811,17 +2917,13 @@ DockId=0x6A3C3007,0
             if (resetComponent) ResetInspectorComponent(selectedObject, component);
             if (expanded)
             {
-                var bodyMin = ImGui.GetCursorScreenPos();
-                ImGui.Indent(8F);
+                ImGui.Dummy(new Vector2(0F, 4F));
+                ImGui.Indent(12F);
                 DrawComponentSummary(selectedObject, component);
-                ImGui.Unindent(8F);
-                var bodyMax = ImGui.GetCursorScreenPos();
-                var bodyDraw = ImGui.GetWindowDrawList();
-                bodyDraw.AddRect(bodyMin, new Vector2(headerMax.X, bodyMax.Y + 3F),
-                    ToPackedColor(EditorPalette.Border), 3F, ImDrawFlags.None, 1F);
-                ImGui.Dummy(new Vector2(0F, 5F));
+                ImGui.Unindent(12F);
+                ImGui.Dummy(new Vector2(0F, 4F));
             }
-            ImGui.Dummy(new Vector2(0F, 2F));
+            ImGui.Dummy(new Vector2(0F, 1F));
             ImGui.PopID();
         }
         ImGui.PopStyleVar();
@@ -2835,7 +2937,14 @@ DockId=0x6A3C3007,0
             SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
         }
 
-        if (ImGui.Button("添加组件", new Vector2(-1F, 30F))) ImGui.OpenPopup("##InspectorAddComponentPopup");
+        ImGui.Dummy(new Vector2(0F, 6F));
+        var addWidth = Math.Min(220F, ImGui.GetContentRegionAvail().X);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0F, (ImGui.GetContentRegionAvail().X - addWidth) / 2F));
+        ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ToColor(EditorPalette.AccentSoft));
+        var addHeight = Math.Max(ImGui.GetFrameHeight() + 8F, ImGui.GetTextLineHeight() + 12F);
+        if (ImGui.Button("添加组件", new Vector2(addWidth, addHeight))) ImGui.OpenPopup("##InspectorAddComponentPopup");
+        ImGui.PopStyleColor(2);
         if (ImGui.BeginPopup("##InspectorAddComponentPopup"))
             {
                 ImGui.TextDisabled("选择要添加的组件");
@@ -3001,10 +3110,12 @@ DockId=0x6A3C3007,0
     private static void BeginInspectorField(string label, string? tooltip = null)
     {
         var start = ImGui.GetCursorPosX();
+        var labelWidth = Math.Clamp(ImGui.GetContentRegionAvail().X * .31F, 94F, 158F);
+        ImGui.AlignTextToFramePadding();
         ImGui.TextDisabled(label);
         if (tooltip is not null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
         ImGui.SameLine();
-        ImGui.SetCursorPosX(Math.Max(start + 82F, ImGui.GetCursorPosX()));
+        ImGui.SetCursorPosX(Math.Max(start + labelWidth, ImGui.GetCursorPosX()));
         ImGui.SetNextItemWidth(-1F);
     }
 
@@ -3021,6 +3132,13 @@ DockId=0x6A3C3007,0
             : known
                 ? Path.GetFileNameWithoutExtension(current)
                 : $"丢失引用 · {Path.GetFileName(current)}";
+        var availableTextWidth = Math.Max(28F, ImGui.GetContentRegionAvail().X - ImGui.GetFrameHeight() * 1.7F);
+        if (ImGui.CalcTextSize(display).X > availableTextWidth)
+        {
+            while (display.Length > 1 && ImGui.CalcTextSize(display + "…").X > availableTextWidth)
+                display = display[..^1];
+            display += "…";
+        }
         var changed = false;
         ImGui.SetNextItemWidth(-1F);
         if (ImGui.BeginCombo("##InspectorVoxelModelReference", display))
@@ -3091,29 +3209,6 @@ DockId=0x6A3C3007,0
         return _voxelModelReferenceCache;
     }
 
-    private static void DrawInspectorIcon(bool rotation, string tooltip)
-    {
-        ImGui.Dummy(new Vector2(18F, 18F));
-        var min = ImGui.GetItemRectMin();
-        var max = ImGui.GetItemRectMax();
-        var center = (min + max) * 0.5F;
-        var draw = ImGui.GetWindowDrawList();
-        var color = ToPackedColor(EditorPalette.Text);
-        if (rotation)
-        {
-            draw.AddCircle(center, 6F, color, 16, 1.4F);
-            draw.AddTriangleFilled(center + new Vector2(4F, -6F), center + new Vector2(8F, -5F),
-                center + new Vector2(6F, -1F), color);
-        }
-        else
-        {
-            draw.AddLine(center + new Vector2(-7F, 0F), center + new Vector2(7F, 0F), color, 1.4F);
-            draw.AddLine(center + new Vector2(0F, -7F), center + new Vector2(0F, 7F), color, 1.4F);
-            draw.AddCircleFilled(center, 2F, color, 8);
-        }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
-    }
-
     private void DrawComponentSummary(SceneObject selectedObject, ComponentRecord component)
     {
         if (SceneComponentTypes.IsTransform(component))
@@ -3123,9 +3218,7 @@ DockId=0x6A3C3007,0
                 var position = selectedObject.Transform.Free.Position;
                 var rotation = selectedObject.Transform.Free.Rotation;
                 var positionValue = new NumVector3((float)position.X, (float)position.Y, (float)position.Z);
-                DrawInspectorIcon(false, "对象在场景中的位置。");
-                ImGui.SameLine();
-                ImGui.SetNextItemWidth(-1F);
+                BeginInspectorField("位置", "对象在场景中的位置。");
                 if (ImGui.InputFloat3("##TransformPosition", ref positionValue))
                 {
                     selectedObject.Transform.SetFree(new FreeTransform(
@@ -3133,12 +3226,9 @@ DockId=0x6A3C3007,0
                     UpdateTransformMarker(selectedObject);
                     MarkSceneDocumentDirty();
                 }
-                ImGui.NewLine();
                 var euler = selectedObject.Transform.GetEulerDegrees();
                 var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
-                DrawInspectorIcon(true, "对象的 XYZ 旋转角度。");
-                ImGui.SameLine();
-                ImGui.SetNextItemWidth(-1F);
+                BeginInspectorField("旋转", "对象的 XYZ 旋转角度。");
                 if (ImGui.InputFloat3("##TransformRotation", ref eulerValue))
                 {
                     selectedObject.Transform.SetFreeEuler(
@@ -3151,12 +3241,9 @@ DockId=0x6A3C3007,0
             else
             {
                 var grid = selectedObject.Transform.Grid;
-                DrawInspectorIcon(false, "体素对象的整数网格坐标。");
-                ImGui.SameLine();
-                ImGui.Text($"{grid.Position.X}, {grid.Position.Y}, {grid.Position.Z}");
-                ImGui.NewLine();
-                DrawInspectorIcon(true, "模型按 90 度为单位旋转。");
-                ImGui.SameLine();
+                BeginInspectorField("位置", "体素对象的整数网格坐标。");
+                ImGui.TextUnformatted($"X  {grid.Position.X}     Y  {grid.Position.Y}     Z  {grid.Position.Z}");
+                BeginInspectorField("旋转", "模型按 90 度为单位旋转。");
                 var thirdWidth = Math.Max(46F, (ImGui.GetContentRegionAvail().X - 12F) / 3F);
                 if (ImGui.Button("X +90°##TransformRotateX", new Vector2(thirdWidth, 0F)))
                     RotateModel(selectedObject, OrthogonalRotation.AroundX90);
@@ -3806,7 +3893,7 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
-                    OpenProject,
+                    project => OpenProject(project),
                     exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, path),
                     () => SetStatus("已取消创建项目")))
             {
@@ -3838,17 +3925,12 @@ DockId=0x6A3C3007,0
                         report(new BlockingOperationProgress("正在读取项目清单…", .18F, CanCancel: true));
                         var project = ProjectLayout.Open(absolutePath);
                         cancellation.ThrowIfCancellationRequested();
-                        report(new BlockingOperationProgress("正在扫描资产目录…", .76F, CanCancel: true));
-                        foreach (var directory in ProjectLayout.AssetDirectories)
-                        {
-                            cancellation.ThrowIfCancellationRequested();
-                            _ = Directory.Exists(Path.Combine(project.AssetsPath, directory));
-                        }
-
-                        report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: true));
-                        return project;
+                        report(new BlockingOperationProgress("正在读取体素资产…", .22F, CanCancel: true));
+                        var preload = PreloadProjectModels(project, cancellation, report);
+                        report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: false));
+                        return new PreparedProjectLoad(project, preload);
                     },
-                    OpenProject,
+                    prepared => OpenProject(prepared.Project, prepared.Models),
                     exception => ShowProjectOperationError("打开项目失败", exception, fromWelcome, 2, path),
                     () => SetStatus("已取消加载项目")))
             {
@@ -3887,7 +3969,7 @@ DockId=0x6A3C3007,0
             () => SetStatus("加载诊断已取消"));
     }
 
-    private void OpenProject(ProjectHandle project)
+    private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null)
     {
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
@@ -3914,7 +3996,7 @@ DockId=0x6A3C3007,0
         }
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
-        LoadWorldForProject(project);
+        LoadWorldForProject(project, preloadedModels);
         TryRestoreRecovery(project);
         ReloadMaterialTable();
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
@@ -3965,6 +4047,7 @@ DockId=0x6A3C3007,0
         _voxelHistory.Clear();
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
+        _pinnedVoxelModelId = null;
         _palette = EditorPalettes.ResolveEditorPalette();
         _paletteIsProjectLevel = false;
         _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 using OpenTkImage = OpenTK.Windowing.Common.Input.Image;
 using OpenTkWindowIcon = OpenTK.Windowing.Common.Input.WindowIcon;
@@ -10,11 +11,89 @@ namespace MVoxel.Editor;
 /// </summary>
 internal static class AppBranding
 {
+    private const uint ImageIcon = 1;
+    private const uint LoadFromFile = 0x0010;
+    private const uint WmSetIcon = 0x0080;
+    private const nint IconSmall = 0;
+    private const nint IconBig = 1;
+    private const int ClassIcon = -14;
+    private const int ClassSmallIcon = -34;
+    private static nint _smallTaskbarIcon;
+    private static nint _largeTaskbarIcon;
+
     private static readonly string[] LogoCandidates =
     {
         Path.Combine(AppContext.BaseDirectory, "Editor", "Brand", "MVoxelLogo.png"),
         Path.Combine(AppContext.BaseDirectory, "Brand", "MVoxelLogo.png"),
     };
+
+    /// <summary>设置固定的 Windows Shell 身份，使任务栏按 MVoxel 的应用图标分组。</summary>
+    internal static void ConfigureWindowsApplicationId()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            _ = SetCurrentProcessExplicitAppUserModelId("MVoxel.Editor");
+        }
+    }
+
+    /// <summary>把 exe 中同源 ICO 明确附加到窗口与窗口类，供任务栏和 Alt+Tab 读取。</summary>
+    internal static void ApplyWindowsTaskbarIcon(nint windowHandle)
+    {
+        if (!OperatingSystem.IsWindows() || windowHandle == 0)
+        {
+            return;
+        }
+
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Editor", "Brand", "MVoxelLogo.ico");
+        if (!File.Exists(iconPath))
+        {
+            return;
+        }
+
+        _smallTaskbarIcon = LoadImageW(nint.Zero, iconPath, ImageIcon,
+            GetSystemMetrics(49), GetSystemMetrics(50), LoadFromFile);
+        _largeTaskbarIcon = LoadImageW(nint.Zero, iconPath, ImageIcon,
+            GetSystemMetrics(11), GetSystemMetrics(12), LoadFromFile);
+        if (_smallTaskbarIcon == 0 || _largeTaskbarIcon == 0)
+        {
+            return;
+        }
+
+        _ = SendMessageW(windowHandle, WmSetIcon, IconSmall, _smallTaskbarIcon);
+        _ = SendMessageW(windowHandle, WmSetIcon, IconBig, _largeTaskbarIcon);
+        SetWindowClassIcon(windowHandle, ClassSmallIcon, _smallTaskbarIcon);
+        SetWindowClassIcon(windowHandle, ClassIcon, _largeTaskbarIcon);
+    }
+
+    private static void SetWindowClassIcon(nint windowHandle, int index, nint icon)
+    {
+        if (IntPtr.Size == 8)
+        {
+            _ = SetClassLongPtrW(windowHandle, index, icon);
+        }
+        else
+        {
+            _ = SetClassLongW(windowHandle, index, icon.ToInt32());
+        }
+    }
+
+    [DllImport("shell32.dll", EntryPoint = "SetCurrentProcessExplicitAppUserModelID", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelId(string appId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint LoadImageW(nint instance, string name, uint type, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint SendMessageW(nint windowHandle, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW", SetLastError = true)]
+    private static extern nint SetClassLongPtrW(nint windowHandle, int index, nint value);
+
+    [DllImport("user32.dll", EntryPoint = "SetClassLongW", SetLastError = true)]
+    private static extern int SetClassLongW(nint windowHandle, int index, int value);
 
     /// <summary>
     /// 生成 GLFW 窗口图标
@@ -27,11 +106,9 @@ internal static class AppBranding
             return null;
         }
 
-        var images = new[]
-        {
-            new OpenTkImage(32, 32, ResizeRgba(pixels, width, height, 32, 32)),
-            new OpenTkImage(16, 16, ResizeRgba(pixels, width, height, 16, 16)),
-        };
+        var images = new[] { 16, 20, 24, 32, 48, 64, 128, 256 }
+            .Select(size => new OpenTkImage(size, size, ResizeRgba(pixels, width, height, size, size)))
+            .ToArray();
         return new OpenTkWindowIcon(images);
     }
 

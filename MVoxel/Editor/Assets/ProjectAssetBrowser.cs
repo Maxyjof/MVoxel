@@ -134,13 +134,15 @@ internal sealed class ProjectAssetBrowser
     {
         ImGui.TextColored(ToColor(EditorPalette.Text), BuildBreadcrumb(project));
 
-        const float filterWidth = 104F;
-        const float scopeWidth = 52F;
-        const float searchWidth = 176F;
+        var filterLabel = FilterLabel(_filter);
+        var filterWidth = Math.Max(156F, ImGui.CalcTextSize(filterLabel).X + ImGui.GetFrameHeight() + 20F);
+        var scopeWidth = Math.Max(52F, ImGui.CalcTextSize(_searchAll ? "全局" : "当前").X + 20F);
+        var searchWidth = Math.Max(176F, ImGui.CalcTextSize("搜索资产…").X + 72F);
         var left = ImGui.GetCursorPosX();
         var right = left + ImGui.GetContentRegionAvail().X;
+        var toolbarWidth = filterWidth + scopeWidth + searchWidth + ImGui.GetStyle().ItemSpacing.X * 2F;
         ImGui.SameLine();
-        ImGui.SetCursorPosX(Math.Max(left + 8F, right - filterWidth - scopeWidth - searchWidth - 12F));
+        ImGui.SetCursorPosX(Math.Max(left + 8F, right - toolbarWidth));
         if (ImGui.Button(_searchAll ? "全局" : "当前", new Vector2(scopeWidth, 0F)))
         {
             _searchAll = !_searchAll;
@@ -148,7 +150,7 @@ internal sealed class ProjectAssetBrowser
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(filterWidth);
-        if (ImGui.BeginCombo("##资源类型筛选", FilterLabel(_filter)))
+        if (ImGui.BeginCombo("##资源类型筛选", filterLabel))
         {
             if (ImGui.Selectable("全部类型", _filter is null)) _filter = null;
             foreach (var kind in ProjectAssetCatalog.FilterKinds)

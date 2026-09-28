@@ -1,8 +1,12 @@
 # MVoxel brand assets
 
-`MVoxelLogo.png` is the generated MVoxel brand mark. It uses a blue-left/red-right
-uppercase M made from independent, aligned voxel-grid modules, set into a dark
-voxel plaque with consistent material lighting. The SVG master is
-`MVoxelLogoGrid.svg`; it makes the module size and spacing explicit so blocks do
-not overlap. The PNG has a real transparent alpha background. Keep the square
-crop and do not stretch it non-uniformly when adding alternate UI sizes.
+The MVoxel mark is a red-and-blue M composed only of square grid voxels on a
+transparent background. No rectangular strokes, rounded silhouettes, or badge
+are used. `MVoxelLogo.png` serves the welcome screen and runtime window icon;
+`MVoxelLogo.ico` is embedded into the Windows executable. The vector master is
+`MVoxelLogoGrid.svg`.
+
+All three files are generated from the same grid and palette with
+`python tools/generate_brand.py` at the repository root. The ICO contains
+16/24/32/48/64/128/256-pixel PNG layers. Keep the icon square and use nearest-
+neighbor resizing so the voxel edges stay crisp.
