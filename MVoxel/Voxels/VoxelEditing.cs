@@ -219,6 +219,7 @@ public sealed class VoxelStrokeCommand : IEditorCommand
 {
     private readonly VoxelWorld _world;
     private readonly (VoxelCoord64 Coordinate, VoxelValue Before, VoxelValue After)[] _edits;
+    private readonly Action<bool>? _onApplied;
 
     /// <summary>
     /// 捕获描边前后的逐格差异，目标值与当前值相同的格子自动跳过
@@ -227,8 +228,9 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     /// <param name="world">目标世界</param>
     /// <param name="cells">描边覆盖的格子</param>
     /// <param name="after">统一写入的体素值，空值表示删除</param>
-    public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<VoxelCoord64> cells, VoxelValue after)
-        : this(name, world, cells.Select(cell => (cell, after)))
+    public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<VoxelCoord64> cells, VoxelValue after,
+        Action<bool>? onApplied = null)
+        : this(name, world, cells.Select(cell => (cell, after)), onApplied)
     {
     }
 
@@ -238,12 +240,14 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     /// <param name="name">命令显示名</param>
     /// <param name="world">目标世界</param>
     /// <param name="cells">格子与各自目标值的序列，空值表示删除</param>
-    public VoxelStrokeCommand(string name, VoxelWorld world, IEnumerable<(VoxelCoord64 Coordinate, VoxelValue After)> cells)
+    public VoxelStrokeCommand(string name, VoxelWorld world,
+        IEnumerable<(VoxelCoord64 Coordinate, VoxelValue After)> cells, Action<bool>? onApplied = null)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(cells);
         Name = name;
         _world = world;
+        _onApplied = onApplied;
         var byCoordinate = new Dictionary<VoxelCoord64, VoxelValue>();
         foreach (var (coordinate, after) in cells)
         {
@@ -282,6 +286,7 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     public void Execute()
     {
         foreach (var (coordinate, _, after) in _edits) _world.Set(coordinate, after);
+        _onApplied?.Invoke(true);
     }
 
     /// <summary>
@@ -290,5 +295,6 @@ public sealed class VoxelStrokeCommand : IEditorCommand
     public void Undo()
     {
         foreach (var (coordinate, before, _) in _edits) _world.Set(coordinate, before);
+        _onApplied?.Invoke(false);
     }
 }

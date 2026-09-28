@@ -421,6 +421,35 @@ public sealed class VoxelWorld
         StructureStamp++;
     }
 
+    /// <summary>文件读取专用写入器；连续记录通常属于同一区块，避免每个体素重复查全局区块字典。</summary>
+    internal BulkWriter CreateBulkWriter() => new(this);
+
+    internal sealed class BulkWriter(VoxelWorld world)
+    {
+        private ChunkCoord64 _lastCoordinate;
+        private SparseVoxelChunk? _lastChunk;
+
+        internal void Set(VoxelCoord64 coordinate, VoxelValue value)
+        {
+            var (chunkCoordinate, localCoordinate) = Split(coordinate);
+            if (_lastChunk is null || chunkCoordinate != _lastCoordinate)
+            {
+                if (!world._chunks.TryGetValue(chunkCoordinate, out _lastChunk))
+                {
+                    _lastChunk = new SparseVoxelChunk();
+                    world._chunks.Add(chunkCoordinate, _lastChunk);
+                    world.StructureStamp++;
+                }
+
+                _lastCoordinate = chunkCoordinate;
+                world._dirtyChunks.Add(chunkCoordinate);
+            }
+
+            _lastChunk.Set(localCoordinate, value);
+            world.ContentVersion++;
+        }
+    }
+
     /// <summary>
     /// 读取指定坐标的稀疏区块
     /// </summary>

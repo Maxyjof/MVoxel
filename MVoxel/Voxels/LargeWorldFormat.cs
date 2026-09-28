@@ -75,6 +75,16 @@ public static class LargeWorldFormat
         WriteStreaming(path, width, depth, height, count, chunks, offsets, minimum);
     }
 
+    /// <summary>保留空模型资产及其场景引用，供擦除全部体素后继续在原对象上绘制。</summary>
+    public static void WriteEmpty(string path)
+    {
+        var header = new byte[24];
+        using (var stream = new MemoryStream(header, writable: true))
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
+            WriteHeader(writer, 1, 1, 1, 0);
+        AtomicFile.WriteBytes(path, header);
+    }
+
     /// <summary>
     /// 大世界流式写入：预分配定长临时文件，各区块用池化缓冲序列化后并行定点写入自己的区间，
     /// 记录 FNV-1a 区哈希；强制刷盘后整文件回读重算哈希，逐区一致才原子替换目标，
@@ -249,7 +259,8 @@ public static class LargeWorldFormat
     /// <param name="path">模型文件路径</param>
     /// <param name="origin">模型实例在场景中的世界原点</param>
     /// <returns>读取出的稀疏世界</returns>
-    public static VoxelWorld Read(string path, VoxelCoord64 origin = default)
+    public static VoxelWorld Read(string path, VoxelCoord64 origin = default,
+        CancellationToken cancellationToken = default, Action<int, int>? reportProgress = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
@@ -258,19 +269,22 @@ public static class LargeWorldFormat
         ReadFully(stream, header, header.Length);
         var (width, depth, height, count) = ValidateHeader(header, stream.Length);
         var world = new VoxelWorld();
+        var writer = world.CreateBulkWriter();
         var buffer = new byte[RecordSize * 65536];
         var remaining = count;
         while (remaining > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var records = (int)Math.Min(remaining, buffer.Length / RecordSize);
             var bytes = records * RecordSize;
             ReadFully(stream, buffer, bytes);
             for (var record = 0; record < records; record++)
             {
-                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, origin, world);
+                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, origin, writer);
             }
 
             remaining -= records;
+            reportProgress?.Invoke(count - remaining, count);
         }
 
         return world;
@@ -304,7 +318,7 @@ public static class LargeWorldFormat
     /// 解析一条 13 字节体素记录并写入世界，越界或空体素视为损坏
     /// </summary>
     private static void ParseRecord(ReadOnlySpan<byte> record, int width, int height, int depth,
-        VoxelCoord64 origin, VoxelWorld world)
+        VoxelCoord64 origin, VoxelWorld.BulkWriter writer)
     {
         var x = BinaryPrimitives.ReadUInt16LittleEndian(record);
         var y = BinaryPrimitives.ReadUInt16LittleEndian(record[2..]);
@@ -318,7 +332,7 @@ public static class LargeWorldFormat
             throw new InvalidDataException("大世界模型包含越界或空体素记录");
         }
 
-        world.Set(origin + new VoxelCoord64(x, y, z), value);
+        writer.Set(origin + new VoxelCoord64(x, y, z), value);
     }
 
     /// <summary>
@@ -337,9 +351,10 @@ public static class LargeWorldFormat
 
         var (width, depth, height, count) = ValidateHeader(bytes, bytes.Length);
         var world = new VoxelWorld();
+        var writer = world.CreateBulkWriter();
         for (var index = 0; index < count; index++)
         {
-            ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, origin, world);
+            ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, origin, writer);
         }
 
         return world;
