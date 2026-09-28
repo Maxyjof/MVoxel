@@ -136,7 +136,8 @@ internal sealed class ImGuiWelcomeContent
         ImGui.SetNextWindowPos(screen / 2F, ImGuiCond.Always, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(panelSize, ImGuiCond.Always);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
-                    ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings;
+                    ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings |
+                    ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
         ImGui.Begin("##MVoxelWelcome", flags);
         var display = ImGui.GetWindowSize();
 
@@ -190,12 +191,9 @@ internal sealed class ImGuiWelcomeContent
         var footerHeight = ImGui.GetTextLineHeightWithSpacing() * 2F + 16F;
         var desiredRecentHeight = recentContentHeight;
         var recentHeight = Math.Min(desiredRecentHeight,
-            Math.Max(60F, ImGui.GetContentRegionAvail().Y - footerHeight));
-        var recentWindowFlags = recentHeight >= desiredRecentHeight
-            ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
-            : ImGuiWindowFlags.None;
+            Math.Max(0F, ImGui.GetContentRegionAvail().Y - footerHeight));
         ImGui.BeginChild("##RecentProjects", new Vector2(contentWidth, recentHeight), ImGuiChildFlags.Borders,
-            recentWindowFlags);
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (recent.Count == 0)
         {
             ImGui.Dummy(new Vector2(0F, 18F));
@@ -221,11 +219,14 @@ internal sealed class ImGuiWelcomeContent
                 draw.AddRect(rowMin, rowMax, ToPackedColor(border), 6F, ImDrawFlags.None, 1F);
                 draw.AddRectFilled(rowMin, rowMin + new Vector2(4F, rowHeight), ToPackedColor(EditorPalette.Accent), 6F,
                     ImDrawFlags.RoundCornersLeft);
-                draw.AddText(rowMin + new Vector2(12F, 5F), textColor, entry.Name);
                 var date = entry.LastOpenedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                 var dateWidth = ImGui.CalcTextSize(date).X;
+                var titleMaxWidth = Math.Max(1F, rowWidth - dateWidth - 36F);
+                var title = FitText(entry.Name, titleMaxWidth);
+                var path = FitText(entry.Path, Math.Max(1F, rowWidth - 24F));
+                draw.AddText(rowMin + new Vector2(12F, 5F), textColor, title);
                 draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 12F, 5F), mutedColor, date);
-                draw.AddText(rowMin + new Vector2(12F, 28F), mutedColor, entry.Path);
+                draw.AddText(rowMin + new Vector2(12F, 28F), mutedColor, path);
                 if (clicked)
                 {
                     _errorText = string.Empty;
@@ -282,6 +283,22 @@ internal sealed class ImGuiWelcomeContent
                             ImGui.CalcTextSize(logPath, false, textWidth).Y +
                             ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y * 3F + 2F;
         return Math.Max(92F, contentHeight) + 20F;
+    }
+
+    private static string FitText(string text, float maxWidth)
+    {
+        if (ImGui.CalcTextSize(text).X <= maxWidth) return text;
+        const string ellipsis = "…";
+        var low = 0;
+        var high = text.Length;
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            if (ImGui.CalcTextSize(text[..middle] + ellipsis).X <= maxWidth) low = middle;
+            else high = middle - 1;
+        }
+
+        return low == 0 ? ellipsis : text[..low] + ellipsis;
     }
 
     private static void DrawCrashNotice(Vector2 display)

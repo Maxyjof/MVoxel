@@ -21,7 +21,7 @@ internal sealed class ProjectAssetBrowser
     private string _searchText = string.Empty;
     private ProjectAssetKind? _filter;
     private bool _searchAll = true;
-    private float _treeWidth = 280F;
+    private float _treeWidth = 360F;
     private float _tileSize = 76F;
     private string? _renamePath;
 
@@ -90,7 +90,8 @@ internal sealed class ProjectAssetBrowser
         ImGui.Separator();
 
         var bodyHeight = Math.Max(64F, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8F);
-        ImGui.BeginChild("##资源目录树", new Vector2(_treeWidth, bodyHeight), ImGuiChildFlags.Borders);
+        ImGui.BeginChild("##资源目录树", new Vector2(_treeWidth, bodyHeight), ImGuiChildFlags.Borders,
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         DrawFolderTree(project);
         ImGui.EndChild();
 
@@ -98,7 +99,7 @@ internal sealed class ProjectAssetBrowser
         ImGui.InvisibleButton("##资源面板分隔条", new Vector2(5F, bodyHeight));
         if (ImGui.IsItemActive())
         {
-            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 220F, 400F);
+            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 270F, 440F);
         }
         if (ImGui.IsItemHovered() || ImGui.IsItemActive())
         {
@@ -192,7 +193,7 @@ internal sealed class ProjectAssetBrowser
         }
 
         if (children.Count == 0 || !opened) return;
-        if (isRoot && ImGui.GetContentRegionAvail().X >= 250F && ImGui.BeginTable("##资源根目录网格", 2,
+        if (isRoot && ImGui.BeginTable("##资源根目录网格", 2,
                 ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
         {
             foreach (var child in children)
