@@ -1211,7 +1211,6 @@ internal sealed partial class ImGuiEditorWindow
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
-            var interactivePreview = cameraNavigating || settingsInteracting;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
@@ -1229,7 +1228,8 @@ internal sealed partial class ImGuiEditorWindow
             // 相机、场景或配置改变时仍会重绘。
             if (!effective.PathTracingEnabled)
             {
-                var realtimeSettings = interactivePreview ? previewSettings.CreateInteractionPreview() : previewSettings;
+                // 环绕/平移相机时保持 AO、光照和后处理完整；仅编辑渲染控件时才启用轻量预览。
+                var realtimeSettings = settingsInteracting ? previewSettings.CreateInteractionPreview() : previewSettings;
                 var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
                     pathMode: false, outlines: false);
                 if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
@@ -1254,7 +1254,8 @@ internal sealed partial class ImGuiEditorWindow
                     Vector2.Zero, pipeline.DisplayUvMax);
                 return true;
             }
-            var renderSettings = cameraNavigating || settingsInteracting
+            // 相机移动同样使用完整路径追踪配置；不能因导航临时关闭照明或减少反弹。
+            var renderSettings = settingsInteracting
                 ? previewSettings.CreateInteractionPreview()
                 : previewSettings;
             var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);

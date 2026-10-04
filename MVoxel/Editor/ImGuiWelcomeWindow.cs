@@ -119,7 +119,8 @@ internal sealed class ImGuiWelcomeContent
         var screen = ImGui.GetIO().DisplaySize;
         var panelWidth = Math.Min(780F, Math.Max(520F, screen.X - 32F));
         var recent = RecentProjects.Load();
-        const float recentRowHeight = 52F;
+        var recentLineHeight = ImGui.GetTextLineHeight();
+        var recentRowHeight = Math.Max(62F, recentLineHeight * 2F + 24F);
         const float recentRowGap = 4F;
         var recentContentHeight = recent.Count == 0
             ? 60F
@@ -206,7 +207,7 @@ internal sealed class ImGuiWelcomeContent
             {
                 ImGui.PushID(entry.Path);
                 var rowWidth = ImGui.GetContentRegionAvail().X;
-                const float rowHeight = recentRowHeight;
+                var rowHeight = recentRowHeight;
                 var rowMin = ImGui.GetCursorScreenPos();
                 var clicked = ImGui.InvisibleButton("##RecentProjectCard", new Vector2(rowWidth, rowHeight));
                 var rowMax = rowMin + new Vector2(rowWidth, rowHeight);
@@ -224,9 +225,13 @@ internal sealed class ImGuiWelcomeContent
                 var titleMaxWidth = Math.Max(1F, rowWidth - dateWidth - 36F);
                 var title = FitText(entry.Name, titleMaxWidth);
                 var path = FitText(entry.Path, Math.Max(1F, rowWidth - 24F));
-                draw.AddText(rowMin + new Vector2(12F, 5F), textColor, title);
-                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 12F, 5F), mutedColor, date);
-                draw.AddText(rowMin + new Vector2(12F, 28F), mutedColor, path);
+                var firstLineY = MathF.Max(6F, (recentRowHeight - recentLineHeight * 2F - 4F) * 0.5F);
+                var secondLineY = firstLineY + recentLineHeight + 4F;
+                draw.PushClipRect(rowMin, rowMax, true);
+                draw.AddText(rowMin + new Vector2(12F, firstLineY), textColor, title);
+                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 12F, firstLineY), mutedColor, date);
+                draw.AddText(rowMin + new Vector2(12F, secondLineY), mutedColor, path);
+                draw.PopClipRect();
                 if (clicked)
                 {
                     _errorText = string.Empty;

@@ -395,8 +395,8 @@ public sealed class RenderSettings
     public float CameraFovDegrees = 50F;
 
     /// <summary>
-    /// 创建视角拖动期间使用的 GPU 交互参数副本。它仍然走同一条 GPU 管线，
-    /// 只减少单帧路径复杂度，停止拖动后下一帧自动恢复原始设置。
+    /// 创建渲染设置控件交互期间使用的 GPU 参数副本。相机导航不使用此副本；
+    /// 编辑器控件拖动时临时降低单帧路径复杂度，停止编辑后恢复完整设置。
     /// </summary>
     internal RenderSettings CreateInteractionPreview()
     {
