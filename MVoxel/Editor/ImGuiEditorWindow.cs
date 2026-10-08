@@ -607,7 +607,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         AppPaths.EnsureDirectories();
         var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         var layoutVersionPath = AppPaths.ConfigPath("imgui-layout.version");
-        const string layoutVersion = "5";
+        const string layoutVersion = "6";
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
         var hasCurrentLayoutVersion = File.Exists(layoutVersionPath) &&
@@ -683,6 +683,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void DrawEditorFrame()
     {
+        if (_resetDockLayoutRequested)
+        {
+            ImGui.LoadIniSettingsFromMemory(DefaultDockLayout);
+            _resetDockLayoutRequested = false;
+        }
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
         var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
         var operation = _projectOperation.Snapshot;
@@ -693,6 +698,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawDockspace();
         DrawHierarchy();
         DrawCenter();
+        DrawModelingTools();
         DrawInspector();
         DrawRenderConfig();
         DrawProjectAssets();
@@ -706,6 +712,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (inputBlocked) ImGui.EndDisabled();
         DrawExitConfirmationDialog();
         if (!inputBlocked) DrawSettingsWindow();
+        if (!inputBlocked) DrawGettingStarted();
         TrackConfigurationChanges();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
         else if (operation is { } snapshot)
@@ -726,6 +733,21 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             if (ImGui.MenuItem("新建项目", "Ctrl+N")) ShowProjectPathDialog(create: true);
             if (ImGui.MenuItem("打开项目", "Ctrl+O")) ShowProjectPathDialog(create: false);
+            if (ImGui.MenuItem("保存项目", "Ctrl+S", false, _project is not null)) SaveProject();
+            if (ImGui.MenuItem("另存项目为…", null, false, _project is not null)) ShowSaveAsDialog();
+            if (ImGui.MenuItem("新建体素模型", null, false, _project is not null)) CreateVoxelModel();
+            if (ImGui.BeginMenu("导出", _project is not null))
+            {
+                if (ImGui.MenuItem("整个场景 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
+                if (ImGui.MenuItem("选中模型 → MagicaVoxel (.vox)")) ExportWorkingVoxels(true, false);
+                if (ImGui.MenuItem("整个场景 → Qubicle (.qb)")) ExportWorkingVoxels(false, true);
+                if (ImGui.MenuItem("选中模型 → Qubicle (.qb)")) ExportWorkingVoxels(true, true);
+                ImGui.Separator();
+                if (ImGui.MenuItem("当前渲染相机 → PNG")) { _requestedCenterTab = 1; ExportRenderPng(); }
+                if (ImGui.MenuItem("当前渲染相机 → HDR")) { _requestedCenterTab = 1; ExportRenderHdr(); }
+                if (ImGui.MenuItem("全部相机 → PNG")) { _requestedCenterTab = 1; ExportAllCamerasPng(); }
+                ImGui.EndMenu();
+            }
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
             if (ImGui.MenuItem("导入体素数据（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
@@ -741,6 +763,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
             ImGui.Separator();
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
+            if (ImGui.MenuItem("建模工具", null, ref _showModelingTools)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
             if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
             if (ImGui.MenuItem("生成器", null, ref _showGeneratorPanel)) { }
@@ -838,8 +861,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("帮助"))
         {
-            ImGui.MenuItem("MVoxel 体素建模软件", enabled: false);
-            ImGui.MenuItem("在场景中旋转、平移和缩放，观察你的作品", enabled: false);
+            if (ImGui.MenuItem("入门与 MagicaVoxel 迁移指南")) _showGettingStarted = true;
+            if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
             ImGui.EndMenu();
         }
 
@@ -875,10 +898,12 @@ DockId=0x6A3C3003,0
 DockId=0x6A3C3005,0
 [Window][渲染##渲染窗口]
 DockId=0x6A3C3005,1
-[Window][检查器##检查器窗口]
+[Window][建模工具##建模工具窗口]
 DockId=0x6A3C3006,0
-[Window][渲染配置##渲染配置窗口]
+[Window][检查器##检查器窗口]
 DockId=0x6A3C3006,1
+[Window][渲染配置##渲染配置窗口]
+DockId=0x6A3C3006,2
 [Window][项目资产##资源浏览器]
 DockId=0x6A3C3007,0
 """;
@@ -1018,7 +1043,8 @@ DockId=0x6A3C3007,0
             {
                 if (objects.Count == 0)
                 {
-                    ImGui.TextDisabled("场景中还没有对象");
+                    if (ImGui.Button("创建第一个体素模型", new Vector2(-1F, ImGui.GetFrameHeight()))) CreateVoxelModel();
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("也可以选择绘制工具，直接在网格上落笔，自动创建模型。");
                 }
                 else
                 {
@@ -1342,12 +1368,12 @@ DockId=0x6A3C3007,0
                     GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)));
         }
 
-        if (_project is not null && showVoxelWorld)
+        if (_project is not null && !gizmoHovered && (showVoxelWorld || GetVoxelWorldObject() is null))
         {
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
-        else if (!gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
+        else if (_project is null && !gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
                  ImGui.IsMouseHoveringRect(origin, origin + size))
         {
             RequestWelcomeWindow();
@@ -1454,7 +1480,7 @@ DockId=0x6A3C3007,0
     {
         var fps = MathF.Max(0F, ImGui.GetIO().Framerate);
         var milliseconds = fps > 0F ? 1000F / fps : 0F;
-        var gpuCells = _project is null ? 0 : _pipeline?.SyncTotalCells ?? 0;
+        var gpuCells = _project is null ? 0 : _scenePipeline?.SyncTotalCells ?? 0;
         var lines = new[]
         {
             $"帧率  {fps:0.0} FPS  ·  {milliseconds:0.0} ms",
@@ -2431,7 +2457,8 @@ DockId=0x6A3C3007,0
             var scale = _activeExport.Scale;
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
-            var frame = BuildFrameState(viewCamera, size, scale, width, height, pathMode: settings.PathTracingEnabled, outlines: false);
+            var frame = BuildFrameState(viewCamera, size, scale, width, height,
+                pathMode: settings.PathTracingEnabled, outlines: false, sourcePipeline: pipeline);
             var submitted = settings.PathTracingEnabled
                 ? pipeline.RenderPathView(settings, frame, width, height)
                 : pipeline.RenderSceneView(settings, frame, width, height);
@@ -2522,7 +2549,7 @@ DockId=0x6A3C3007,0
 
     private void ExportRenderPng()
     {
-        if (_pipeline is not { IsAvailable: true })
+        if (_gpuRenderingDisabled || _vulkan is null || _project is null)
         {
             SetStatus("显卡渲染不可用，无法加入导出队列");
             return;
@@ -2543,7 +2570,7 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void ExportRenderHdr()
     {
-        if (_pipeline is not { IsAvailable: true })
+        if (_gpuRenderingDisabled || _vulkan is null || _project is null)
         {
             SetStatus("显卡渲染不可用，无法加入导出队列");
             return;
@@ -2565,7 +2592,7 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void ExportAllCamerasPng()
     {
-        if (_pipeline is not { IsAvailable: true })
+        if (_gpuRenderingDisabled || _vulkan is null || _project is null)
         {
             SetStatus("显卡渲染不可用，无法批量出图");
             return;
@@ -3492,6 +3519,7 @@ DockId=0x6A3C3007,0
     private int _projectPathDialogMode;
     private string _projectPathText = string.Empty;
     private string _projectPathError = string.Empty;
+    private readonly ProjectLocationForm _locationForm = new();
     private string _projectBrowserPath = string.Empty;
     private string? _projectBrowserSelectedPath;
     private readonly Stack<string> _projectBrowserBack = new();
@@ -3641,14 +3669,23 @@ DockId=0x6A3C3007,0
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelStatusBar", flags);
         var exportCount = _exportQueue.Count + (_activeExport is null ? 0 : 1);
+        var saveState = _project is null ? "未打开项目" : _sceneDocumentDirty ? "未保存" : "已保存";
+        var status = string.IsNullOrWhiteSpace(_statusText) ? saveState : $"{saveState} · {_statusText}";
+        var statusWidth = Math.Max(1F, ImGui.GetContentRegionAvail().X - (exportCount > 0 ? 360F : 0F));
+        var statusPosition = ImGui.GetCursorScreenPos();
+        ImGui.GetWindowDrawList().PushClipRect(statusPosition, statusPosition + new Vector2(statusWidth, ImGui.GetTextLineHeight()), true);
+        ImGui.TextUnformatted(status);
+        ImGui.GetWindowDrawList().PopClipRect();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(status);
         if (exportCount > 0)
         {
+            ImGui.SameLine();
             ImGui.SetCursorPosX(Math.Max(8F, display.X - 360F));
             ImGui.TextDisabled($"导出队列 {exportCount}");
             ImGui.SameLine();
-            var progress = _activeExport is null || _pipeline is null || _activeExport.Settings.PathMaxAccumulatedSamples <= 0
+            var progress = _activeExport is null || _exportPipeline is null || _activeExport.Settings.PathMaxAccumulatedSamples <= 0
                 ? 0F
-                : Math.Clamp((float)_pipeline.AccumulatedSamples / _activeExport.Settings.PathMaxAccumulatedSamples, 0F, 1F);
+                : Math.Clamp((float)_exportPipeline.AccumulatedSamples / _activeExport.Settings.PathMaxAccumulatedSamples, 0F, 1F);
             ImGui.ProgressBar(progress, new Vector2(120F, 0F));
             ImGui.SameLine();
             if (ImGui.SmallButton(_exportQueueExpanded ? "收起" : "展开")) _exportQueueExpanded = !_exportQueueExpanded;
@@ -3688,6 +3725,14 @@ DockId=0x6A3C3007,0
     {
         _layoutPreset = preset;
         _applyPreset = true;
+        _resetDockLayoutRequested = true;
+        _showModelingTools = preset != LayoutPreset.Rendering;
+        _showInspector = true;
+        _showHierarchy = true;
+        _showProjectAssets = true;
+        _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
+        _focusModelingTools = preset != LayoutPreset.Rendering;
+        if (preset == LayoutPreset.Rendering) _requestedInspectorTab = 1;
     }
 
     private void ShowProjectPathDialog(bool create)
@@ -3720,7 +3765,7 @@ DockId=0x6A3C3007,0
         var open = true;
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(0.5F, 0.5F));
         ImGui.SetNextWindowSize(new Vector2(580F, _projectPathDialogMode == 2 ? 610F : 0F), ImGuiCond.Appearing);
-        if (ImGui.Begin(_projectPathDialogMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目", ref open,
+        if (ImGui.Begin(_projectPathDialogMode == 1 ? "新建 MVoxel 项目" : _projectPathDialogMode == 3 ? "另存 MVoxel 项目" : "打开 MVoxel 项目", ref open,
                 ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse))
         {
             if (_projectPathDialogMode == 1)
@@ -3728,10 +3773,9 @@ DockId=0x6A3C3007,0
                 DrawProjectTemplatePicker();
             }
 
-            if (_projectPathDialogMode == 1)
+            if (_projectPathDialogMode is 1 or 3)
             {
-                ImGui.SetNextItemWidth(540F);
-                ImGui.InputText("项目路径", ref _projectPathText, 2048);
+                _locationForm.Draw(ref _projectPathText);
             }
             else
             {
@@ -3771,7 +3815,9 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (_projectPathDialogMode == 1) BeginCreateProject(path, _selectedProjectTemplate, fromWelcome: false);
+        if (_projectPathDialogMode is 1 or 3 && !_locationForm.TryValidate(path, out _projectPathError)) return;
+        if (_projectPathDialogMode == 3) BeginSaveAsProject(path);
+        else if (_projectPathDialogMode == 1) BeginCreateProject(path, _selectedProjectTemplate, fromWelcome: false);
         else if (!IsProjectFolder(path)) _projectPathError = "所选文件夹不是 MVoxel 项目（缺少 Project.mvoxproj）。";
         else BeginOpenProject(path, fromWelcome: false);
     }
@@ -3884,6 +3930,7 @@ DockId=0x6A3C3007,0
 
     private void BeginCreateProject(string path, ProjectTemplateId templateId, bool fromWelcome)
     {
+        if (DeferProjectReplacement(() => BeginCreateProject(path, templateId, fromWelcome))) return;
         try
         {
             var absolutePath = Path.GetFullPath(path.Trim().Trim('"'));
@@ -3911,8 +3958,11 @@ DockId=0x6A3C3007,0
                         projectSettings.SceneNearClip = _editorSettings.SceneNearClip;
                         projectSettings.SceneFarClip = _editorSettings.SceneFarClip;
                         projectSettings.SceneFieldOfView = _editorSettings.SceneFieldOfView;
-                        projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings;
-                        projectSettings.RenderSettings = _editorSettings.RenderViewSettings;
+                        if (templateId == ProjectTemplateId.Empty)
+                        {
+                            projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings.CloneForExport();
+                            projectSettings.RenderSettings = _editorSettings.RenderViewSettings.CloneForExport();
+                        }
                         projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
                         projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
                         projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
@@ -3940,6 +3990,7 @@ DockId=0x6A3C3007,0
 
     private void BeginOpenProject(string path, bool fromWelcome)
     {
+        if (DeferProjectReplacement(() => BeginOpenProject(path, fromWelcome))) return;
         try
         {
             var absolutePath = Path.GetFullPath(path.Trim().Trim('"'));
@@ -3998,6 +4049,7 @@ DockId=0x6A3C3007,0
 
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null)
     {
+        _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
         _project = project;
@@ -4024,6 +4076,7 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
+        if (GetVoxelWorldObject() is null) _activeTool = EditorTool.Draw;
         TryRestoreRecovery(project);
         ReloadMaterialTable();
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
@@ -4054,6 +4107,7 @@ DockId=0x6A3C3007,0
 
     private void CloseProject()
     {
+        _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
         _pluginRuntime = null;
         SaveProjectSettings();
@@ -4123,6 +4177,7 @@ DockId=0x6A3C3007,0
 
     private void RequestCloseProject()
     {
+        _afterProjectClose = null;
         if (_project is null) return;
         if (_sceneDocumentDirty)
         {
@@ -4144,23 +4199,23 @@ DockId=0x6A3C3007,0
         if (!ImGui.BeginPopupModal("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
         ImGui.TextWrapped("当前场景有未保存修改。请选择如何处理这些修改。");
         ImGui.Spacing();
-        if (ImGui.Button("保存并关闭", new Vector2(120F, 30F)))
+        if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
         {
             SaveProject();
             if (!_sceneDocumentDirty)
             {
                 ImGui.CloseCurrentPopup();
-                CloseProject();
+                CompleteProjectClose();
             }
         }
         ImGui.SameLine();
-        if (ImGui.Button("不保存关闭", new Vector2(120F, 30F)))
+        if (ImGui.Button(_afterProjectClose is null ? "不保存关闭" : "不保存继续", new Vector2(120F, 30F)))
         {
             ImGui.CloseCurrentPopup();
-            CloseProject();
+            CompleteProjectClose();
         }
         ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(90F, 30F))) ImGui.CloseCurrentPopup();
+        if (ImGui.Button("取消", new Vector2(90F, 30F))) { _afterProjectClose = null; ImGui.CloseCurrentPopup(); }
         ImGui.EndPopup();
     }
 
@@ -4172,23 +4227,40 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        ProjectLayout.EnsureDirectories(_project.RootPath);
-        SaveProjectSettings();
-        if (SaveWorldToProject(_project))
+        try
         {
+            if (_worldLoadFailed)
+            {
+                _sceneDocumentDirty = true;
+                SetStatus("模型加载失败，已阻止覆盖保存；请修复资产引用后重新打开项目");
+                return;
+            }
+            ProjectLayout.EnsureDirectories(_project.RootPath);
+            SaveProjectSettings();
+            if (!SaveWorldToProject(_project))
+            {
+                _sceneDocumentDirty = true;
+                return;
+            }
+            RecoveryStore.Clear(_project.RootPath);
             _sceneDocumentDirty = false;
             _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
-            RecoveryStore.Clear(_project.RootPath);
             SetStatus(automatic
                 ? $"项目已自动保存：{_project.Manifest.Name}"
                 : $"项目已保存：{_project.Manifest.Name}（场景与体素世界，{_world.OccupiedVoxelCount} 体素）");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _sceneDocumentDirty = true;
+            MVoxelLog.Error("保存项目失败", exception);
+            SetStatus($"保存未完成，已保留未保存状态：{exception.Message}");
         }
     }
 
     private void TryAutoSaveProject()
     {
         _autoSaveQueued = false;
-        if (_project is null || !_projectSettings.AutoSave || !_sceneDocumentDirty) return;
+        if (_project is null || _worldLoadFailed || !_projectSettings.AutoSave || !_sceneDocumentDirty) return;
 
         try
         {
@@ -4196,6 +4268,10 @@ DockId=0x6A3C3007,0
             if (_world.OccupiedVoxelCount > 0)
             {
                 Voxels.LargeWorldFormat.Write(RecoveryStore.WorldFilePath(_project.RootPath), _world);
+            }
+            else
+            {
+                Voxels.LargeWorldFormat.WriteEmpty(RecoveryStore.WorldFilePath(_project.RootPath));
             }
 
             RecoveryStore.Write(_project.RootPath,

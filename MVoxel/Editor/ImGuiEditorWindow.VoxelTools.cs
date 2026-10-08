@@ -28,6 +28,7 @@ internal enum EditorTool
     Line,
     Box,
     Fill,
+    Eyedropper,
 }
 
 /// <summary>
@@ -36,6 +37,10 @@ internal enum EditorTool
 /// </summary>
 internal sealed partial class ImGuiEditorWindow
 {
+    // 场景与渲染窗口可以同时可见，不能共享会被另一窗口重建的输出纹理。
+    private VulkanVoxelRenderPipeline? _scenePipeline;
+    private bool _worldLoadFailed;
+    private Rgba32? _sampledBrushColor;
     private bool _settingsToggleSun;
     private bool _settingsToggleAo;
     private bool _settingsTogglePalette;
@@ -67,6 +72,7 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+            _pipeline.SetMaterialTable(Project.MaterialAsset.PackTable(_brushMaterials));
             _pipelineStatus = string.Empty;
         }
         catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
@@ -104,6 +110,8 @@ internal sealed partial class ImGuiEditorWindow
 
         _pipeline?.Dispose();
         _pipeline = null;
+        _scenePipeline?.Dispose();
+        _scenePipeline = null;
     }
 
     internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin);
@@ -255,6 +263,7 @@ internal sealed partial class ImGuiEditorWindow
             SaveProjectSettings();
         }
         _palette = EditorPalettes.ResolveProjectPalette(project, _selectedProjectPalettePath);
+        _sampledBrushColor = null;
         _paletteIsProjectLevel = true;
         var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
         var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
@@ -290,14 +299,17 @@ internal sealed partial class ImGuiEditorWindow
             }
             else
             {
-                _world = VoxelDemoScene.Build(_palette);
-                SetStatus("已生成示范场景（房屋·树·提灯），可用“绘制/擦除”工具继续创作");
+                _world = new VoxelWorld();
+                _worldLoadFailed = true;
+                SetStatus("引用的体素数据不存在，未使用示范模型替代；请检查资产路径");
             }
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
         {
-            _world = VoxelDemoScene.Build(_palette);
-            SetStatus($"模型读取失败，已载入示范场景：{exception.Message}");
+            _world = new VoxelWorld();
+            MVoxelLog.Error("模型读取失败，已保留场景引用", exception);
+            _worldLoadFailed = true;
+            SetStatus($"模型读取失败，未使用其他模型替代：{exception.Message}");
         }
 
         var primaryPath = largeWorldPath is not null && File.Exists(largeWorldPath) ? largeWorldPath : modelPath;
@@ -499,8 +511,12 @@ internal sealed partial class ImGuiEditorWindow
             var hash = (long)_world.ContentVersion * 397;
             foreach (var sceneObject in _sceneDocument?.Objects ?? [])
             {
+                hash = hash * 31 + sceneObject.Id.GetHashCode();
+                hash = hash * 31 + (sceneObject.ParentId?.GetHashCode() ?? 0);
                 hash = hash * 31 + (sceneObject.Visible ? 7 : 3);
                 hash = hash * 31 + sceneObject.LayerIndex;
+                foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
+                    hash = hash * 31 + (component.Enabled ? 7 : 3);
             }
 
             foreach (var layer in _sceneDocument?.HiddenLayerNames ?? [])
@@ -670,8 +686,19 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
+        if (_worldLoadFailed)
+        {
+            SetStatus("体素资产未完整加载，已阻止保存覆盖；请修复资产路径或重新打开项目");
+            return false;
+        }
         try
         {
+            if (GetVoxelWorldObject() is null && _world.OccupiedVoxelCount == 0)
+            {
+                Scene.SceneSerializer.Save(Path.Combine(project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                    _sceneDocument ?? new SceneDocument { Name = "主场景" });
+                return true;
+            }
             var modelAssetPath = ResolveCurrentWorldAssetPath(project);
             var modelPath = Path.Combine(project.RootPath, modelAssetPath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(modelPath)!);
@@ -685,10 +712,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     LargeWorldFormat.Write(modelPath, _world);
                 }
-                else if (File.Exists(modelPath))
-                {
-                    File.Delete(modelPath);
-                }
+                else LargeWorldFormat.WriteEmpty(modelPath);
             }
             else
             {
@@ -1044,8 +1068,10 @@ internal sealed partial class ImGuiEditorWindow
 
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
-        bool showGrid = false, float gridStep = 0F, bool scenePreview = false)
+        bool showGrid = false, float gridStep = 0F, bool scenePreview = false,
+        VulkanVoxelRenderPipeline? sourcePipeline = null)
     {
+        var framePipeline = sourcePipeline ?? _pipeline;
         NumVector3 Convert(Vector3 value) => new(value.X, value.Y, value.Z);
         var width = Math.Max(16, widthOverride);
         var height = Math.Max(16, heightOverride);
@@ -1057,13 +1083,13 @@ internal sealed partial class ImGuiEditorWindow
             // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
             // 路径追踪仍需帧号驱动样本去相关。
             FrameIndex: pathMode ? (int)(Environment.TickCount & 0x3FFFFFFF) : 0,
-            _pipeline?.RegionMin ?? default,
-            _pipeline?.RegionSize ?? default,
-            _pipeline?.StepBudget ?? 8192,
-            _pipeline?.EmissiveLightCount ?? 0,
+            framePipeline?.RegionMin ?? default,
+            framePipeline?.RegionSize ?? default,
+            framePipeline?.StepBudget ?? 8192,
+            framePipeline?.EmissiveLightCount ?? 0,
             HuePhaseDegrees: effectiveSettings.HueCycle ? _elapsedSeconds * effectiveSettings.HueCycleSpeed % 360F : 0F,
             ShowOutlines: outlines,
-            AccumulatedSamples: _pipeline?.AccumulatedSamples ?? 0,
+            AccumulatedSamples: framePipeline?.AccumulatedSamples ?? 0,
             PathMode: pathMode,
             GridStep: gridStep,
             ShowGrid: showGrid,
@@ -1146,10 +1172,10 @@ internal sealed partial class ImGuiEditorWindow
         bool showGeometry = true)
     {
         if (_project is null || _gpuRenderingDisabled) return false;
-        if (_pipeline is null) InitializeVoxelPipeline();
-        if (_pipeline is not { } pipeline) return false;
         try
         {
+            _scenePipeline ??= new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+            var pipeline = _scenePipeline;
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
@@ -1162,7 +1188,7 @@ internal sealed partial class ImGuiEditorWindow
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(camera, size, scale, width, height,
                 pathMode: false, outlines: _showVoxelOutlines, scenePreview: true,
-                showGrid: _showGrid, gridStep: 1F);
+                showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
 
             drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
@@ -1309,6 +1335,7 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             _pipeline?.Dispose();
+            _scenePipeline?.Dispose();
         }
         catch (Exception disposeException)
         {
@@ -1316,6 +1343,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _pipeline = null;
+        _scenePipeline = null;
     }
 
     // 体素笔刷工具
@@ -1357,7 +1385,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (_activeTool == EditorTool.Pick)
+        if (_activeTool is EditorTool.Pick or EditorTool.Eyedropper)
         {
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
@@ -1365,6 +1393,12 @@ internal sealed partial class ImGuiEditorWindow
                 if (_selectedVoxel is { } pickedVoxel)
                 {
                     _ = ResolveVoxelEditTarget(pickedVoxel.Coordinate);
+                    if (_activeTool == EditorTool.Eyedropper && _world.TryGet(pickedVoxel.Coordinate, out var value))
+                    {
+                        _sampledBrushColor = value.Color;
+                        _brushMaterialSlot = value.MaterialSlot;
+                        _brushEmissive = (value.Flags & (byte)VoxelFlags.Emissive) != 0;
+                    }
                     _activeTool = EditorTool.Draw;
                 }
                 SetStatus(_selectedVoxel is { } picked
@@ -1405,7 +1439,8 @@ internal sealed partial class ImGuiEditorWindow
         Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         if (action is ViewportMouseAction.None or ViewportMouseAction.Orbit ||
-            !ImGui.IsMouseClicked(button))
+            !(ImGui.IsMouseClicked(button) || button == ImGuiMouseButton.Left &&
+                ImGui.IsMouseDragging(button) && ImGui.GetIO().MouseDelta != Vector2.Zero))
         {
             return false;
         }
@@ -1424,6 +1459,7 @@ internal sealed partial class ImGuiEditorWindow
                 var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
                 CommitStroke(cells, erase: false, targetId);
             }
+            else SetStatus(erase ? "未命中可擦除的体素" : "射线未命中模型或网格平面，请调整视角后绘制");
 
             _brushPreview = null;
             return true;
@@ -1482,7 +1518,7 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelValue CurrentBrushValue(bool erase)
     {
         if (erase) return default;
-        var paletteColor = _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
+        var paletteColor = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
         var flags = (byte)((_brushEmissive ? VoxelFlags.Emissive : VoxelFlags.None) |
                            (paletteColor.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
         return new VoxelValue(paletteColor, _brushMaterialSlot, flags);
@@ -1497,9 +1533,23 @@ internal sealed partial class ImGuiEditorWindow
         StableId? targetId = null)
     {
         if (cells.Count == 0) return;
+        if (_project is null)
+        {
+            SetStatus("请先新建或打开项目");
+            return;
+        }
+        if (!value.IsEmpty && GetVoxelWorldObject() is null) CreateVoxelModel();
         var primaryId = GetVoxelWorldObject()?.Id;
         var objects = _sceneDocument?.Objects ?? [];
         targetId ??= ResolveVoxelEditTarget(null);
+        var target = objects.FirstOrDefault(item => item.Id == targetId);
+        if (target is null || !target.Visible || !(_sceneDocument?.IsLayerVisible(target.LayerIndex) ?? false) ||
+            !IsSceneObjectAncestorsVisible(target, objects.ToDictionary(item => item.Id)) ||
+            !target.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled))
+        {
+            SetStatus("编辑目标不可见或模型组件未启用；请显示目标对象及其图层后再编辑");
+            return;
+        }
         var editable = VoxelEditOwnership.FilterEditableCells(cells, _world, targetId, primaryId,
             objects, _layerOwnership, value.IsEmpty);
         if (editable.Count == 0)
@@ -1511,18 +1561,34 @@ internal sealed partial class ImGuiEditorWindow
         VoxelEditOwnership.Change[] ownershipChanges = [];
         var command = new VoxelStrokeCommand(name, _world, editable, value,
             forward => VoxelEditOwnership.Apply(ownershipChanges, forward, primaryId, _layerOwnership));
+        if (command.ChangedCellCount == 0) return;
         ownershipChanges = VoxelEditOwnership.Capture(command.Edits, targetId, primaryId, objects, _layerOwnership);
         _voxelHistory.Execute(command);
         _editingJournal?.Append(command.Name, command.Edits);
-        if (command.ChangedCellCount == 0)
-        {
-            _voxelHistory.Undo();
-            _voxelHistory.Clear();
-            return;
-        }
 
         _pipeline?.ResetAccumulation();
         MarkSceneDocumentDirty();
+    }
+
+    private void CreateVoxelModel()
+    {
+        if (_project is null) return;
+        _sceneDocument ??= new SceneDocument { Name = "主场景" };
+        var firstModel = GetVoxelWorldObject() is null;
+        var name = "体素模型";
+        for (var suffix = 2; _sceneDocument.Objects.Any(item => item.Name == name); suffix++)
+            name = $"体素模型 {suffix}";
+        var model = new SceneGraph(_sceneDocument).Add(name,
+            transform: TransformComponent.FromGrid(GridTransform.Identity));
+        var relative = firstModel ? "Assets/Worlds/主世界.mvmodel" : $"Assets/Worlds/模型_{model.Id}.mvmodel";
+        model.Components.Add(SceneComponentTypes.CreateVoxelModel(relative, 0, "手动创建", name));
+        if (!firstModel) _layerOwnership[model.Id] = new HashSet<VoxelCoord64>();
+        _selectedSceneObjectId = model.Id;
+        _composedRenderWorld = null;
+        _activeTool = EditorTool.Draw;
+        _showModelingTools = true;
+        MarkSceneDocumentDirty();
+        SetStatus($"已创建 {name}，可在网格上绘制；Ctrl+S 保存项目");
     }
 
     /// <summary>
@@ -1542,7 +1608,7 @@ internal sealed partial class ImGuiEditorWindow
         var ioState = ImGui.GetIO();
         if (ioState.MouseClicked[(int)button])
         {
-            var hit = PickVoxel(mouse, origin, size, camera);
+            var hit = PickShapeSurface(mouse, origin, size, camera, destroy);
             if (hit is null)
             {
                 return true;
@@ -1557,7 +1623,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         else if (ImGui.IsMouseDown(button) && _toolDragAnchor is not null)
         {
-            var hit = PickVoxel(mouse, origin, size, camera);
+            var hit = PickShapeSurface(mouse, origin, size, camera, _toolDragErase);
             if (hit is not null)
             {
                 _toolDragCurrent = _toolDragErase ? hit.Value.Coordinate : hit.Value.Coordinate + hit.Value.Normal;
@@ -1579,6 +1645,17 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return true;
+    }
+
+    private VoxelDda.Hit? PickShapeSurface(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera, bool erase)
+    {
+        var hit = PickVoxel(mouse, origin, size, camera);
+        if (hit is not null || erase) return hit;
+        var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
+        if (!VoxelDda.TryGroundHit(new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                new NumVector3(ray.X, ray.Y, ray.Z), _sceneCameraDistance * 8F + 256F, out var point)) return null;
+        return new VoxelDda.Hit(new VoxelCoord64((long)MathF.Floor(point.X), -1, (long)MathF.Floor(point.Z)),
+            new VoxelCoord64(0, 1, 0), 0F, point);
     }
 
     /// <summary>
@@ -1839,6 +1916,7 @@ internal sealed partial class ImGuiEditorWindow
 
         if (ShortcutBindingRouter.IsPressed(scheme, "project.new")) ShowProjectPathDialog(create: true);
         if (ShortcutBindingRouter.IsPressed(scheme, "project.open")) ShowProjectPathDialog(create: false);
+        if (ShortcutBindingRouter.IsPressed(scheme, "project.save")) SaveProject();
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.camera")) _activeTool = EditorTool.Camera;
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
@@ -1849,6 +1927,7 @@ internal sealed partial class ImGuiEditorWindow
             _showHierarchy = !visible;
             _showProjectAssets = !visible;
             _showInspector = !visible;
+            _showModelingTools = !visible;
         }
 
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.focus"))
@@ -1876,6 +1955,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!_voxelHistory.Undo()) return false;
         SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
         _pipeline?.ResetAccumulation();
+        MarkSceneDocumentDirty();
         return true;
     }
 
@@ -1892,6 +1972,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!_voxelHistory.Redo()) return false;
         SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
         _pipeline?.ResetAccumulation();
+        MarkSceneDocumentDirty();
         return true;
     }
 
@@ -1957,20 +2038,18 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawBrushToolbarRow()
     {
         var previousTool = _activeTool;
-        ImGui.TextDisabled("观察");
-        ImGui.SameLine(0F, 6F);
         ToolButton("相机", EditorTool.Camera);
         ImGui.SameLine();
         ToolButton("选择", EditorTool.Pick);
-        ImGui.SameLine(0F, 12F);
-        ImGui.TextDisabled("编辑");
-        ImGui.SameLine(0F, 6F);
+        ImGui.SameLine();
+        ToolButton("取色", EditorTool.Eyedropper);
+        ImGui.NewLine();
         ToolButton("绘制", EditorTool.Draw);
         ImGui.SameLine();
         ToolButton("擦除", EditorTool.Erase);
         ImGui.SameLine();
         ToolButton("直线", EditorTool.Line);
-        ImGui.SameLine();
+        ImGui.NewLine();
         ToolButton("长方体", EditorTool.Box);
         ImGui.SameLine();
         ToolButton("填充", EditorTool.Fill);
@@ -1978,13 +2057,14 @@ internal sealed partial class ImGuiEditorWindow
         if (previousTool == _activeTool) return;
         SetStatus(_activeTool switch
         {
-            EditorTool.Camera => "视口工具：左键放置 · 右键环绕 · Shift+左键破坏 · 中键平移",
+            EditorTool.Camera => "相机工具：左键不编辑 · 右键环绕 · 中键平移",
             EditorTool.Pick => "选择工具：点击体素查看坐标与颜色（可取色）",
+            EditorTool.Eyedropper => "取色工具：点击体素取样颜色、材质槽与自发光标记",
             EditorTool.Draw => "绘制工具：左键放置 · Shift+左键破坏",
             EditorTool.Line => "直线工具：按下取起点，拖动到终点松开，一次可撤销",
             EditorTool.Box => "长方体工具：按下取一个角，拖到对角松开",
             EditorTool.Fill => "填充工具：点击体素替换其同值连通域，超上限需确认",
-            _ => "擦除工具：Shift+左键破坏",
+            _ => "擦除工具：左键擦除",
         });
     }
 
@@ -2032,12 +2112,14 @@ internal sealed partial class ImGuiEditorWindow
     {
         var active = _activeTool == tool;
         if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
-        if (ImGui.SmallButton(label) && !active) _activeTool = tool;
+        if (ImGui.Button(label, new Vector2(Math.Max(62F, ImGui.CalcTextSize(label).X + 20F), ImGui.GetFrameHeight())) && !active)
+            _activeTool = tool;
         if (ImGui.IsItemHovered()) ImGui.SetTooltip(tool switch
         {
             EditorTool.Camera => "观察：左键不修改体素，右键环绕，中键平移",
             EditorTool.Pick => "选择：点击体素查看坐标和颜色",
-            EditorTool.Draw => "绘制：左键放置，Shift+左键或右键擦除",
+            EditorTool.Eyedropper => "取色：采样体素的精确颜色、材质槽和自发光标记，再返回绘制",
+            EditorTool.Draw => "绘制：左键放置，Shift+左键擦除；右键环绕（Caps Lock 模式除外）",
             EditorTool.Erase => "擦除：左键或右键擦除体素",
             EditorTool.Line => "直线：拖动绘制或擦除一条直线",
             EditorTool.Box => "长方体：拖动绘制或擦除实心长方体",
@@ -2050,7 +2132,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPaletteSelector()
     {
         const int columns = 16;
-        var cellSize = Math.Clamp((ImGui.GetContentRegionAvail().X - 6F) / columns, 10F, 22F);
+        var cellSize = Math.Max(4F, Math.Min(22F, (ImGui.GetContentRegionAvail().X - (columns - 1)) / columns));
         var draw = ImGui.GetWindowDrawList();
         for (var index = 0; index < VoxelPalette.EntryCount; index++)
         {
@@ -2059,12 +2141,18 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.InvisibleButton("##色板格", new Vector2(cellSize, cellSize)))
             {
                 _paletteIndex = index;
+                _sampledBrushColor = null;
                 var picked = _palette[index];
                 _brushEmissive = false;
                 SetStatus($"画笔颜色 #{index} · RGB({picked.R},{picked.G},{picked.B}) · A{picked.A}");
             }
 
             ImGui.PopID();
+            if (ImGui.IsItemHovered())
+            {
+                var swatch = _palette[index];
+                ImGui.SetTooltip($"颜色 {index} · RGB({swatch.R}, {swatch.G}, {swatch.B}) · A {swatch.A}");
+            }
             var position = ImGui.GetItemRectMin();
             var color = _palette[index];
             var min = position + new Vector2(1F, 1F);
@@ -2125,7 +2213,7 @@ internal sealed partial class ImGuiEditorWindow
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
         DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
-        DrawRenderSettingsAccordion("palette", "材质与笔刷", () => DrawPaletteSection(settings));
+        DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
         DrawRenderSettingsAccordion("color", "色彩输出", () => DrawPostSection(settings));
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
         DrawRenderSettingsAccordion("material", "全局材质", () => DrawGlobalMaterialSection(settings));
@@ -2241,8 +2329,10 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("明度", ref settings.Brightness, 0.2F, 2F, "%.2f");
         Toggle("色相环动画", ref _settingsToggleHueCycle, value => settings.HueCycle = value);
         SliderFloat("色相环速度##cycle", ref settings.HueCycleSpeed, 0F, 90F, "%.0f°/秒");
-        ImGui.SeparatorText("笔刷");
-        DrawBrushToolbarRow();
+    }
+
+    private void DrawBrushProperties()
+    {
         var selectedMaterial = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
         if (ImGui.BeginCombo("笔刷材质", selectedMaterial?.Name ?? "默认材质（槽 0）"))
         {
@@ -2269,11 +2359,10 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus(_brushEmissive ? "新绘制的体素将带自发光标记" : "新绘制的体素为普通颜色");
         }
 
-        ImGui.SeparatorText("色板（256 色）");
+        ImGui.SeparatorText("色板");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(_paletteIsProjectLevel
+            ? $"项目调色板：{_selectedProjectPalettePath}" : "编辑器默认调色板");
         DrawPaletteSelector();
-        ImGui.TextDisabled(_paletteIsProjectLevel
-            ? $"当前项目调色板：{_selectedProjectPalettePath}"
-            : "当前为编辑器默认调色板（未打开项目）");
         if (_project is not null)
         {
             if (ImGui.Button("在项目设置中编辑调色板", new Vector2(-1F, 30F)))

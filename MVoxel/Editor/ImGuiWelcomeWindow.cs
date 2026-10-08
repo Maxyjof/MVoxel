@@ -364,7 +364,7 @@ internal sealed class ImGuiWelcomeContent
 
         var display = ImGui.GetIO().DisplaySize;
         var dialogWidth = Math.Min(680F, Math.Max(520F, display.X - 48F));
-        var dialogHeight = _pathMode == 1 ? 438F : 610F;
+        var dialogHeight = _pathMode == 1 ? 510F : 610F;
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(dialogWidth, dialogHeight), ImGuiCond.Appearing);
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
@@ -391,9 +391,7 @@ internal sealed class ImGuiWelcomeContent
 
             if (_pathMode == 1)
             {
-                ImGui.TextColored(ToColor(EditorPalette.MutedText), "项目文件夹");
-                ImGui.SetNextItemWidth(-1F);
-                ImGui.InputText("##WelcomeProjectPath", ref _pathText, 2048);
+                _locationForm.Draw(ref _pathText);
             }
             else
             {
@@ -434,6 +432,7 @@ internal sealed class ImGuiWelcomeContent
         _errorText = string.Empty;
         if (_pathMode == 1)
         {
+            if (!_locationForm.TryValidate(path, out _errorText)) return;
             _editor.StartNewProjectFromWelcome(path, _selectedTemplate);
         }
         else
@@ -577,6 +576,8 @@ internal sealed class ImGuiWelcomeContent
         newAutoName = safeName;
         return separatorIndex < 0 ? safeName : pathText[..(separatorIndex + 1)] + safeName;
     }
+
+    private readonly ProjectLocationForm _locationForm = new();
 
     private void OnProjectOperationFailed(object? sender, ProjectOperationFailedEventArgs args) => _errorText = args.Message;
 

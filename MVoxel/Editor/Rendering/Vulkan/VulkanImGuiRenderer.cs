@@ -197,8 +197,10 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
                     new Extent2D((uint)(clipRight - clipLeft), (uint)(clipBottom - clipTop)));
                 _api.CmdSetScissor(commandBuffer, 0, 1, in scissor);
                 var textureSet = _textureDescriptorSet;
-                if (drawCommand.TextureId != IntPtr.Zero && _textures.TryGetValue(drawCommand.TextureId, out var texture))
+                if (drawCommand.TextureId != IntPtr.Zero)
                 {
+                    // 非零句柄代表图像；过期句柄不能退回字体图集，否则视口会铺满字形花屏。
+                    if (!_textures.TryGetValue(drawCommand.TextureId, out var texture)) continue;
                     textureSet = texture.TextureSet;
                 }
 

@@ -69,12 +69,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 默认关闭：密集场景的砖内线性扫描尚待区块内 BVH 替换，
     /// 且砖格未做贪心合并，与传统路径存在噪声级像素差异
     /// </summary>
-    internal static bool EnableBrickPath;
+    internal static bool EnableBrickPath { get; set; }
 
     /// <summary>
     /// 强制走传统全量路径（渲染台架 A/B 对比用）
     /// </summary>
-    internal static bool DisableBrickPath;
+    internal static bool DisableBrickPath { get; set; }
     private DescriptorSetLayout _computeDescriptorLayout;
     private DescriptorPool _computeDescriptorPool;
     private PipelineLayout _computePipelineLayout;

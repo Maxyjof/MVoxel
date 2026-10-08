@@ -49,6 +49,14 @@ internal sealed class ProjectAssetBrowser
 
     internal string SelectedAssetPath => _selectedAsset;
 
+    internal void SelectAsset(string relativePath)
+    {
+        _selectedAsset = relativePath.Replace('\\', '/');
+        _selectedFolder = Path.GetDirectoryName(_selectedAsset)?.Replace('\\', '/') ?? string.Empty;
+        _searchText = string.Empty;
+        _filter = null;
+    }
+
     /// <summary>
     /// 清空选择状态（切换项目或手动刷新时调用）
     /// </summary>

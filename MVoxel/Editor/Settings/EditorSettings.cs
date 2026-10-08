@@ -41,7 +41,9 @@ public sealed class EditorSettingsDocument
     /// <summary>
     /// 新建项目对话框默认使用的项目根目录
     /// </summary>
-    public static string DefaultProjectRootPath => Path.Combine(AppPaths.BaseDirectory, "MVoxel_Workspace");
+    public static string DefaultProjectRootPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) is { Length: > 0 } documents
+            ? documents : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "MVoxel Projects");
 
     public int FormatVersion = CurrentFormatVersion;
     public string ProjectRootPath = DefaultProjectRootPath;
@@ -91,6 +93,9 @@ public sealed class EditorSettingsDocument
         ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
             ? DefaultProjectRootPath
             : ProjectRootPath.Trim().Trim('"');
+        // 迁移旧版程序目录下的默认值；不移动已有项目，也不改动自定义目录。
+        if (string.Equals(ProjectRootPath, Path.Combine(AppPaths.BaseDirectory, "MVoxel_Workspace"), StringComparison.OrdinalIgnoreCase))
+            ProjectRootPath = DefaultProjectRootPath;
         ShortcutSchemes ??= new List<ShortcutScheme>();
         if (ShortcutSchemes.Count == 0) ShortcutSchemes.Add(CreateDefaultScheme());
 
@@ -203,6 +208,7 @@ public static class ShortcutCommands
         new("edit.redo", "重做", "Ctrl+Y", "编辑"),
         new("project.new", "新建项目", "Ctrl+N", "项目"),
         new("project.open", "打开项目", "Ctrl+O", "项目"),
+        new("project.save", "保存项目", "Ctrl+S", "项目"),
         new("viewport.camera", "相机工具", "C", "视口"),
         new("viewport.draw", "绘制工具", "B", "视口"),
         new("viewport.erase", "擦除工具", "E", "视口"),
