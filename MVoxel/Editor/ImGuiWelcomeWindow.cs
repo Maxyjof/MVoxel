@@ -364,11 +364,14 @@ internal sealed class ImGuiWelcomeContent
 
         var display = ImGui.GetIO().DisplaySize;
         var dialogWidth = Math.Min(680F, Math.Max(520F, display.X - 48F));
-        var dialogHeight = _pathMode == 1 ? 510F : 610F;
+        var dialogHeight = _pathMode == 1 ? 0F : 610F;
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(dialogWidth, dialogHeight), ImGuiCond.Appearing);
+        if (_pathMode == 1) ImGui.SetNextWindowSizeConstraints(new Vector2(dialogWidth, 0F),
+            new Vector2(dialogWidth, Math.Max(200F, display.Y - 48F)));
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
+        if (_pathMode == 1) flags |= ImGuiWindowFlags.AlwaysAutoResize;
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 24F));
         if (ImGui.BeginPopupModal("##WelcomeProjectPathDialog", flags))
         {
@@ -529,7 +532,6 @@ internal sealed class ImGuiWelcomeContent
     private void DrawTemplatePicker()
     {
         var selected = ProjectTemplateCatalog.Get(_selectedTemplate);
-        ImGui.TextColored(ToColor(EditorPalette.Text), "选择一个有明确学习目标的起始场景");
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
             foreach (var template in ProjectTemplateCatalog.All)
@@ -547,9 +549,8 @@ internal sealed class ImGuiWelcomeContent
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled($"规模：{selected.Scale}    重点：{selected.Focus}");
-        ImGui.TextWrapped(selected.Description);
-        ImGui.TextColored(ToColor(EditorPalette.Accent), $"创建后你将学到：{selected.LearningGoal}");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Description}\n规模：{selected.Scale}\n重点：{selected.Focus}\n学习目标：{selected.LearningGoal}");
+        TemplateLearningPreview.Draw(_selectedTemplate);
     }
 
     /// <summary>

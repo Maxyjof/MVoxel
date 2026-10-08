@@ -466,6 +466,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// 获取最近一次同步的工作集体素数
     /// </summary>
     internal int SyncTotalCells { get; private set; }
+    internal int LastDispatchCount { get; private set; }
+    internal long LastWorkgroupCount { get; private set; }
 
     /// <summary>
     /// 获取体素与 BVH 显存缓冲的容量字节数
@@ -885,6 +887,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private bool DispatchCompute(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels, bool pathMode)
     {
+        LastDispatchCount = 0;
+        LastWorkgroupCount = 0;
         if (!IsAvailable || _context is null || _api is not { } api || widthPixels <= 0 || heightPixels <= 0)
         {
             return false;
@@ -940,6 +944,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     0, 1, in descriptorSet, 0, null);
                 api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
                     ((uint)tileHeight + 7U) / 8U, 1);
+                LastDispatchCount++;
+                LastWorkgroupCount += ((tileWidth + 7L) / 8L) * ((tileHeight + 7L) / 8L);
                 TransitionOutputToShaderRead(commandBuffer);
                 CommitRingSlot(slot);
             }
@@ -970,6 +976,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     0, 1, in descriptorSet, 0, null);
                 api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
                     ((uint)heightPixels + 7U) / 8U, 1);
+                LastDispatchCount++;
+                LastWorkgroupCount += ((widthPixels + 7L) / 8L) * ((heightPixels + 7L) / 8L);
                 TransitionOutputToShaderRead(commandBuffer);
                 CommitRingSlot(slot);
                 parameters[modeSlot] = 0F;

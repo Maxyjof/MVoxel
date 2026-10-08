@@ -23,6 +23,7 @@ internal sealed partial class ImGuiEditorWindow
     private int _selectedShortcutScheme;
     private string _newShortcutSchemeName = string.Empty;
     private string _renameShortcutScheme = string.Empty;
+    private string _shortcutSearch = string.Empty;
     private string _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
     private string _newProjectPaletteName = "新调色板";
     private string _lastEditorSettingsSnapshot = string.Empty;
@@ -768,21 +769,25 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         DrawSettingsSectionHeader("按命令修改绑定", "使用 Ctrl/Shift/Alt + 按键格式，例如 Ctrl+Z");
+        ImGui.SetNextItemWidth(-1F);
+        ImGui.InputTextWithHint("##快捷键搜索", "搜索命令、分类或按键", ref _shortcutSearch, 128);
         foreach (var command in ShortcutCommands.All)
         {
             scheme.Bindings.TryGetValue(command.Id, out var binding);
             binding ??= command.DefaultBinding;
+            if (_shortcutSearch.Length > 0 &&
+                !command.DisplayName.Contains(_shortcutSearch, StringComparison.OrdinalIgnoreCase) &&
+                !command.Category.Contains(_shortcutSearch, StringComparison.OrdinalIgnoreCase) &&
+                !binding.Contains(_shortcutSearch, StringComparison.OrdinalIgnoreCase)) continue;
             ImGui.PushID(command.Id);
             ImGui.Text(command.DisplayName);
-            ImGui.SameLine(180F);
-            ImGui.SetNextItemWidth(160F);
+            ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(240F, ImGui.GetContentRegionAvail().X)));
             if (ImGui.InputText("##绑定", ref binding, 32))
             {
                 scheme.Bindings[command.Id] = binding.Trim();
                 SaveEditorSettings();
             }
 
-            ImGui.SameLine();
             ImGui.TextDisabled(command.Category);
             ImGui.PopID();
         }

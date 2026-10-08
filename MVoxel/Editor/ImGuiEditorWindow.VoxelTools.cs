@@ -1348,6 +1348,13 @@ internal sealed partial class ImGuiEditorWindow
 
     // 体素笔刷工具
 
+    private VoxelWorld? _pickWorld;
+    private int _pickVersion;
+    private NumVector3 _pickOrigin;
+    private NumVector3 _pickDirection;
+    private float _pickDistance;
+    private VoxelDda.Hit? _pickResult;
+
     private VoxelDda.Hit? PickVoxel(Vector2 screenPixel, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var ray = SceneProjection.RayFromScreen(screenPixel, origin, size, camera);
@@ -1355,7 +1362,15 @@ internal sealed partial class ImGuiEditorWindow
         var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
         // 拾取应与场景实际显示一致：隐藏图层和切面后的体素不能抢占可见模型的命中。
         var visibleWorld = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue));
-        return VoxelDda.RayCast(visibleWorld, origin3, direction3, _sceneCameraDistance * 8F + 256F);
+        var distance = _sceneCameraDistance * 8F + 256F;
+        if (ReferenceEquals(_pickWorld, visibleWorld) && _pickVersion == visibleWorld.ContentVersion &&
+            _pickOrigin == origin3 && _pickDirection == direction3 && _pickDistance == distance) return _pickResult;
+        _pickWorld = visibleWorld;
+        _pickVersion = visibleWorld.ContentVersion;
+        _pickOrigin = origin3;
+        _pickDirection = direction3;
+        _pickDistance = distance;
+        return _pickResult = VoxelDda.RayCast(visibleWorld, origin3, direction3, distance);
     }
 
     private void HandleVoxelToolInput(Vector2 origin, Vector2 size, SceneCamera camera)
@@ -1398,8 +1413,8 @@ internal sealed partial class ImGuiEditorWindow
                         _sampledBrushColor = value.Color;
                         _brushMaterialSlot = value.MaterialSlot;
                         _brushEmissive = (value.Flags & (byte)VoxelFlags.Emissive) != 0;
+                        _activeTool = EditorTool.Draw;
                     }
-                    _activeTool = EditorTool.Draw;
                 }
                 SetStatus(_selectedVoxel is { } picked
                     ? $"已选择体素 ({picked.Coordinate.X}, {picked.Coordinate.Y}, {picked.Coordinate.Z})"
@@ -1413,6 +1428,34 @@ internal sealed partial class ImGuiEditorWindow
             _editorSettings.McMode);
         var rightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, shiftPressed, capsLockMode,
             _editorSettings.McMode);
+        var hoverHit = PickVoxel(mouse, origin, size, camera);
+        var primary = GetVoxelWorldObject()?.Id;
+        var objects = _sceneDocument?.Objects;
+        var selectedModelId = objects?.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
+            item.Components.Any(SceneComponentTypes.IsVoxelModel))?.Id;
+        var hoverTargetId = GetPinnedVoxelModelObject()?.Id ??
+            (hoverHit is { } hovered && objects is not null
+                ? VoxelEditOwnership.ResolveOwner(hovered.Coordinate, primary, objects, _layerOwnership)
+                : selectedModelId ?? primary);
+        var hoverTarget = objects?.FirstOrDefault(item => item.Id == hoverTargetId);
+        var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
+        if (!ImGui.IsMouseDown(ImGuiMouseButton.Right) && !ImGui.IsMouseDown(ImGuiMouseButton.Middle))
+        {
+            ImGui.BeginTooltip();
+            ImGui.TextUnformatted($"{(hoverErase ? "擦除" : "绘制")}目标：{hoverTarget?.Name ?? "首次绘制自动创建模型"}{(hoverTarget?.Locked == true ? "（已锁定）" : "")}");
+            if (hoverTarget is not null && (!hoverTarget.Visible ||
+                !(_sceneDocument?.IsLayerVisible(hoverTarget.LayerIndex) ?? false) ||
+                !IsSceneObjectAncestorsVisible(hoverTarget, objects!.ToDictionary(item => item.Id)) ||
+                !hoverTarget.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled)))
+                ImGui.TextUnformatted("不可编辑：目标、父级、图层隐藏或模型组件禁用");
+            if (hoverHit is { } location)
+            {
+                var coordinate = hoverErase ? location.Coordinate : location.Coordinate + location.Normal;
+                ImGui.TextUnformatted($"格子：{coordinate.X}, {coordinate.Y}, {coordinate.Z}");
+            }
+            else ImGui.TextUnformatted(hoverErase ? "未命中可擦除方块" : "未命中模型；与网格平面相交时可起笔");
+            ImGui.EndTooltip();
+        }
         if (_activeTool is EditorTool.Line or EditorTool.Box &&
             HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
         {
@@ -1431,7 +1474,8 @@ internal sealed partial class ImGuiEditorWindow
         handled |= ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
         if (!handled)
         {
-            _brushPreview = null;
+            _brushPreview = hoverHit;
+            _brushPreviewErase = hoverErase;
         }
     }
 
@@ -1561,10 +1605,15 @@ internal sealed partial class ImGuiEditorWindow
         VoxelEditOwnership.Change[] ownershipChanges = [];
         var command = new VoxelStrokeCommand(name, _world, editable, value,
             forward => VoxelEditOwnership.Apply(ownershipChanges, forward, primaryId, _layerOwnership));
-        if (command.ChangedCellCount == 0) return;
+        if (command.ChangedCellCount == 0)
+        {
+            SetStatus("此操作没有改变方块，撤销历史保持不变");
+            return;
+        }
         ownershipChanges = VoxelEditOwnership.Capture(command.Edits, targetId, primaryId, objects, _layerOwnership);
         _voxelHistory.Execute(command);
         _editingJournal?.Append(command.Name, command.Edits);
+        SetStatus($"{name} · {target.Name} · {command.ChangedCellCount:N0} 格（可撤销）");
 
         _pipeline?.ResetAccumulation();
         MarkSceneDocumentDirty();
@@ -1697,7 +1746,6 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         CommitCells(destroy ? "擦除填充" : "洪水填充", cells, value, targetId);
-        SetStatus($"填充 {cells.Count:N0} 格");
         return true;
     }
 
@@ -2038,21 +2086,26 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawBrushToolbarRow()
     {
         var previousTool = _activeTool;
-        ToolButton("相机", EditorTool.Camera);
-        ImGui.SameLine();
-        ToolButton("选择", EditorTool.Pick);
-        ImGui.SameLine();
-        ToolButton("取色", EditorTool.Eyedropper);
-        ImGui.NewLine();
-        ToolButton("绘制", EditorTool.Draw);
-        ImGui.SameLine();
-        ToolButton("擦除", EditorTool.Erase);
-        ImGui.SameLine();
-        ToolButton("直线", EditorTool.Line);
-        ImGui.NewLine();
-        ToolButton("长方体", EditorTool.Box);
-        ImGui.SameLine();
-        ToolButton("填充", EditorTool.Fill);
+        var tools = new (string Label, EditorTool Tool)[]
+        {
+            ("绘制", EditorTool.Draw), ("擦除", EditorTool.Erase), ("填充", EditorTool.Fill),
+            ("选择", EditorTool.Pick), ("取色", EditorTool.Eyedropper), ("直线", EditorTool.Line),
+            ("长方体", EditorTool.Box), ("相机", EditorTool.Camera),
+        };
+        var rowWidth = ImGui.GetContentRegionAvail().X;
+        var used = 0F;
+        foreach (var (label, tool) in tools)
+        {
+            var width = Math.Max(62F, ImGui.CalcTextSize(label).X + 20F);
+            if (used > 0F && used + ImGui.GetStyle().ItemSpacing.X + width <= rowWidth)
+            {
+                ImGui.SameLine();
+                used += ImGui.GetStyle().ItemSpacing.X;
+            }
+            else used = 0F;
+            ToolButton(label, tool);
+            used += width;
+        }
         DrawFloodConfirmModal();
         if (previousTool == _activeTool) return;
         SetStatus(_activeTool switch
@@ -2120,7 +2173,7 @@ internal sealed partial class ImGuiEditorWindow
             EditorTool.Pick => "选择：点击体素查看坐标和颜色",
             EditorTool.Eyedropper => "取色：采样体素的精确颜色、材质槽和自发光标记，再返回绘制",
             EditorTool.Draw => "绘制：左键放置，Shift+左键擦除；右键环绕（Caps Lock 模式除外）",
-            EditorTool.Erase => "擦除：左键或右键擦除体素",
+            EditorTool.Erase => "擦除：左键擦除体素；右键仍用于环绕",
             EditorTool.Line => "直线：拖动绘制或擦除一条直线",
             EditorTool.Box => "长方体：拖动绘制或擦除实心长方体",
             EditorTool.Fill => "填充：替换同值连通区域",
@@ -2131,8 +2184,10 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPaletteSelector()
     {
-        const int columns = 16;
-        var cellSize = Math.Max(4F, Math.Min(22F, (ImGui.GetContentRegionAvail().X - (columns - 1)) / columns));
+        var available = ImGui.GetContentRegionAvail().X;
+        var minimumCell = Math.Max(14F, ImGui.GetTextLineHeight());
+        var columns = Math.Clamp((int)((available + 1F) / (minimumCell + 1F)), 1, 16);
+        var cellSize = Math.Max(4F, Math.Min(26F, (available - (columns - 1)) / columns));
         var draw = ImGui.GetWindowDrawList();
         for (var index = 0; index < VoxelPalette.EntryCount; index++)
         {

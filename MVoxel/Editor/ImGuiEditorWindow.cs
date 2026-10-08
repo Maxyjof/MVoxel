@@ -201,6 +201,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void RequestExit()
     {
+        if (_projectOperation.IsRunning)
+        {
+            SetStatus("请等待当前操作完成，或先在进度窗口取消操作，再退出");
+            return;
+        }
         if (_project is not null && _sceneDocumentDirty)
         {
             _exitConfirmationRequested = true;
@@ -214,6 +219,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
+        if (_projectOperation.IsRunning)
+        {
+            e.Cancel = true;
+            SetStatus("请等待当前操作完成，或先取消操作，再退出");
+            return;
+        }
         if (e.Cancel || _allowWindowClose || _project is null || !_sceneDocumentDirty) return;
 
         e.Cancel = true;
@@ -607,7 +618,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         AppPaths.EnsureDirectories();
         var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         var layoutVersionPath = AppPaths.ConfigPath("imgui-layout.version");
-        const string layoutVersion = "6";
+        const string layoutVersion = "7";
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
         var hasCurrentLayoutVersion = File.Exists(layoutVersionPath) &&
@@ -738,10 +749,20 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("新建体素模型", null, false, _project is not null)) CreateVoxelModel();
             if (ImGui.BeginMenu("导出", _project is not null))
             {
-                if (ImGui.MenuItem("整个场景 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
-                if (ImGui.MenuItem("选中模型 → MagicaVoxel (.vox)")) ExportWorkingVoxels(true, false);
-                if (ImGui.MenuItem("整个场景 → Qubicle (.qb)")) ExportWorkingVoxels(false, true);
-                if (ImGui.MenuItem("选中模型 → Qubicle (.qb)")) ExportWorkingVoxels(true, true);
+                if (ImGui.MenuItem("选中模型 → MVoxel 原生 (.mvmodel)")) ExportWorkingVoxels(true, false, native: true);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("保留原生颜色、材质槽与标记，不使用 MagicaVoxel 的尺寸或色板上限。材质定义保存在项目内。");
+                if (ImGui.MenuItem("整个场景体素 → MVoxel 原生 (.mvworld)")) ExportWorkingVoxels(false, false, native: true);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("导出合并体素数据，包括隐藏模型；保留层级、相机、光照与材质定义请使用另存项目。");
+                if (ImGui.BeginMenu("兼容导出"))
+                {
+                    if (ImGui.MenuItem("选中模型 → MagicaVoxel (.vox)")) ExportWorkingVoxels(true, false);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅交换几何和颜色：单模型每轴最多 256 格、255 个非空颜色。不导出 MVoxel 材质参数与层级；超限明确拒绝，不裁剪、不量化。");
+                    if (ImGui.MenuItem("整个场景体素 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("含隐藏模型的合并几何与颜色；仅用于满足 VOX 单模型限制的小场景。大场景优先原生格式。");
+                    if (ImGui.MenuItem("选中模型 → Qubicle (.qb)")) ExportWorkingVoxels(true, true);
+                    if (ImGui.MenuItem("整个场景体素 → Qubicle (.qb)")) ExportWorkingVoxels(false, true);
+                    ImGui.EndMenu();
+                }
                 ImGui.Separator();
                 if (ImGui.MenuItem("当前渲染相机 → PNG")) { _requestedCenterTab = 1; ExportRenderPng(); }
                 if (ImGui.MenuItem("当前渲染相机 → HDR")) { _requestedCenterTab = 1; ExportRenderHdr(); }
@@ -750,7 +771,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             }
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
-            if (ImGui.MenuItem("导入体素数据（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
+            if (ImGui.MenuItem("导入 MVoxel 原生体素数据…", enabled: _project is not null)) ImportVoxAsWorld(native: true);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("导入 .mvmodel/.mvworld，保留原生颜色、材质槽与标记；若来自其他项目，材质定义需一同放入 Materials。");
+            if (ImGui.MenuItem("兼容导入（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
             if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
             if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) RequestExit();
@@ -887,23 +910,29 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 [Docking][Data]
 DockSpace ID=0x6A3C3001 Pos=0,24 Size=1440,840 Split=Y Selected=0x6A3C3002
   DockNode ID=0x6A3C3002 Parent=0x6A3C3001 SizeRef=1440,615 Split=X Selected=0x6A3C3003
-    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=260,615 Selected=0xD7AC1001
+    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=260,615 Split=Y
+      DockNode ID=0x6A3C3008 Parent=0x6A3C3003 SizeRef=260,180
+      DockNode ID=0x6A3C3009 Parent=0x6A3C3003 SizeRef=260,435
     DockNode ID=0x6A3C3004 Parent=0x6A3C3002 SizeRef=1180,615 Split=X Selected=0x6A3C3005
       DockNode ID=0x6A3C3005 Parent=0x6A3C3004 SizeRef=820,615 Selected=0xD7AC1002
-      DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615 Selected=0xD7AC1003
+      DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615 Split=Y
+        DockNode ID=0x6A3C3010 Parent=0x6A3C3006 SizeRef=360,420
+        DockNode ID=0x6A3C3011 Parent=0x6A3C3006 SizeRef=360,195
   DockNode ID=0x6A3C3007 Parent=0x6A3C3001 SizeRef=1440,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
-DockId=0x6A3C3003,0
+DockId=0x6A3C3009,0
+[Window][工具##建模工具箱]
+DockId=0x6A3C3008,0
 [Window][场景##场景窗口]
 DockId=0x6A3C3005,0
 [Window][渲染##渲染窗口]
 DockId=0x6A3C3005,1
-[Window][建模工具##建模工具窗口]
-DockId=0x6A3C3006,0
+[Window][颜色与笔刷##建模工具窗口]
+DockId=0x6A3C3010,0
 [Window][检查器##检查器窗口]
-DockId=0x6A3C3006,1
+DockId=0x6A3C3011,0
 [Window][渲染配置##渲染配置窗口]
-DockId=0x6A3C3006,2
+DockId=0x6A3C3011,1
 [Window][项目资产##资源浏览器]
 DockId=0x6A3C3007,0
 """;
@@ -1476,16 +1505,20 @@ DockId=0x6A3C3007,0
         return clicked;
     }
 
-    private void DrawSceneStatistics(ImDrawListPtr drawList, Vector2 origin)
+    private void DrawSceneStatistics(ImDrawListPtr drawList, Vector2 origin, bool renderView = false)
     {
         var fps = MathF.Max(0F, ImGui.GetIO().Framerate);
         var milliseconds = fps > 0F ? 1000F / fps : 0F;
-        var gpuCells = _project is null ? 0 : _scenePipeline?.SyncTotalCells ?? 0;
+        var pipeline = renderView ? _pipeline : _scenePipeline;
+        var gpuCells = _project is null ? 0 : pipeline?.SyncTotalCells ?? 0;
         var lines = new[]
         {
             $"帧率  {fps:0.0} FPS  ·  {milliseconds:0.0} ms",
             $"体素  {_world.OccupiedVoxelCount:N0}  ·  GPU 工作集  {gpuCells:N0}",
-            $"视角  {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  距离  {_sceneCameraDistance:0.0}",
+            $"工作集构建  {pipeline?.SyncWorksetBuildMs ?? 0:0.00} ms  ·  BVH  {pipeline?.SyncBvhBuildMs ?? 0:0.00} ms",
+            $"打包  {pipeline?.SyncPackMs ?? 0:0.00} ms  ·  上传  {pipeline?.SyncUploadMs ?? 0:0.00} ms（CPU 最近更新）",
+            $"计算派发  {pipeline?.LastDispatchCount ?? 0:N0}  ·  工作组  {pipeline?.LastWorkgroupCount ?? 0:N0}（最近提交）",
+            renderView ? $"渲染采样  {pipeline?.AccumulatedSamples ?? 0:N0}" : $"视角  {_sceneOrbitYaw * 180F / MathF.PI:0}° / {_sceneOrbitPitch * 180F / MathF.PI:0}°  ·  距离  {_sceneCameraDistance:0.0}",
         };
         var lineHeight = ImGui.GetTextLineHeightWithSpacing();
         var width = lines.Max(line => ImGui.CalcTextSize(line).X) + 16F;
@@ -2497,54 +2530,32 @@ DockId=0x6A3C3007,0
 
     private void DrawRenderViewOverlay(Vector2 origin, Vector2 size, ImDrawListPtr drawList)
     {
-        _ = drawList;
-        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        var pipeline = _pipeline;
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
+        var buttonWidth = Math.Max(80F, ImGui.CalcTextSize("重新计算").X + 20F);
+        var buttonHeight = ImGui.GetFrameHeight();
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        if (ImGui.SmallButton("重新计算"))
+        if (SceneToolbarButton("重新计算", false, buttonWidth, buttonHeight, "重置当前渲染视图的采样累积"))
         {
             _pipeline?.ResetAccumulation();
         }
-
         ImGui.SameLine();
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
-        if (ImGui.SmallButton("导出 PNG"))
+        if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight,
+                "导出当前相机 PNG/HDR 或全部相机 PNG；完整路径与进度见底部导出队列")) ImGui.OpenPopup("##RenderExportMenu");
+        if (ImGui.BeginPopup("##RenderExportMenu"))
         {
-            ExportRenderPng();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("导出 HDR"))
-        {
-            ExportRenderHdr();
-        }
-        if (canExport && ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip("把 HDR 累积缓冲导出为 Radiance .hdr 文件，保留完整动态范围供后期处理");
-        }
-        ImGui.SameLine();
-        if (ImGui.SmallButton("批量出图（全部相机）"))
-        {
-            ExportAllCamerasPng();
+            if (ImGui.MenuItem("当前相机 → PNG")) ExportRenderPng();
+            if (ImGui.MenuItem("当前相机 → HDR")) ExportRenderHdr();
+            if (ImGui.MenuItem("全部相机 → PNG")) ExportAllCamerasPng();
+            ImGui.EndPopup();
         }
         ImGui.EndDisabled();
-        if (canExport && ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip("为每个相机对象各出一张图：统一使用项目渲染配置，并按各相机的视角、视场角和图层遮罩分别重组渲染世界");
-        }
-        if (!canExport && ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip("当前显卡显示结果尚未准备好");
-        }
-        ImGui.SameLine();
-        var worksetCells = pipeline?.SyncTotalCells ?? 0;
-        var performanceLabel = activeRenderSettings.AutoPerformanceScaling && worksetCells > 20_000 &&
-                               !activeRenderSettings.PathTracingEnabled
-            ? $" · AO≤{Math.Min(activeRenderSettings.AoSamples, RenderSettings.LargeSceneAoSampleLimit(worksetCells))}"
-            : string.Empty;
-        ImGui.TextDisabled($"{(int)activeRenderSettings.CameraFovDegrees}° · 尺寸 {(int)size.X}×{(int)size.Y}{performanceLabel}");
+        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth * 2F + ImGui.GetStyle().ItemSpacing.X * 2F, size.X - buttonWidth - 12F), 10F));
+        if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight,
+                $"帧率、体素工作集、派发量和 CPU 更新耗时\n视场角 {activeRenderSettings.CameraFovDegrees:0}° · 视口 {size.X:0}×{size.Y:0}\n统计来自当前视图，不运行性能台架"))
+            _showRenderStatistics = !_showRenderStatistics;
+        if (_showRenderStatistics) DrawSceneStatistics(drawList, origin + new Vector2(0F, buttonHeight + 14F), renderView: true);
     }
 
     private void ExportRenderPng()
@@ -2622,6 +2633,7 @@ DockId=0x6A3C3007,0
             EnqueueExport(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
             {
                 Camera = ToSceneCamera(cameraObject),
+                CameraName = cameraObject.Name,
                 CullingMask = cameraData.CullingMask,
             });
         }
@@ -2641,6 +2653,7 @@ DockId=0x6A3C3007,0
             ? _lastRenderViewportSize : new Vector2(1280, 720);
         job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
         job.Materials = _project is null ? null : MaterialAsset.PackTable(MaterialAsset.LoadFromProject(_project));
+        job.CameraName ??= GetActiveRenderCameraObject()?.Name ?? "场景视角";
         _exportQueue.Enqueue(job);
     }
 
@@ -2655,6 +2668,7 @@ DockId=0x6A3C3007,0
         internal Vector2 Size { get; set; }
         internal float Scale { get; set; }
         internal float[]? Materials { get; set; }
+        internal string? CameraName { get; set; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
         internal SceneCamera? Camera { get; init; }
@@ -2708,7 +2722,7 @@ DockId=0x6A3C3007,0
             ImGui.TextUnformatted("正在导出");
             ImGui.SameLine();
             if (ImGui.SmallButton("取消##取消当前导出")) _cancelActiveExportRequested = true;
-            ImGui.TextWrapped(Path.GetFileName(active.Path));
+            ImGui.TextWrapped($"相机：{active.CameraName} · {active.Format}\n{active.Path}");
             ImGui.ProgressBar(ExportProgress(active), new Vector2(-1F, 0F),
                 $"{ExportProgress(active) * 100F:0}%");
         }
@@ -2722,7 +2736,7 @@ DockId=0x6A3C3007,0
         foreach (var job in _exportQueue.ToArray())
         {
             ImGui.PushID(job.Path);
-            ImGui.TextWrapped(Path.GetFileName(job.Path));
+            ImGui.TextWrapped($"相机：{job.CameraName} · {job.Format}\n{job.Path}");
             ImGui.SameLine();
             ImGui.ProgressBar(0F, new Vector2(90F, 0F), "等待");
             ImGui.SameLine();
@@ -3683,9 +3697,7 @@ DockId=0x6A3C3007,0
             ImGui.SetCursorPosX(Math.Max(8F, display.X - 360F));
             ImGui.TextDisabled($"导出队列 {exportCount}");
             ImGui.SameLine();
-            var progress = _activeExport is null || _exportPipeline is null || _activeExport.Settings.PathMaxAccumulatedSamples <= 0
-                ? 0F
-                : Math.Clamp((float)_exportPipeline.AccumulatedSamples / _activeExport.Settings.PathMaxAccumulatedSamples, 0F, 1F);
+            var progress = _activeExport is null ? 0F : ExportProgress(_activeExport);
             ImGui.ProgressBar(progress, new Vector2(120F, 0F));
             ImGui.SameLine();
             if (ImGui.SmallButton(_exportQueueExpanded ? "收起" : "展开")) _exportQueueExpanded = !_exportQueueExpanded;
@@ -3765,6 +3777,8 @@ DockId=0x6A3C3007,0
         var open = true;
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Appearing, new Vector2(0.5F, 0.5F));
         ImGui.SetNextWindowSize(new Vector2(580F, _projectPathDialogMode == 2 ? 610F : 0F), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(Math.Min(580F, display.X - 48F), 0F),
+            new Vector2(Math.Max(200F, display.X - 48F), Math.Max(200F, display.Y - 48F)));
         if (ImGui.Begin(_projectPathDialogMode == 1 ? "新建 MVoxel 项目" : _projectPathDialogMode == 3 ? "另存 MVoxel 项目" : "打开 MVoxel 项目", ref open,
                 ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse))
         {
@@ -3889,7 +3903,6 @@ DockId=0x6A3C3007,0
     private void DrawProjectTemplatePicker()
     {
         var selected = ProjectTemplateCatalog.Get(_selectedProjectTemplate);
-        ImGui.TextDisabled("模板不是装饰场景：每个模板都对应一条明确的编辑或渲染练习路径。");
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
             foreach (var template in ProjectTemplateCatalog.All)
@@ -3901,9 +3914,8 @@ DockId=0x6A3C3007,0
 
             ImGui.EndCombo();
         }
-        ImGui.TextDisabled($"规模：{selected.Scale}    重点：{selected.Focus}");
-        ImGui.TextWrapped(selected.Description);
-        ImGui.TextColored(ToColor(EditorPalette.Accent), $"学习目标：{selected.LearningGoal}");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Description}\n规模：{selected.Scale}\n重点：{selected.Focus}\n学习目标：{selected.LearningGoal}");
+        TemplateLearningPreview.Draw(_selectedProjectTemplate);
     }
 
     private static string GetNewProjectPath(string requestedPath)
@@ -4107,6 +4119,7 @@ DockId=0x6A3C3007,0
 
     private void CloseProject()
     {
+        _pickWorld = null;
         _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
         _pluginRuntime = null;
