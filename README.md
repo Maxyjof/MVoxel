@@ -105,14 +105,13 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 - [ ] 开源许可证（待项目所有者决定）
 - [ ] Windows 安装包与更新机制、Linux 技术预览、gox/glTF 等更多格式
 
-## 验证
+## 构建与发布
 
 ```powershell
 dotnet build .\MVoxel.sln --no-restore --configuration Release -m:1
-dotnet run --project .\MVoxel.Tests\MVoxel.Tests.csproj --no-build --configuration Release
 dotnet publish .\MVoxel\MVoxel.csproj --configuration Release --runtime win-x64 --self-contained false --output .\artifacts\publish\MVoxel
 ```
 
 未显式指定配置时，项目和解决方案默认使用 `Release`；`Debug` 仅保留给具体项目的显式调试构建。编辑器采用常规 .NET JIT 发布，不启用裁剪或 NativeAOT，以保留插件、脚本和反射式检查器能力。
 
-开发约定集中在[编码规范](Docs/技术文档/06-工程实践与质量.md)中。项目采用直接、清晰的当前实现，功能边界以技术文档和测试结果为准。
+开发约定集中在[编码规范](Docs/技术文档/06-工程实践与质量.md)中。按项目所有者要求，已移除测试源码项目和解决方案引用，不再新增或运行自动化测试、烟测及性能台架；开发阶段执行构建和代码检查，实际功能与体验由用户验收。构建成功不代表功能验收通过。

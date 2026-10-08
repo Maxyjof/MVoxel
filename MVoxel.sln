@@ -1,8 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MVoxel", "MVoxel\MVoxel.csproj", "{030B8CF6-2EBC-43AB-B74B-618B7557C39E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MVoxel.Tests", "MVoxel.Tests\MVoxel.Tests.csproj", "{80432781-1904-4CAF-9E12-35D43007466D}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MVoxel.Cli", "MVoxel.Cli\MVoxel.Cli.csproj", "{7D5B4F2E-9A6C-4D5E-8F31-2A4B6C7D8E90}"
 EndProject
 Global
@@ -12,8 +10,6 @@ Global
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{030B8CF6-2EBC-43AB-B74B-618B7557C39E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{030B8CF6-2EBC-43AB-B74B-618B7557C39E}.Release|Any CPU.Build.0 = Release|Any CPU
-		{80432781-1904-4CAF-9E12-35D43007466D}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{80432781-1904-4CAF-9E12-35D43007466D}.Release|Any CPU.Build.0 = Release|Any CPU
 		{7D5B4F2E-9A6C-4D5E-8F31-2A4B6C7D8E90}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7D5B4F2E-9A6C-4D5E-8F31-2A4B6C7D8E90}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
