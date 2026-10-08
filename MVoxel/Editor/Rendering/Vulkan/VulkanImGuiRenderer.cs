@@ -39,7 +39,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     private readonly Dictionary<nint, TextureResource> _textures = new();
     private ulong _vertexCapacity;
     private ulong _indexCapacity;
-    private long _nextTextureId = 1;
+    private long _nextTextureId = (long)VulkanImGuiController.FontTextureId;
     private bool _disposed;
 
     /// <summary>
@@ -197,9 +197,10 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
                     new Extent2D((uint)(clipRight - clipLeft), (uint)(clipBottom - clipTop)));
                 _api.CmdSetScissor(commandBuffer, 0, 1, in scissor);
                 var textureSet = _textureDescriptorSet;
-                if (drawCommand.TextureId != IntPtr.Zero)
+                if (drawCommand.TextureId != IntPtr.Zero && drawCommand.TextureId != VulkanImGuiController.FontTextureId)
                 {
-                    // 非零句柄代表图像；过期句柄不能退回字体图集，否则视口会铺满字形花屏。
+                    // 字体图集也使用非零句柄，文字与面板的白像素均依赖它。
+                    // 其他句柄才属于注册图像；过期图像仍不能回退到字体图集。
                     if (!_textures.TryGetValue(drawCommand.TextureId, out var texture)) continue;
                     textureSet = texture.TextureSet;
                 }

@@ -14,6 +14,7 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// </summary>
 internal sealed class VulkanImGuiController : IDisposable
 {
+    internal static readonly nint FontTextureId = 1;
     private readonly GameWindow _window;
     private readonly IntPtr _context;
     private readonly Action<TextInputEventArgs> _textInputHandler;
@@ -132,7 +133,7 @@ internal sealed class VulkanImGuiController : IDisposable
             Marshal.Copy(pixels, FontPixels, 0, FontPixels.Length);
         }
 
-        io.Fonts.SetTexID((IntPtr)1);
+        io.Fonts.SetTexID(FontTextureId);
         io.Fonts.ClearTexData();
     }
 

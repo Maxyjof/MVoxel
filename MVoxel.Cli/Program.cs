@@ -18,6 +18,7 @@ namespace MVoxel.Cli;
 internal static class Program
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static string _editorEndpointPath = AppPaths.EditorEndpointPath;
 
     /// <summary>
     /// 执行命令行入口
@@ -26,6 +27,25 @@ internal static class Program
     /// <returns>进程退出码</returns>
     private static int Main(string[] args)
     {
+        var editorDirectoryIndex = Array.IndexOf(args, "--editor-directory");
+        if (editorDirectoryIndex >= 0)
+        {
+            if (editorDirectoryIndex + 1 >= args.Length || string.IsNullOrWhiteSpace(args[editorDirectoryIndex + 1]))
+            {
+                Console.Error.WriteLine("错误：--editor-directory 需要指定 MVoxel.exe 所在目录");
+                return 1;
+            }
+            try
+            {
+                _editorEndpointPath = Path.Combine(Path.GetFullPath(args[editorDirectoryIndex + 1]), "MVoxelData", "editor.endpoint");
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                Console.Error.WriteLine($"错误：编辑器目录无效：{exception.Message}");
+                return 1;
+            }
+            args = args.Where((_, index) => index != editorDirectoryIndex && index != editorDirectoryIndex + 1).ToArray();
+        }
         if (args.Any(item => item.Equals("--mcp", StringComparison.OrdinalIgnoreCase)))
         {
             RunMcp();
@@ -57,6 +77,8 @@ internal static class Program
         Console.WriteLine("MVoxel CLI");
         Console.WriteLine("  --mcp");
         Console.WriteLine("      启动 MCP stdio 服务");
+        Console.WriteLine("  --editor-directory <MVoxel.exe 所在目录>");
+        Console.WriteLine("      CLI 与编辑器分目录部署时显式指定控制端点位置，可与 --mcp 或编辑器命令组合");
         Console.WriteLine("  --project-info <项目目录>");
         Console.WriteLine("      输出项目摘要");
         Console.WriteLine("  --scene-info <场景文件>");
@@ -377,6 +399,9 @@ internal static class Program
     /// </summary>
     private static void RunMcp()
     {
+        // MCP stdio 固定为 UTF-8，不能继承 Windows 控制台的本地代码页。
+        Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
         string? line;
         while ((line = Console.ReadLine()) is not null)
         {
@@ -627,8 +652,8 @@ internal static class Program
     /// <returns>编辑器返回结果</returns>
     private static object CallEditor(string method, JsonElement arguments)
     {
-        if (!File.Exists(AppPaths.EditorEndpointPath)) throw new InvalidOperationException("没有发现运行中的 MVoxel 编辑器");
-        var pipeName = File.ReadAllText(AppPaths.EditorEndpointPath).Trim();
+        if (!File.Exists(_editorEndpointPath)) throw new InvalidOperationException($"没有发现运行中的 MVoxel 编辑器：{_editorEndpointPath}；分目录部署请使用 --editor-directory 指定 MVoxel.exe 所在目录");
+        var pipeName = File.ReadAllText(_editorEndpointPath).Trim();
         if (string.IsNullOrWhiteSpace(pipeName)) throw new InvalidDataException("编辑器控制端点为空");
         using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         client.Connect(2000);
