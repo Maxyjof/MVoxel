@@ -205,7 +205,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.End();
     }
 
-    private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false)
+    private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false, bool obj = false)
     {
         if (_project is null) return;
         try
@@ -220,7 +220,7 @@ internal sealed partial class ImGuiEditorWindow
             var directory = Path.Combine(_project.AssetsPath, "Exports");
             Directory.CreateDirectory(directory);
             var safeName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-            var extension = native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
+            var extension = obj ? ".obj" : native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
             var path = Path.Combine(directory, UniqueAssetFileName(directory, safeName, extension));
             var scope = selectedOnly ? $"选中模型：{name}" : "整个场景体素（含隐藏对象）";
             _projectOperation.TryStart($"导出 {extension} · {scope}", path,
@@ -246,6 +246,7 @@ internal sealed partial class ImGuiEditorWindow
                         if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(path);
                         else LargeWorldFormat.Write(path, world);
                     }
+                    else if (obj) ObjVoxelExporter.Write(path, world);
                     else if (qubicle) QubicleFormat.Write(path, world);
                     else VoxFormat.Write(path, world);
                     return world.OccupiedVoxelCount;

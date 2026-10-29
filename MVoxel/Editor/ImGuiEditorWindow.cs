@@ -759,6 +759,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅交换几何和颜色：单模型每轴最多 256 格、255 个非空颜色。不导出 MVoxel 材质参数与层级；超限明确拒绝，不裁剪、不量化。");
                     if (ImGui.MenuItem("整个场景体素 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
                     if (ImGui.IsItemHovered()) ImGui.SetTooltip("含隐藏模型的合并几何与颜色；仅用于满足 VOX 单模型限制的小场景。大场景优先原生格式。");
+                    if (ImGui.MenuItem("选中模型 → Blender 网格 (.obj)")) ExportWorkingVoxels(true, false, obj: true);
+                    if (ImGui.MenuItem("整个场景体素 → Blender 网格 (.obj)")) ExportWorkingVoxels(false, false, obj: true);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("导出外表面与顶点颜色；不包含材质参数、相机和层级。大型场景可能产生很大的文件。");
                     if (ImGui.MenuItem("选中模型 → Qubicle (.qb)")) ExportWorkingVoxels(true, true);
                     if (ImGui.MenuItem("整个场景体素 → Qubicle (.qb)")) ExportWorkingVoxels(false, true);
                     ImGui.EndMenu();
