@@ -328,6 +328,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
                 DrawEditorFrame();
+                ProcessCaptureView();
                 if (_activeExport is not null || _exportQueue.Count > 0)
                     ProcessExportQueue(GetRenderViewCamera(), _lastRenderViewportSize);
                 _controller.Render();
@@ -425,6 +426,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.saveProject" => QueueSaveProject(),
             "editor.closeProject" => QueueCloseProject(request),
             "editor.openProject" => QueueOpenProject(request),
+            "editor.captureView" => QueueCaptureView(request),
+            "editor.captureStatus" => CaptureStatus(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
             "editor.reloadPlugins" => QueueReloadPlugins(),
