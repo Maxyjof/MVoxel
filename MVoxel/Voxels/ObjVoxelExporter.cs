@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using MVoxel.Core;
 
@@ -7,7 +6,7 @@ namespace MVoxel.Voxels;
 /// <summary>将体素的可见外表面导出为带顶点颜色的 OBJ 网格。</summary>
 public static class ObjVoxelExporter
 {
-    public static void Write(string path, VoxelWorld world)
+    public static void Write(string path, VoxelWorld world, CancellationToken cancellationToken = default)
     {
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
@@ -16,8 +15,10 @@ public static class ObjVoxelExporter
             {
                 writer.WriteLine("# MVoxel OBJ: vertex RGB; Y is up");
                 long vertex = 1;
+                long processed = 0;
                 foreach (var (p, value) in world.EnumerateOccupied())
                 {
+                    if (++processed % 16384 == 0) cancellationToken.ThrowIfCancellationRequested();
                     for (var face = 0; face < 6; face++)
                     {
                         var (dx, dy, dz) = Directions[face];
@@ -29,6 +30,7 @@ public static class ObjVoxelExporter
                     }
                 }
             }
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temp, path, false);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }

@@ -240,13 +240,13 @@ internal sealed partial class ImGuiEditorWindow
                             world.Set(cell.Coordinate, cell.Value);
                     }
                     cancellation.ThrowIfCancellationRequested();
-                    report(new BlockingOperationProgress($"写入 {extension} · {world.OccupiedVoxelCount:N0} 体素\n{path}", .85F, CanCancel: false));
+                    report(new BlockingOperationProgress($"写入 {extension} · {world.OccupiedVoxelCount:N0} 体素\n{path}", .85F, CanCancel: obj));
                     if (native)
                     {
                         if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(path);
                         else LargeWorldFormat.Write(path, world);
                     }
-                    else if (obj) ObjVoxelExporter.Write(path, world);
+                    else if (obj) ObjVoxelExporter.Write(path, world, cancellation);
                     else if (qubicle) QubicleFormat.Write(path, world);
                     else VoxFormat.Write(path, world);
                     return world.OccupiedVoxelCount;
