@@ -1697,7 +1697,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         bool TraceClosestWithin(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
-            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance)
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit)
         {
             int stack[64];
             int stackSize = 1;
@@ -1747,6 +1747,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                             hitSlot = cell.metadata.x & 0xFFFFu;
                             hitCell = cell.position.xyz;
                             hitExtent = packedExtent;
+                            if (anyHit && hitColor.a > 0.0) return true;
                         }
                     }
                 }
@@ -1777,7 +1778,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent)
         {
             return TraceClosestWithin(rayOrigin, rayDirection, closestDistance, hitNormal,
-                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, 3.402823e+38);
+                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, 3.402823e+38, false);
         }
 
         bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
@@ -1790,7 +1791,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             ivec3 cell;
             ivec3 cellExtent;
             return TraceClosestWithin(rayOrigin, rayDirection, distance, normal, color, flags,
-                slot, cell, cellExtent, true, maxDistance);
+                slot, cell, cellExtent, true, maxDistance, true);
         }
 
         float Random(inout uint state);
@@ -1844,7 +1845,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 ivec3 hitCell;
                 ivec3 hitExtent;
                 if (TraceClosestWithin(hitPoint + normal * 0.003, direction, distance,
-                    hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, true, radius))
+                    hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, true, radius, false))
                     blocked += 1.0 - smoothstep(0.0, radius, distance);
             }
             float visibility = 1.0 - blocked / float(sampleCount);
