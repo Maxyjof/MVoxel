@@ -1754,8 +1754,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     if (stackSize + 2 <= 64)
                     {
-                        stack[stackSize++] = node.links.x;
-                        stack[stackSize++] = node.links.y;
+                        float leftDistance;
+                        float rightDistance;
+                        bool leftHit = IntersectBounds(rayOrigin, rayDirection, nodes[node.links.x], leftDistance) && leftDistance <= closestDistance;
+                        bool rightHit = IntersectBounds(rayOrigin, rayDirection, nodes[node.links.y], rightDistance) && rightDistance <= closestDistance;
+                        //先访问近节点，让最近命中尽早排除远节点
+                        if (leftHit && rightHit)
+                        {
+                            stack[stackSize++] = leftDistance < rightDistance ? node.links.y : node.links.x;
+                            stack[stackSize++] = leftDistance < rightDistance ? node.links.x : node.links.y;
+                        }
+                        else if (leftHit) stack[stackSize++] = node.links.x;
+                        else if (rightHit) stack[stackSize++] = node.links.y;
                     }
                 }
             }
@@ -2367,7 +2377,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     float shadowVisibility = TraceSoftShadow(
                         hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state);
-                    radiance += throughput * hitLinearColor * lightAmount * values[27] * shadowVisibility;
+                    radiance += throughput * hitLinearColor * vec3(values[28], values[29], values[30]) * lightAmount * values[27] * shadowVisibility;
                 }
 
                 float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
@@ -2631,7 +2641,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             {
                 float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
                 color = mix(vec3(luminance), color, max(values[52], 0.0));
-                color = (color - 0.5) * max(values[54], 0.0) + 0.5;
                 color *= max(values[55], 0.0);
                 float angle = radians(values[53]);
                 float cs = cos(angle);
@@ -2659,6 +2668,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             }
             float gamma = max(values[66], 0.01);
             color = pow(color, vec3(1.0 / gamma));
+            if (values[56] > 0.5)
+                color = (color - 0.5) * max(values[54], 0.0) + 0.5;
             if (values[71] > 0.5)
             {
                 float noise = fract(sin(dot(vec2(pixel), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
