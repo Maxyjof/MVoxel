@@ -156,9 +156,10 @@ internal static class XianxiaTerrain
             for (var x = 0; x < Size; x++)
             {
                 var index = z * Size + x;
-                if (Heights[index] == 0) continue;
-                var flattened = XianxiaGeography.Flatten(x, z, Heights[index], levels);
-                Heights[index] = Math.Max(flattened, CloudLevel + 3);
+                var original = Heights[index];
+                var flattened = XianxiaGeography.Flatten(x, z, original == 0 ? CloudLevel : original, levels);
+                Heights[index] = original == 0 && flattened <= CloudLevel + 3
+                    ? 0 : Math.Max(flattened, CloudLevel + 3);
             }
         });
     }

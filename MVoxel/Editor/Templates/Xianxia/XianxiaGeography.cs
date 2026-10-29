@@ -197,12 +197,15 @@ internal static class XianxiaGeography
     /// <returns>压平后的高度</returns>
     public static int Flatten(int x, int z, int baseHeight, int[]? siteHeights = null)
     {
-        var result = baseHeight;
+        var strongestWeight = 0F;
+        var closestSite = float.PositiveInfinity;
+        var chosenLevel = baseHeight;
         for (var index = 0; index < Sites.Length; index++)
         {
             var site = Sites[index];
             var dx = x - site.X;
             var dz = z - site.Z;
+            if (Math.Abs(dx) > site.Radius * 2.34F || Math.Abs(dz) > site.Radius * 2.34F) continue;
             var angle = MathF.Atan2(dz, dx);
             // 平台轮廓加角度扰动，避免每处地标都变成一个标准圆盘
             var wobble = 1F + .2F * MathF.Sin(angle * 3F + index * 1.7F)
@@ -211,9 +214,15 @@ internal static class XianxiaGeography
             if (distance > site.Radius * 1.8F) continue;
             var level = siteHeights is not null && index < siteHeights.Length ? siteHeights[index] : site.Height;
             var weight = 1F - XianxiaNoise.SmoothStep(site.Radius, site.Radius * 1.8F, distance);
-            result = (int)MathF.Round(result + (level - result) * weight);
+            var relativeDistance = distance / site.Radius;
+            if (weight > strongestWeight || (weight == strongestWeight && relativeDistance < closestSite))
+            {
+                strongestWeight = weight;
+                closestSite = relativeDistance;
+                chosenLevel = level;
+            }
         }
 
-        return result;
+        return (int)MathF.Round(baseHeight + (chosenLevel - baseHeight) * strongestWeight);
     }
 }
