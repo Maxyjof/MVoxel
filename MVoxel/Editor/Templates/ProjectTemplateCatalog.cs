@@ -86,6 +86,11 @@ public enum ProjectTemplateId
 
     /// <summary>展示沙漠绿洲、商队驿站、拱廊与夜间灯火</summary>
     DesertCaravanserai,
+
+    /// <summary>
+    /// 展示 1024×1024 的完整仙域大陆：六大地形分区、宗门、坊市、浮空仙岛与古迹
+    /// </summary>
+    XianxiaContinent,
 }
 
 /// <summary>
@@ -110,6 +115,7 @@ public static class ProjectTemplateCatalog
     public static IReadOnlyList<ProjectTemplateDefinition> All { get; } =
     [
         new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素数据", "适合从零开始", "起步", "建立自己的项目结构"),
+        new(ProjectTemplateId.XianxiaContinent, "仙域九霄 · 修仙大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
         new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色板 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
@@ -152,7 +158,11 @@ public static class ProjectTemplateCatalog
             WriteMaterials(project, id);
             WriteProjectPalette(project);
             WriteRenderPreset(project, settings);
-            if (id == ProjectTemplateId.MinecraftValley)
+            if (id == ProjectTemplateId.XianxiaContinent)
+            {
+                Xianxia.XianxiaWorld.Populate(project, report);
+            }
+            else if (id == ProjectTemplateId.MinecraftValley)
             {
                 var terrain = TemplateScenes.BuildValleyTerrain();
                 var trees = TemplateScenes.BuildValleyTrees(terrain);
@@ -221,6 +231,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.MoonbaseOutpost => TemplateScenes.BuildMoonbaseOutpost(),
             ProjectTemplateId.ClockworkConservatory => TemplateScenes.BuildClockworkConservatory(),
             ProjectTemplateId.DesertCaravanserai => TemplateScenes.BuildDesertCaravanserai(),
+            ProjectTemplateId.XianxiaContinent => Xianxia.XianxiaTerrain.Build().Worlds[Xianxia.XianxiaRegion.Summit],
             _ => new VoxelWorld(),
         };
     }
@@ -493,6 +504,51 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.TransmissiveAbsorption = .24F;
                 settings.RenderSettings.Tone = ToneCurve.Filmic;
                 settings.RenderSettings.Exposure = .28F;
+                break;
+            case ProjectTemplateId.XianxiaContinent:
+                settings.DefaultRenderPreset = "仙域 · 九霄晨曦";
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.SunElevationDegrees = 22F;
+                settings.RenderSettings.SunAzimuthDegrees = 116F;
+                settings.RenderSettings.SunIntensity = 1.28F;
+                settings.RenderSettings.SunColor = new Vector3(1F, .87F, .72F);
+                settings.RenderSettings.SkyTop = new Vector3(.07F, .15F, .34F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.94F, .62F, .38F);
+                settings.RenderSettings.SkyAmbient = .44F;
+                settings.RenderSettings.AmbientTint = .2F;
+                settings.RenderSettings.ShadowSoftness = .1F;
+                settings.RenderSettings.ShadowSamples = 6;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .9F;
+                settings.RenderSettings.AoPower = 1.32F;
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.PathSamplesPerFrame = 2;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 640;
+                settings.RenderSettings.MaxBounces = 6;
+                settings.RenderSettings.PathDenoising = true;
+                settings.RenderSettings.PathDenoiseStrength = .66F;
+                settings.RenderSettings.PathRoughness = .2F;
+                settings.RenderSettings.PathMetalness = .1F;
+                settings.RenderSettings.PathSpecularF0 = .05F;
+                settings.RenderSettings.EmissiveVoxels = true;
+                settings.RenderSettings.EmissiveIntensity = 26F;
+                settings.RenderSettings.TransmissiveAbsorption = .34F;
+                settings.RenderSettings.BloomEnabled = true;
+                settings.RenderSettings.BloomIntensity = .42F;
+                settings.RenderSettings.BloomThreshold = 1.05F;
+                settings.RenderSettings.BloomRadius = 14F;
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.Exposure = .24F;
+                settings.RenderSettings.Saturation = 1.12F;
+                settings.RenderSettings.ColorContrast = 1.1F;
+                settings.RenderSettings.Brightness = 1.02F;
+                settings.RenderSettings.WhiteBalance = 5200F;
+                settings.RenderSettings.Vignette = .18F;
+                settings.RenderSettings.CameraFovDegrees = 46F;
+                settings.RenderSettings.Dither = true;
+                settings.RenderSettings.RadianceClamp = 26F;
+                settings.RenderSettings.DirectLightingMIS = true;
+                settings.RenderSettings.AutoPerformanceScaling = false;
                 break;
             case ProjectTemplateId.RenderingGallery:
                 settings.DefaultRenderPreset = "全效果展示";

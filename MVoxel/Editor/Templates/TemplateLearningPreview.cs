@@ -63,6 +63,7 @@ internal static class TemplateLearningPreview
     internal static string[] Steps(ProjectTemplateId id) => id switch
     {
         ProjectTemplateId.Empty => ["在网格上绘制第一个方块，自动建立模型", "改变颜色与笔刷，锁定模型后继续搭建", "Ctrl+S 保存，再从项目菜单导出选中模型"],
+        ProjectTemplateId.XianxiaContinent => ["在层级中选择山体、宗门或浮空岛并聚焦", "锁定一个分件，取色并修改局部体素", "切换场景相机，保存项目并导出画面"],
         ProjectTemplateId.MaterialLab => ["选择玻璃、金属与发光样品并取色", "从笔刷材质进入共享材质，比较粗糙度与透明度", "切到渲染视图，保存并导出 PNG"],
         ProjectTemplateId.PaletteWorkshop => ["取样色卡并在空白处绘制", "在项目设置中创建与保存调色板副本", "比较新笔刷颜色与已有方块，再保存项目"],
         ProjectTemplateId.SparseWorld => ["在层级中选择远距离地标并聚焦", "锁定地标，观察远近移动与编辑归属", "打开信息统计，保存并导出选中地标"],
