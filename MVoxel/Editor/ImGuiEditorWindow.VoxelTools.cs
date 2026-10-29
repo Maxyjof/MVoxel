@@ -1082,7 +1082,7 @@ internal sealed partial class ImGuiEditorWindow
             width, height,
             // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
             // 路径追踪仍需帧号驱动样本去相关。
-            FrameIndex: pathMode ? (int)(Environment.TickCount & 0x3FFFFFFF) : 0,
+            FrameIndex: pathMode ? framePipeline?.AccumulatedSamples ?? 0 : 0,
             framePipeline?.RegionMin ?? default,
             framePipeline?.RegionSize ?? default,
             framePipeline?.StepBudget ?? 8192,

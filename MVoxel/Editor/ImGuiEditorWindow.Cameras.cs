@@ -169,7 +169,6 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_renderCameraInitialFramePending)
         {
-            EnsureInitialRenderCameraFraming(size);
             _renderCameraInitialFramePending = false;
         }
 
@@ -268,72 +267,6 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return GetRenderViewCamera();
-    }
-
-    /// <summary>
-    /// 首次进入项目时校验渲染相机是否真的能看完整个当前渲染世界。
-    /// 模板相机和当前世界的包围盒必须使用同一坐标系，否则第一次输入环绕前
-    /// 会出现相机偏向、距离过近或目标落在视野外，环绕后才突然恢复正常。
-    /// </summary>
-    /// <param name="viewportSize">渲染视口逻辑尺寸</param>
-    private void EnsureInitialRenderCameraFraming(Vector2 viewportSize)
-    {
-        if (viewportSize.X <= 1F || viewportSize.Y <= 1F ||
-            GetActiveRenderCameraObject() is not { } cameraObject ||
-            !_world.TryGetBounds(out var min, out var max))
-        {
-            return;
-        }
-
-        var pivot = GetRenderOrbitAnchor();
-        _renderOrbitAnchor = pivot;
-        var camera = ToSceneCamera(cameraObject);
-        var offset = camera.Position - pivot;
-        var distance = offset.Length;
-        if (!float.IsFinite(distance) || distance < 0.0001F)
-        {
-            offset = Vector3.Normalize(new Vector3(1F, 0.7F, 1F));
-            distance = 0F;
-        }
-        else
-        {
-            offset /= distance;
-        }
-
-        var width = (float)(max.X - min.X + 1D);
-        var height = (float)(max.Y - min.Y + 1D);
-        var depth = (float)(max.Z - min.Z + 1D);
-        var radius = 0.5F * MathF.Sqrt(width * width + height * height + depth * depth) + 1F;
-        var settings = ResolveRenderSettings(cameraObject);
-        var verticalHalfFov = Math.Clamp(settings.CameraFovDegrees, 20F, 120F) * MathF.PI / 360F;
-        var aspect = MathF.Max(viewportSize.X / viewportSize.Y, 0.1F);
-        var horizontalHalfFov = MathF.Atan(MathF.Tan(verticalHalfFov) * aspect);
-        var visibleHalfFov = MathF.Min(verticalHalfFov, horizontalHalfFov) * 0.88F;
-        var requiredDistance = radius / MathF.Max(MathF.Tan(visibleHalfFov), 0.05F) * 1.08F;
-        var toPivot = Vector3.Normalize(pivot - camera.Position);
-        var centerAngle = camera.Position == pivot || !float.IsFinite(toPivot.X)
-            ? MathF.PI
-            : MathF.Acos(Math.Clamp(Vector3.Dot(camera.Forward, toPivot), -1F, 1F));
-        var angularRadius = distance > radius
-            ? MathF.Asin(Math.Clamp(radius / distance, 0F, 0.99F))
-            : MathF.PI * 0.5F;
-        var fits = distance >= requiredDistance &&
-                   centerAngle + angularRadius <= visibleHalfFov;
-        if (fits)
-        {
-            return;
-        }
-
-        distance = MathF.Max(requiredDistance, 1.25F);
-        var position = pivot + offset * distance;
-        var forward = Vector3.Normalize(pivot - position);
-        var right = Vector3.Cross(forward, Vector3.UnitY);
-        if (right.LengthSquared < 0.0001F)
-        {
-            right = Vector3.UnitX;
-        }
-
-        WriteCameraTransform(cameraObject, position, forward, Vector3.Normalize(Vector3.Cross(right, forward)));
     }
 
     private Vector3 GetRenderOrbitAnchor()

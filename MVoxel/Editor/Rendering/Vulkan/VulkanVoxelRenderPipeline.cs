@@ -2530,8 +2530,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     float saltX = float(Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 42317u + 11u)) / 4294967296.0;
                     float saltY = float(Hash(uint(pixel.x) * 7393u + uint(pixel.y) * 15211u + 47u)) / 4294967296.0;
-                    jitter = vec2(fract(saltX + float(values[7]) * 0.6180339887),
-                        fract(saltY + float(values[7]) * 0.7548776662)) - 0.5;
+                    float sampleNumber = values[7] + float(sampleIndex);
+                    jitter = vec2(fract(saltX + sampleNumber * 0.6180339887),
+                        fract(saltY + sampleNumber * 0.7548776662)) - 0.5;
                 }
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
                 vec3 sampleOrigin = origin;
