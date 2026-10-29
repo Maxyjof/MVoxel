@@ -220,20 +220,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     internal string? ShaderLog => _workset.IsEmpty
         ? "Vulkan 体素工作集为空，等待场景数据"
         : IsAvailable
-            ? $"Vulkan GPU BVH 路径追踪已就绪，工作集 {_workset.Cells.Count:N0} 个体素，节点 {_bvhNodeCount:N0} 个" +
-              (LastSyncWasBudgeted ? "，场景超出显存预算已采样显示" : null)
+            ? $"Vulkan GPU BVH 路径追踪已就绪，工作集 {_workset.Cells.Count:N0} 个体素，节点 {_bvhNodeCount:N0} 个"
             : $"已同步 {_workset.Cells.Count:N0} 个体素，等待 Vulkan Compute 资源初始化";
 
     /// <summary>
-    /// 完整工作集允许的最大体素数：约 384MB 打包记录加同量级 BVH，
-    /// 超过上限的渲染视图请求自动降级为采样，避免超大场景必然的内存耗尽或设备丢失
+    /// 砖路径当前支持的最大源体素数
     /// </summary>
     internal const int MaxFullWorksetCells = 8_000_000;
-
-    /// <summary>
-    /// 获取最近一次同步是否因超出显存预算而被采样降级
-    /// </summary>
-    internal bool LastSyncWasBudgeted { get; private set; }
 
     /// <summary>
     /// 同步稀疏体素世界到 Vulkan 工作集
@@ -281,14 +274,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
         _brickResidency = null;
         _usingBrickPath = false;
-        var requestedFull = maximumCells == 0 && world.OccupiedVoxelCount > MaxFullWorksetCells;
-        if (requestedFull)
-        {
-            maximumCells = MaxFullWorksetCells;
-            MVoxelLog.Warn($"渲染工作集超出显存预算：世界 {world.OccupiedVoxelCount:N0} 体素，已采样降级到 {MaxFullWorksetCells:N0} 体素");
-        }
-
-        LastSyncWasBudgeted = requestedFull;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior);
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;

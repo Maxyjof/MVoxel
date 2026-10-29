@@ -86,6 +86,15 @@ internal sealed class EditorControlServer : IDisposable
         _cancellation.Cancel();
         try { _worker?.Wait(TimeSpan.FromSeconds(1)); } catch (Exception) { }
         _cancellation.Dispose();
-        if (File.Exists(AppPaths.EditorEndpointPath)) File.Delete(AppPaths.EditorEndpointPath);
+        try
+        {
+            if (File.Exists(AppPaths.EditorEndpointPath) &&
+                File.ReadAllText(AppPaths.EditorEndpointPath).Trim() == _pipeName)
+                File.Delete(AppPaths.EditorEndpointPath);
+        }
+        catch (IOException exception)
+        {
+            MVoxelLog.Warn($"清理编辑器控制端点失败：{exception.Message}");
+        }
     }
 }

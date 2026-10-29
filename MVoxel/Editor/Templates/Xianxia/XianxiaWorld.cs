@@ -235,10 +235,10 @@ internal static class XianxiaWorld
     {
         var shots = new[]
         {
-            new Shot("相机 · 云海仙峰", new Vector3(1656F, 656F, 1572F), new Vector3(500F, 392F, 500F), 40F),
+            new Shot("相机 · 云海仙峰", new Vector3(1135.8F, 537.2F, 1089.6F), new Vector3(500F, 392F, 500F), 40F),
             new Shot("相机 · 山门问道", new Vector3(512F, 302F, 1096F), new Vector3(512F, 438F, 664F), 46F),
-            new Shot("相机 · 青云之巅", new Vector3(824F, 826F, 906F), new Vector3(512F, 646F, 500F), 40F),
-            new Shot("相机 · 宗门平台", new Vector3(318F, 706F, 786F), new Vector3(512F, 596F, 500F), 50F),
+            new Shot("相机 · 青云之巅", new Vector3(730.4F, 772F, 784.2F), new Vector3(512F, 646F, 500F), 40F),
+            new Shot("相机 · 宗门平台", new Vector3(366.5F, 678.5F, 714.5F), new Vector3(512F, 596F, 500F), 50F),
             new Shot("相机 · 长乐坊市", new Vector3(764F, 342F, 868F), new Vector3(640F, 300F, 720F), 52F),
             new Shot("相机 · 玉京浮岛", new Vector3(132F, 648F, 452F), new Vector3(306F, 470F, 316F), 45F),
             new Shot("相机 · 悬空瀑布", new Vector3(768F, 430F, 748F), new Vector3(576F, 330F, 560F), 46F),
