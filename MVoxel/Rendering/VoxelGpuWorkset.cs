@@ -122,11 +122,14 @@ public sealed class VoxelGpuWorkset
             CheckedExtent(minimum.Y, maximum.Y, nameof(minimum)),
             CheckedExtent(minimum.Z, maximum.Z, nameof(minimum)));
 
-        // 区块按 (Z, Y, X) 的列顺序排好后，每个区块内部按键升序遍历就是全局 Z、Y、X 稳定序，
-        // 因此只需区块内的小排序，不再对全体体素做全局排序
+        //按空间邻近顺序排列区块，减少大型场景BVH节点的包围盒重叠
         var chunks = world.SnapshotChunks();
-        chunks.Sort(static (left, right) =>
+        chunks.Sort((left, right) =>
         {
+            var leftKey = MortonChunkKey(left.Coordinate, minimum, size);
+            var rightKey = MortonChunkKey(right.Coordinate, minimum, size);
+            var byKey = leftKey.CompareTo(rightKey);
+            if (byKey != 0) return byKey;
             var byZ = left.Coordinate.Z.CompareTo(right.Coordinate.Z);
             if (byZ != 0) return byZ;
             var byY = left.Coordinate.Y.CompareTo(right.Coordinate.Y);
@@ -250,6 +253,25 @@ public sealed class VoxelGpuWorkset
         }
 
         return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
+    }
+
+    private static uint MortonChunkKey(ChunkCoord64 coordinate, VoxelCoord64 minimum, VoxelCoord64 size)
+    {
+        static uint Quantize(long chunk, long min, long extent)
+        {
+            var position = (double)chunk * VoxelWorld.ChunkSize + VoxelWorld.ChunkSize * 0.5;
+            return (uint)Math.Clamp((position - min) * 1023.0 / Math.Max(1.0, extent), 0.0, 1023.0);
+        }
+        static uint Spread(uint value)
+        {
+            value = (value | value << 16) & 0x030000FFu;
+            value = (value | value << 8) & 0x0300F00Fu;
+            value = (value | value << 4) & 0x030C30C3u;
+            return (value | value << 2) & 0x09249249u;
+        }
+        return Spread(Quantize(coordinate.X, minimum.X, size.X)) |
+               (Spread(Quantize(coordinate.Y, minimum.Y, size.Y)) << 1) |
+               (Spread(Quantize(coordinate.Z, minimum.Z, size.Z)) << 2);
     }
 
     /// <summary>
