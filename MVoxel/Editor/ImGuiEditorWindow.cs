@@ -317,6 +317,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnRenderFrame(FrameEventArgs args)
     {
+        var analysisStart = _showPerformanceAnalyzer ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
         try
         {
             base.OnRenderFrame(args);
@@ -345,6 +346,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
             ImGui.SetCurrentContext(_imguiContext);
             UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
+            if (analysisStart != 0L) RecordPerformanceFrame(args.Time, analysisStart);
         }
         catch (Exception exception)
         {
@@ -725,6 +727,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawProjectAssets();
         DrawPluginPanels();
         DrawGeneratorWindow();
+        DrawAnalysisWindows();
         DrawStatusBar();
         DrawProjectPathDialog();
         DrawCloseProjectDialog();
@@ -855,6 +858,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.TextDisabled("视口工具");
             if (ImGui.MenuItem("相机", null, _activeTool == EditorTool.Camera)) _activeTool = EditorTool.Camera;
             if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
+            if (ImGui.MenuItem("取色", null, _activeTool == EditorTool.Eyedropper)) _activeTool = EditorTool.Eyedropper;
             ImGui.Separator();
             ImGui.TextDisabled("体素编辑工具");
             if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw)) _activeTool = EditorTool.Draw;
@@ -863,6 +867,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("长方体", null, _activeTool == EditorTool.Box)) _activeTool = EditorTool.Box;
             if (ImGui.MenuItem("填充", null, _activeTool == EditorTool.Fill)) _activeTool = EditorTool.Fill;
             ImGui.Separator();
+            ImGui.TextDisabled("度量与诊断");
+            if (ImGui.MenuItem("体素度量", null, ref _showVoxelMeasurements)) _measurementRefreshSeconds = 1F;
+            if (ImGui.MenuItem("性能分析器", null, ref _showPerformanceAnalyzer))
+            {
+                _analysisAllocatedBytes = 0;
+                _analysisRefreshSeconds = 0;
+            }
             if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
             ImGui.EndMenu();
         }
