@@ -106,6 +106,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private Image _accumulationImage;
     private DeviceMemory _accumulationMemory;
     private ImageView _accumulationView;
+    private Image _guideImage;
+    private DeviceMemory _guideMemory;
+    private ImageView _guideView;
+    private bool _guideInitialized;
     private nint _displayTextureId;
     private uint _outputWidth;
     private uint _outputHeight;
@@ -921,6 +925,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (pathMode || bloomActive)
                 {
                     TransitionAccumulationToGeneral(commandBuffer);
+                    if (pathMode) TransitionGuideToGeneral(commandBuffer);
                 }
 
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
@@ -954,6 +959,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     // 最终降噪/Bloom 读取整张累积图，必须显式等待前面所有分块的写入。
                     TransitionAccumulationToGeneral(commandBuffer);
+                    if (pathMode) TransitionGuideToGeneral(commandBuffer);
                 }
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
                 var descriptorSet = _ringSets[slot];
@@ -1109,6 +1115,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             Check(api.BindImageMemory(_device, _accumulationImage, _accumulationMemory, 0),
                 "绑定路径追踪累积图像");
             _accumulationView = CreateImageView(_accumulationImage, Format.R16G16B16A16Sfloat);
+            var guideCreateInfo = accumulationCreateInfo;
+            guideCreateInfo.Format = Format.R32G32B32A32Sfloat;
+            Check(api.CreateImage(_device, &guideCreateInfo, null, out _guideImage), "创建降噪辅助图像");
+            MemoryRequirements guideRequirements = default;
+            api.GetImageMemoryRequirements(_device, _guideImage, &guideRequirements);
+            _guideMemory = AllocateMemory(guideRequirements, MemoryPropertyFlags.DeviceLocalBit);
+            Check(api.BindImageMemory(_device, _guideImage, _guideMemory, 0), "绑定降噪辅助图像");
+            _guideView = CreateImageView(_guideImage, Format.R32G32B32A32Sfloat);
+            _guideInitialized = false;
             _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
             _outputHeight = height;
@@ -1200,6 +1215,25 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _accumulationInitialized = true;
     }
 
+    private void TransitionGuideToGeneral(CommandBuffer commandBuffer)
+    {
+        ImageMemoryBarrier barrier = new()
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = _guideInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _guideImage,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+            SrcAccessMask = _guideInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit : 0,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
+        };
+        _api!.CmdPipelineBarrier(commandBuffer, _guideInitialized ? PipelineStageFlags.ComputeShaderBit : PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in barrier);
+        _guideInitialized = true;
+    }
+
     /// <summary>
     /// 更新 Compute 参数 Storage Buffer
     /// </summary>
@@ -1259,7 +1293,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[8];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[9];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1268,10 +1302,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         bindings[5] = new(5, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[6] = new(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[7] = new(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[8] = new(8, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 8,
+            BindingCount = 9,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1288,7 +1323,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
             new(DescriptorType.StorageBuffer, 6 * TileRingDepth),
-            new(DescriptorType.StorageImage, 2 * TileRingDepth)
+            new(DescriptorType.StorageImage, 3 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
@@ -1384,15 +1419,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private void UpdateComputeDescriptors()
     {
         if (_voxelBuffer.Handle == 0 || _bvhBuffer.Handle == 0 ||
-            _outputView.Handle == 0 || _accumulationView.Handle == 0) return;
+            _outputView.Handle == 0 || _accumulationView.Handle == 0 || _guideView.Handle == 0) return;
         // 砖表绑定在布局中恒存在（着色器静态引用），即使传统路径也要绑定最小缓冲
         EnsureBrickTableBuffer(1);
         DescriptorBufferInfo voxelInfo = new(_voxelBuffer, 0, _voxelBufferCapacity);
         DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
+        DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[8];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[9];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1475,7 +1511,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &brickTableInfo
             };
-            _api!.UpdateDescriptorSets(_device, 8, writes, 0, null);
+            writes[8] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
+                DstBinding = 8, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage, PImageInfo = &guideInfo };
+            _api!.UpdateDescriptorSets(_device, 9, writes, 0, null);
         }
     }
 
@@ -1527,6 +1565,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="api">Vulkan API</param>
     private void DestroyOutputImage(Vk api)
     {
+        if (_guideView.Handle != 0) api.DestroyImageView(_device, _guideView, null);
+        if (_guideImage.Handle != 0) api.DestroyImage(_device, _guideImage, null);
+        if (_guideMemory.Handle != 0) api.FreeMemory(_device, _guideMemory, null);
+        _guideView = default;
+        _guideImage = default;
+        _guideMemory = default;
+        _guideInitialized = false;
         if (_accumulationView.Handle != 0) api.DestroyImageView(_device, _accumulationView, null);
         if (_accumulationImage.Handle != 0) api.DestroyImage(_device, _accumulationImage, null);
         if (_accumulationMemory.Handle != 0) api.FreeMemory(_device, _accumulationMemory, null);
@@ -1585,6 +1630,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         };
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
+        layout(set = 0, binding = 8, rgba32f) uniform coherent image2D guideImage;
 
         struct MaterialSlotData
         {
@@ -2057,10 +2103,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
-            out bool primarySurfaceHit, out float primarySurfaceDistance)
+            out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal)
         {
             primarySurfaceHit = false;
             primarySurfaceDistance = 3.402823e+38;
+            primaryNormal = vec3(0.0);
             vec3 radiance = vec3(0.0);
             vec3 throughput = vec3(1.0);
             int translucentPasses = 0;
@@ -2154,6 +2201,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     primarySurfaceHit = true;
                     primarySurfaceDistance = hitDistance;
+                    primaryNormal = hitNormal;
                 }
                 MaterialSlotData material = materialSlots[int(hitSlot) % 64];
                 vec3 hitLinearColor = groundHit
@@ -2442,6 +2490,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 filtered = vec3(0.0);
             float weightSum = 0.0;
             float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
+            vec4 centerGuide = imageLoad(guideImage, pixel);
             for (int oy = -2; oy <= 2; oy++)
             {
                 for (int ox = -2; ox <= 2; ox++)
@@ -2451,6 +2500,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     float spatial = exp(-float(ox * ox + oy * oy) / 3.5);
                     float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
                     float edge = exp(-abs(neighborLuma - centerLuma) * 10.0);
+                    vec4 neighborGuide = imageLoad(guideImage, samplePixel);
+                    if ((centerGuide.w > 0.0) != (neighborGuide.w > 0.0)) continue;
+                    if (centerGuide.w > 0.0)
+                    {
+                        edge *= pow(max(dot(centerGuide.xyz, neighborGuide.xyz), 0.0), 16.0);
+                        edge *= exp(-abs(centerGuide.w - neighborGuide.w) / max(centerGuide.w * 0.02, 0.5));
+                    }
                     float weight = spatial * mix(0.0, edge, strength);
                     filtered += neighbor * weight;
                     weightSum += weight;
@@ -2533,6 +2589,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 sampleColor = vec3(0.0);
             bool primarySurfaceHit = false;
             float primarySurfaceDistance = 3.402823e+38;
+            vec4 guide = vec4(0.0);
             for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
             {
                 if (sampleIndex >= samples) break;
@@ -2565,8 +2622,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
                 bool sampleSurfaceHit = false;
                 float sampleSurfaceDistance = 3.402823e+38;
+                vec3 sampleNormal;
                 sampleColor += TracePath(sampleOrigin, direction, state, pathMode,
-                    sampleSurfaceHit, sampleSurfaceDistance);
+                    sampleSurfaceHit, sampleSurfaceDistance, sampleNormal);
+                if (sampleIndex == 0 && sampleSurfaceHit)
+                    guide = vec4(sampleNormal, max(sampleSurfaceDistance * dot(direction, forward), 0.0001));
                 primarySurfaceHit = primarySurfaceHit || sampleSurfaceHit;
                 primarySurfaceDistance = min(primarySurfaceDistance, sampleSurfaceDistance);
             }
@@ -2575,6 +2635,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 color = sampleColor;
             if (pathMode)
             {
+                imageStore(guideImage, pixel, guide);
                 vec4 previous = imageLoad(accumulationImage, pixel);
                 float totalSamples = float(accumulatedSamples + samples);
                 color = totalSamples > 0.0
