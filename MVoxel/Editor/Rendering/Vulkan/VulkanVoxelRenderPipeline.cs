@@ -2402,8 +2402,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - vDotH, 5.0);
                 float fresnelStrength = clamp(max(max(fresnel.r, fresnel.g), fresnel.b), 0.02, 0.98);
                 vec3 specularCandidate = normalize(reflect(rayDirection, microfacetNormal));
-                if (dot(specularCandidate, hitNormal) > 0.0 && Random(state) < fresnelStrength)
+                if (Random(state) < fresnelStrength)
                 {
+                    //镜面采样落到表面下方时该样本贡献为零，不能改走漫反射分支
+                    if (dot(specularCandidate, hitNormal) <= 0.0) break;
                     rayDirection = specularCandidate;
                     // 按实际 Fresnel 分支概率补偿；不能额外乘 2 放大路径能量。
                     throughput *= fresnel / fresnelStrength;
