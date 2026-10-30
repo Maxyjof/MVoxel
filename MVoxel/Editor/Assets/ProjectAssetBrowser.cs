@@ -10,8 +10,8 @@ using Vector4 = System.Numerics.Vector4;
 namespace MVoxel.Editor;
 
 /// <summary>
-/// 刻意保持小巧的数据驱动两栏资源浏览器，对齐 Unity Project 窗口的有用部分：
-/// 左侧目录树、右侧按类型呈现的资产卡片，配全局搜索与类型筛选
+/// 数据驱动的单栏资源浏览器：顶部显示当前位置和返回上级，正文按类型呈现资产卡片，
+/// 配全局搜索与类型筛选；目录通过点击文件夹进入，不再占用左侧目录树
 /// 目录遍历拒绝符号链接与 Assets 根之外的路径
 /// </summary>
 internal sealed class ProjectAssetBrowser
@@ -21,7 +21,6 @@ internal sealed class ProjectAssetBrowser
     private string _searchText = string.Empty;
     private ProjectAssetKind? _filter;
     private bool _searchAll = true;
-    private float _treeWidth = 360F;
     private float _tileSize = 76F;
     private string? _renamePath;
 
@@ -98,23 +97,6 @@ internal sealed class ProjectAssetBrowser
         ImGui.Separator();
 
         var bodyHeight = Math.Max(64F, ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeightWithSpacing() - 8F);
-        ImGui.BeginChild("##资源目录树", new Vector2(_treeWidth, bodyHeight), ImGuiChildFlags.Borders,
-            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
-        DrawFolderTree(project);
-        ImGui.EndChild();
-
-        ImGui.SameLine(0F, 0F);
-        ImGui.InvisibleButton("##资源面板分隔条", new Vector2(5F, bodyHeight));
-        if (ImGui.IsItemActive())
-        {
-            _treeWidth = Math.Clamp(_treeWidth + ImGui.GetIO().MouseDelta.X, 270F, 440F);
-        }
-        if (ImGui.IsItemHovered() || ImGui.IsItemActive())
-        {
-            ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW);
-        }
-
-        ImGui.SameLine(0F, 0F);
         ImGui.BeginChild("##资源平铺内容", new Vector2(0F, bodyHeight), ImGuiChildFlags.Borders);
         DrawGrid(project, reportStatus, trackedChange, openWorldRequest, instantiatePrefabRequest, exportVoxRequest, openGeneratorRequest, exportQubicleRequest, countReferences);
         if (_openRenameDialog)
@@ -142,6 +124,12 @@ internal sealed class ProjectAssetBrowser
     private void DrawToolbar(ProjectHandle? project)
     {
         ImGui.TextColored(ToColor(EditorPalette.Text), BuildBreadcrumb(project));
+        if (!string.IsNullOrEmpty(_selectedFolder))
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("↑ 上级")) ActivateFolder(ParentFolder(_selectedFolder));
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级资产文件夹");
+        }
 
         var filterLabel = FilterLabel(_filter);
         var filterWidth = Math.Max(156F, ImGui.CalcTextSize(filterLabel).X + ImGui.GetFrameHeight() + 20F);
@@ -173,54 +161,6 @@ internal sealed class ProjectAssetBrowser
         ImGui.SameLine();
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##资源搜索", "搜索资产…", ref _searchText, 256);
-    }
-
-    private void DrawFolderTree(ProjectHandle? project)
-    {
-        var framePadding = ImGui.GetStyle().FramePadding;
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(framePadding.X, Math.Min(1F, framePadding.Y)));
-        DrawFolderNode(project, string.Empty, "资产", 0);
-        ImGui.PopStyleVar();
-    }
-
-    private void DrawFolderNode(ProjectHandle? project, string relativePath, string displayName, int depth)
-    {
-        var children = ProjectAssetCatalog.Folders(project, relativePath);
-        var isRoot = relativePath.Length == 0;
-        var flags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.SpanAvailWidth;
-        if (isRoot || depth < 2) flags |= ImGuiTreeNodeFlags.DefaultOpen;
-        if (_selectedFolder == relativePath) flags |= ImGuiTreeNodeFlags.Selected;
-        if (children.Count == 0) flags |= ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen;
-
-        var opened = ImGui.TreeNodeEx($"{displayName}##资源树-{relativePath}", flags);
-        // TreeNodeEx 返回后必须立即读取当前行的点击状态。树节点后续绘制会改写
-        // ImGui 的 last-item；同时明确限定左键，避免首帧或右键菜单状态吞掉导航点击。
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-        {
-            ActivateFolder(relativePath);
-        }
-
-        if (children.Count == 0 || !opened) return;
-        if (isRoot && ImGui.BeginTable("##资源根目录网格", 2,
-                ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings))
-        {
-            foreach (var child in children)
-            {
-                ImGui.TableNextColumn();
-                DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
-            }
-
-            ImGui.EndTable();
-        }
-        else
-        {
-            foreach (var child in children)
-            {
-                DrawFolderNode(project, child.RelativePath, child.DisplayName, depth + 1);
-            }
-        }
-
-        ImGui.TreePop();
     }
 
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
@@ -676,6 +616,15 @@ internal sealed class ProjectAssetBrowser
         ImGui.SameLine();
         ImGui.SetNextItemWidth(110F);
         ImGui.SliderFloat("##资源图标大小", ref _tileSize, 48F, 112F, "%.0f");
+    }
+
+    /// <summary>返回上一级资产文件夹；已在根目录时返回空字符串</summary>
+    private static string ParentFolder(string folder)
+    {
+        var trimmed = folder.Replace('\\', '/').Trim('/');
+        if (trimmed.Length == 0) return string.Empty;
+        var index = trimmed.LastIndexOf('/');
+        return index < 0 ? string.Empty : trimmed[..index];
     }
 
     private string BuildBreadcrumb(ProjectHandle? project)
