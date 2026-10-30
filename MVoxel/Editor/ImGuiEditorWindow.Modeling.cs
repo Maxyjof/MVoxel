@@ -11,7 +11,6 @@ namespace MVoxel.Editor;
 internal sealed partial class ImGuiEditorWindow
 {
     private bool _showModelingTools = true;
-    private bool _showGettingStarted;
     private bool _resetDockLayoutRequested;
     private bool _focusModelingTools;
     private Action? _afterProjectClose;
@@ -175,32 +174,6 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.Button("取消")) ImGui.CloseCurrentPopup();
                 ImGui.EndPopup();
             }
-        }
-        ImGui.End();
-    }
-
-    private void DrawGettingStarted()
-    {
-        if (!_showGettingStarted) return;
-        ImGui.SetNextWindowSize(new Vector2(700F, 570F), ImGuiCond.Appearing);
-        if (ImGui.Begin("入门与 MagicaVoxel 迁移指南", ref _showGettingStarted))
-        {
-            ImGui.TextWrapped("从第一笔到导出");
-            ImGui.Separator();
-            ImGui.TextWrapped("1. 项目 → 新建项目，填写项目名称和保存位置。空项目可以直接从网格上绘制，也可以先新建体素模型。");
-            ImGui.TextWrapped("2. 在建模工具中选绘制、颜色和笔刷。左键放置，Shift+左键擦除；右键环绕，中键平移，滚轮缩放。相机工具不会改动模型。");
-            ImGui.TextWrapped("3. 命中哪个模型就编辑哪个模型。锁定编辑目标后，新方块始终归属该模型；隐藏对象、图层或禁用组件后不能编辑。");
-            ImGui.TextWrapped("4. 笔刷颜色用于新绘制的方块；材质槽可以被多个模型共享。修改共享材质会影响所有引用体素。");
-            ImGui.TextWrapped("5. 场景用于建模，渲染用于观察最终画面。切面查看只影响场景，不删除体素，也不改变导出内容。");
-            ImGui.TextWrapped("6. 项目 → 保存项目写入正式文件。自动保存是恢复快照，不能替代正式保存。退出、关闭和切换项目会保护未保存修改。");
-            ImGui.TextWrapped("7. 项目 → 导出默认使用 MVoxel 原生 .mvmodel/.mvworld，保留更高的尺寸上限和材质槽；完整场景与材质定义用另存项目。MagicaVoxel/Qubicle 仅是兼容交换入口。PNG/HDR 使用当前渲染相机。输出均在 Assets/Exports，不覆盖同名文件。");
-            ImGui.SeparatorText("熟悉 MagicaVoxel 时需要注意");
-            ImGui.TextWrapped("MVoxel 将项目、场景对象、体素数据、图层和材质槽分开管理；色板仍用于绘制，但场景对象不是色板项。先用“小屋与花园”熟悉对象归属，再使用大型场景模板。");
-            if (ImGui.Button("显示建模工具")) { _showModelingTools = true; _focusModelingTools = true; }
-            ImGui.SameLine();
-            if (ImGui.Button("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
-            ImGui.SameLine();
-            if (ImGui.Button("新建项目")) ShowProjectPathDialog(create: true);
         }
         ImGui.End();
     }

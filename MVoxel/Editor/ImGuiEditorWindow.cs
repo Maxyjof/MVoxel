@@ -908,7 +908,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("帮助"))
         {
-            if (ImGui.MenuItem("入门与 MagicaVoxel 迁移指南")) _showGettingStarted = true;
+            if (ImGui.MenuItem("快速入门")) OpenGuide(0);
+            if (ImGui.MenuItem("完整教程")) OpenGuide(1);
+            if (ImGui.MenuItem("MagicaVoxel 迁移指南")) OpenGuide(2);
+            if (ImGui.MenuItem("快捷键对照")) OpenGuide(3);
+            ImGui.Separator();
             if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
             ImGui.EndMenu();
         }
