@@ -596,7 +596,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 ImGui.EndCombo();
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用后可以继续手动调整；低：实时光照、1次阴影采样、关闭AO与辉光并启用远距离LOD；中：实时光照与较温和LOD；高和超高：路径追踪、完整体素。所有方案保持完整分辨率，导出设置独立。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用后可以继续手动调整；低和中使用实时光照，高和超高使用路径追踪。所有方案保留完整体素、分辨率、AO及辉光；低档使用更少的阴影和AO采样。导出设置独立。");
         }
 
         DrawRenderSettingsAccordion("backend", "后端", () =>

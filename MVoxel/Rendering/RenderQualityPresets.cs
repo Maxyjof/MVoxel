@@ -47,23 +47,18 @@ public static class RenderQualityPresets
         settings.Backend = RenderBackend.Gpu;
         settings.UseHardwareRayTracing = false;
         settings.ResolutionScale = 1F;
-        settings.AutoPerformanceScaling = quality == RenderQualityPreset.Low;
+        settings.AutoPerformanceScaling = false;
         settings.PathTracingEnabled = quality is RenderQualityPreset.High or RenderQualityPreset.Ultra;
         settings.PathSamplesPerFrame = quality == RenderQualityPreset.Ultra ? 2 : 1;
         settings.PathMaxAccumulatedSamples = quality switch { RenderQualityPreset.High => 256, RenderQualityPreset.Ultra => 1024, _ => 64 };
         settings.MaxBounces = quality == RenderQualityPreset.Ultra ? 6 : quality == RenderQualityPreset.High ? 3 : 1;
         settings.ShadowSamples = quality switch { RenderQualityPreset.Low => 1, RenderQualityPreset.Medium => 2, RenderQualityPreset.High => 4, _ => 6 };
-        settings.AmbientOcclusionEnabled = quality != RenderQualityPreset.Low;
+        settings.AmbientOcclusionEnabled = true;
         settings.AoSamples = quality switch { RenderQualityPreset.Low => 4, RenderQualityPreset.Medium => 4, RenderQualityPreset.High => 8, _ => 16 };
-        settings.BloomEnabled = quality != RenderQualityPreset.Low;
+        settings.BloomEnabled = true;
         settings.PathDenoising = quality is RenderQualityPreset.High or RenderQualityPreset.Ultra;
         settings.DirectLightingMIS = true;
-        settings.RenderLod = quality switch
-        {
-            RenderQualityPreset.Low => new VoxelLodSettings { Enabled = true, LevelCount = 5, Distances = [64F, 128F, 256F, 512F] },
-            RenderQualityPreset.Medium => new VoxelLodSettings { Enabled = true, LevelCount = 3, Distances = [256F, 512F] },
-            _ => new VoxelLodSettings { Enabled = false },
-        };
+        settings.RenderLod = new VoxelLodSettings { Enabled = false };
         settings.ClampAll();
     }
 }

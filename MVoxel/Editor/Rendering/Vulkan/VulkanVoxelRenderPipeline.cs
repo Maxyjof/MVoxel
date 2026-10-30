@@ -2011,7 +2011,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     0.05, 0.50);
                 float horizonFade = 1.0 - smoothstep(0.0, horizonBand, abs(rayDirection.y));
                 float groundFade = horizonFade * clamp(groundHorizonTransition / 1024.0, 0.0, 1.0);
-                vec3 horizon = pathMode
+                vec3 horizon = pathMode || values[115] < 0.5
                     ? Sky(rayDirection)
                     : vec3(values[98], values[99], values[100]);
                 groundColor = mix(groundColor, horizon, groundFade);
@@ -2182,7 +2182,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     }
                     else
                     {
-                        radiance += pathMode
+                        radiance += pathMode || values[115] < 0.5
                             ? throughput * Sky(rayDirection)
                             : vec3(values[98], values[99], values[100]);
                         break;
@@ -2191,7 +2191,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 if (bounce == 0 && (hitDistance < values[96] || hitDistance > values[97]))
                 {
-                    if (!pathMode)
+                    if (!pathMode && values[115] > 0.5)
                     {
                         radiance += vec3(values[98], values[99], values[100]);
                     }
