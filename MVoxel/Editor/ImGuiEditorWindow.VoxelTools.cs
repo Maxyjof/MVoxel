@@ -2354,7 +2354,8 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawLightingSection(RenderSettings settings)
     {
         ImGui.SeparatorText("太阳与阴影");
-        Toggle("太阳平行光", ref _settingsToggleSun, value => settings.SunEnabled = value);
+        if (ImGui.Checkbox("太阳平行光", ref settings.SunEnabled) && ReferenceEquals(settings, _renderSettings))
+            _settingsToggleSun = settings.SunEnabled;
         SliderFloat("方位角##sun", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
         SliderFloat("仰角##sun", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
         SliderFloat("强度##sun", ref settings.SunIntensity, 0F, 6F, "%.2f");
@@ -2365,7 +2366,8 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SetTooltip("每像素阴影射线数。较低值性能更好，较高值可降低半影噪点；默认值偏向性能。");
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
-            Toggle("角点环境光遮蔽", ref _settingsToggleAo, value => settings.AmbientOcclusionEnabled = value);
+            if (ImGui.Checkbox("角点环境光遮蔽", ref settings.AmbientOcclusionEnabled) && ReferenceEquals(settings, _renderSettings))
+                _settingsToggleAo = settings.AmbientOcclusionEnabled;
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
             SliderInt("AO 射线采样数", ref settings.AoSamples, 4, 64);
@@ -2378,7 +2380,8 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawEnvironmentSection(RenderSettings settings)
     {
         ImGui.SeparatorText("天空与地面");
-        Toggle("显示地面平面", ref _settingsToggleGround, value => settings.ShowGround = value);
+        if (ImGui.Checkbox("显示地面平面", ref settings.ShowGround) && ReferenceEquals(settings, _renderSettings))
+            _settingsToggleGround = settings.ShowGround;
         DrawColorSlider("地面颜色", ref settings.GroundColor);
         SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
         DrawColorSlider("天顶色", ref settings.SkyTop);

@@ -194,11 +194,10 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.TextDisabled($"曝光  {settings.Exposure:0.00}    视场角  {settings.CameraFovDegrees:0.0}°");
             if (ImGui.Button("应用到当前项目", new Vector2(145F, 30F)))
             {
-                _projectSettings.RenderSettings = settings;
-                _renderSettings = settings;
-                SyncSettingsToggles();
-                SaveProjectSettings();
-                SetStatus($"已应用渲染预设：{Path.GetFileNameWithoutExtension(path)}");
+                var presetDirectory = Path.Combine(_project!.AssetsPath, "RenderPresets");
+                var name = string.Equals(Path.GetDirectoryName(path), presetDirectory, StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetFileNameWithoutExtension(path) : null;
+                ApplyRenderPresetSettings(settings, name);
             }
         }
         catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)

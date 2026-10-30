@@ -26,6 +26,7 @@ internal sealed partial class ImGuiEditorWindow
     private string _shortcutSearch = string.Empty;
     private string _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
     private string _newProjectPaletteName = "新调色板";
+    private string _newRenderPresetName = "自定义画面";
     private string _lastEditorSettingsSnapshot = string.Empty;
     private string _lastProjectSettingsSnapshot = string.Empty;
     private bool _configurationAutoSavePending;
@@ -252,17 +253,79 @@ internal sealed partial class ImGuiEditorWindow
                 settings = RenderSettings.FromJson(File.ReadAllText(path));
             }
 
-            _projectSettings.DefaultRenderPreset = name;
-            _projectSettings.RenderSettings = settings;
-            _renderSettings = settings;
-            SyncSettingsToggles();
-            _pipeline?.ResetAccumulation();
-            SaveProjectSettings();
-            SetStatus($"已应用渲染预设：{name}");
+            ApplyRenderPresetSettings(settings, name);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             SetStatus($"渲染预设加载失败：{exception.Message}");
+        }
+    }
+
+    private void ApplyRenderPresetSettings(RenderSettings settings, string? name)
+    {
+        if (name is not null) _projectSettings.DefaultRenderPreset = name;
+        _projectSettings.RenderSettings = settings;
+        _renderSettings = settings;
+        _useHardwareRayTracing = settings.UseHardwareRayTracing;
+        SyncSettingsToggles();
+        _pipeline?.ResetAccumulation();
+        _accumulationSignature = string.Empty;
+        SaveProjectSettings();
+        SetStatus($"已应用画面方案：{name ?? "资产"}");
+    }
+
+    private void DrawProjectRenderPresets()
+    {
+        if (_project is null) return;
+        ImGui.SeparatorText("项目画面方案");
+        ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(300F, ImGui.GetContentRegionAvail().X * .6F)));
+        if (ImGui.BeginCombo("当前方案", _projectSettings.DefaultRenderPreset))
+        {
+            foreach (var name in GetProjectRenderPresetNames())
+                if (ImGui.Selectable(name, name == _projectSettings.DefaultRenderPreset)) ApplyProjectRenderPreset(name);
+            ImGui.EndCombo();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用方案会替换渲染窗口配置，之后的手动修改不会更改方案文件。导出画面单独配置。");
+        ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(300F, ImGui.GetContentRegionAvail().X * .6F)));
+        ImGui.InputText("新方案名称", ref _newRenderPresetName, 96);
+        if (ImGui.Button("保存当前画面为新方案")) SaveNewProjectRenderPreset();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前渲染窗口配置保存到项目资产的渲染预设文件夹，不覆盖已有方案。");
+    }
+
+    private void SaveNewProjectRenderPreset()
+    {
+        if (_project is null) return;
+        var name = _newRenderPresetName.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name is "." or ".." || name.EndsWith('.') ||
+            name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            string.Equals(name, "默认", StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus("方案名称无效或已保留，请更换名称");
+            return;
+        }
+        try
+        {
+            var directory = Path.Combine(_project.AssetsPath, "RenderPresets");
+            Directory.CreateDirectory(directory);
+            if (Directory.EnumerateFiles(directory).Any(path =>
+                (string.Equals(Path.GetExtension(path), ".mvrenderpreset", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(Path.GetExtension(path), ".mvrender", StringComparison.OrdinalIgnoreCase)) &&
+                string.Equals(Path.GetFileNameWithoutExtension(path), name, StringComparison.OrdinalIgnoreCase)))
+            {
+                SetStatus($"画面方案已存在：{name}");
+                return;
+            }
+            var path = Path.Combine(directory, name + ".mvrenderpreset");
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false)))
+                writer.Write(_projectSettings.RenderSettings.ToJson());
+            _projectSettings.DefaultRenderPreset = name;
+            SaveProjectSettings();
+            SetStatus($"已保存画面方案：{name}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            SetStatus($"保存画面方案失败：{exception.Message}");
         }
     }
 
@@ -434,7 +497,7 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawSettingsPageHeader(string title, string description)
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), title);
-        _ = description;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(description);
         ImGui.Separator();
     }
 
@@ -442,11 +505,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         ImGui.Spacing();
         ImGui.TextColored(ToColor(EditorPalette.Accent), title);
-        if (!string.IsNullOrWhiteSpace(description))
-        {
-            ImGui.SameLine();
-            ImGui.TextDisabled($"· {description}");
-        }
+        if (!string.IsNullOrWhiteSpace(description) && ImGui.IsItemHovered()) ImGui.SetTooltip(description);
 
         ImGui.Separator();
     }
@@ -668,6 +727,18 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
                 ImGui.Checkbox("直接光 MIS 采样", ref settings.DirectLightingMIS);
+        });
+
+        DrawRenderSettingsAccordion("performance", "大型场景性能", () =>
+        {
+            ImGui.Checkbox("自动限制视口采样", ref settings.AutoPerformanceScaling);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("大型工作集限制实时 AO 和阴影采样，超过 70 万格时关闭实时 AO；不改变分辨率或导出设置。");
+        });
+
+        DrawRenderSettingsAccordion("lod", "渲染距离 LOD", () =>
+        {
+            DrawLodGroup("渲染窗口", settings.RenderLod);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离 LOD 会简化远处体素，关闭时保留完整模型精度。");
         });
 
         DrawRenderSettingsAccordion("camera", "相机", () =>
@@ -966,6 +1037,7 @@ internal sealed partial class ImGuiEditorWindow
 
             if (BeginSettingsSubTab("渲染画面", "project.visual.render"))
             {
+                DrawProjectRenderPresets();
                 DrawFullRenderConfiguration(_projectSettings.RenderSettings, "渲染窗口");
                 ImGui.EndTabItem();
             }
