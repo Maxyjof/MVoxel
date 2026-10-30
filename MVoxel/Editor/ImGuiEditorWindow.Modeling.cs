@@ -122,13 +122,14 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SameLine();
             ImGui.TextUnformatted(_sampledBrushColor.HasValue ? "取样色" : $"颜色 {_paletteIndex}");
             ImGui.SameLine();
-            var sampling = _activeTool == EditorTool.Eyedropper;
+            var sampling = _screenColorSampling;
             if (ImGui.Button(sampling ? "取消取色" : "取色"))
             {
-                _activeTool = sampling ? EditorTool.Draw : EditorTool.Eyedropper;
-                SetStatus(sampling ? "已返回绘制" : "点击场景中的体素取样颜色、材质和发光标记");
+                _screenColorSampling = !sampling;
+                _screenColorSamplingArmed = false;
+                SetStatus(sampling ? "已取消取色" : "点击场景体素取原色，其他位置取显示颜色；Esc 取消");
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("点击后在场景中选择体素取样，完成后自动返回绘制");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景体素取原色、材质和发光标记；其他位置取显示颜色，保留笔刷材质与发光标记。Esc 取消");
             DrawBrushProperties();
             var material = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
             if (material is not null && ImGui.Button("编辑共享材质", new Vector2(-1F, ImGui.GetFrameHeight())))

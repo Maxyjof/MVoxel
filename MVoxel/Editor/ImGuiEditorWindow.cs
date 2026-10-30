@@ -725,7 +725,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
         var operation = _projectOperation.Snapshot;
         var inputBlocked = welcomeIsOpen || operation is not null;
-        if (!inputBlocked) HandleVoxelShortcuts();
+        if (!inputBlocked && !_screenColorSampling) HandleVoxelShortcuts();
         if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
         DrawDockspace();
@@ -750,6 +750,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (!inputBlocked) DrawSettingsWindow();
         if (!inputBlocked) DrawGettingStarted();
         TrackConfigurationChanges();
+        if (!inputBlocked) DrawScreenColorSampler();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
         else if (operation is { } snapshot)
         {
@@ -1407,7 +1408,9 @@ DockId=0x6A3C3007,0
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
-        var gizmoInput = HandleSceneGizmoInput(origin, size, camera, gizmoHovered);
+        _colorSampleSceneOrigin = origin;
+        _colorSampleSceneSize = size;
+        var gizmoInput = !_screenColorSampling && HandleSceneGizmoInput(origin, size, camera, gizmoHovered);
         MVoxelLog.SetRuntimeContext(
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
@@ -1429,7 +1432,7 @@ DockId=0x6A3C3007,0
                     GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)));
         }
 
-        if (_project is not null && !gizmoHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
+        if (!_screenColorSampling && _project is not null && !gizmoHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
             (showVoxelWorld || GetVoxelWorldObject() is null))
         {
             HandleVoxelToolInput(origin, size, camera);
@@ -1625,7 +1628,7 @@ DockId=0x6A3C3007,0
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
         bool allowMouseCapture, ViewportCaptureTarget captureTarget = ViewportCaptureTarget.Scene)
     {
-        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning)
+        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning || _screenColorSampling)
         {
             EndSceneMouseCapture(captureTarget);
             return false;
