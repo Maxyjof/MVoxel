@@ -112,6 +112,8 @@ public static class SceneComponentTypes
         var data = component.Data;
         var shape = ReadInt(data, "shape", 0) is var shapeIndex && Enum.IsDefined((LightShape)shapeIndex)
             ? (LightShape)shapeIndex : LightShape.Point;
+        var profileIndex = ReadInt(data, "profile", 0);
+        var profile = Enum.IsDefined((LightProfile)profileIndex) ? (LightProfile)profileIndex : LightProfile.Default;
         return new LightComponentData(
             shape,
             ReadFloat(data, "intensity", 1F),
@@ -121,8 +123,9 @@ public static class SceneComponentTypes
             ReadFloat(data, "range", 32F),
             ReadFloat(data, "spotAngleDegrees", 45F),
             ReadFloat(data, "innerSpotAngleDegrees", 25F),
-            !data.TryGetProperty("castShadows", out var shadows) ||
-            shadows.ValueKind != JsonValueKind.False).Normalize();
+            data.TryGetProperty("castShadows", out var shadows) &&
+            shadows.ValueKind == JsonValueKind.True,
+            profile).Normalize();
     }
 
     /// <summary>
@@ -273,7 +276,18 @@ public enum LightShape
 public sealed record SceneComponentDefinition(string TypeId, string DisplayName, string Category, bool BuiltIn);
 
 /// <summary>
-/// 光照组件参数：类型、强度、颜色、范围、聚光内外角和阴影开关
+/// 本地光源的配光曲线预设，用于模拟 IES 中常见的窄束、宽束和蝴蝶结分布
+/// </summary>
+public enum LightProfile
+{
+    Default,
+    Narrow,
+    Wide,
+    Batwing,
+}
+
+/// <summary>
+/// 光照组件参数：类型、强度、颜色、范围、聚光内外角、阴影开关和配光曲线预设
 /// </summary>
 public readonly record struct LightComponentData(
     LightShape Shape,
@@ -284,11 +298,12 @@ public readonly record struct LightComponentData(
     float Range,
     float SpotAngleDegrees,
     float InnerSpotAngleDegrees,
-    bool CastShadows)
+    bool CastShadows,
+    LightProfile Profile = LightProfile.Default)
 {
-    public static LightComponentData Default => new(LightShape.Point, 1F, 1F, 1F, 1F, 32F, 45F, 25F, true);
+    public static LightComponentData Default => new(LightShape.Point, 1F, 1F, 1F, 1F, 32F, 45F, 25F, false);
 
-    /// <summary>旧版只含强度、颜色与阴影的构造入口，按点光处理</summary>
+    /// <summary>旧版只含强度、颜色与阴影的构造入口，按点光和默认配光处理</summary>
     public LightComponentData(float intensity, float colorR, float colorG, float colorB, bool castShadows)
         : this(LightShape.Point, intensity, colorR, colorG, colorB, 32F, 45F, 25F, castShadows)
     {
@@ -305,7 +320,8 @@ public readonly record struct LightComponentData(
             Math.Clamp(float.IsFinite(ColorR) ? ColorR : 1F, 0F, 1F),
             Math.Clamp(float.IsFinite(ColorG) ? ColorG : 1F, 0F, 1F),
             Math.Clamp(float.IsFinite(ColorB) ? ColorB : 1F, 0F, 1F),
-            range, outer, inner, CastShadows);
+            range, outer, inner, CastShadows,
+            Enum.IsDefined(Profile) ? Profile : LightProfile.Default);
     }
 }
 

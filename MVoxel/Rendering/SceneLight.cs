@@ -41,7 +41,8 @@ public enum SceneLightKind
 /// <param name="InnerSpotAngleDegrees">聚光内角（度），夹取到 0 到外角</param>
 /// <param name="Kind">光源类型</param>
 /// <param name="Enabled">是否启用，只有启用的光源参与着色</param>
-/// <param name="CastShadows">是否投射阴影，当前渲染管线尚未消费此字段</param>
+/// <param name="CastShadows">是否投射阴影；实时与路径追踪会向光源方向发射硬阴影射线</param>
+/// <param name="Profile">配光曲线预设，0 默认、1 窄束、2 宽束、3 蝴蝶结</param>
 public readonly record struct SceneLight(
     Vector3 Position,
     Vector3 Direction,
@@ -52,7 +53,8 @@ public readonly record struct SceneLight(
     float InnerSpotAngleDegrees,
     SceneLightKind Kind = SceneLightKind.Point,
     bool Enabled = true,
-    bool CastShadows = false)
+    bool CastShadows = false,
+    int Profile = 0)
 {
     /// <summary>
     /// 渲染管线支持的本地光源数量上限
@@ -97,7 +99,8 @@ public readonly record struct SceneLight(
         var innerSpot = Math.Min(ClampSpotAngle(InnerSpotAngleDegrees), spotAngle);
         var kind = Enum.IsDefined(Kind) ? Kind : SceneLightKind.Point;
         return new SceneLight(SanitizePosition(Position), NormalizeDirection(Direction),
-            color, intensity, range, spotAngle, innerSpot, kind, Enabled, CastShadows);
+            color, intensity, range, spotAngle, innerSpot, kind, Enabled, CastShadows,
+            Math.Clamp(Profile, 0, 3));
     }
 
     /// <summary>

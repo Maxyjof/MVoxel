@@ -94,7 +94,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private DeviceMemory _sceneLightMemory;
     private int _sceneLightCount;
     private float[]? _sceneLightPacked;
-    private const int SceneLightFloatsPerLight = 16;
+    private const int SceneLightFloatsPerLight = 20;
     private const int SceneLightBufferBytes = SceneLight.Capacity * SceneLightFloatsPerLight * sizeof(float);
 
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
@@ -129,6 +129,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private bool _disposed;
     private bool _usingHardwareRayTracing;
+    private int _hardwareLightFallbackCount = -1;
     private int _worksetMaximumCells;
 
     /// <summary>
@@ -438,7 +439,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     /// <param name="lights">场景光源集合，超出容量的部分忽略</param>
     /// <remarks>
-    /// 当前限制：本地光源不投射阴影，CastShadows 暂不消费，太阳软阴影逻辑保持不变。
+    /// 当前限制：本地光源只投射硬阴影，没有面积光源因此不做软阴影；太阳软阴影逻辑保持不变。
     /// 数据未变化时直接返回，避免逐帧重置路径追踪累积
     /// </remarks>
     internal void SetSceneLights(IReadOnlyList<SceneLight> lights)
@@ -466,7 +467,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             packed[offset + 12] = light.Range;
             packed[offset + 13] = light.SpotAngleDegrees;
             packed[offset + 14] = light.InnerSpotAngleDegrees;
-            packed[offset + 15] = 0F;
+            packed[offset + 15] = light.CastShadows ? 1F : 0F;
+            packed[offset + 16] = Math.Clamp(light.Profile, 0, 3);
             packedCount++;
         }
 
@@ -586,7 +588,22 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         _usingHardwareRayTracing = false;
         if (_context?.IsDeviceLost == true) return false;
-        if (settings.UseHardwareRayTracing && _context is not null && _imguiRenderer is not null &&
+        // 硬件 RT 目前只输出体素基础颜色，不执行太阳、自发光和场景光源着色；
+        // 存在场景光源时改用 Compute 路径，保证本地光照与阴影可见，避免切到硬件 RT 后变暗
+        if (settings.UseHardwareRayTracing && _sceneLightCount > 0)
+        {
+            if (_hardwareLightFallbackCount != _sceneLightCount)
+            {
+                _hardwareLightFallbackCount = _sceneLightCount;
+                MVoxelLog.Info($"场景存在 {_sceneLightCount} 盏本地光源，硬件 RT 暂不执行光照，已使用 Compute 路径");
+            }
+        }
+        else
+        {
+            _hardwareLightFallbackCount = -1;
+        }
+
+        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
         {
             _hardwareRayTracingPipeline ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
@@ -1777,8 +1794,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec4 directionEnabled;
             // rgb 为线性颜色，w 为强度
             vec4 colorIntensity;
-            // x 为范围，y 为外角（度），z 为内角（度），w 保留
+            // x 为范围，y 为外角（度），z 为内角（度），w 为是否投射阴影
             vec4 rangeSpot;
+            // x 为配光曲线预设（0 默认，1 窄束，2 宽束，3 蝴蝶结）
+            vec4 profileExtra;
         };
 
         layout(set = 0, binding = 9, std430) readonly buffer SceneLightBuffer
@@ -2183,9 +2202,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 求第 index 盏本地光源对表面的入射方向与已含强度、衰减的辐照颜色。
-        // 当前限制：本地光源不投射阴影，也没有距离衰减以外的能量归一化，
-        // CastShadows 字段暂不消费；只有启用且强度大于 0 的光源会被上传
-        bool SceneLightSample(int index, vec3 hitPoint, out vec3 lightDirection, out vec3 radiance)
+        // 阴影是硬阴影：从着色点向光源投射一条遮挡射线，命中体素即返回 false；
+        // 本地光源没有面积参数，因此不做软阴影
+        bool SceneLightSample(int index, vec3 hitPoint, vec3 hitNormal,
+            out vec3 lightDirection, out vec3 radiance)
         {
             SceneLightData light = sceneLights[index];
             lightDirection = vec3(0.0, 1.0, 0.0);
@@ -2193,6 +2213,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             if (light.directionEnabled.w < 0.5) return false;
             int kind = int(light.positionKind.w + 0.5);
             float attenuation = 1.0;
+            float shadowDistance = 1.0e30;
             if (kind == 0)
             {
                 // Direction 是光线传播方向，表面指向光源要取反
@@ -2204,6 +2225,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 float distanceSquared = max(dot(offset, offset), 1e-4);
                 lightDirection = offset * inversesqrt(distanceSquared);
                 attenuation = SceneLightWindow(distanceSquared, light.rangeSpot.x);
+                shadowDistance = sqrt(distanceSquared) - 0.05;
                 if (kind == 2)
                 {
                     // 聚光锥轴就是光线传播方向，表面到光源的向量与其反向夹角
@@ -2215,6 +2237,31 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     attenuation *= smoothstep(cosOuter, max(cosInner, cosOuter + 1e-4), cosAngle);
                 }
             }
+
+            // 配光曲线预设：围绕对象朝向的轴向亮度分布，模拟常见的 IES 轮廓
+            if (kind != 0)
+            {
+                int profile = int(light.profileExtra.x + 0.5);
+                if (profile > 0)
+                {
+                    float cosAxis = clamp(dot(-lightDirection, normalize(light.directionEnabled.xyz)), 0.0, 1.0);
+                    if (profile == 1) attenuation *= pow(cosAxis, 6.0);
+                    else if (profile == 2) attenuation *= pow(cosAxis, 0.35);
+                    else if (profile == 3)
+                    {
+                        float sinTheta = sqrt(max(1.0 - cosAxis * cosAxis, 0.0));
+                        attenuation *= clamp(0.25 + 1.5 * sinTheta * sinTheta, 0.0, 1.0);
+                    }
+                }
+            }
+
+            if (light.rangeSpot.w > 0.5 && shadowDistance > 0.0)
+            {
+                // 沿法线离开表面半个体素，避免阴影射线从实体内部出发命中自身
+                vec3 shadowOrigin = hitPoint + normalize(hitNormal) * 0.05 + lightDirection * 0.02;
+                if (TraceShadow(shadowOrigin, lightDirection, shadowDistance)) return false;
+            }
+
             radiance = max(light.colorIntensity.rgb, vec3(0.0)) *
                 max(light.colorIntensity.w, 0.0) * attenuation;
             return true;
@@ -2230,7 +2277,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (index >= lightCount) break;
                 vec3 lightDirection;
                 vec3 radiance;
-                if (!SceneLightSample(index, hitPoint, lightDirection, radiance)) continue;
+                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance)) continue;
                 irradiance += radiance * max(dot(hitNormal, lightDirection), 0.0);
             }
             return irradiance;
@@ -2344,7 +2391,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 if (index >= lightCount) break;
                 vec3 lightDirection;
                 vec3 radiance;
-                if (!SceneLightSample(index, hitPoint, lightDirection, radiance)) continue;
+                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance)) continue;
                 response += SunSurfaceResponse(baseColor, metalness, roughness,
                     hitNormal, viewDirection, lightDirection) * radiance;
             }
@@ -2683,7 +2730,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 // 本地光源没有可被 BSDF 采样命中的几何，直接光采样是唯一可见途径，
                 // 因此不受 MIS 开关影响；MIS 仍只控制太阳的下一事件估计，
-                // 当前限制：本地光源不投射阴影，只有太阳使用软阴影
+                // 本地光源目前只做硬阴影，太阳继续使用软阴影
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
                     -rayDirection, hitLinearColor, metalness, roughness);
 

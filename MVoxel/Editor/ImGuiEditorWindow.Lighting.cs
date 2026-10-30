@@ -74,11 +74,24 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        BeginInspectorField("阴影", "当前本地光源暂不投射阴影，开关保留供后续扩展。");
+        BeginInspectorField("阴影", "让点光、聚光或方向光在体素上投射硬阴影；阴影采样会增加渲染开销。");
         var shadows = data.CastShadows;
-        ImGui.BeginDisabled();
-        ImGui.Checkbox("投射阴影##LightShadows", ref shadows);
-        ImGui.EndDisabled();
+        if (ImGui.Checkbox("投射阴影##LightShadows", ref shadows))
+        {
+            data = data with { CastShadows = shadows };
+            changed = true;
+        }
+
+        if (data.Shape != LightShape.Directional)
+        {
+            BeginInspectorField("配光曲线", "围绕灯光朝向的亮度分布：窄束、宽束和蝴蝶结用于模拟常见 IES 轮廓。");
+            var profile = (int)data.Profile;
+            if (ImGui.Combo("##LightProfile", ref profile, "默认\0窄束\0宽束\0蝴蝶结\0", 4))
+            {
+                data = data with { Profile = (LightProfile)Math.Clamp(profile, 0, 3) };
+                changed = true;
+            }
+        }
 
         if (!changed) return;
         SceneComponentTypes.WriteLight(component, data);
@@ -188,7 +201,7 @@ internal sealed partial class ImGuiEditorWindow
                 new System.Numerics.Vector3(direction.X, direction.Y, direction.Z),
                 new System.Numerics.Vector3(color.X, color.Y, color.Z),
                 data.Intensity, data.Range, data.SpotAngleDegrees, data.InnerSpotAngleDegrees,
-                kind, Enabled: true, CastShadows: data.CastShadows));
+                kind, Enabled: true, CastShadows: data.CastShadows, Profile: (int)data.Profile));
             if (result.Count >= SceneLight.Capacity) break;
         }
 

@@ -677,7 +677,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("启用硬件 RT", ref hardwareRayTracing);
                 ImGui.EndDisabled();
                 settings.UseHardwareRayTracing = hardwareRayTracing;
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持，不可用时回退显卡计算路径");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持；存在场景光照时自动改用 Compute 路径以保留本地光源和阴影");
         });
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
