@@ -654,6 +654,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             AtomicFile.WriteText(layoutVersionPath, layoutVersion);
         }
 
+        LoadLayoutSelection();
         ApplyImGuiStyle();
     }
 
@@ -709,7 +710,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         if (_resetDockLayoutRequested)
         {
-            ImGui.LoadIniSettingsFromMemory(DefaultDockLayout);
+            ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
             _resetDockLayoutRequested = false;
         }
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
@@ -731,6 +732,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawAnalysisWindows();
         DrawStatusBar();
         DrawProjectPathDialog();
+        DrawLayoutNameDialog();
         DrawCloseProjectDialog();
         DrawMinecraftImportWindow();
         DrawMeshImportWindow();
@@ -839,20 +841,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.EndMenu();
         }
 
-        if (ImGui.BeginMenu("布局"))
-        {
-            if (ImGui.MenuItem("默认布局", null, _layoutPreset == LayoutPreset.Default)) SelectLayout(LayoutPreset.Default);
-            if (ImGui.MenuItem("建模布局", null, _layoutPreset == LayoutPreset.Modeling)) SelectLayout(LayoutPreset.Modeling);
-            if (ImGui.MenuItem("渲染布局", null, _layoutPreset == LayoutPreset.Rendering)) SelectLayout(LayoutPreset.Rendering);
-            ImGui.Separator();
-            if (ImGui.MenuItem(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
-            {
-                _editPanelLayout = !_editPanelLayout;
-                SetStatus(_editPanelLayout ? "面板布局编辑已开启：可拖拽标题栏进行停靠" : "面板布局编辑已完成");
-            }
-            if (ImGui.MenuItem("重置当前布局")) SelectLayout(_layoutPreset);
-            ImGui.EndMenu();
-        }
+        DrawLayoutMenu();
 
         if (ImGui.BeginMenu("工具"))
         {
@@ -944,11 +933,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 [Docking][Data]
 DockSpace ID=0x6A3C3001 Pos=0,24 Size=1440,840 Split=Y Selected=0x6A3C3002
   DockNode ID=0x6A3C3002 Parent=0x6A3C3001 SizeRef=1440,615 Split=X Selected=0x6A3C3003
-    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=260,615 Split=Y
-      DockNode ID=0x6A3C3008 Parent=0x6A3C3003 SizeRef=260,180
-      DockNode ID=0x6A3C3009 Parent=0x6A3C3003 SizeRef=260,435
-    DockNode ID=0x6A3C3004 Parent=0x6A3C3002 SizeRef=1180,615 Split=X Selected=0x6A3C3005
-      DockNode ID=0x6A3C3005 Parent=0x6A3C3004 SizeRef=820,615 Selected=0xD7AC1002
+    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=300,615 Split=Y
+      DockNode ID=0x6A3C3008 Parent=0x6A3C3003 SizeRef=300,180
+      DockNode ID=0x6A3C3009 Parent=0x6A3C3003 SizeRef=300,435
+    DockNode ID=0x6A3C3004 Parent=0x6A3C3002 SizeRef=1140,615 Split=X Selected=0x6A3C3005
+      DockNode ID=0x6A3C3005 Parent=0x6A3C3004 SizeRef=780,615 Selected=0xD7AC1002
       DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615 Split=Y
         DockNode ID=0x6A3C3010 Parent=0x6A3C3006 SizeRef=360,420
         DockNode ID=0x6A3C3011 Parent=0x6A3C3006 SizeRef=360,195
@@ -1168,7 +1157,13 @@ DockId=0x6A3C3007,0
         var rowMax = ImGui.GetItemRectMax();
         var rowClicked = ImGui.IsItemClicked();
         var treeCursor = ImGui.GetCursorScreenPos();
-        var rowWidth = Math.Max(1F, ImGui.GetContentRegionAvail().X);
+        const float iconWidth = HierarchyRowIconSize;
+        var iconGap = 2F;
+        var rightEdge = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - ImGui.GetStyle().WindowPadding.X -
+                        (ImGui.GetScrollMaxY() > 0F ? ImGui.GetStyle().ScrollbarSize : 0F) - ImGui.GetScrollX();
+        var minimumIconStart = rowMin.X + ImGui.GetTreeNodeToLabelSpacing() + ImGui.CalcTextSize(sceneObject.Name).X + ImGui.GetStyle().ItemSpacing.X;
+        var iconsStart = Math.Max(minimumIconStart, rightEdge - iconWidth * 2F - iconGap);
+        var rowWidth = Math.Max(1F, iconsStart + iconWidth * 2F + iconGap - rowMin.X);
         ImGui.SetCursorScreenPos(rowMin);
         var rowSelectableClicked = ImGui.InvisibleButton($"##SceneObjectRow_{sceneObject.Id}",
             new Vector2(Math.Max(1F, rowWidth - 48F), rowMax.Y - rowMin.Y));
@@ -1187,9 +1182,6 @@ DockId=0x6A3C3007,0
                 ToPackedColor(rowColor), 2F);
         }
 
-        const float iconWidth = HierarchyRowIconSize;
-        var iconGap = 2F;
-        var iconsStart = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - iconWidth * 2F - iconGap - 8F;
         var rowDoubleClicked = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) && rowHovered &&
                                ImGui.GetIO().MousePos.X < iconsStart;
         ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + 1F));
@@ -2870,7 +2862,7 @@ DockId=0x6A3C3007,0
 
         // 检查器内容必须由外层统一滚动。组件自身不能用固定高度裁剪，
         // 否则相机的图层等字段会在展开状态下直接消失。
-        if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None))
+        if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.HorizontalScrollbar))
         {
             ImGui.EndChild();
             return;
@@ -3810,15 +3802,15 @@ DockId=0x6A3C3007,0
     private static float WorkspaceTop => MenuHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
 
-    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse;
+    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.HorizontalScrollbar;
 
     private LayoutMetrics GetLayoutMetrics(Vector2 display)
     {
         var metrics = _layoutPreset switch
         {
-            LayoutPreset.Modeling => new LayoutMetrics(270F, 360F, 250F),
-            LayoutPreset.Rendering => new LayoutMetrics(210F, 400F, 300F),
-            _ => new LayoutMetrics(245F, 360F, 280F),
+            LayoutPreset.Modeling => new LayoutMetrics(310F, 360F, 250F),
+            LayoutPreset.Rendering => new LayoutMetrics(250F, 400F, 300F),
+            _ => new LayoutMetrics(300F, 360F, 280F),
         };
         var availableWidth = Math.Max(1F, display.X - metrics.LeftWidth - metrics.RightWidth);
         var availableHeight = Math.Max(1F, display.Y - WorkspaceTop - 1F - StatusHeight - metrics.AssetsHeight);
@@ -3835,6 +3827,9 @@ DockId=0x6A3C3007,0
     private void SelectLayout(LayoutPreset preset)
     {
         _layoutPreset = preset;
+        _activeLayoutFile = null;
+        _activeLayoutName = string.Empty;
+        SaveLayoutSelection($"@builtin:{preset}");
         _applyPreset = true;
         _resetDockLayoutRequested = true;
         _showModelingTools = preset != LayoutPreset.Rendering;
@@ -4588,5 +4583,6 @@ DockId=0x6A3C3007,0
         Default,
         Modeling,
         Rendering,
+        Custom,
     }
 }

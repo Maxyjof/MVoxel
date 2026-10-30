@@ -12,6 +12,7 @@ internal static class NativeDialogs
     private const uint OfnFileMustExist = 0x0000_1000;
     private const uint OfnPathMustExist = 0x0000_0800;
     private const uint OfnNoChangeDir = 0x0000_0008;
+    private const uint OfnOverwritePrompt = 0x0000_0002;
     private const uint BifReturnOnlyFsDirs = 0x0000_0001;
     private const uint BifNewDialogStyle = 0x0000_0040;
 
@@ -37,6 +38,46 @@ internal static class NativeDialogs
                 Flags = OfnExplorer | OfnFileMustExist | OfnPathMustExist | OfnNoChangeDir,
             };
             if (GetOpenFileNameW(ref ofn))
+            {
+                var text = Marshal.PtrToStringUni(buffer);
+                return string.IsNullOrWhiteSpace(text) ? null : text;
+            }
+
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(buffer);
+        }
+    }
+
+    /// <summary>
+    /// 弹出保存文件对话框
+    /// </summary>
+    /// <param name="title">对话框标题</param>
+    /// <param name="filter">过滤器，形如“布局文件\0*.ini\0全部文件\0*.*\0”</param>
+    /// <param name="defaultExtension">默认扩展名，不带点</param>
+    /// <param name="suggestedName">默认文件名</param>
+    /// <returns>保存目标完整路径，取消时为 null</returns>
+    internal static string? SaveFile(string title, string filter, string defaultExtension, string suggestedName)
+    {
+        var buffer = Marshal.AllocCoTaskMem(4096);
+        try
+        {
+            var nameBytes = Encoding.Unicode.GetBytes(suggestedName);
+            Marshal.Copy(nameBytes, 0, buffer, nameBytes.Length);
+            Marshal.WriteInt16(buffer, nameBytes.Length, 0);
+            var ofn = new OpenFileNameW
+            {
+                lStructSize = Marshal.SizeOf<OpenFileNameW>(),
+                lpstrFilter = filter,
+                lpstrFile = buffer,
+                nMaxFile = 2048,
+                lpstrTitle = title,
+                lpstrDefExt = defaultExtension,
+                Flags = OfnExplorer | OfnPathMustExist | OfnNoChangeDir | OfnOverwritePrompt,
+            };
+            if (GetSaveFileNameW(ref ofn))
             {
                 var text = Marshal.PtrToStringUni(buffer);
                 return string.IsNullOrWhiteSpace(text) ? null : text;
@@ -133,6 +174,10 @@ internal static class NativeDialogs
     [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetOpenFileNameW(ref OpenFileNameW ofn);
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSaveFileNameW(ref OpenFileNameW ofn);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SHBrowseForFolderW(ref BrowseInfoW browse);

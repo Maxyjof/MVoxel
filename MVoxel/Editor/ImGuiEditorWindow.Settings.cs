@@ -493,7 +493,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.EndChild();
         ImGui.SameLine();
-        ImGui.BeginChild(id + "内容", new Vector2(0F, contentHeight), ImGuiChildFlags.Borders);
+        ImGui.BeginChild(id + "内容", new Vector2(0F, contentHeight), ImGuiChildFlags.Borders, ImGuiWindowFlags.HorizontalScrollbar);
         drawContent();
         ImGui.EndChild();
     }
@@ -821,7 +821,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.EndChild();
         ImGui.SameLine();
-        ImGui.BeginChild("##快捷键方案内容", new Vector2(0F, 0F), ImGuiChildFlags.Borders);
+        ImGui.BeginChild("##快捷键方案内容", new Vector2(0F, 0F), ImGuiChildFlags.Borders, ImGuiWindowFlags.HorizontalScrollbar);
         ImGui.TextColored(ToColor(EditorPalette.Accent), $"当前方案 · {scheme.Name}");
         ImGui.SameLine();
         ImGui.TextDisabled(string.Equals(_editorSettings.ActiveShortcutScheme, scheme.Name, StringComparison.OrdinalIgnoreCase)
