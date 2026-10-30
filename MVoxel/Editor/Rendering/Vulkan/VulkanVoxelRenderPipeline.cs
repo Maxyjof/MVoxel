@@ -2386,7 +2386,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
                 // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
                 float alpha = max(roughness * roughness, 0.002);
-                vec3 f0 = mix(vec3(0.04), hitLinearColor, metalness);
+                vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), hitLinearColor, metalness);
                 vec3 viewDir = -rayDirection;
                 float xi1 = max(Random(state), 1e-4);
                 float xi2 = Random(state);
