@@ -13,6 +13,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         var arguments = request.GetProperty("arguments");
         var path = Path.GetFullPath(arguments.GetProperty("path").GetString() ?? throw new ArgumentException("截图路径不能为空"));
+        var cameraName = arguments.TryGetProperty("cameraName", out var cameraValue) ? cameraValue.GetString() : null;
         if (!string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("截图路径必须以.png结尾");
         if (File.Exists(path)) throw new IOException("截图文件已存在");
@@ -23,6 +24,20 @@ internal sealed partial class ImGuiEditorWindow
             {
                 _captureResults[path] = _project is null ? "没有打开项目" : "已有截图任务";
                 return;
+            }
+            if (!string.IsNullOrWhiteSpace(cameraName))
+            {
+                var cameras = GetRenderCameraObjects().Where(camera => camera.Name == cameraName).ToArray();
+                if (cameras.Length != 1)
+                {
+                    _captureResults[path] = cameras.Length == 0 ? "未找到指定相机" : "相机名称不唯一";
+                    return;
+                }
+                _renderCameraId = cameras[0].Id;
+                _renderOrbitAnchor = null;
+                _renderCameraInitialFramePending = true;
+                _pipeline?.ResetAccumulation();
+                _accumulationSignature = string.Empty;
             }
             _capturePath = path;
             _captureFrames = 0;
