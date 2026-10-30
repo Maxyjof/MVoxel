@@ -2599,16 +2599,9 @@ DockId=0x6A3C3007,0
     private void DrawRenderViewOverlay(Vector2 origin, Vector2 size, ImDrawListPtr drawList)
     {
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
-        var buttonWidth = Math.Max(80F, ImGui.CalcTextSize("重新计算").X + 20F);
+        var buttonWidth = Math.Max(80F, Math.Max(ImGui.CalcTextSize("导出…").X, ImGui.CalcTextSize("信息").X) + 20F);
         var buttonHeight = ImGui.GetFrameHeight();
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        ImGui.BeginDisabled(!activeRenderSettings.PathTracingEnabled);
-        if (SceneToolbarButton("重新计算", false, buttonWidth, buttonHeight, "重置当前渲染视图的采样累积；实时渲染不需要重新计算"))
-        {
-            _pipeline?.ResetAccumulation();
-        }
-        ImGui.EndDisabled();
-        ImGui.SameLine();
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
         if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight,
@@ -2621,7 +2614,7 @@ DockId=0x6A3C3007,0
             ImGui.EndPopup();
         }
         ImGui.EndDisabled();
-        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth * 2F + ImGui.GetStyle().ItemSpacing.X * 2F, size.X - buttonWidth - 12F), 10F));
+        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth + ImGui.GetStyle().ItemSpacing.X, size.X - buttonWidth - 12F), 10F));
         if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight,
                 $"帧率、体素工作集、派发量和 CPU 更新耗时\n视场角 {activeRenderSettings.CameraFovDegrees:0}° · 视口 {size.X:0}×{size.Y:0}\n统计来自当前视图，不运行性能台架"))
             _showRenderStatistics = !_showRenderStatistics;
