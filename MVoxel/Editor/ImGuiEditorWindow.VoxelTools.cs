@@ -1237,6 +1237,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_pipeline is not { } pipeline) return false;
         try
         {
+            pipeline.SetSceneLights(CollectSceneLights(GetActiveRenderCullingMask()));
             pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             // 首帧工作集是在渲染视图按需上传的，因此不能在 SyncWorld 之前用
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。

@@ -868,6 +868,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("长方体", null, _activeTool == EditorTool.Box)) _activeTool = EditorTool.Box;
             if (ImGui.MenuItem("填充", null, _activeTool == EditorTool.Fill)) _activeTool = EditorTool.Fill;
             ImGui.Separator();
+            ImGui.TextDisabled("场景对象");
+            if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
+            if (ImGui.MenuItem("添加聚光灯", enabled: _project is not null)) CreateLightObject(LightShape.Spot);
+            if (ImGui.MenuItem("添加方向光", enabled: _project is not null)) CreateLightObject(LightShape.Directional);
+            ImGui.Separator();
             ImGui.TextDisabled("度量与诊断");
             if (ImGui.MenuItem("体素度量", null, ref _showVoxelMeasurements)) _measurementRefreshSeconds = 1F;
             if (ImGui.MenuItem("性能分析器", null, ref _showPerformanceAnalyzer))
@@ -1410,6 +1415,7 @@ DockId=0x6A3C3007,0
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
+        var gizmoInput = HandleSceneGizmoInput(origin, size, camera, gizmoHovered);
         MVoxelLog.SetRuntimeContext(
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
@@ -1431,7 +1437,8 @@ DockId=0x6A3C3007,0
                     GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)));
         }
 
-        if (_project is not null && !gizmoHovered && (showVoxelWorld || GetVoxelWorldObject() is null))
+        if (_project is not null && !gizmoHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
+            (showVoxelWorld || GetVoxelWorldObject() is null))
         {
             HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
@@ -1444,6 +1451,7 @@ DockId=0x6A3C3007,0
 
         // ImGui 绘制列表没有场景深度，轴线在体素图像之后提交并按体素射线裁剪遮挡段
         DrawSceneWorldAxes(drawList, origin, size, camera);
+        DrawSceneGizmos(drawList, origin, size, camera);
 
         DrawOrientationGizmo(drawList, gizmoCenter, gizmoRadius, camera, gizmoHovered);
         if (_showSceneStatistics) DrawSceneStatistics(drawList, origin);
@@ -1503,7 +1511,31 @@ DockId=0x6A3C3007,0
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var left = ImGui.GetCursorPosX();
         var available = ImGui.GetContentRegionAvail().X;
-        ImGui.SetCursorPosX(left + MathF.Max(0F, available - buttonWidth * 3F - spacing * 2F));
+        var modes = new[]
+        {
+            ("选择##SceneGizmoSelect", SceneGizmoMode.Select, "选择对象；左键继续用于体素编辑"),
+            ("移动##SceneGizmoMove", SceneGizmoMode.Move, "拖动 X/Y/Z 轴移动选中对象"),
+            ("旋转##SceneGizmoRotate", SceneGizmoMode.Rotate, "点击圆环把模型转 90 度，自由对象转 15 度"),
+            ("缩放##SceneGizmoScale", SceneGizmoMode.Scale, "拖动缩放点，按倍数重采样体素模型"),
+        };
+        for (var modeIndex = 0; modeIndex < modes.Length; modeIndex++)
+        {
+            if (modeIndex > 0) ImGui.SameLine(0F, 4F);
+            var (label, mode, tip) = modes[modeIndex];
+            if (SceneToolbarButton(label, _sceneGizmoMode == mode, 56F, buttonHeight, tip))
+                _sceneGizmoMode = mode;
+        }
+
+        ImGui.SameLine(0F, spacing);
+        var used = ImGui.GetCursorPosX() - left;
+        var rightStart = MathF.Max(used, available - buttonWidth * 3F - spacing * 2F);
+        if (rightStart < used + spacing)
+        {
+            ImGui.NewLine();
+            rightStart = 0F;
+        }
+
+        ImGui.SetCursorPosX(left + rightStart);
 
         if (SceneToolbarButton("切面查看##SceneSlice", _sceneSliceEnabled, buttonWidth, buttonHeight,
                 "非破坏性切面，仅影响场景窗口；启用后可选择轴和位置。"))
@@ -2522,6 +2554,7 @@ DockId=0x6A3C3007,0
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
             var mask = _activeExport.CullingMask ?? uint.MaxValue;
+            pipeline.SetSceneLights(CollectSceneLights(mask));
             pipeline.SyncWorld(_activeExport.World ?? GetRenderWorld(mask), 0, settings.RenderLod,
                 new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
             if (!pipeline.IsAvailable) return;
@@ -3393,6 +3426,29 @@ DockId=0x6A3C3007,0
             ImGui.TextDisabled($"{data.VoxelCount:N0}");
             BeginInspectorField("模板", "生成当前模型的示例模板名称。");
             ImGui.TextDisabled(data.Template switch { "" => "未指定", _ => data.Template });
+            BeginInspectorField("缩放", "按倍数从原始模型重采样；缩小后体素数量减少，重置可恢复原始数据。");
+            ImGui.TextDisabled($"当前 {data.Scale:0.###}x");
+            foreach (var factor in new[] { 0.25F, 0.5F, 1F, 2F, 4F })
+            {
+                ImGui.PushID($"Scale{factor}");
+                if (ImGui.SmallButton($"{factor * 100F:0}%"))
+                {
+                    if (Math.Abs(factor - 1F) < 0.001F && !HasScaleOriginal(selectedObject))
+                        SetStatus("当前模型尚未创建原始备份，100% 无需缩放");
+                    else ApplyModelScale(selectedObject, factor);
+                }
+                ImGui.PopID();
+                if (factor < 4F) ImGui.SameLine(0F, 4F);
+            }
+
+            if (HasScaleOriginal(selectedObject))
+            {
+                if (ImGui.Button("重置为原始模型##ResetModelScale", new Vector2(-1F, 0F)))
+                    ApplyModelScale(selectedObject, 1F);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("从缩放原件恢复；在缩放级别上做过的体素编辑会被原始内容覆盖");
+            }
+
             if (changed)
             {
                 SceneComponentTypes.WriteVoxelModel(component,
@@ -3471,23 +3527,7 @@ DockId=0x6A3C3007,0
 
         if (SceneComponentTypes.IsLight(component))
         {
-            var data = SceneComponentTypes.ReadLight(component);
-            var intensity = data.Intensity;
-            var color = new NumVector3(data.ColorR, data.ColorG, data.ColorB);
-            var castShadows = data.CastShadows;
-            BeginInspectorField("强度", "光照强度。");
-            var changed = ImGui.DragFloat("##InspectorLightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f");
-            BeginInspectorField("颜色", "光照颜色。");
-            changed |= ImGui.ColorEdit3("##InspectorLightColor", ref color, ImGuiColorEditFlags.Float);
-            BeginInspectorField("阴影", "是否让该光源投射阴影。");
-            changed |= ImGui.Checkbox("投射阴影##InspectorLightShadows", ref castShadows);
-            if (changed)
-            {
-                SceneComponentTypes.WriteLight(component, new LightComponentData(
-                    intensity, color.X, color.Y, color.Z, castShadows));
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-            }
+            DrawLightComponentInspector(component);
             return;
         }
 

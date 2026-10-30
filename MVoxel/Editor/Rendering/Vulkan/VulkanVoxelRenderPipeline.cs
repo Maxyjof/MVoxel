@@ -88,6 +88,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     private int _environmentHeight;
     private const int EnvironmentCapacity = 256 * 256;
 
+    // 场景本地光源按固定容量打包成 Storage Buffer，每盏 4 个 vec4：
+    // 位置与类型、方向与启用标记、颜色与强度、范围与聚光角度
+    private VkBuffer _sceneLightBuffer;
+    private DeviceMemory _sceneLightMemory;
+    private int _sceneLightCount;
+    private float[]? _sceneLightPacked;
+    private const int SceneLightFloatsPerLight = 16;
+    private const int SceneLightBufferBytes = SceneLight.Capacity * SceneLightFloatsPerLight * sizeof(float);
+
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
     // 分块一提交就走，槽位复用时才等自己的栅栏，GPU 分块之间不再被 CPU 等待打断
     private const int TileRingDepth = 3;
@@ -422,6 +431,91 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         _environmentHeight = height;
         _environmentIntensity = Math.Clamp(intensity, 0F, 16F);
         ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 上传场景本地光源，固定容量 Storage Buffer，只有启用且强度大于 0 的光源参与着色
+    /// </summary>
+    /// <param name="lights">场景光源集合，超出容量的部分忽略</param>
+    /// <remarks>
+    /// 当前限制：本地光源不投射阴影，CastShadows 暂不消费，太阳软阴影逻辑保持不变。
+    /// 数据未变化时直接返回，避免逐帧重置路径追踪累积
+    /// </remarks>
+    internal void SetSceneLights(IReadOnlyList<SceneLight> lights)
+    {
+        ArgumentNullException.ThrowIfNull(lights);
+        var packed = new float[SceneLight.Capacity * SceneLightFloatsPerLight];
+        var packedCount = 0;
+        for (var index = 0; index < lights.Count && packedCount < SceneLight.Capacity; index++)
+        {
+            var light = lights[index].Clamped();
+            if (!light.IsActive) continue;
+            var offset = packedCount * SceneLightFloatsPerLight;
+            packed[offset] = light.Position.X;
+            packed[offset + 1] = light.Position.Y;
+            packed[offset + 2] = light.Position.Z;
+            packed[offset + 3] = (int)light.Kind;
+            packed[offset + 4] = light.Direction.X;
+            packed[offset + 5] = light.Direction.Y;
+            packed[offset + 6] = light.Direction.Z;
+            packed[offset + 7] = 1F;
+            packed[offset + 8] = light.Color.X;
+            packed[offset + 9] = light.Color.Y;
+            packed[offset + 10] = light.Color.Z;
+            packed[offset + 11] = light.Intensity;
+            packed[offset + 12] = light.Range;
+            packed[offset + 13] = light.SpotAngleDegrees;
+            packed[offset + 14] = light.InnerSpotAngleDegrees;
+            packed[offset + 15] = 0F;
+            packedCount++;
+        }
+
+        if (packedCount == _sceneLightCount &&
+            PrefixEquals(_sceneLightPacked, packed, packedCount * SceneLightFloatsPerLight))
+        {
+            return;
+        }
+
+        _sceneLightCount = packedCount;
+        _sceneLightPacked = packed;
+        if (_context is not null && _api is { } api && _sceneLightBuffer.Handle != 0)
+        {
+            void* mapped = null;
+            Check(api.MapMemory(_device, _sceneLightMemory, 0, (ulong)SceneLightBufferBytes, 0, &mapped),
+                "映射场景光源缓冲");
+            try
+            {
+                fixed (float* source = packed)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, SceneLightBufferBytes, SceneLightBufferBytes);
+                }
+            }
+            finally
+            {
+                api.UnmapMemory(_device, _sceneLightMemory);
+            }
+        }
+
+        // 光源变化必须让路径追踪重新收敛，并让实时模式丢弃上一帧复用判定
+        ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 比较缓存的光源打包数据前 count 项是否与本次一致
+    /// </summary>
+    /// <param name="cached">上一次打包的数据</param>
+    /// <param name="current">本次打包的数据</param>
+    /// <param name="count">需要比较的 float 个数</param>
+    /// <returns>完全一致时返回 true</returns>
+    private static bool PrefixEquals(float[]? cached, float[] current, int count)
+    {
+        if (cached is null || cached.Length < count) return false;
+        for (var index = 0; index < count; index++)
+        {
+            if (cached[index] != current[index]) return false;
+        }
+
+        return true;
     }
 
     private float _environmentIntensity = 1F;
@@ -789,6 +883,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 api.FreeMemory(_device, _environmentMemory, null);
             }
 
+            if (_sceneLightBuffer.Handle != 0)
+            {
+                api.DestroyBuffer(_device, _sceneLightBuffer, null);
+                api.FreeMemory(_device, _sceneLightMemory, null);
+            }
+
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
             DestroyBrickTableBuffer(api);
@@ -826,6 +926,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 SetMaterialTable(MVoxel.Project.MaterialAsset.PackTable([]));
                 (_environmentBuffer, _environmentMemory) = CreateBuffer(
                     (ulong)(EnvironmentCapacity * 4 * sizeof(float)),
+                    BufferUsageFlags.StorageBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+                // 固定容量：光源数量变化只改参数槽，不需要重建缓冲
+                (_sceneLightBuffer, _sceneLightMemory) = CreateBuffer(
+                    (ulong)SceneLightBufferBytes,
                     BufferUsageFlags.StorageBufferBit,
                     MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
             }
@@ -892,6 +997,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
         parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
+        parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
         if (!pathMode && ParametersEqualForDisplay(parameters))
         {
             return true;
@@ -1293,7 +1399,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[9];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[10];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1303,10 +1409,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         bindings[6] = new(6, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[7] = new(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[8] = new(8, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        bindings[9] = new(9, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 9,
+            BindingCount = 10,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1322,7 +1429,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 6 * TileRingDepth),
+            new(DescriptorType.StorageBuffer, 7 * TileRingDepth),
             new(DescriptorType.StorageImage, 3 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
@@ -1428,7 +1535,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[9];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[10];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1513,7 +1620,18 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             };
             writes[8] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 8, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage, PImageInfo = &guideInfo };
-            _api!.UpdateDescriptorSets(_device, 9, writes, 0, null);
+            // 本地光源缓冲容量固定，沿用同一个描述符信息即可
+            DescriptorBufferInfo sceneLightInfo = new(_sceneLightBuffer, 0, (ulong)SceneLightBufferBytes);
+            writes[9] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _ringSets[slot],
+                DstBinding = 9,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &sceneLightInfo
+            };
+            _api!.UpdateDescriptorSets(_device, 10, writes, 0, null);
         }
     }
 
@@ -1593,9 +1711,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
     internal static string ComputeShaderSourceForTests => SceneComputeShader;
 
-    private const string SceneComputeShader = """
-        #version 450
+    // #version 必须是第一条有效指令，因此参数槽位与光源容量的 #define 放在版本行之后注入，
+    // GLSL 侧只读 P_ 开头的宏，不再硬编码新增槽位号
+    private static readonly string SceneComputeShader =
+        "#version 450\n\n" + VoxelRenderParameters.Defines() + "\n" + SceneShaderBody;
 
+    private const string SceneShaderBody = """
         layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
         struct VoxelCell
@@ -1646,6 +1767,23 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         layout(set = 0, binding = 6, std430) readonly buffer EnvironmentMap
         {
             vec4 envTexels[];
+        };
+
+        struct SceneLightData
+        {
+            // xyz 为位置，w 为类型（0 方向光，1 点光，2 聚光）
+            vec4 positionKind;
+            // xyz 为光线传播方向，w 为启用标记（1 参与着色）
+            vec4 directionEnabled;
+            // rgb 为线性颜色，w 为强度
+            vec4 colorIntensity;
+            // x 为范围，y 为外角（度），z 为内角（度），w 保留
+            vec4 rangeSpot;
+        };
+
+        layout(set = 0, binding = 9, std430) readonly buffer SceneLightBuffer
+        {
+            SceneLightData sceneLights[];
         };
 
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
@@ -2034,6 +2172,70 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return groundColor;
         }
 
+        // 点光与聚光的范围窗口：距离平方衰减再乘范围末端平滑归零的窗口，
+        // 避免在 range 处出现硬切的圆形亮斑
+        float SceneLightWindow(float distanceSquared, float range)
+        {
+            float distance = sqrt(distanceSquared);
+            float ratio = distance / max(range, 0.01);
+            float window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+            return window * window / max(distanceSquared, 1e-4);
+        }
+
+        // 求第 index 盏本地光源对表面的入射方向与已含强度、衰减的辐照颜色。
+        // 当前限制：本地光源不投射阴影，也没有距离衰减以外的能量归一化，
+        // CastShadows 字段暂不消费；只有启用且强度大于 0 的光源会被上传
+        bool SceneLightSample(int index, vec3 hitPoint, out vec3 lightDirection, out vec3 radiance)
+        {
+            SceneLightData light = sceneLights[index];
+            lightDirection = vec3(0.0, 1.0, 0.0);
+            radiance = vec3(0.0);
+            if (light.directionEnabled.w < 0.5) return false;
+            int kind = int(light.positionKind.w + 0.5);
+            float attenuation = 1.0;
+            if (kind == 0)
+            {
+                // Direction 是光线传播方向，表面指向光源要取反
+                lightDirection = normalize(-light.directionEnabled.xyz);
+            }
+            else
+            {
+                vec3 offset = light.positionKind.xyz - hitPoint;
+                float distanceSquared = max(dot(offset, offset), 1e-4);
+                lightDirection = offset * inversesqrt(distanceSquared);
+                attenuation = SceneLightWindow(distanceSquared, light.rangeSpot.x);
+                if (kind == 2)
+                {
+                    // 聚光锥轴就是光线传播方向，表面到光源的向量与其反向夹角
+                    float outerDegrees = clamp(light.rangeSpot.y, 0.0, 179.0);
+                    float innerDegrees = clamp(light.rangeSpot.z, 0.0, outerDegrees);
+                    float cosOuter = cos(radians(outerDegrees));
+                    float cosInner = cos(radians(innerDegrees));
+                    float cosAngle = dot(-lightDirection, normalize(light.directionEnabled.xyz));
+                    attenuation *= smoothstep(cosOuter, max(cosInner, cosOuter + 1e-4), cosAngle);
+                }
+            }
+            radiance = max(light.colorIntensity.rgb, vec3(0.0)) *
+                max(light.colorIntensity.w, 0.0) * attenuation;
+            return true;
+        }
+
+        // 场景本地光源对表面的直接光辐照度（未乘 BRDF），光源数为 0 时返回零向量
+        vec3 SceneLocalLightIrradiance(vec3 hitPoint, vec3 hitNormal)
+        {
+            int lightCount = clamp(int(values[P_SCENE_LIGHT_COUNT]), 0, SCENE_LIGHT_CAPACITY);
+            vec3 irradiance = vec3(0.0);
+            for (int index = 0; index < SCENE_LIGHT_CAPACITY; index++)
+            {
+                if (index >= lightCount) break;
+                vec3 lightDirection;
+                vec3 radiance;
+                if (!SceneLightSample(index, hitPoint, lightDirection, radiance)) continue;
+                irradiance += radiance * max(dot(hitNormal, lightDirection), 0.0);
+            }
+            return irradiance;
+        }
+
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
         // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
         vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
@@ -2065,6 +2267,10 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 diffuse += baseColor * vec3(values[28], values[29], values[30]) *
                     values[27] * directAmount * shadowVisibility;
             }
+
+            // 场景本地光源直接光，只有启用且强度大于 0 的光源参与；
+            // 光源数为 0 时辐照度为零向量，输出与改动前一致
+            diffuse += baseColor * SceneLocalLightIrradiance(hitPoint, hitNormal);
 
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
@@ -2125,6 +2331,24 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 specular = fresnel * distribution * gView * gLight / max(4.0 * nDotL * nDotV, 1e-6);
             vec3 diffuse = baseColor * (1.0 - metalness) * (vec3(1.0) - fresnel);
             return (diffuse + specular * 3.14159265) * nDotL;
+        }
+
+        // 场景本地光源在路径追踪中的直接光响应，复用太阳表面响应保持材质一致
+        vec3 SceneLocalLightResponse(vec3 hitPoint, vec3 hitNormal, vec3 viewDirection,
+            vec3 baseColor, float metalness, float roughness)
+        {
+            int lightCount = clamp(int(values[P_SCENE_LIGHT_COUNT]), 0, SCENE_LIGHT_CAPACITY);
+            vec3 response = vec3(0.0);
+            for (int index = 0; index < SCENE_LIGHT_CAPACITY; index++)
+            {
+                if (index >= lightCount) break;
+                vec3 lightDirection;
+                vec3 radiance;
+                if (!SceneLightSample(index, hitPoint, lightDirection, radiance)) continue;
+                response += SunSurfaceResponse(baseColor, metalness, roughness,
+                    hitNormal, viewDirection, lightDirection) * radiance;
+            }
+            return response;
         }
 
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
@@ -2456,6 +2680,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     vec3 response = SunSurfaceResponse(hitLinearColor, metalness, roughness, hitNormal, -rayDirection, lightDirection);
                     radiance += throughput * response * vec3(values[28], values[29], values[30]) * values[27] * shadowVisibility;
                 }
+
+                // 本地光源没有可被 BSDF 采样命中的几何，直接光采样是唯一可见途径，
+                // 因此不受 MIS 开关影响；MIS 仍只控制太阳的下一事件估计，
+                // 当前限制：本地光源不投射阴影，只有太阳使用软阴影
+                radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
+                    -rayDirection, hitLinearColor, metalness, roughness);
 
                 // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
                 // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色

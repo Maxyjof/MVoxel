@@ -93,11 +93,13 @@ public sealed class VoxelRenderParameters
     public const int BrickMode = 114;
     /// <summary>场景窗口基础体素显示开关（不使用实时特效）</summary>
     public const int ScenePreview = 115;
+    /// <summary>参与着色的场景本地光源数量（0 表示关闭本地光源路径）</summary>
+    public const int SceneLightCount = 116;
     /// <summary>参数槽总数</summary>
-    public const int SlotCount = 116;
+    public const int SlotCount = 117;
 
     /// <summary>
-    /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位常量同源
+    /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
     /// </summary>
     /// <returns>多行 #define 文本</returns>
     public static string Defines()
@@ -141,6 +143,7 @@ public sealed class VoxelRenderParameters
             ("P_SCENE_SHADING", SceneShading),
             ("P_BRICK_MODE", BrickMode),
             ("P_SCENE_PREVIEW", ScenePreview),
+            ("P_SCENE_LIGHT_COUNT", SceneLightCount),
         };
 
         var builder = new StringBuilder();
@@ -148,6 +151,9 @@ public sealed class VoxelRenderParameters
         {
             builder.Append("#define ").Append(name).Append(' ').Append(index).Append('\n');
         }
+
+        // 光源容量不是参数槽，但着色器循环上限同样只能有一个来源
+        builder.Append("#define SCENE_LIGHT_CAPACITY ").Append(SceneLight.Capacity).Append('\n');
 
         return builder.ToString();
     }

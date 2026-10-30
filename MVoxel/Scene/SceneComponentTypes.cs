@@ -73,7 +73,11 @@ public static class SceneComponentTypes
             data.TryGetProperty("voxelCount", out var count) && count.TryGetInt32(out var voxelCount)
                 ? Math.Max(0, voxelCount)
                 : 0,
-            ReadString(data, "template"));
+            ReadString(data, "template"),
+            data.TryGetProperty("scale", out var scale) && scale.TryGetSingle(out var scaleValue) &&
+            float.IsFinite(scaleValue)
+                ? Math.Clamp(scaleValue, 0.125F, 8F)
+                : 1F);
     }
 
     /// <summary>
@@ -87,6 +91,7 @@ public static class SceneComponentTypes
             Model = data.Model.Trim(),
             Part = string.IsNullOrWhiteSpace(data.Part) ? "模型" : data.Part.Trim(),
             VoxelCount = Math.Max(0, data.VoxelCount),
+            Scale = Math.Clamp(float.IsFinite(data.Scale) ? data.Scale : 1F, 0.125F, 8F),
         }, JsonOptions);
     }
 
@@ -105,13 +110,19 @@ public static class SceneComponentTypes
         if (!IsLight(component) || component.Data.ValueKind != JsonValueKind.Object)
             return LightComponentData.Default;
         var data = component.Data;
+        var shape = ReadInt(data, "shape", 0) is var shapeIndex && Enum.IsDefined((LightShape)shapeIndex)
+            ? (LightShape)shapeIndex : LightShape.Point;
         return new LightComponentData(
+            shape,
             ReadFloat(data, "intensity", 1F),
             ReadFloat(data, "colorR", 1F),
             ReadFloat(data, "colorG", 1F),
             ReadFloat(data, "colorB", 1F),
+            ReadFloat(data, "range", 32F),
+            ReadFloat(data, "spotAngleDegrees", 45F),
+            ReadFloat(data, "innerSpotAngleDegrees", 25F),
             !data.TryGetProperty("castShadows", out var shadows) ||
-            shadows.ValueKind != JsonValueKind.False);
+            shadows.ValueKind != JsonValueKind.False).Normalize();
     }
 
     /// <summary>
@@ -235,33 +246,67 @@ public static class SceneComponentTypes
         data.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString() ?? fallback
             : fallback;
+
+    private static int ReadInt(JsonElement data, string name, int fallback) =>
+        data.TryGetProperty(name, out var property) && property.TryGetInt32(out var value) ? value : fallback;
 }
 
 /// <summary>
 /// 体素模型组件保存的资源引用信息
 /// </summary>
-public readonly record struct VoxelModelComponentData(string Model, string Part, int VoxelCount, string Template)
+public readonly record struct VoxelModelComponentData(
+    string Model, string Part, int VoxelCount, string Template, float Scale = 1F)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }
 
+/// <summary>
+/// 场景光照组件的类型；方向光不需要位置范围，由对象朝向决定照射方向
+/// </summary>
+public enum LightShape
+{
+    Point,
+    Spot,
+    Directional,
+}
+
 public sealed record SceneComponentDefinition(string TypeId, string DisplayName, string Category, bool BuiltIn);
 
+/// <summary>
+/// 光照组件参数：类型、强度、颜色、范围、聚光内外角和阴影开关
+/// </summary>
 public readonly record struct LightComponentData(
+    LightShape Shape,
     float Intensity,
     float ColorR,
     float ColorG,
     float ColorB,
+    float Range,
+    float SpotAngleDegrees,
+    float InnerSpotAngleDegrees,
     bool CastShadows)
 {
-    public static LightComponentData Default => new(1F, 1F, 1F, 1F, true);
+    public static LightComponentData Default => new(LightShape.Point, 1F, 1F, 1F, 1F, 32F, 45F, 25F, true);
 
-    public LightComponentData Normalize() => new(
-        Math.Clamp(float.IsFinite(Intensity) ? Intensity : 1F, 0F, 1000F),
-        Math.Clamp(float.IsFinite(ColorR) ? ColorR : 1F, 0F, 1F),
-        Math.Clamp(float.IsFinite(ColorG) ? ColorG : 1F, 0F, 1F),
-        Math.Clamp(float.IsFinite(ColorB) ? ColorB : 1F, 0F, 1F),
-        CastShadows);
+    /// <summary>旧版只含强度、颜色与阴影的构造入口，按点光处理</summary>
+    public LightComponentData(float intensity, float colorR, float colorG, float colorB, bool castShadows)
+        : this(LightShape.Point, intensity, colorR, colorG, colorB, 32F, 45F, 25F, castShadows)
+    {
+    }
+
+    public LightComponentData Normalize()
+    {
+        var range = Math.Clamp(float.IsFinite(Range) ? Range : 32F, 0.01F, 100_000F);
+        var outer = Math.Clamp(float.IsFinite(SpotAngleDegrees) ? SpotAngleDegrees : 45F, 0.1F, 179F);
+        var inner = Math.Clamp(float.IsFinite(InnerSpotAngleDegrees) ? InnerSpotAngleDegrees : 25F, 0F, outer);
+        return new LightComponentData(
+            Enum.IsDefined(Shape) ? Shape : LightShape.Point,
+            Math.Clamp(float.IsFinite(Intensity) ? Intensity : 1F, 0F, 1000F),
+            Math.Clamp(float.IsFinite(ColorR) ? ColorR : 1F, 0F, 1F),
+            Math.Clamp(float.IsFinite(ColorG) ? ColorG : 1F, 0F, 1F),
+            Math.Clamp(float.IsFinite(ColorB) ? ColorB : 1F, 0F, 1F),
+            range, outer, inner, CastShadows);
+    }
 }
 
 /// <summary>
