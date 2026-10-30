@@ -2421,6 +2421,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
                 vec3 lightDirection = sunDirection;
+                float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
                 if (values[85] > 0.5 && lightAmount > 0.0)
                 {
@@ -2429,7 +2430,6 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     radiance += throughput * hitLinearColor * vec3(values[28], values[29], values[30]) * lightAmount * values[27] * shadowVisibility;
                 }
 
-                float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
                 float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
                 // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
                 // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
@@ -2462,7 +2462,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 {
                     rayDirection = CosineHemisphere(hitNormal, state);
                     float diffuseProbability = max(1.0 - fresnelStrength, 0.02);
-                    throughput *= hitLinearColor * (vec3(1.0) - fresnel) / diffuseProbability;
+                    throughput *= hitLinearColor * (1.0 - metalness) * (vec3(1.0) - fresnel) / diffuseProbability;
                 }
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
