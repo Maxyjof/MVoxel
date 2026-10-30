@@ -2102,6 +2102,28 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return max(result, vec3(0.0));
         }
 
+        vec3 SunSurfaceResponse(vec3 baseColor, float metalness, float roughness,
+            vec3 normal, vec3 viewDir, vec3 lightDir)
+        {
+            float nDotL = max(dot(normal, lightDir), 0.0);
+            float nDotV = max(dot(normal, viewDir), 0.0);
+            if (nDotL <= 0.0 || nDotV <= 0.0) return vec3(0.0);
+            vec3 halfVector = normalize(viewDir + lightDir);
+            float nDotH = max(dot(normal, halfVector), 0.0);
+            float vDotH = max(dot(viewDir, halfVector), 0.0);
+            float alpha = max(roughness * roughness, 0.002);
+            float alphaSquared = alpha * alpha;
+            float denominator = nDotH * nDotH * (alphaSquared - 1.0) + 1.0;
+            float distribution = alphaSquared / max(3.14159265 * denominator * denominator, 1e-7);
+            float gView = 2.0 * nDotV / max(nDotV + sqrt(alphaSquared + (1.0 - alphaSquared) * nDotV * nDotV), 1e-6);
+            float gLight = 2.0 * nDotL / max(nDotL + sqrt(alphaSquared + (1.0 - alphaSquared) * nDotL * nDotL), 1e-6);
+            vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), baseColor, metalness);
+            vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - vDotH, 5.0);
+            vec3 specular = fresnel * distribution * gView * gLight / max(4.0 * nDotL * nDotV, 1e-6);
+            vec3 diffuse = baseColor * (1.0 - metalness) * (vec3(1.0) - fresnel);
+            return (diffuse + specular * 3.14159265) * nDotL;
+        }
+
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
             out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal)
         {
@@ -2422,15 +2444,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
                 vec3 lightDirection = sunDirection;
                 float metalness = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
+                float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
                 if (values[85] > 0.5 && lightAmount > 0.0)
                 {
                     float shadowVisibility = TraceSoftShadow(
                         hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state);
-                    radiance += throughput * hitLinearColor * vec3(values[28], values[29], values[30]) * lightAmount * values[27] * shadowVisibility;
+                    vec3 response = SunSurfaceResponse(hitLinearColor, metalness, roughness, hitNormal, -rayDirection, lightDirection);
+                    radiance += throughput * response * vec3(values[28], values[29], values[30]) * values[27] * shadowVisibility;
                 }
 
-                float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
                 // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
                 // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
                 float alpha = max(roughness * roughness, 0.002);
