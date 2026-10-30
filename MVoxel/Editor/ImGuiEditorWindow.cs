@@ -669,14 +669,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void ApplyImGuiStyle()
     {
         var style = ImGui.GetStyle();
-        style.WindowRounding = 2F;
-        style.ChildRounding = 2F;
-        style.FrameRounding = 2F;
-        style.PopupRounding = 2F;
+        style.WindowRounding = 4F;
+        style.ChildRounding = 3F;
+        style.FrameRounding = 3F;
+        style.PopupRounding = 8F;
         style.ScrollbarRounding = 2F;
         style.GrabRounding = 2F;
         style.WindowBorderSize = 1F;
+        style.ChildBorderSize = 1F;
+        style.PopupBorderSize = 1F;
         style.FrameBorderSize = 1F;
+        style.DockingSeparatorSize = 2F;
         style.ItemSpacing = new Vector2(7F, 5F);
         style.WindowPadding = new Vector2(7F, 7F);
         style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);

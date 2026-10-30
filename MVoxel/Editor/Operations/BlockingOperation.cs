@@ -294,7 +294,8 @@ internal static class BlockingOperationDialog
             var draw = ImGui.GetWindowDrawList();
             var window = ImGui.GetWindowPos();
             var windowSize = ImGui.GetWindowSize();
-            draw.AddRectFilled(window, window + new Vector2(4F, windowSize.Y), ToPacked(EditorPalette.Accent), 7F);
+            draw.AddLine(window + new Vector2(3F, 9F), window + new Vector2(3F, windowSize.Y - 9F),
+                ToPacked(EditorPalette.Accent), 3F);
             ImGui.TextColored(ToColor(EditorPalette.Text), title);
             ImGui.Dummy(new Vector2(0F, 4F));
             ImGui.TextWrapped(detail);

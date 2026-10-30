@@ -130,7 +130,7 @@ internal static class EditorPalette
                 _ => (
                     Color.FromArgb(255, 16, 21, 28), Color.FromArgb(255, 27, 35, 45),
                     Color.FromArgb(255, 38, 49, 63), Color.FromArgb(255, 18, 26, 34),
-                    Color.FromArgb(255, 70, 87, 106), Color.FromArgb(255, 76, 176, 238),
+                    Color.FromArgb(255, 98, 119, 142), Color.FromArgb(255, 76, 176, 238),
                     Color.FromArgb(255, 33, 82, 116), Color.FromArgb(255, 235, 240, 246),
                     Color.FromArgb(255, 155, 170, 188), Color.FromArgb(255, 184, 202, 220),
                     Color.FromArgb(255, 104, 214, 147), Color.FromArgb(255, 255, 102, 112)),

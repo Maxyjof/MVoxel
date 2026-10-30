@@ -81,6 +81,8 @@ internal sealed class ImGuiWelcomeContent
         ImGui.StyleColorsDark();
         var style = ImGui.GetStyle();
         style.WindowRounding = 8F;
+        style.PopupRounding = 8F;
+        style.PopupBorderSize = 1F;
         style.FrameRounding = 4F;
         style.WindowBorderSize = 1F;
         style.FrameBorderSize = 1F;
@@ -378,11 +380,8 @@ internal sealed class ImGuiWelcomeContent
             var draw = ImGui.GetWindowDrawList();
             var window = ImGui.GetWindowPos();
             var windowSize = ImGui.GetWindowSize();
-            draw.AddRectFilled(window, window + windowSize, ToPackedColor(EditorPalette.Window), 8F);
-            draw.AddRect(window, window + windowSize, ToPackedColor(EditorPalette.Border), 8F,
-                ImDrawFlags.None, 1F);
-            draw.AddRectFilled(window, window + new Vector2(5F, windowSize.Y),
-                ToPackedColor(EditorPalette.Accent), 8F, ImDrawFlags.RoundCornersLeft);
+            draw.AddLine(window + new Vector2(3F, 9F), window + new Vector2(3F, windowSize.Y - 9F),
+                ToPackedColor(EditorPalette.Accent), 3F);
             ImGui.TextColored(ToColor(EditorPalette.Text), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
             ImGui.Dummy(new Vector2(0F, 6F));
             ImGui.Dummy(new Vector2(0F, 14F));
