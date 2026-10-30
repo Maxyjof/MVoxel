@@ -494,7 +494,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var primaryId = GetVoxelWorldObject()?.Id ?? default;
         var composed = Scene.RenderWorldComposer.Compose(_world, primaryId, _sceneDocument.Objects,
-            _layerOwnership, cullingMask, _sceneDocument.LayerNames, _sceneDocument.HiddenLayerNames);
+            _layerOwnership, cullingMask, _sceneDocument.LayerNames, _sceneDocument.HiddenLayerNames, allowSharedWorld: true);
         _composedRenderWorld = composed;
         _composedSignature = signature;
         _composedMask = cullingMask;

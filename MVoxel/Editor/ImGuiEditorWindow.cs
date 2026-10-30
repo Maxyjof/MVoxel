@@ -329,7 +329,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
                 DrawEditorFrame();
                 ProcessCaptureView();
-                if (_activeExport is not null || _exportQueue.Count > 0)
+                if (_activeExport is not null || _exportQueue.Count > 0 || _exportSnapshot is not null)
                     ProcessExportQueue(GetRenderViewCamera(), _lastRenderViewportSize);
                 _controller.Render();
                 UiDiagnostics.Capture(this, "editor");
@@ -2469,7 +2469,13 @@ DockId=0x6A3C3007,0
 
     private void ProcessExportQueue(SceneCamera camera, Vector2 size)
     {
-        if (_activeExport is null && _exportQueue.Count == 0) return;
+        if (_activeExport is null && _exportQueue.Count == 0)
+        {
+            _exportSnapshot = null;
+            _exportSnapshotSource = null;
+            _exportSnapshotVersion = -1;
+            return;
+        }
         if (_vulkan is null) return;
         _exportPipeline ??= new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
         var pipeline = _exportPipeline;
@@ -2657,11 +2663,26 @@ DockId=0x6A3C3007,0
     internal enum ExportImageFormat { Png, Hdr }
 
     private VulkanVoxelRenderPipeline? _exportPipeline;
+    private VoxelWorld? _exportSnapshotSource;
+    private VoxelWorld? _exportSnapshot;
+    private int _exportSnapshotVersion = -1;
 
     private void EnqueueExport(ExportJob job)
     {
-        // Composer 返回独立快照，批量相机任务共享它，避免按相机数复制整份体素数据。
+        //导出任务必须持有独立快照，避免后续编辑改变排队中的渲染结果
         job.World = GetRenderWorld(job.CullingMask ?? uint.MaxValue);
+        if (ReferenceEquals(job.World, _world))
+        {
+            if (!ReferenceEquals(_exportSnapshotSource, _world) || _exportSnapshotVersion != _world.ContentVersion)
+            {
+                var snapshot = new VoxelWorld();
+                foreach (var item in _world.EnumerateOccupied()) snapshot.Set(item.Coordinate, item.Value);
+                _exportSnapshot = snapshot;
+                _exportSnapshotSource = _world;
+                _exportSnapshotVersion = _world.ContentVersion;
+            }
+            job.World = _exportSnapshot;
+        }
         job.Size = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
             ? _lastRenderViewportSize : new Vector2(1280, 720);
         job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);

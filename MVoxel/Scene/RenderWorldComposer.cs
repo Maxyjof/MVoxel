@@ -18,20 +18,31 @@ public static class RenderWorldComposer
     /// <param name="objects">场景全部对象</param>
     /// <param name="ownership">分层对象的体素所有权表</param>
     /// <param name="cullingMask">相机图层遮罩，位 i 为 1 表示渲染第 i 层</param>
+    /// <param name="allowSharedWorld">允许在全部内容可见时返回共享工作世界，调用方不得修改结果</param>
     /// <returns>只含允许图层且可见内容的新世界</returns>
     public static VoxelWorld Compose(VoxelWorld merged, StableId primaryId,
         IReadOnlyList<SceneObject> objects, IReadOnlyDictionary<StableId, HashSet<VoxelCoord64>> ownership,
-        uint cullingMask, IReadOnlyList<string>? layerNames = null, IReadOnlyCollection<string>? hiddenLayers = null)
+        uint cullingMask, IReadOnlyList<string>? layerNames = null, IReadOnlyCollection<string>? hiddenLayers = null,
+        bool allowSharedWorld = false)
     {
-        var result = new VoxelWorld();
         var objectsById = objects.ToDictionary(item => item.Id);
+        var primary = objects.FirstOrDefault(item => item.Id == primaryId);
+        bool Included(SceneObject item) => IsObjectVisible(item, objectsById) &&
+            LayerAllowed(cullingMask, item.LayerIndex) && IsLayerVisible(item.LayerIndex, layerNames, hiddenLayers);
+
+        //全部体素都可见时直接使用工作世界，避免每次编辑后复制整座场景
+        if (allowSharedWorld && (primary is null || Included(primary)) && ownership.All(entry =>
+                entry.Value.Count == 0 || (entry.Key != primaryId &&
+                    objectsById.TryGetValue(entry.Key, out var owner) && Included(owner))))
+            return merged;
+
+        var result = new VoxelWorld();
         var ownedUnion = new HashSet<VoxelCoord64>();
         foreach (var owned in ownership.Values)
         {
             ownedUnion.UnionWith(owned);
         }
 
-        var primary = objects.FirstOrDefault(item => item.Id == primaryId);
         if (primary is null || (IsObjectVisible(primary, objectsById) && LayerAllowed(cullingMask, primary.LayerIndex) &&
                                 IsLayerVisible(primary.LayerIndex, layerNames, hiddenLayers)))
         {
