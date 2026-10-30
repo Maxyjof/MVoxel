@@ -54,6 +54,7 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleHueCycle;
     private bool _settingsToggleAutoPerformance;
     private bool _brushPreviewErase;
+    private bool _hollowBox;
     private VoxelCoord64? _toolDragAnchor;
     private VoxelCoord64? _toolDragCurrent;
     private StableId? _toolDragTargetId;
@@ -1473,6 +1474,8 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextUnformatted($"格子：{coordinate.X}, {coordinate.Y}, {coordinate.Z}");
             }
             else ImGui.TextUnformatted(hoverErase ? "未命中可擦除方块" : "未命中模型；与网格平面相交时可起笔");
+            if (_toolDragAnchor is { } start && _toolDragCurrent is { } end)
+                ImGui.TextUnformatted($"范围：{Math.Abs(end.X - start.X) + 1} × {Math.Abs(end.Y - start.Y) + 1} × {Math.Abs(end.Z - start.Z) + 1} 格");
             ImGui.EndTooltip();
         }
         if (_activeTool is EditorTool.Line or EditorTool.Box &&
@@ -1601,7 +1604,12 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("请先新建或打开项目");
             return;
         }
-        if (!value.IsEmpty && GetVoxelWorldObject() is null) CreateVoxelModel();
+        if (!value.IsEmpty && GetVoxelWorldObject() is null)
+        {
+            var activeTool = _activeTool;
+            CreateVoxelModel();
+            _activeTool = activeTool;
+        }
         var primaryId = GetVoxelWorldObject()?.Id;
         var objects = _sceneDocument?.Objects ?? [];
         targetId ??= ResolveVoxelEditTarget(null);
@@ -1666,13 +1674,13 @@ internal sealed partial class ImGuiEditorWindow
         ViewportMouseAction leftAction, ViewportMouseAction rightAction)
     {
         var place = leftAction == ViewportMouseAction.Place;
-        var destroy = !place && rightAction == ViewportMouseAction.Destroy;
+        var destroy = !place && (leftAction == ViewportMouseAction.Destroy || rightAction == ViewportMouseAction.Destroy);
         if (!place && !destroy)
         {
             return false;
         }
 
-        var button = place ? ImGuiMouseButton.Left : ImGuiMouseButton.Right;
+        var button = place || leftAction == ViewportMouseAction.Destroy ? ImGuiMouseButton.Left : ImGuiMouseButton.Right;
         var ioState = ImGui.GetIO();
         if (ioState.MouseClicked[(int)button])
         {
@@ -1699,10 +1707,13 @@ internal sealed partial class ImGuiEditorWindow
         }
         else if (ioState.MouseReleased[(int)button] && _toolDragAnchor is { } anchor)
         {
-            var to = _toolDragCurrent ?? anchor;
+            var releaseHit = PickShapeSurface(mouse, origin, size, camera, _toolDragErase);
+            var to = releaseHit is { } finalHit
+                ? (_toolDragErase ? finalHit.Coordinate : finalHit.Coordinate + finalHit.Normal)
+                : _toolDragCurrent ?? anchor;
             var cells = _activeTool == EditorTool.Line
                 ? VoxelEditingTools.LineCells(anchor, to)
-                : VoxelEditingTools.BoxCells(anchor, to, hollow: false);
+                : VoxelEditingTools.BoxCells(anchor, to, hollow: _hollowBox);
             CommitCells(_activeTool == EditorTool.Line
                 ? (_toolDragErase ? "擦除直线" : "绘制直线")
                 : (_toolDragErase ? "擦除长方体" : "绘制长方体"), cells, CurrentBrushValue(_toolDragErase),
@@ -2431,6 +2442,13 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         SliderInt("半径（1=单格）", ref _brushRadius, 1, 8);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip($"当前笔刷包围尺寸：{_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} 格；轮廓只标出中心格。球形笔刷位于此范围内。");
+        if (_activeTool == EditorTool.Box)
+        {
+            ImGui.Checkbox("空心长方体", ref _hollowBox);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只绘制边界，适合建造外壳；厚度为一格。两端落在同一平面时结果仍是平面。");
+        }
         if (ImGui.Checkbox("自发光笔刷（提灯）", ref _brushEmissive))
         {
             SetStatus(_brushEmissive ? "新绘制的体素将带自发光标记" : "新绘制的体素为普通颜色");
