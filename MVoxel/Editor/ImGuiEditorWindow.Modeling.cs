@@ -118,19 +118,6 @@ internal sealed partial class ImGuiEditorWindow
         _focusModelingTools = false;
         if (ImGui.Begin("颜色与笔刷##建模工具窗口", ref _showModelingTools, PanelWindowFlags))
         {
-            var target = GetPinnedVoxelModelObject() ?? _sceneDocument?.Objects.FirstOrDefault(item =>
-                item.Id == _selectedSceneObjectId && item.Components.Any(SceneComponentTypes.IsVoxelModel)) ?? GetVoxelWorldObject();
-            if (target is not null)
-            {
-                ImGui.TextUnformatted("目标");
-                ImGui.SameLine();
-                ImGui.TextWrapped(target.Name);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("未锁定时，命中的模型自动成为编辑目标；锁定后只修改该模型。");
-                if (ImGui.Button(target.Locked ? "解除目标锁定" : "锁定编辑目标")) ToggleSceneObjectLock(target);
-            }
-            else ImGui.TextUnformatted("目标：首次绘制自动创建");
-            if (ImGui.Button("新建体素模型", new Vector2(-1F, ImGui.GetFrameHeight()))) CreateVoxelModel();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("创建独立模型。也可以在空项目中直接落笔，自动建立第一个模型。");
             var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
             ImGui.ColorButton("当前笔刷色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F), ImGuiColorEditFlags.NoTooltip,
                 new Vector2(ImGui.GetFrameHeight() * 2F, ImGui.GetFrameHeight()));
@@ -146,36 +133,38 @@ internal sealed partial class ImGuiEditorWindow
                 _requestedInspectorTab = 0;
             }
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("修改此材质槽会影响所有引用它的体素；选择笔刷颜色不会重绘已有方块。");
-            ImGui.BeginDisabled(target is null);
-            if (ImGui.Button("重绘当前模型…", new Vector2(-1F, ImGui.GetFrameHeight())))
-            {
-                _repaintModelId = target?.Id;
-                ImGui.OpenPopup("重绘模型确认");
-            }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前颜色、材质槽与发光标记应用到此模型已有方块，不添加新方块；整次操作可撤销。");
-            ImGui.EndDisabled();
-            if (ImGui.BeginPopupModal("重绘模型确认", ImGuiWindowFlags.AlwaysAutoResize))
-            {
-                var repaintTarget = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _repaintModelId);
-                ImGui.TextWrapped($"将当前笔刷应用到“{repaintTarget?.Name}”的所有已有方块。共享材质的参数不会被修改。");
-                if (ImGui.Button("应用并保留撤销"))
-                {
-                    if (repaintTarget is not null)
-                    {
-                        var primaryId = GetVoxelWorldObject()?.Id;
-                        var cells = _world.EnumerateOccupied().Where(cell =>
-                            VoxelEditOwnership.ResolveOwner(cell.Coordinate, primaryId, _sceneDocument!.Objects, _layerOwnership) == repaintTarget.Id)
-                            .Select(cell => cell.Coordinate).ToArray();
-                        CommitCells("重绘模型", cells, CurrentBrushValue(false), repaintTarget.Id);
-                    }
-                    ImGui.CloseCurrentPopup();
-                }
-                ImGui.SameLine();
-                if (ImGui.Button("取消")) ImGui.CloseCurrentPopup();
-                ImGui.EndPopup();
-            }
         }
         ImGui.End();
+    }
+
+    private void DrawRepaintModelAction(SceneObject target)
+    {
+        if (ImGui.Button("重绘当前模型…", new Vector2(-1F, ImGui.GetFrameHeight())))
+        {
+            _repaintModelId = target.Id;
+            ImGui.OpenPopup("重绘模型确认");
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前颜色、材质槽与发光标记应用到此模型已有方块，不添加新方块；整次操作可撤销。");
+        if (ImGui.BeginPopupModal("重绘模型确认", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            var repaintTarget = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _repaintModelId);
+            ImGui.TextWrapped($"将当前笔刷应用到“{repaintTarget?.Name}”的所有已有方块。共享材质的参数不会被修改。");
+            if (ImGui.Button("应用并保留撤销"))
+            {
+                if (repaintTarget is not null)
+                {
+                    var primaryId = GetVoxelWorldObject()?.Id;
+                    var cells = _world.EnumerateOccupied().Where(cell =>
+                        VoxelEditOwnership.ResolveOwner(cell.Coordinate, primaryId, _sceneDocument!.Objects, _layerOwnership) == repaintTarget.Id)
+                        .Select(cell => cell.Coordinate).ToArray();
+                    CommitCells("重绘模型", cells, CurrentBrushValue(false), repaintTarget.Id);
+                }
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("取消")) ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
     }
 
     private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false, bool obj = false)

@@ -2778,8 +2778,12 @@ DockId=0x6A3C3007,0
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8F, 8F));
             ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,
                 new Vector2(6F, MathF.Max(5F, ImGui.GetFontSize() * .2F)));
+            ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1F);
+            ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ToColor(EditorPalette.AccentSoft));
             DrawInspectorProperties();
-            ImGui.PopStyleVar(2);
+            ImGui.PopStyleColor(2);
+            ImGui.PopStyleVar(3);
         }
         ImGui.End();
     }
@@ -2879,11 +2883,12 @@ DockId=0x6A3C3007,0
         var objectRowHeight = ImGui.GetFrameHeight();
         var objectRowGap = ImGui.GetStyle().ItemSpacing.Y;
         const float objectPadding = 7F;
-        var objectHeaderHeight = objectRowHeight * 2F + objectRowGap + objectPadding * 2F;
+        var modelObject = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
+        var objectHeaderHeight = objectRowHeight * (modelObject ? 3F : 2F) + objectRowGap * (modelObject ? 2F : 1F) + objectPadding * 2F;
         var objectIconSize = objectRowHeight;
         ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.PanelHeader));
         if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, objectHeaderHeight),
-                ImGuiChildFlags.None, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+                ImGuiChildFlags.Borders, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
             ImGui.SetCursorPos(new Vector2(8F, objectPadding));
             var visible = selectedObject.Visible;
@@ -2898,24 +2903,20 @@ DockId=0x6A3C3007,0
             }
             ImGui.SameLine();
             var objectName = selectedObject.Name;
-            ImGui.SetNextItemWidth(Math.Max(40F, ImGui.GetContentRegionAvail().X - objectIconSize - 12F));
+            ImGui.SetNextItemWidth(Math.Max(40F, ImGui.GetContentRegionAvail().X - (modelObject ? 8F : objectIconSize + 12F)));
             if (ImGui.InputText("##InspectorObjectName", ref objectName, 128) &&
                 !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
             {
                 selectedObject.Name = objectName.Trim();
                 MarkSceneDocumentDirty();
             }
-            ImGui.SameLine(0F, 4F);
-            var modelObject = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
-            var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
-                modelObject ? "固定为体素编辑目标" : "允许选中对象",
-                modelObject ? "解除固定编辑目标" : "禁止选中对象",
-                !selectedObject.Locked, DrawLockIcon, objectIconSize);
-            if (selectableClicked)
+            if (!modelObject)
             {
-                ToggleSceneObjectLock(selectedObject);
+                ImGui.SameLine(0F, 4F);
+                var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
+                    "允许选中对象", "禁止选中对象", !selectedObject.Locked, DrawLockIcon, objectIconSize);
+                if (selectableClicked) ToggleSceneObjectLock(selectedObject);
             }
-            if (_sceneDocumentDirty && ImGui.IsItemHovered()) ImGui.SetTooltip("当前场景有未保存修改");
             ImGui.SetCursorPos(new Vector2(8F, objectPadding + objectRowHeight + objectRowGap));
             ImGui.AlignTextToFramePadding();
             ImGui.TextDisabled("图层");
@@ -2940,10 +2941,18 @@ DockId=0x6A3C3007,0
             }
 
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；渲染窗口中相机的图层遮罩决定本对象是否被该相机渲染");
+            if (modelObject)
+            {
+                ImGui.SetCursorPos(new Vector2(8F, objectPadding + (objectRowHeight + objectRowGap) * 2F));
+                var pinned = selectedObject.Locked;
+                if (ImGui.Checkbox("固定为体素编辑目标", ref pinned)) ToggleSceneObjectLock(selectedObject);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("固定后笔刷只修改此模型，不会擦除或覆盖其他模型已有的方块；再次取消即可恢复自动选择。");
+            }
         }
         ImGui.EndChild();
         ImGui.PopStyleColor();
         ImGui.Dummy(new Vector2(0F, 3F));
+        if (modelObject) DrawRepaintModelAction(selectedObject);
         DrawPrefabInspectorSection(selectedObject);
 
         var removeComponentIndex = -1;
@@ -3073,7 +3082,9 @@ DockId=0x6A3C3007,0
                 ImGui.Unindent(12F);
                 ImGui.Dummy(new Vector2(0F, 4F));
             }
-            ImGui.Dummy(new Vector2(0F, 1F));
+            var cardBottom = ImGui.GetCursorScreenPos().Y;
+            draw.AddRect(headerMin, new Vector2(headerMax.X, cardBottom), ToPackedColor(EditorPalette.Border), 2F);
+            ImGui.Dummy(new Vector2(0F, Math.Max(4F, ImGui.GetStyle().ItemSpacing.Y)));
             ImGui.PopID();
         }
         ImGui.PopStyleVar();
