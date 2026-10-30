@@ -122,7 +122,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VulkanVoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
     private long _renderSettingsInteractionAt;
-    private EditorTool _activeTool = EditorTool.Camera;
+    private EditorTool _activeTool = EditorTool.Draw;
     private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
     private int _brushRadius = 1;
     private int _paletteIndex = 40;
@@ -635,7 +635,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         AppPaths.EnsureDirectories();
         var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         var layoutVersionPath = AppPaths.ConfigPath("imgui-layout.version");
-        const string layoutVersion = "8";
+        const string layoutVersion = "9";
         LoadLayoutSelection();
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
@@ -732,6 +732,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawHierarchy();
         DrawCenter();
         DrawModelingTools();
+        DrawFloodConfirmModal();
         DrawInspector();
         DrawRenderConfig();
         DrawProjectAssets();
@@ -857,14 +858,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.TextDisabled("视口工具");
             if (ImGui.MenuItem("相机", null, _activeTool == EditorTool.Camera)) _activeTool = EditorTool.Camera;
             if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
-            if (ImGui.MenuItem("取色", null, _activeTool == EditorTool.Eyedropper)) _activeTool = EditorTool.Eyedropper;
             ImGui.Separator();
             ImGui.TextDisabled("体素编辑工具");
             if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw)) _activeTool = EditorTool.Draw;
             if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase)) _activeTool = EditorTool.Erase;
-            if (ImGui.MenuItem("直线", null, _activeTool == EditorTool.Line)) _activeTool = EditorTool.Line;
-            if (ImGui.MenuItem("长方体", null, _activeTool == EditorTool.Box)) _activeTool = EditorTool.Box;
-            if (ImGui.MenuItem("填充", null, _activeTool == EditorTool.Fill)) _activeTool = EditorTool.Fill;
             ImGui.Separator();
             ImGui.TextDisabled("场景对象");
             if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
@@ -942,17 +939,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 [Docking][Data]
 DockSpace ID=0x6A3C3001 Pos=0,24 Size=1440,840 Split=Y Selected=0x6A3C3002
   DockNode ID=0x6A3C3002 Parent=0x6A3C3001 SizeRef=1440,615 Split=X Selected=0x6A3C3003
-    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=300,615 Split=Y
-      DockNode ID=0x6A3C3008 Parent=0x6A3C3003 SizeRef=300,180
-      DockNode ID=0x6A3C3009 Parent=0x6A3C3003 SizeRef=300,435
+    DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=300,615
     DockNode ID=0x6A3C3004 Parent=0x6A3C3002 SizeRef=1140,615 Split=X Selected=0x6A3C3005
       DockNode ID=0x6A3C3005 Parent=0x6A3C3004 SizeRef=780,615 Selected=0xD7AC1002
       DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615
   DockNode ID=0x6A3C3007 Parent=0x6A3C3001 SizeRef=1440,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
-DockId=0x6A3C3009,0
-[Window][工具##建模工具箱]
-DockId=0x6A3C3008,0
+DockId=0x6A3C3003,0
 [Window][场景##场景窗口]
 DockId=0x6A3C3005,0
 [Window][渲染##渲染窗口]
@@ -4214,7 +4207,7 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
-        if (GetVoxelWorldObject() is null) _activeTool = EditorTool.Draw;
+        _activeTool = EditorTool.Draw;
         TryRestoreRecovery(project);
         ReloadMaterialTable();
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));

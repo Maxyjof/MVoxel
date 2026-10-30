@@ -94,9 +94,7 @@ internal sealed partial class ImGuiEditorWindow
             _ => (300, 360, 225),
         };
         return DefaultDockLayout
-            .Replace("SizeRef=300,615 Split=Y", $"SizeRef={left},615 Split=Y")
-            .Replace("SizeRef=300,180", $"SizeRef={left},180")
-            .Replace("SizeRef=300,435", $"SizeRef={left},435")
+            .Replace("SizeRef=300,615", $"SizeRef={left},615")
             .Replace("SizeRef=1140,615 Split=X", $"SizeRef={1440 - left},615 Split=X")
             .Replace("SizeRef=780,615 Selected", $"SizeRef={1440 - left - right},615 Selected")
             .Replace("SizeRef=360,615", $"SizeRef={right},615")
@@ -231,8 +229,28 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private static string MigrateLayoutWindowNames(string contents) =>
-        contents.Replace("[Window][颜色与笔刷##建模工具窗口]", "[Window][调色板##建模工具窗口]", StringComparison.Ordinal);
+    private static string MigrateLayoutWindowNames(string contents)
+    {
+        contents = contents.Replace("[Window][颜色与笔刷##建模工具窗口]", "[Window][调色板##建模工具窗口]", StringComparison.Ordinal);
+        const string toolHeader = "[Window][工具##建模工具箱]";
+        var sections = System.Text.RegularExpressions.Regex.Matches(contents,
+            @"(?ms)^\[Window\]\[(?<name>[^\r\n]*)\]\r?\n.*?(?=^\[|\z)");
+        var toolbar = sections.Cast<System.Text.RegularExpressions.Match>()
+            .FirstOrDefault(section => section.Value.StartsWith(toolHeader, StringComparison.Ordinal));
+        var toolbarOwnsNode = toolbar is not null && toolbar.Value.Contains("DockId=0x6A3C3008", StringComparison.OrdinalIgnoreCase) &&
+            sections.Cast<System.Text.RegularExpressions.Match>().Count(section =>
+                section.Value.Contains("DockId=0x6A3C3008", StringComparison.OrdinalIgnoreCase)) == 1;
+        if (toolbar is not null) contents = contents.Remove(toolbar.Index, toolbar.Length);
+        if (!toolbarOwnsNode) return contents;
+
+        var parent = @"(?m)^(?<node>\s*DockNode ID=0x6A3C3003 Parent=0x6A3C3002 SizeRef=\d+,\d+) Split=Y\s*$";
+        var children = @"(?m)^\s*DockNode ID=0x6A3C300[89] Parent=0x6A3C3003[^\r\n]*\r?\n";
+        if (!System.Text.RegularExpressions.Regex.IsMatch(contents, parent) ||
+            System.Text.RegularExpressions.Regex.Matches(contents, children).Count != 2) return contents;
+        contents = System.Text.RegularExpressions.Regex.Replace(contents, parent, "${node}");
+        contents = System.Text.RegularExpressions.Regex.Replace(contents, children, "");
+        return contents.Replace("DockId=0x6A3C3009,", "DockId=0x6A3C3003,", StringComparison.OrdinalIgnoreCase);
+    }
 
     private string CaptureLayout()
     {

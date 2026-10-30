@@ -108,9 +108,6 @@ internal sealed partial class ImGuiEditorWindow
     {
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, 210F));
-        if (ImGui.Begin("工具##建模工具箱", PanelWindowFlags)) DrawBrushToolbarRow();
-        ImGui.End();
         if (!_showModelingTools) return;
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F),
             new Vector2(layout.RightWidth, layout.MainHeight));
@@ -124,6 +121,14 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.IsItemHovered()) ImGui.SetTooltip($"颜色 {_paletteIndex} · RGB({color.R}, {color.G}, {color.B}) · A {color.A}");
             ImGui.SameLine();
             ImGui.TextUnformatted(_sampledBrushColor.HasValue ? "取样色" : $"颜色 {_paletteIndex}");
+            ImGui.SameLine();
+            var sampling = _activeTool == EditorTool.Eyedropper;
+            if (ImGui.Button(sampling ? "取消取色" : "取色"))
+            {
+                _activeTool = sampling ? EditorTool.Draw : EditorTool.Eyedropper;
+                SetStatus(sampling ? "已返回绘制" : "点击场景中的体素取样颜色、材质和发光标记");
+            }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("点击后在场景中选择体素取样，完成后自动返回绘制");
             DrawBrushProperties();
             var material = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
             if (material is not null && ImGui.Button("编辑共享材质", new Vector2(-1F, ImGui.GetFrameHeight())))

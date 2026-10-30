@@ -2101,44 +2101,6 @@ internal sealed partial class ImGuiEditorWindow
 
     // 工具栏和色板
 
-    private void DrawBrushToolbarRow()
-    {
-        var previousTool = _activeTool;
-        var tools = new (string Label, EditorTool Tool)[]
-        {
-            ("绘制", EditorTool.Draw), ("擦除", EditorTool.Erase), ("填充", EditorTool.Fill),
-            ("选择", EditorTool.Pick), ("取色", EditorTool.Eyedropper), ("直线", EditorTool.Line),
-            ("长方体", EditorTool.Box), ("相机", EditorTool.Camera),
-        };
-        var rowWidth = ImGui.GetContentRegionAvail().X;
-        var used = 0F;
-        foreach (var (label, tool) in tools)
-        {
-            var width = Math.Max(62F, ImGui.CalcTextSize(label).X + 20F);
-            if (used > 0F && used + ImGui.GetStyle().ItemSpacing.X + width <= rowWidth)
-            {
-                ImGui.SameLine();
-                used += ImGui.GetStyle().ItemSpacing.X;
-            }
-            else used = 0F;
-            ToolButton(label, tool);
-            used += width;
-        }
-        DrawFloodConfirmModal();
-        if (previousTool == _activeTool) return;
-        SetStatus(_activeTool switch
-        {
-            EditorTool.Camera => "相机工具：左键不编辑 · 右键环绕 · 中键平移",
-            EditorTool.Pick => "选择工具：点击体素查看坐标与颜色（可取色）",
-            EditorTool.Eyedropper => "取色工具：点击体素取样颜色、材质槽与自发光标记",
-            EditorTool.Draw => "绘制工具：左键放置 · Shift+左键破坏",
-            EditorTool.Line => "直线工具：按下取起点，拖动到终点松开，一次可撤销",
-            EditorTool.Box => "长方体工具：按下取一个角，拖到对角松开",
-            EditorTool.Fill => "填充工具：点击体素替换其同值连通域，超上限需确认",
-            _ => "擦除工具：左键擦除",
-        });
-    }
-
     /// <summary>
     /// 洪水填充命中预算上限后的二次确认弹窗，确认应用截断结果或放弃
     /// </summary>
@@ -2177,27 +2139,6 @@ internal sealed partial class ImGuiEditorWindow
 
             ImGui.EndPopup();
         }
-    }
-
-    private void ToolButton(string label, EditorTool tool)
-    {
-        var active = _activeTool == tool;
-        if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
-        if (ImGui.Button(label, new Vector2(Math.Max(62F, ImGui.CalcTextSize(label).X + 20F), ImGui.GetFrameHeight())) && !active)
-            _activeTool = tool;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tool switch
-        {
-            EditorTool.Camera => "观察：左键不修改体素，右键环绕，中键平移",
-            EditorTool.Pick => "选择：点击体素查看坐标和颜色",
-            EditorTool.Eyedropper => "取色：采样体素的精确颜色、材质槽和自发光标记，再返回绘制",
-            EditorTool.Draw => "绘制：左键放置，Shift+左键擦除；右键环绕（Caps Lock 模式除外）",
-            EditorTool.Erase => "擦除：左键擦除体素；右键仍用于环绕",
-            EditorTool.Line => "直线：拖动绘制或擦除一条直线",
-            EditorTool.Box => "长方体：拖动绘制或擦除实心长方体",
-            EditorTool.Fill => "填充：替换同值连通区域",
-            _ => label,
-        });
-        if (active) ImGui.PopStyleColor();
     }
 
     private void DrawPaletteSelector()
