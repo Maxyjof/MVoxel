@@ -70,6 +70,7 @@ public sealed class EditorSettingsDocument
     public static EditorSettingsDocument CreateDefault()
     {
         var document = new EditorSettingsDocument();
+        RenderQualityPresets.Apply(document.RenderViewSettings, RenderQualityPreset.Ultra);
         document.ShortcutSchemes.Add(CreateDefaultScheme());
         return document;
     }
@@ -172,7 +173,12 @@ public sealed class ProjectSettingsDocument
     public RenderSettings RenderSettings = new();
     public RenderSettings ExportRenderSettings = new();
 
-    public static ProjectSettingsDocument CreateDefault() => new();
+    public static ProjectSettingsDocument CreateDefault()
+    {
+        var settings = new ProjectSettingsDocument();
+        RenderQualityPresets.Apply(settings.RenderSettings, RenderQualityPreset.Ultra);
+        return settings;
+    }
 
     public void Normalize()
     {

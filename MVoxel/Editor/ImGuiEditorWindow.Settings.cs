@@ -573,6 +573,32 @@ internal sealed partial class ImGuiEditorWindow
             ? "显卡计算 · 修改后实时生效"
             : "CPU 计算 · 适合调试和无显卡环境");
 
+        if (context == "渲染窗口")
+        {
+            var selected = RenderQualityPresets.Identify(settings);
+            var selectedLabel = selected switch { RenderQualityPreset.Low => "低", RenderQualityPreset.Medium => "中", RenderQualityPreset.High => "高", RenderQualityPreset.Ultra => "超高", _ => "自定义" };
+            ImGui.SetNextItemWidth(Math.Min(240F, Math.Max(80F, ImGui.GetContentRegionAvail().X * .55F)));
+            if (ImGui.BeginCombo("画质方案", selectedLabel))
+            {
+                var options = new[] { ("低", RenderQualityPreset.Low), ("中", RenderQualityPreset.Medium),
+                    ("高", RenderQualityPreset.High), ("超高", RenderQualityPreset.Ultra) };
+                foreach (var (label, quality) in options)
+                {
+                    if (!ImGui.Selectable(label, selected == quality)) continue;
+                    RenderQualityPresets.Apply(settings, quality);
+                    if (ReferenceEquals(settings, _renderSettings))
+                    {
+                        _useHardwareRayTracing = settings.UseHardwareRayTracing;
+                        SyncSettingsToggles(settings);
+                        _pipeline?.ResetAccumulation();
+                        _accumulationSignature = string.Empty;
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用后可以继续手动调整；低：实时光照、1次阴影采样、关闭AO与辉光并启用远距离LOD；中：实时光照与较温和LOD；高和超高：路径追踪、完整体素。所有方案保持完整分辨率，导出设置独立。");
+        }
+
         DrawRenderSettingsAccordion("backend", "后端", () =>
         {
                 DrawSettingsSectionHeader("计算后端", "决定实时预览使用的计算路径");

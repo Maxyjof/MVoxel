@@ -302,8 +302,6 @@ public static class ProjectTemplateCatalog
     {
         var settings = ProjectSettingsDocument.CreateDefault();
         settings.TemplateId = id.ToString();
-        // 空项目和偏编辑/性能验证模板从实时渲染开始；需要展示光照、透明和景深的模板在各自分支显式开启。
-        settings.RenderSettings.PathTracingEnabled = false;
         switch (id)
         {
             case ProjectTemplateId.SparseWorld:
