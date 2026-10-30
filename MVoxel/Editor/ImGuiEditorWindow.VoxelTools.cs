@@ -1270,6 +1270,15 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
 
+            //窗口失焦时保留已完成的画面，重新聚焦或MCP截图时继续累积
+            if (!IsFocused && _capturePath is null && !_renderViewNeedsInitialRender &&
+                pipeline.DisplayTextureId != IntPtr.Zero)
+            {
+                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
+                    Vector2.Zero, pipeline.DisplayUvMax);
+                return true;
+            }
+
             // 调整渲染配置时可以短暂复用上一张纹理，避免拖动滑块同步等待完整路径追踪；
             // 相机导航绝不能走这条分支，否则新姿态刚写入就会被旧视角覆盖显示，
             // 表现为右键环绕后视角瞬间弹回。
