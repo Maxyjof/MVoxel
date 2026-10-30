@@ -22,6 +22,11 @@ public sealed class RecentProjectEntry
     /// 最后一次打开的时间（UTC）
     /// </summary>
     public DateTimeOffset LastOpenedUtc { get; set; }
+
+    /// <summary>
+    /// 项目清单里的稳定 ID；同一项目的副本共享该 ID，用于最近列表去重
+    /// </summary>
+    public Guid? ProjectId { get; set; }
 }
 
 /// <summary>
@@ -66,9 +71,12 @@ public static class RecentProjects
             var entries = JsonSerializer.Deserialize<List<RecentProjectEntry>>(File.ReadAllText(path), JsonOptions)
                 ?? new List<RecentProjectEntry>();
             return entries
-                .Where(entry => entry is not null && IsExistingProject(entry))
-                .GroupBy(entry => NormalizePath(entry.Path), StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.OrderByDescending(entry => entry.LastOpenedUtc).First())
+                .Where(entry => entry is not null && IsExistingProject(entry) && !IsSystemTempProject(entry.Path))
+                .Select(entry => (Entry: entry, Id: ResolveProjectId(entry)))
+                .GroupBy(item => item.Id is { } id && id != Guid.Empty
+                    ? "id:" + id.ToString("D")
+                    : "path:" + NormalizePath(item.Entry.Path), StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.OrderByDescending(item => item.Entry.LastOpenedUtc).First().Entry)
                 .OrderByDescending(entry => entry.LastOpenedUtc)
                 .Take(MaxEntries)
                 .ToArray();
@@ -103,14 +111,19 @@ public static class RecentProjects
 
         var path = storagePath ?? DefaultStoragePath;
         var normalizedProjectPath = NormalizePath(project.RootPath);
+        // 临时目录里的副本通常是预览或验证用的，不能进入长期最近项目列表
+        if (IsSystemTempProject(normalizedProjectPath)) return;
+        var projectId = project.Manifest.ProjectId.Value;
         var entries = Load(path)
-            .Where(entry => !string.Equals(NormalizePath(entry.Path), normalizedProjectPath, StringComparison.OrdinalIgnoreCase))
+            .Where(entry => !string.Equals(NormalizePath(entry.Path), normalizedProjectPath, StringComparison.OrdinalIgnoreCase) &&
+                            !(projectId != Guid.Empty && ResolveProjectId(entry) == projectId))
             .ToList();
         entries.Add(new RecentProjectEntry
         {
             Name = project.Manifest.Name,
             Path = normalizedProjectPath,
             LastOpenedUtc = openedAtUtc ?? DateTimeOffset.UtcNow,
+            ProjectId = projectId == Guid.Empty ? null : projectId,
         });
 
         var directory = System.IO.Path.GetDirectoryName(path)
@@ -145,6 +158,56 @@ public static class RecentProjects
             return false;
         }
         catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 解析条目对应的项目 ID：优先用记录值，旧记录读取项目清单补齐
+    /// </summary>
+    private static Guid? ResolveProjectId(RecentProjectEntry entry) =>
+        entry.ProjectId is { } recorded && recorded != Guid.Empty
+            ? recorded
+            : TryReadProjectId(entry.Path);
+
+    /// <summary>从项目清单读取稳定的项目 ID，读取失败返回空</summary>
+    private static Guid? TryReadProjectId(string rootPath)
+    {
+        try
+        {
+            var manifestPath = System.IO.Path.Combine(NormalizePath(rootPath), ProjectLayout.ProjectFileName);
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("projectId", out var projectId) &&
+                projectId.ValueKind == JsonValueKind.Object &&
+                projectId.TryGetProperty("value", out var value) &&
+                value.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(value.GetString(), out var id) && id != Guid.Empty)
+            {
+                return id;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                              JsonException or ArgumentException)
+        {
+        }
+
+        return null;
+    }
+
+    /// <summary>判断路径是否位于系统临时目录下</summary>
+    private static bool IsSystemTempProject(string path)
+    {
+        try
+        {
+            var normalized = NormalizePath(path);
+            var tempRoot = NormalizePath(System.IO.Path.GetTempPath());
+            return string.Equals(normalized, tempRoot, StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith(tempRoot + System.IO.Path.DirectorySeparatorChar,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException)
         {
             return false;
         }
