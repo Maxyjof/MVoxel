@@ -381,7 +381,7 @@ internal sealed partial class ImGuiEditorWindow
                 _showGeneratorPanel = true;
                 break;
             case GuideActionId.RenderConfig:
-                _showInspector = true;
+                _showRenderConfig = true;
                 _requestedInspectorTab = 1;
                 break;
             case GuideActionId.ImportCompatibility:

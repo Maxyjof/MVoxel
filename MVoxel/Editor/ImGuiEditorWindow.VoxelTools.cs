@@ -1980,6 +1980,7 @@ internal sealed partial class ImGuiEditorWindow
             _showProjectAssets = !visible;
             _showInspector = !visible;
             _showModelingTools = !visible;
+            if (visible) _showRenderConfig = false;
         }
 
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.focus"))

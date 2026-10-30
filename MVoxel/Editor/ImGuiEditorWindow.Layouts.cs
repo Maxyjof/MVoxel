@@ -237,7 +237,8 @@ internal sealed partial class ImGuiEditorWindow
     private string CaptureLayout()
     {
         var panels = string.Concat(_showHierarchy ? "1" : "0", _showModelingTools ? "1" : "0",
-            _showInspector ? "1" : "0", _showProjectAssets ? "1" : "0", _showGeneratorPanel ? "1" : "0");
+            _showInspector ? "1" : "0", _showProjectAssets ? "1" : "0", _showGeneratorPanel ? "1" : "0",
+            _showRenderConfig ? "1" : "0");
         return $";MVoxelPanels={panels}\n" + ImGui.SaveIniSettingsToMemory();
     }
 
@@ -247,12 +248,13 @@ internal sealed partial class ImGuiEditorWindow
         var line = contents.Split('\n').FirstOrDefault(value => value.StartsWith(marker, StringComparison.Ordinal));
         if (line is null) return;
         var panels = line[marker.Length..].Trim();
-        if (panels.Length != 5 || panels.Any(value => value is not ('0' or '1'))) return;
+        if (panels.Length is not (5 or 6) || panels.Any(value => value is not ('0' or '1'))) return;
         _showHierarchy = panels[0] == '1';
         _showModelingTools = panels[1] == '1';
         _showInspector = panels[2] == '1';
         _showProjectAssets = panels[3] == '1';
         _showGeneratorPanel = panels[4] == '1';
+        _showRenderConfig = panels.Length == 6 && panels[5] == '1';
     }
 
     private static void ValidateLayout(string contents)

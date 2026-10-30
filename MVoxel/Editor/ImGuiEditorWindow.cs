@@ -68,6 +68,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string? _voxelModelReferenceCacheRoot;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
+    private bool _showRenderConfig;
     private int _centerTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
@@ -646,7 +647,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                                      savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][检查器##检查器窗口]", StringComparison.Ordinal) &&
-                                     savedLayout.Contains("[Window][渲染配置##渲染配置窗口]", StringComparison.Ordinal) &&
                                      !savedLayout.Contains("[Window][场景与渲染##中央面板]", StringComparison.Ordinal);
         if (hasCurrentPanelLayout)
         {
@@ -656,7 +656,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         else
         {
             ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
-            _requestedInspectorTab = _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
+            _requestedInspectorTab = 0;
             AtomicFile.WriteText(layoutVersionPath, layoutVersion);
         }
 
@@ -813,6 +813,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("调色板", null, ref _showModelingTools)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
             if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
+            if (ImGui.MenuItem("渲染配置", null, ref _showRenderConfig) && _showRenderConfig) _requestedInspectorTab = 1;
             if (ImGui.MenuItem("生成器", null, ref _showGeneratorPanel)) { }
             ImGui.EndMenu();
         }
@@ -900,7 +901,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.Separator();
             if (ImGui.MenuItem("快速画面设置"))
             {
-                _showInspector = true;
+                _showRenderConfig = true;
                 _requestedInspectorTab = 1;
             }
             ImGui.EndMenu();
@@ -3592,8 +3593,9 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawRenderConfig()
     {
-        if (!_showInspector)
+        if (!_showRenderConfig)
         {
+            _requestedInspectorTab = null;
             return;
         }
 
@@ -3601,7 +3603,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染配置##渲染配置窗口", PanelWindowFlags))
+        if (!ImGui.Begin("渲染配置##渲染配置窗口", ref _showRenderConfig, PanelWindowFlags))
         {
             _requestedInspectorTab = null;
         }
@@ -3848,11 +3850,12 @@ DockId=0x6A3C3007,0
         _resetDockLayoutRequested = true;
         _showModelingTools = true;
         _showInspector = true;
+        _showRenderConfig = false;
         _showHierarchy = true;
         _showProjectAssets = true;
         _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
         _focusModelingTools = false;
-        _requestedInspectorTab = preset == LayoutPreset.Rendering ? 1 : 0;
+        _requestedInspectorTab = 0;
     }
 
     private void ShowProjectPathDialog(bool create)
