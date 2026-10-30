@@ -55,6 +55,11 @@ internal sealed partial class ImGuiEditorWindow
     private bool _settingsToggleAutoPerformance;
     private bool _brushPreviewErase;
     private bool _hollowBox;
+    private VoxelCoord64? _previewShapeAnchor;
+    private VoxelCoord64? _previewShapeEnd;
+    private EditorTool _previewShapeTool;
+    private bool _previewShapeHollow;
+    private IReadOnlyList<VoxelCoord64> _previewShapeCells = [];
     private VoxelCoord64? _toolDragAnchor;
     private VoxelCoord64? _toolDragCurrent;
     private StableId? _toolDragTargetId;
@@ -1422,6 +1427,7 @@ internal sealed partial class ImGuiEditorWindow
 
         if (_activeTool is EditorTool.Pick or EditorTool.Eyedropper)
         {
+            _brushPreview = null;
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
             {
                 _selectedVoxel = PickVoxel(mouse, origin, size, camera);
@@ -1449,35 +1455,9 @@ internal sealed partial class ImGuiEditorWindow
         var rightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, shiftPressed, capsLockMode,
             _editorSettings.McMode);
         var hoverHit = PickVoxel(mouse, origin, size, camera);
-        var primary = GetVoxelWorldObject()?.Id;
-        var objects = _sceneDocument?.Objects;
-        var selectedModelId = objects?.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
-            item.Components.Any(SceneComponentTypes.IsVoxelModel))?.Id;
-        var hoverTargetId = GetPinnedVoxelModelObject()?.Id ??
-            (hoverHit is { } hovered && objects is not null
-                ? VoxelEditOwnership.ResolveOwner(hovered.Coordinate, primary, objects, _layerOwnership)
-                : selectedModelId ?? primary);
-        var hoverTarget = objects?.FirstOrDefault(item => item.Id == hoverTargetId);
         var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
-        if (!ImGui.IsMouseDown(ImGuiMouseButton.Right) && !ImGui.IsMouseDown(ImGuiMouseButton.Middle))
-        {
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted($"{(hoverErase ? "擦除" : "绘制")}目标：{hoverTarget?.Name ?? "首次绘制自动创建模型"}{(hoverTarget?.Locked == true ? "（已锁定）" : "")}");
-            if (hoverTarget is not null && (!hoverTarget.Visible ||
-                !(_sceneDocument?.IsLayerVisible(hoverTarget.LayerIndex) ?? false) ||
-                !IsSceneObjectAncestorsVisible(hoverTarget, objects!.ToDictionary(item => item.Id)) ||
-                !hoverTarget.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled)))
-                ImGui.TextUnformatted("不可编辑：目标、父级、图层隐藏或模型组件禁用");
-            if (hoverHit is { } location)
-            {
-                var coordinate = hoverErase ? location.Coordinate : location.Coordinate + location.Normal;
-                ImGui.TextUnformatted($"格子：{coordinate.X}, {coordinate.Y}, {coordinate.Z}");
-            }
-            else ImGui.TextUnformatted(hoverErase ? "未命中可擦除方块" : "未命中模型；与网格平面相交时可起笔");
-            if (_toolDragAnchor is { } start && _toolDragCurrent is { } end)
-                ImGui.TextUnformatted($"范围：{Math.Abs(end.X - start.X) + 1} × {Math.Abs(end.Y - start.Y) + 1} × {Math.Abs(end.Z - start.Z) + 1} 格");
-            ImGui.EndTooltip();
-        }
+        _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
+        _brushPreviewErase = hoverErase;
         if (_activeTool is EditorTool.Line or EditorTool.Box &&
             HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
         {
@@ -1491,14 +1471,8 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        var handled = false;
-        handled |= ApplyMouseVoxelAction(leftAction, ImGuiMouseButton.Left, mouse, origin, size, camera);
-        handled |= ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
-        if (!handled)
-        {
-            _brushPreview = hoverHit;
-            _brushPreviewErase = hoverErase;
-        }
+        _ = ApplyMouseVoxelAction(leftAction, ImGuiMouseButton.Left, mouse, origin, size, camera);
+        _ = ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
     }
 
     private bool ApplyMouseVoxelAction(ViewportMouseAction action, ImGuiMouseButton button,
@@ -2064,18 +2038,30 @@ internal sealed partial class ImGuiEditorWindow
 
         if (_toolDragAnchor is { } anchor)
         {
-            if (DrawCellWireframe(drawList, origin, size, camera, anchor, 0.52F,
-                    ToPackedColor(Color.FromArgb(235, 93, 187, 255)), 1.6F))
+            var end = _toolDragCurrent ?? anchor;
+            if (_previewShapeAnchor != anchor || _previewShapeEnd != end ||
+                _previewShapeTool != _activeTool || _previewShapeHollow != _hollowBox)
             {
-                var to = _toolDragCurrent ?? anchor;
-                DrawCellWireframe(drawList, origin, size, camera, to, 0.52F,
-                    ToPackedColor(Color.FromArgb(235, 93, 187, 255)), 1.6F);
+                _previewShapeAnchor = anchor;
+                _previewShapeEnd = end;
+                _previewShapeTool = _activeTool;
+                _previewShapeHollow = _hollowBox;
+                _previewShapeCells = _activeTool == EditorTool.Line
+                    ? VoxelEditingTools.LineCells(anchor, end)
+                    : VoxelEditingTools.BoxCells(anchor, end, _hollowBox);
             }
+            var color = ToPackedColor(_toolDragErase
+                ? Color.FromArgb(210, 255, 112, 120) : Color.FromArgb(235, 93, 187, 255));
+            foreach (var cell in _previewShapeCells)
+                DrawCellWireframe(drawList, origin, size, camera, cell, 0.5F, color, 1.25F);
+            return;
         }
 
+        _previewShapeAnchor = null;
+        _previewShapeCells = [];
         if (_brushPreview is not { } hit) return;
-        var cell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
-        DrawCellWireframe(drawList, origin, size, camera, cell, 0.52F,
+        var previewCell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
+        DrawCellWireframe(drawList, origin, size, camera, previewCell, 0.52F,
             ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
                 _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255)), 1.6F);
     }
@@ -2087,23 +2073,24 @@ internal sealed partial class ImGuiEditorWindow
         VoxelCoord64 cell, float half, uint color, float thickness)
     {
         var center = new Vector3((float)cell.X + 0.5F, (float)cell.Y + 0.5F, (float)cell.Z + 0.5F);
-        var corners = new[]
+        Span<Vector3> corners = stackalloc Vector3[]
         {
             center + new Vector3(-half, -half, -half), center + new Vector3(half, -half, -half),
             center + new Vector3(half, half, -half), center + new Vector3(-half, half, -half),
             center + new Vector3(-half, -half, half), center + new Vector3(half, -half, half),
             center + new Vector3(half, half, half), center + new Vector3(-half, half, half),
         };
-        var points = new Vector2[8];
+        Span<Vector2> points = stackalloc Vector2[8];
         for (var index = 0; index < corners.Length; index++)
         {
             if (!SceneProjection.Project(corners[index], origin, size, camera, out points[index], out _)) return false;
         }
 
-        foreach (var (start, end) in new[]
-                 {
-                     (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
-                 })
+        ReadOnlySpan<(int Start, int End)> edges = stackalloc (int, int)[]
+        {
+            (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
+        };
+        foreach (var (start, end) in edges)
         {
             drawList.AddLine(points[start], points[end], color, thickness);
         }
