@@ -631,13 +631,14 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         AppPaths.EnsureDirectories();
         var layoutPath = AppPaths.ConfigPath("imgui-layout.ini");
         var layoutVersionPath = AppPaths.ConfigPath("imgui-layout.version");
-        const string layoutVersion = "7";
+        const string layoutVersion = "8";
+        LoadLayoutSelection();
         _imguiLayoutPath = layoutPath;
         var savedLayout = File.Exists(layoutPath) ? File.ReadAllText(layoutPath) : string.Empty;
         var hasCurrentLayoutVersion = File.Exists(layoutVersionPath) &&
                                       string.Equals(File.ReadAllText(layoutVersionPath).Trim(), layoutVersion,
                                           StringComparison.Ordinal);
-        var hasCurrentPanelLayout = hasCurrentLayoutVersion &&
+        var hasCurrentPanelLayout = (hasCurrentLayoutVersion || _activeLayoutFile is not null) &&
                                      savedLayout.Contains("DockSpace ID=0x6A3C3001", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
@@ -646,15 +647,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                                      !savedLayout.Contains("[Window][场景与渲染##中央面板]", StringComparison.Ordinal);
         if (hasCurrentPanelLayout)
         {
-            ImGui.LoadIniSettingsFromDisk(layoutPath);
+            ImGui.LoadIniSettingsFromMemory(MigrateLayoutWindowNames(savedLayout));
+            if (!hasCurrentLayoutVersion) AtomicFile.WriteText(layoutVersionPath, layoutVersion);
         }
         else
         {
-            ImGui.LoadIniSettingsFromMemory(DefaultDockLayout);
+            ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
+            _requestedInspectorTab = _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
             AtomicFile.WriteText(layoutVersionPath, layoutVersion);
         }
 
-        LoadLayoutSelection();
         ApplyImGuiStyle();
     }
 
@@ -805,7 +807,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
             ImGui.Separator();
             if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
-            if (ImGui.MenuItem("建模工具", null, ref _showModelingTools)) { }
+            if (ImGui.MenuItem("调色板", null, ref _showModelingTools)) { }
             if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
             if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
             if (ImGui.MenuItem("生成器", null, ref _showGeneratorPanel)) { }
@@ -938,9 +940,7 @@ DockSpace ID=0x6A3C3001 Pos=0,24 Size=1440,840 Split=Y Selected=0x6A3C3002
       DockNode ID=0x6A3C3009 Parent=0x6A3C3003 SizeRef=300,435
     DockNode ID=0x6A3C3004 Parent=0x6A3C3002 SizeRef=1140,615 Split=X Selected=0x6A3C3005
       DockNode ID=0x6A3C3005 Parent=0x6A3C3004 SizeRef=780,615 Selected=0xD7AC1002
-      DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615 Split=Y
-        DockNode ID=0x6A3C3010 Parent=0x6A3C3006 SizeRef=360,420
-        DockNode ID=0x6A3C3011 Parent=0x6A3C3006 SizeRef=360,195
+      DockNode ID=0x6A3C3006 Parent=0x6A3C3004 SizeRef=360,615
   DockNode ID=0x6A3C3007 Parent=0x6A3C3001 SizeRef=1440,225 Selected=0xD7AC1004
 [Window][层级##层级面板]
 DockId=0x6A3C3009,0
@@ -950,12 +950,12 @@ DockId=0x6A3C3008,0
 DockId=0x6A3C3005,0
 [Window][渲染##渲染窗口]
 DockId=0x6A3C3005,1
-[Window][颜色与笔刷##建模工具窗口]
-DockId=0x6A3C3010,0
 [Window][检查器##检查器窗口]
-DockId=0x6A3C3011,0
+DockId=0x6A3C3006,0
+[Window][调色板##建模工具窗口]
+DockId=0x6A3C3006,1
 [Window][渲染配置##渲染配置窗口]
-DockId=0x6A3C3011,1
+DockId=0x6A3C3006,2
 [Window][项目资产##资源浏览器]
 DockId=0x6A3C3007,0
 """;
@@ -3843,13 +3843,13 @@ DockId=0x6A3C3007,0
         SaveLayoutSelection($"@builtin:{preset}");
         _applyPreset = true;
         _resetDockLayoutRequested = true;
-        _showModelingTools = preset != LayoutPreset.Rendering;
+        _showModelingTools = true;
         _showInspector = true;
         _showHierarchy = true;
         _showProjectAssets = true;
         _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
-        _focusModelingTools = preset != LayoutPreset.Rendering;
-        if (preset == LayoutPreset.Rendering) _requestedInspectorTab = 1;
+        _focusModelingTools = false;
+        _requestedInspectorTab = preset == LayoutPreset.Rendering ? 1 : 0;
     }
 
     private void ShowProjectPathDialog(bool create)

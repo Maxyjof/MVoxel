@@ -99,9 +99,7 @@ internal sealed partial class ImGuiEditorWindow
             .Replace("SizeRef=300,435", $"SizeRef={left},435")
             .Replace("SizeRef=1140,615 Split=X", $"SizeRef={1440 - left},615 Split=X")
             .Replace("SizeRef=780,615 Selected", $"SizeRef={1440 - left - right},615 Selected")
-            .Replace("SizeRef=360,615 Split=Y", $"SizeRef={right},615 Split=Y")
-            .Replace("SizeRef=360,420", $"SizeRef={right},420")
-            .Replace("SizeRef=360,195", $"SizeRef={right},195")
+            .Replace("SizeRef=360,615", $"SizeRef={right},615")
             .Replace("SizeRef=1440,225", $"SizeRef=1440,{bottom}");
     }
 
@@ -217,7 +215,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             var contents = File.ReadAllText(path);
             ValidateLayout(contents);
-            ImGui.LoadIniSettingsFromMemory(contents);
+            ImGui.LoadIniSettingsFromMemory(MigrateLayoutWindowNames(contents));
             _layoutPreset = LayoutPreset.Custom;
             _applyPreset = false;
             _resetDockLayoutRequested = false;
@@ -232,6 +230,9 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus($"布局读取失败：{exception.Message}");
         }
     }
+
+    private static string MigrateLayoutWindowNames(string contents) =>
+        contents.Replace("[Window][颜色与笔刷##建模工具窗口]", "[Window][调色板##建模工具窗口]", StringComparison.Ordinal);
 
     private string CaptureLayout()
     {

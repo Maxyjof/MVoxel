@@ -26,11 +26,11 @@ internal static class GuideQuickStart
             [
                 "左上“工具”放绘制、擦除、填充、选择、取色、直线、长方体、相机八个工具；左下“层级”是对象树。",
                 "中间的“场景”用来快速编辑，“渲染”用来看最终画面。",
-                "右上“颜色与笔刷”管颜色、笔刷和材质槽；右下“检查器”编辑当前对象，“渲染配置”调画面参数。",
+                "右侧“检查器”“调色板”和“渲染配置”是同一面板的标签，分别管理对象、笔刷和画面参数。",
                 "底部“项目资产”按分类浏览资产，双击体素数据可以切换当前编辑对象。",
             ],
             "面板被关掉或者挤乱了，用“布局 → 建模布局”恢复。",
-            [new GuideAction("应用建模布局", GuideActionId.ModelingLayout), new GuideAction("显示建模工具", GuideActionId.ShowModelingTools)]),
+            [new GuideAction("应用建模布局", GuideActionId.ModelingLayout), new GuideAction("显示调色板", GuideActionId.ShowModelingTools)]),
         new(
             "观察视角",
             "MVoxel 的左键留给绘制，观察模型靠另外三个动作。",
@@ -52,7 +52,7 @@ internal static class GuideQuickStart
                 "如果没有反应，先看对象或图层是不是被隐藏、模型组件是不是被禁用；鼠标悬停会直接给出不可编辑的原因。",
             ],
             null,
-            [new GuideAction("显示建模工具", GuideActionId.ShowModelingTools)]),
+            [new GuideAction("显示调色板", GuideActionId.ShowModelingTools)]),
         new(
             "搭出体积",
             "有了第一笔，接下来用直线、长方体和填充把形状搭出来。",
@@ -62,7 +62,7 @@ internal static class GuideQuickStart
                 "笔刷形状可以切立方或球，半径 1 到 8，半径 1 是单格。",
                 "模型行右侧的锁可以固定编辑目标，锁定后新方块只归这个模型，不会跑到相邻对象里。",
             ],
-            "笔刷颜色只影响新画的方块。想给已有方块整体换色，用颜色与笔刷面板里的“重绘当前模型”。",
+            "笔刷颜色只影响新画的方块。想给已有方块整体换色，选中模型后用检查器里的“重绘当前模型”。",
             [new GuideAction("项目设置", GuideActionId.ProjectSettings)]),
         new(
             "出图与保存",

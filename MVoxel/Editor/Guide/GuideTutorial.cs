@@ -43,7 +43,7 @@ internal static class GuideTutorial
                 "左上“工具”是绘制、擦除、填充、选择、取色、直线、长方体、相机八个按钮，面板宽度不够时自动换行。",
                 "左下“层级”是场景对象树，支持搜索、图层过滤、显隐、锁定、拖放父子关系和创建空对象。",
                 "中间是“场景”和“渲染”两个标签页，场景用于快速编辑，渲染用于观察最终画面。",
-                "右上“颜色与笔刷”管理色板、笔刷形状、半径、材质槽和目标锁定；右下“检查器”与“渲染配置”分别编辑对象和画面参数。",
+                "右侧“检查器”“调色板”和“渲染配置”通过标签切换，分别管理对象、笔刷与画面；编辑目标固定在模型检查器。",
                 "底部“项目资产”左侧是固定分类目录，右侧是当前目录的图标平铺内容，支持搜索和类型筛选。",
                 "右键拖动环绕，中键拖动平移，滚轮缩放；场景右上角相机按钮可调移动速度、近远裁剪和视场角。",
                 "开启大写锁定进入第一人称：WASD 移动、Q/E 升降、鼠标转向、Shift 加速，适合穿行大型场景。",
@@ -91,7 +91,7 @@ internal static class GuideTutorial
                 "颜色不对：可能取过样，笔刷正使用取样色；重新点色板即可回到调色板颜色。",
             ],
             [
-                new GuideAction("显示建模工具", GuideActionId.ShowModelingTools),
+                new GuideAction("显示调色板", GuideActionId.ShowModelingTools),
                 new GuideAction("项目设置", GuideActionId.ProjectSettings),
             ]),
         new(
@@ -117,7 +117,7 @@ internal static class GuideTutorial
                 "模型在场景里看不见：检查对象眼睛、图层遮罩、模型组件开关和切面查看。",
             ],
             [
-                new GuideAction("显示建模工具", GuideActionId.ShowModelingTools),
+                new GuideAction("显示调色板", GuideActionId.ShowModelingTools),
                 new GuideAction("项目设置", GuideActionId.ProjectSettings),
             ]),
         new(
@@ -143,13 +143,13 @@ internal static class GuideTutorial
             ],
             [
                 new GuideAction("项目设置", GuideActionId.ProjectSettings),
-                new GuideAction("显示建模工具", GuideActionId.ShowModelingTools),
+                new GuideAction("显示调色板", GuideActionId.ShowModelingTools),
             ]),
         new(
             "材质与调色板",
             "颜色决定外观，材质槽决定表面反应，调色板决定可用颜色集合",
             [
-                "颜色与笔刷面板里选颜色和材质槽，默认材质是槽 0；点“编辑共享材质”进入当前材质的资产。",
+                "调色板面板里选颜色和材质槽，默认材质是槽 0；点“编辑共享材质”进入当前材质的资产。",
                 "材质槽可以被多个模型共享，改动材质会影响所有引用它的方块；只改笔刷颜色不会动已有方块。",
                 "自发光笔刷给新方块打标记；粗糙度、透明和金属感等参数在材质资产里调。",
                 "“设置 → 项目设置 → 调色板”可以切换当前调色板、创建副本、编辑 256 个 RGBA 色块并保存。",

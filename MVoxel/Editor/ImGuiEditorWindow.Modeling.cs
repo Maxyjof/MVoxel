@@ -106,17 +106,17 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawModelingTools()
     {
-        if (!_showModelingTools) return;
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(0F, WorkspaceTop + 1F), new Vector2(layout.LeftWidth, 210F));
         if (ImGui.Begin("工具##建模工具箱", PanelWindowFlags)) DrawBrushToolbarRow();
         ImGui.End();
+        if (!_showModelingTools) return;
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F),
             new Vector2(layout.RightWidth, layout.MainHeight));
         if (_focusModelingTools) ImGui.SetNextWindowFocus();
         _focusModelingTools = false;
-        if (ImGui.Begin("颜色与笔刷##建模工具窗口", ref _showModelingTools, PanelWindowFlags))
+        if (ImGui.Begin("调色板##建模工具窗口", ref _showModelingTools, PanelWindowFlags))
         {
             var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
             ImGui.ColorButton("当前笔刷色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F), ImGuiColorEditFlags.NoTooltip,
