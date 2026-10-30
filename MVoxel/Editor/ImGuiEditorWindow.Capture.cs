@@ -14,6 +14,19 @@ internal sealed partial class ImGuiEditorWindow
         var arguments = request.GetProperty("arguments");
         var path = Path.GetFullPath(arguments.GetProperty("path").GetString() ?? throw new ArgumentException("截图路径不能为空"));
         var cameraName = arguments.TryGetProperty("cameraName", out var cameraValue) ? cameraValue.GetString() : null;
+        OpenTK.Mathematics.Vector3? position = null, target = null;
+        if (arguments.TryGetProperty("position", out var positionValue) && arguments.TryGetProperty("target", out var targetValue))
+        {
+            static OpenTK.Mathematics.Vector3 ReadVector(JsonElement value) => new(value[0].GetSingle(), value[1].GetSingle(), value[2].GetSingle());
+            position = ReadVector(positionValue);
+            target = ReadVector(targetValue);
+            if (!float.IsFinite(position.Value.X) || !float.IsFinite(position.Value.Y) || !float.IsFinite(position.Value.Z) ||
+                !float.IsFinite(target.Value.X) || !float.IsFinite(target.Value.Y) || !float.IsFinite(target.Value.Z) ||
+                (target.Value - position.Value).LengthSquared < .0001F) throw new ArgumentException("相机位置或目标无效");
+            if (string.IsNullOrWhiteSpace(cameraName)) throw new ArgumentException("调整相机需要指定名称");
+        }
+        else if (arguments.TryGetProperty("position", out _) || arguments.TryGetProperty("target", out _))
+            throw new ArgumentException("相机位置和目标必须同时提供");
         if (!string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("截图路径必须以.png结尾");
         if (File.Exists(path)) throw new IOException("截图文件已存在");
@@ -34,6 +47,8 @@ internal sealed partial class ImGuiEditorWindow
                     return;
                 }
                 _renderCameraId = cameras[0].Id;
+                if (position.HasValue && target.HasValue)
+                    WriteCameraTransform(cameras[0], position.Value, target.Value - position.Value, OpenTK.Mathematics.Vector3.UnitY);
                 _renderOrbitAnchor = null;
                 _renderCameraInitialFramePending = true;
                 _pipeline?.ResetAccumulation();
