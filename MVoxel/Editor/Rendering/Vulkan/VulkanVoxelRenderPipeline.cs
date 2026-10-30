@@ -1745,9 +1745,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
             out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit)
         {
-            int stack[64];
+            ivec2 stack[64];
             int stackSize = 1;
-            stack[0] = 0;
+            stack[0] = ivec2(0, floatBitsToInt(0.0));
             closestDistance = maxDistance;
             hitNormal = vec3(0.0, 1.0, 0.0);
             hitColor = vec4(0.0);
@@ -1760,12 +1760,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             vec3 regionOrigin = vec3(values[16], values[17], values[18]);
             while (stackSize > 0)
             {
-                int nodeIndex = stack[--stackSize];
+                ivec2 pendingNode = stack[--stackSize];
+                int nodeIndex = pendingNode.x;
                 if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+                if (intBitsToFloat(pendingNode.y) > closestDistance) continue;
                 BvhNode node = nodes[nodeIndex];
-                float boundsDistance;
-                if (!IntersectBounds(rayOrigin, rayDirection, node, boundsDistance) || boundsDistance > closestDistance)
-                    continue;
                 if (node.links.x < 0)
                 {
                     int endIndex = min(node.links.z + node.links.w, voxelCount);
@@ -1808,11 +1807,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                         //先访问近节点，让最近命中尽早排除远节点
                         if (leftHit && rightHit)
                         {
-                            stack[stackSize++] = leftDistance < rightDistance ? node.links.y : node.links.x;
-                            stack[stackSize++] = leftDistance < rightDistance ? node.links.x : node.links.y;
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.y, floatBitsToInt(rightDistance))
+                                : ivec2(node.links.x, floatBitsToInt(leftDistance));
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.x, floatBitsToInt(leftDistance))
+                                : ivec2(node.links.y, floatBitsToInt(rightDistance));
                         }
-                        else if (leftHit) stack[stackSize++] = node.links.x;
-                        else if (rightHit) stack[stackSize++] = node.links.y;
+                        else if (leftHit) stack[stackSize++] = ivec2(node.links.x, floatBitsToInt(leftDistance));
+                        else if (rightHit) stack[stackSize++] = ivec2(node.links.y, floatBitsToInt(rightDistance));
                     }
                 }
             }

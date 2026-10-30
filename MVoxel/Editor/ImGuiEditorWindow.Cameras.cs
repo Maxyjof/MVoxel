@@ -279,7 +279,7 @@ internal sealed partial class ImGuiEditorWindow
             return rememberedPivot;
         }
 
-        if (_world.TryGetBounds(out var min, out var max))
+        if (TryGetCachedWorldBounds(out var min, out var max))
         {
             return new Vector3(
                 (float)((min.X + max.X + 1) * 0.5),
@@ -292,7 +292,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private SceneZoomLimits GetRenderOrbitLimits()
     {
-        if (!_world.TryGetBounds(out var min, out var max))
+        if (!TryGetCachedWorldBounds(out var min, out var max))
             return SceneZoomPolicy.Default();
 
         return SceneZoomPolicy.FromBounds(

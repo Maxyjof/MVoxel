@@ -424,7 +424,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void FrameCameraOnWorld()
     {
-        if (_world.TryGetBounds(out var min, out var max))
+        if (TryGetCachedWorldBounds(out var min, out var max))
         {
             var limits = SceneZoomPolicy.FromBounds(
                 max.X - min.X + 1D, max.Y - min.Y + 1D, max.Z - min.Z + 1D);
@@ -450,7 +450,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private SceneZoomLimits GetSceneZoomLimits()
     {
-        if (!_world.TryGetBounds(out var min, out var max))
+        if (!TryGetCachedWorldBounds(out var min, out var max))
         {
             return SceneZoomPolicy.Default();
         }
@@ -586,14 +586,23 @@ internal sealed partial class ImGuiEditorWindow
     private int _axisOcclusionBoundsVersion = -1;
     private VoxelCoord64 _axisOcclusionMinimum;
     private VoxelCoord64 _axisOcclusionMaximum;
+    private bool _axisOcclusionHasBounds;
 
     private void UpdateAxisOcclusionBounds()
     {
         if (ReferenceEquals(_axisOcclusionBoundsWorld, _world) &&
             _axisOcclusionBoundsVersion == _world.ContentVersion) return;
-        if (!_world.TryGetBounds(out _axisOcclusionMinimum, out _axisOcclusionMaximum)) return;
+        _axisOcclusionHasBounds = _world.TryGetBounds(out _axisOcclusionMinimum, out _axisOcclusionMaximum);
         _axisOcclusionBoundsWorld = _world;
         _axisOcclusionBoundsVersion = _world.ContentVersion;
+    }
+
+    private bool TryGetCachedWorldBounds(out VoxelCoord64 minimum, out VoxelCoord64 maximum)
+    {
+        UpdateAxisOcclusionBounds();
+        minimum = _axisOcclusionMinimum;
+        maximum = _axisOcclusionMaximum;
+        return _axisOcclusionHasBounds;
     }
 
     private bool _sceneSliceEnabled;
