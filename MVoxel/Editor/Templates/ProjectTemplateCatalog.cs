@@ -14,7 +14,7 @@ namespace MVoxel.Editor.Templates;
 public enum ProjectTemplateId
 {
     /// <summary>
-    /// 不写入示例资源的空项目
+    /// 包含示例场景的新项目
     /// </summary>
     Empty,
 
@@ -114,7 +114,7 @@ public static class ProjectTemplateCatalog
     /// </summary>
     public static IReadOnlyList<ProjectTemplateDefinition> All { get; } =
     [
-        new(ProjectTemplateId.Empty, "无 · 空项目", "只创建标准目录和配置，不创建任何体素数据", "适合从零开始", "起步", "建立自己的项目结构"),
+        new(ProjectTemplateId.Empty, "无 · 空项目", "创建标准目录与可编辑的光照示例场景", "适合从零开始", "起步", "观察蓝色点光、墙体和地板"),
         new(ProjectTemplateId.XianxiaContinent, "仙域九霄 · 修仙大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -153,7 +153,8 @@ public static class ProjectTemplateCatalog
         report?.Invoke("正在生成示例体素模型…", .74F, true);
         var settings = CreateSettings(id);
         settings.TemplateId = id.ToString();
-        if (id != ProjectTemplateId.Empty)
+        if (id == ProjectTemplateId.Empty) ExampleSceneTemplate.Populate(project);
+        else
         {
             WriteMaterials(project, id);
             WriteProjectPalette(project);
@@ -775,7 +776,7 @@ public static class ProjectTemplateCatalog
     /// <param name="forward">相机视线方向</param>
     /// <param name="up">相机上方向</param>
     /// <returns>相机自由旋转</returns>
-    private static Quaternion CreateCameraRotation(Vector3 forward, Vector3 up)
+    internal static Quaternion CreateCameraRotation(Vector3 forward, Vector3 up)
     {
         forward = Vector3.Normalize(forward);
         up = Vector3.Normalize(up);

@@ -288,6 +288,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnUpdateFrame(FrameEventArgs args)
     {
         base.OnUpdateFrame(args);
+        var desiredTitle = _project is null ? "MVoxel 体素建模" :
+            $"MVoxel 体素建模 - {_project.Manifest.Name} - {Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}";
+        if (!string.Equals(Title, desiredTitle, StringComparison.Ordinal)) Title = desiredTitle;
         if (!IsFocused || !IsCapsLockEnabled())
         {
             EndSceneMouseCapture();
@@ -978,7 +981,7 @@ DockId=0x6A3C3007,0
 
         ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
         ImGui.SameLine();
-        ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
+        ImGui.TextDisabled(_project is null ? "未打开项目" : Path.GetFileNameWithoutExtension(_activeSceneRelativePath));
         ImGui.SetNextItemWidth(-1F);
         ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
         ImGui.TextDisabled("图层筛选");
@@ -1016,7 +1019,7 @@ DockId=0x6A3C3007,0
         else
         {
             var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
-            if (ImGui.TreeNodeEx(_project.Manifest.Name, ImGuiTreeNodeFlags.DefaultOpen))
+            if (ImGui.TreeNodeEx($"{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}##ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 if (objects.Count == 0)
                 {
@@ -4079,6 +4082,10 @@ DockId=0x6A3C3007,0
                         {
                             projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings.CloneForExport();
                             projectSettings.RenderSettings = _editorSettings.RenderViewSettings.CloneForExport();
+                            projectSettings.RenderSettings.ShowGround = false;
+                            projectSettings.RenderSettings.SunEnabled = false;
+                            projectSettings.RenderSettings.SkyAmbient = .16F;
+                            projectSettings.RenderSettings.PathTracingEnabled = false;
                         }
                         projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
                         projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
@@ -4164,13 +4171,21 @@ DockId=0x6A3C3007,0
             () => SetStatus("加载诊断已取消"));
     }
 
+    private static string FindStartupSceneRelativePath(ProjectHandle project)
+    {
+        const string main = "Scenes/主场景.mvox";
+        var example = "Scenes/" + ExampleSceneTemplate.FileName;
+        if (File.Exists(Path.Combine(project.AssetsPath, main.Replace('/', Path.DirectorySeparatorChar)))) return main;
+        return File.Exists(Path.Combine(project.AssetsPath, example.Replace('/', Path.DirectorySeparatorChar))) ? example : main;
+    }
+
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null)
     {
         _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
         _project = project;
-        _activeSceneRelativePath = "Scenes/主场景.mvox";
+        _activeSceneRelativePath = FindStartupSceneRelativePath(project);
         _assetBrowser.Reset();
         _voxelModelReferenceCacheRoot = null;
         _voxelModelReferenceCache = Array.Empty<string>();

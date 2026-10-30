@@ -132,7 +132,7 @@ internal sealed partial class ImGuiEditorWindow
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
         CancellationToken cancellation, Action<BlockingOperationProgress> report)
     {
-        var scenePath = Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
+        var scenePath = Path.Combine(project.AssetsPath, FindStartupSceneRelativePath(project).Replace('/', Path.DirectorySeparatorChar));
         Scene.SceneDocument? scene = null;
         if (File.Exists(scenePath))
         {
