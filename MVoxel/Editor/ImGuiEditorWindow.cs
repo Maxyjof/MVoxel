@@ -120,6 +120,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private readonly CommandHistory _voxelHistory = new();
     private VulkanVoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
+    private long _renderSettingsInteractionAt;
     private EditorTool _activeTool = EditorTool.Camera;
     private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
     private int _brushRadius = 1;
@@ -984,10 +985,11 @@ DockId=0x6A3C3007,0
         ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
         ImGui.SameLine();
         ImGui.TextDisabled(_project?.Manifest.Name ?? "未打开项目");
-        ImGui.SetNextItemWidth(Math.Max(100F, ImGui.GetContentRegionAvail().X - 4F));
+        ImGui.SetNextItemWidth(-1F);
         ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
+        ImGui.TextDisabled("图层筛选");
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(96F);
+        ImGui.SetNextItemWidth(-1F);
         var filterLayers = _sceneDocument?.LayerNames ?? ["默认"];
         if (_hierarchyLayerFilter >= filterLayers.Count)
         {
@@ -1009,11 +1011,43 @@ DockId=0x6A3C3007,0
                 }
             }
 
-        ImGui.EndCombo();
+            ImGui.EndCombo();
         }
 
-        if (ImGui.CollapsingHeader("图层管理", ImGuiTreeNodeFlags.None) && _sceneDocument is { } layerDocument)
+        ImGui.Separator();
+        if (_project is null)
         {
+            ImGui.TextWrapped("打开或创建项目后，场景层级会显示在这里。");
+        }
+        else
+        {
+            var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
+            if (ImGui.TreeNodeEx(_project.Manifest.Name, ImGuiTreeNodeFlags.DefaultOpen))
+            {
+                if (objects.Count == 0)
+                {
+                    if (ImGui.Button("创建第一个体素模型", new Vector2(-1F, ImGui.GetFrameHeight()))) CreateVoxelModel();
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("也可以选择绘制工具，直接在网格上落笔，自动创建模型。");
+                }
+                else
+                {
+                    var roots = objects.Where(item => item.ParentId is null && MatchesHierarchySearch(item, objects)).ToArray();
+                    foreach (var sceneObject in roots)
+                    {
+                        DrawSceneObjectNode(sceneObject, objects);
+                    }
+                }
+
+                ImGui.TreePop();
+            }
+        }
+
+        ImGui.Separator();
+        var layerCount = _sceneDocument?.LayerNames.Count ?? 0;
+        if (ImGui.CollapsingHeader($"图层（{layerCount}）", ImGuiTreeNodeFlags.None) &&
+            _sceneDocument is { } layerDocument)
+        {
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景图层控制对象可见性与过滤，最多 32 层");
             ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 66F));
             ImGui.InputTextWithHint("##新建场景图层", "新图层名称", ref _newSceneLayerName, 64);
             ImGui.SameLine();
@@ -1085,34 +1119,6 @@ DockId=0x6A3C3007,0
                     MarkSceneDocumentDirty();
                 }
                 ImGui.PopID();
-            }
-        }
-
-        ImGui.Separator();
-        if (_project is null)
-        {
-            ImGui.TextWrapped("打开或创建项目后，场景层级会显示在这里。");
-        }
-        else
-        {
-            var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
-            if (ImGui.TreeNodeEx(_project.Manifest.Name, ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                if (objects.Count == 0)
-                {
-                    if (ImGui.Button("创建第一个体素模型", new Vector2(-1F, ImGui.GetFrameHeight()))) CreateVoxelModel();
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("也可以选择绘制工具，直接在网格上落笔，自动创建模型。");
-                }
-                else
-                {
-                    var roots = objects.Where(item => item.ParentId is null && MatchesHierarchySearch(item, objects)).ToArray();
-                    foreach (var sceneObject in roots)
-                    {
-                        DrawSceneObjectNode(sceneObject, objects);
-                    }
-                }
-
-                ImGui.TreePop();
             }
         }
 
@@ -2568,10 +2574,12 @@ DockId=0x6A3C3007,0
         var buttonWidth = Math.Max(80F, ImGui.CalcTextSize("重新计算").X + 20F);
         var buttonHeight = ImGui.GetFrameHeight();
         ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
-        if (SceneToolbarButton("重新计算", false, buttonWidth, buttonHeight, "重置当前渲染视图的采样累积"))
+        ImGui.BeginDisabled(!activeRenderSettings.PathTracingEnabled);
+        if (SceneToolbarButton("重新计算", false, buttonWidth, buttonHeight, "重置当前渲染视图的采样累积；实时渲染不需要重新计算"))
         {
             _pipeline?.ResetAccumulation();
         }
+        ImGui.EndDisabled();
         ImGui.SameLine();
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
@@ -3555,6 +3563,8 @@ DockId=0x6A3C3007,0
         {
             ImGui.TextColored(ToColor(EditorPalette.Text), "渲染配置");
             DrawConfigurationPanel();
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && ImGui.IsAnyItemActive())
+                _renderSettingsInteractionAt = Environment.TickCount64;
         }
         ImGui.End();
         _requestedInspectorTab = null;

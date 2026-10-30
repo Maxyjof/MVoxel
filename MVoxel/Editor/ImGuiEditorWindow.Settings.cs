@@ -404,6 +404,10 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PopStyleVar();
         }
 
+        if (_settingsScope == 1 && _projectSettingsCategory == 1 && ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) &&
+            ImGui.IsAnyItemActive())
+            _renderSettingsInteractionAt = Environment.TickCount64;
+
         ImGui.End();
         if (!open)
         {

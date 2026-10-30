@@ -1245,7 +1245,7 @@ internal sealed partial class ImGuiEditorWindow
             var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
-            var settingsInteracting = ImGui.IsAnyItemActive() && !cameraNavigating;
+            var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);

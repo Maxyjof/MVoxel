@@ -2719,7 +2719,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     return;
                 }
             }
-            float outputAlpha = pathMode || primarySurfaceHit ? 1.0 : 0.0;
+            // 场景预览允许背景透明，让场景视图绘制自己的底色；渲染视图
+            // 必须始终不透明，否则关闭 Bloom 后天空像素 alpha 为 0，会透出视口底色发黑
+            float outputAlpha = pathMode || values[115] < 0.5 || primarySurfaceHit ? 1.0 : 0.0;
             imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
         }
 
