@@ -115,6 +115,14 @@ internal sealed partial class ImGuiEditorWindow
         _focusModelingTools = false;
         if (ImGui.Begin("调色板##建模工具窗口", PanelWindowFlags))
         {
+            DrawPanelWindowMenu();
+            DrawPaletteContents();
+        }
+        ImGui.End();
+    }
+
+    private void DrawPaletteContents()
+    {
             var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
             ImGui.ColorButton("当前笔刷色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F), ImGuiColorEditFlags.NoTooltip,
                 new Vector2(ImGui.GetFrameHeight() * 2F, ImGui.GetFrameHeight()));
@@ -139,8 +147,6 @@ internal sealed partial class ImGuiEditorWindow
                 _requestedInspectorTab = 0;
             }
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("修改此材质槽会影响所有引用它的体素；选择笔刷颜色不会重绘已有方块。");
-        }
-        ImGui.End();
     }
 
     private void DrawRepaintModelAction(SceneObject target)

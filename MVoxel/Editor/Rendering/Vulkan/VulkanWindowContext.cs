@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Numerics;
 using MVoxel.Core;
 using OpenTK.Windowing.Desktop;
@@ -41,6 +41,10 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private RenderPass _renderPass;
     private readonly List<Framebuffer> _framebuffers = [];
     private readonly List<ImageView> _imageViews = [];
+    private VkImage[] _swapchainImages = [];
+    private bool _supportsWindowCapture;
+    private string? _windowCapturePath;
+    private Action<string>? _windowCaptureComplete;
     private SwapchainKHR _swapchain;
     private Extent2D _extent;
     private Format _format;
@@ -315,6 +319,16 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         _api.CmdBeginRenderPass(_commandBuffer, in passInfo, SubpassContents.Inline);
         recordCommands(_commandBuffer);
         _api.CmdEndRenderPass(_commandBuffer);
+        Silk.NET.Vulkan.Buffer captureBuffer = default;
+        DeviceMemory captureMemory = default;
+        string? capturePath = _windowCapturePath;
+        Action<string>? captureComplete = _windowCaptureComplete;
+        _windowCapturePath = null; _windowCaptureComplete = null;
+        if (capturePath is not null)
+        {
+            try { RecordWindowCapture(imageIndex, out captureBuffer, out captureMemory); }
+            catch (Exception exception) { captureComplete?.Invoke(exception.Message); capturePath = null; }
+        }
         _api.EndCommandBuffer(_commandBuffer);
 
         PipelineStageFlags waitStage = PipelineStageFlags.ColorAttachmentOutputBit;
@@ -335,6 +349,18 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         };
         Check(_api.QueueSubmit(_queue, 1, in submitInfo, _inFlight), "提交 Vulkan 帧命令");
 
+        if (capturePath is not null)
+        {
+            try
+            {
+                Check(_api.WaitForFences(_device, 1, in _inFlight, true, ulong.MaxValue), "等待窗口截图");
+                WriteWindowCapture(capturePath, captureMemory);
+                captureComplete?.Invoke("completed");
+            }
+            catch (Exception exception) { captureComplete?.Invoke(exception.Message); }
+            finally { _api.DestroyBuffer(_device, captureBuffer, null); _api.FreeMemory(_device, captureMemory, null); }
+        }
+
         PresentInfoKHR presentInfo = new()
         {
             SType = StructureType.PresentInfoKhr,
@@ -354,6 +380,65 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         {
             throw new InvalidOperationException($"Vulkan 呈现交换链图像失败：{result}");
         }
+    }
+
+    internal void QueueWindowCapture(string path, Action<string> complete)
+    {
+        if (_windowCapturePath is not null) { complete("已有窗口截图任务"); return; }
+        _windowCapturePath = path; _windowCaptureComplete = complete;
+    }
+
+    private void RecordWindowCapture(uint imageIndex, out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
+    {
+        buffer = default; memory = default;
+        if (!_supportsWindowCapture) throw new InvalidOperationException("显卡交换链不支持窗口截图");
+        if (_format is not (Format.B8G8R8A8Unorm or Format.B8G8R8A8Srgb or Format.R8G8B8A8Unorm or Format.R8G8B8A8Srgb))
+            throw new InvalidOperationException($"窗口截图不支持交换链格式 {_format}");
+        var bytes = checked((ulong)_extent.Width * _extent.Height * 4);
+        BufferCreateInfo info = new() { SType = StructureType.BufferCreateInfo, Size = bytes, Usage = BufferUsageFlags.TransferDstBit, SharingMode = SharingMode.Exclusive };
+        Silk.NET.Vulkan.Buffer local = default;
+        Check(_api.CreateBuffer(_device, &info, null, &local), "创建窗口截图缓冲");
+        DeviceMemory localMemory = default;
+        try
+        {
+            MemoryRequirements requirements = default; _api.GetBufferMemoryRequirements(_device, local, &requirements);
+            PhysicalDeviceMemoryProperties properties = default; _api.GetPhysicalDeviceMemoryProperties(_physicalDevice, &properties);
+            var wanted = MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit;
+            uint index = 0;
+            for (; index < properties.MemoryTypeCount; index++)
+                if ((requirements.MemoryTypeBits & (1u << (int)index)) != 0 && (properties.MemoryTypes[(int)index].PropertyFlags & wanted) == wanted) break;
+            if (index == properties.MemoryTypeCount) throw new InvalidOperationException("无法分配窗口截图内存");
+            MemoryAllocateInfo allocation = new() { SType = StructureType.MemoryAllocateInfo, AllocationSize = requirements.Size, MemoryTypeIndex = index };
+            Check(_api.AllocateMemory(_device, &allocation, null, &localMemory), "分配窗口截图内存");
+            Check(_api.BindBufferMemory(_device, local, localMemory, 0), "绑定窗口截图内存");
+            var image = _swapchainImages[(int)imageIndex];
+            ImageMemoryBarrier before = new() { SType = StructureType.ImageMemoryBarrier, OldLayout = ImageLayout.PresentSrcKhr,
+                NewLayout = ImageLayout.TransferSrcOptimal, SrcQueueFamilyIndex = Vk.QueueFamilyIgnored, DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = image, SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                SrcAccessMask = AccessFlags.ColorAttachmentWriteBit, DstAccessMask = AccessFlags.TransferReadBit };
+            _api.CmdPipelineBarrier(_commandBuffer, PipelineStageFlags.ColorAttachmentOutputBit, PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in before);
+            BufferImageCopy copy = new() { ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1), ImageExtent = new Extent3D(_extent.Width, _extent.Height, 1) };
+            _api.CmdCopyImageToBuffer(_commandBuffer, image, ImageLayout.TransferSrcOptimal, local, 1, in copy);
+            ImageMemoryBarrier after = before; after.OldLayout = ImageLayout.TransferSrcOptimal; after.NewLayout = ImageLayout.PresentSrcKhr;
+            after.SrcAccessMask = AccessFlags.TransferReadBit; after.DstAccessMask = 0;
+            _api.CmdPipelineBarrier(_commandBuffer, PipelineStageFlags.TransferBit, PipelineStageFlags.BottomOfPipeBit, 0, 0, null, 0, null, 1, in after);
+            buffer = local; memory = localMemory;
+        }
+        catch { _api.DestroyBuffer(_device, local, null); if (localMemory.Handle != 0) _api.FreeMemory(_device, localMemory, null); throw; }
+    }
+
+    private void WriteWindowCapture(string path, DeviceMemory memory)
+    {
+        var bytes = checked((int)((ulong)_extent.Width * _extent.Height * 4));
+        var pixels = new byte[bytes]; void* mapped = null;
+        Check(_api.MapMemory(_device, memory, 0, (ulong)bytes, 0, &mapped), "映射窗口截图内存");
+        try { Marshal.Copy((IntPtr)mapped, pixels, 0, bytes); } finally { _api.UnmapMemory(_device, memory); }
+        if (_format is Format.B8G8R8A8Unorm or Format.B8G8R8A8Srgb)
+            for (var i = 0; i < pixels.Length; i += 4) (pixels[i], pixels[i + 2]) = (pixels[i + 2], pixels[i]);
+        for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        file.Write(PngEncoder.EncodeRgba8(pixels, (int)_extent.Width, (int)_extent.Height));
     }
 
     /// <summary>
@@ -667,6 +752,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
                 Math.Clamp((uint)Math.Max(width, 1), capabilities.MinImageExtent.Width, capabilities.MaxImageExtent.Width),
                 Math.Clamp((uint)Math.Max(height, 1), capabilities.MinImageExtent.Height, capabilities.MaxImageExtent.Height));
         _format = selectedFormat.Format;
+        _supportsWindowCapture = (capabilities.SupportedUsageFlags & ImageUsageFlags.TransferSrcBit) != 0;
         SwapchainCreateInfoKHR createInfo = new()
         {
             SType = StructureType.SwapchainCreateInfoKhr,
@@ -676,12 +762,13 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             ImageColorSpace = selectedFormat.ColorSpace,
             ImageExtent = _extent,
             ImageArrayLayers = 1,
-            ImageUsage = ImageUsageFlags.ColorAttachmentBit,
+            ImageUsage = ImageUsageFlags.ColorAttachmentBit | (_supportsWindowCapture ? ImageUsageFlags.TransferSrcBit : 0),
             ImageSharingMode = SharingMode.Exclusive,
             PreTransform = capabilities.CurrentTransform,
             CompositeAlpha = CompositeAlphaFlagsKHR.OpaqueBitKhr,
             PresentMode = PresentModeKHR.FifoKhr,
-            Clipped = true
+            // 后台窗口也要完整绘制，供 MCP 从交换链读取未被遮挡的编辑器画面。
+            Clipped = false
         };
         SwapchainKHR swapchain = default;
         Check(_swapchainApi.CreateSwapchain(_device, &createInfo, null, &swapchain), "创建 Vulkan Swapchain");
@@ -748,6 +835,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             Check(_swapchainApi.GetSwapchainImages(_device, _swapchain, &imageCount, imagesPointer), "读取交换链图像");
         }
 
+        _swapchainImages = images;
         foreach (VkImage image in images)
         {
             ImageViewCreateInfo viewInfo = new()

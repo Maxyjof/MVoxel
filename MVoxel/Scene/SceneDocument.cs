@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Numerics;
 using MVoxel.Core;
@@ -501,7 +501,11 @@ public static class SceneValidation
 
             if (sceneObject.Components.Count(SceneComponentTypes.IsTransform) != 1 ||
                 !SceneComponentTypes.IsTransform(sceneObject.Components[0]))
-                errors.Add($"对象“{sceneObject.Name}”的坐标组件不在首位或数量不正确");
+                errors.Add($"对象“{sceneObject.Name}”的变换组件不在首位或数量不正确");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsCamera) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的相机组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsLight) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的光照组件");
         }
 
         return errors;

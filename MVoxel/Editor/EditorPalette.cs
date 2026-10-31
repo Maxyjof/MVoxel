@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 
 namespace MVoxel.Editor;
 
@@ -16,7 +16,7 @@ internal static class EditorPalette
     /// <summary>
     /// 可用主题名称
     /// </summary>
-    internal static readonly string[] ThemeNames =
+    internal static readonly string[] BuiltInThemeNames =
     {
         DefaultThemeName,
         "柔和浅色",
@@ -24,6 +24,44 @@ internal static class EditorPalette
         "高对比度",
         "海蓝清新",
     };
+
+    private static Dictionary<string, int[]>? _customThemes;
+    private static string ThemeFile => MVoxel.Core.AppPaths.ConfigPath("themes.json");
+    internal static string[] ThemeNames => BuiltInThemeNames.Concat(LoadThemes().Keys
+        .Where(name => !BuiltInThemeNames.Contains(name, StringComparer.OrdinalIgnoreCase))) .ToArray();
+    internal static bool IsBuiltIn(string name) => BuiltInThemeNames.Contains(name, StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, int[]> LoadThemes()
+    {
+        if (_customThemes is not null) return _customThemes;
+        try
+        {
+            _customThemes = File.Exists(ThemeFile)
+                ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int[]>>(File.ReadAllText(ThemeFile)) ?? new()
+                : new();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        { _customThemes = new(); }
+        return _customThemes;
+    }
+    internal static int[] CurrentColors() => [Window.ToArgb(), Panel.ToArgb(), PanelHeader.ToArgb(), Input.ToArgb(),
+        Border.ToArgb(), Accent.ToArgb(), AccentSoft.ToArgb(), Text.ToArgb(), MutedText.ToArgb(), Icon.ToArgb(), Success.ToArgb(), Error.ToArgb()];
+    internal static void SaveTheme(string name, int[] colors)
+    {
+        if (string.IsNullOrWhiteSpace(name) || colors.Length != 12) throw new ArgumentException("主题名称或颜色无效");
+        LoadThemes()[name.Trim()] = (int[])colors.Clone();
+        SaveThemeFile();
+    }
+    internal static void RemoveTheme(string name)
+    {
+        LoadThemes().Remove(name);
+        SaveThemeFile();
+    }
+    private static void SaveThemeFile()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(ThemeFile)!);
+        MVoxel.Core.AtomicFile.WriteText(ThemeFile, System.Text.Json.JsonSerializer.Serialize(LoadThemes(),
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
 
     /// <summary>
     /// 窗口底色
@@ -110,9 +148,9 @@ internal static class EditorPalette
                 "石墨灰" => (
                     Color.FromArgb(255, 39, 42, 47), Color.FromArgb(255, 52, 56, 62),
                     Color.FromArgb(255, 66, 71, 78), Color.FromArgb(255, 31, 34, 39),
-                    Color.FromArgb(255, 128, 137, 149), Color.FromArgb(255, 233, 174, 80),
-                    Color.FromArgb(255, 112, 76, 36), Color.FromArgb(255, 246, 246, 244),
-                    Color.FromArgb(255, 196, 198, 201), Color.FromArgb(255, 240, 198, 114),
+                    Color.FromArgb(255, 128, 137, 149), Color.FromArgb(255, 103, 175, 226),
+                    Color.FromArgb(255, 48, 82, 110), Color.FromArgb(255, 246, 246, 244),
+                    Color.FromArgb(255, 196, 198, 201), Color.FromArgb(255, 157, 200, 232),
                     Color.FromArgb(255, 112, 214, 157), Color.FromArgb(255, 255, 122, 122)),
                 "高对比度" => (
                     Color.Black, Color.FromArgb(255, 18, 18, 18), Color.FromArgb(255, 40, 40, 40),
@@ -135,5 +173,10 @@ internal static class EditorPalette
                     Color.FromArgb(255, 155, 170, 188), Color.FromArgb(255, 184, 202, 220),
                     Color.FromArgb(255, 104, 214, 147), Color.FromArgb(255, 255, 102, 112)),
             };
+        if (theme is not null && LoadThemes().TryGetValue(theme, out var colors) && colors is { Length: 12 })
+            (Window, Panel, PanelHeader, Input, Border, Accent, AccentSoft, Text, MutedText, Icon, Success, Error) =
+                (Color.FromArgb(colors[0]), Color.FromArgb(colors[1]), Color.FromArgb(colors[2]), Color.FromArgb(colors[3]),
+                 Color.FromArgb(colors[4]), Color.FromArgb(colors[5]), Color.FromArgb(colors[6]), Color.FromArgb(colors[7]),
+                 Color.FromArgb(colors[8]), Color.FromArgb(colors[9]), Color.FromArgb(colors[10]), Color.FromArgb(colors[11]));
     }
 }

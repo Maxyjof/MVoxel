@@ -67,6 +67,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string? _voxelModelReferenceCacheRoot;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
+    private volatile bool _openWindowMenuRequested;
+    private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
     private int _centerTab;
     private int? _requestedCenterTab;
@@ -121,7 +123,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VulkanVoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
     private long _renderSettingsInteractionAt;
-    private EditorTool _activeTool = EditorTool.Draw;
+    private EditorTool _activeTool = EditorTool.Pick;
+    private StableId? _voxelEditTargetId;
+    private StableId? _inspectorLockedObjectId;
+    private sealed class ExtraInspector { internal int Id; internal string Kind = "检查器"; internal StableId? Locked; internal bool Open = true; internal uint DockId; }
+    private readonly List<ExtraInspector> _extraInspectors = new();
+    private int _nextInspectorId;
     private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
     private int _brushRadius = 1;
     private int _paletteIndex = 40;
@@ -321,7 +328,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnRenderFrame(FrameEventArgs args)
     {
-        var analysisStart = _showPerformanceAnalyzer ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+        var analysisStart = (_showPerformanceAnalyzer || _extraInspectors.Any(item => item.Open && item.Kind == "性能分析器")) ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
         try
         {
             base.OnRenderFrame(args);
@@ -440,6 +447,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.closeProject" => QueueCloseProject(request),
             "editor.openProject" => QueueOpenProject(request),
             "editor.captureView" => QueueCaptureView(request),
+            "editor.captureWindow" => CaptureEditorWindow(request),
+            "editor.showWindowMenu" => RequestWindowMenu(),
+            "editor.showPanelMenu" => RequestInspectorPanelMenu(),
             "editor.captureStatus" => CaptureStatus(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
@@ -455,6 +465,19 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     /// </summary>
     /// <param name="request">命令 JSON</param>
     /// <returns>投递结果</returns>
+    private object RequestInspectorPanelMenu()
+    {
+        _openInspectorPanelMenuRequested = true;
+        _pendingActions.Enqueue(() => { _showInspector = true; _requestedInspectorTab = 0; });
+        return new { queued = true };
+    }
+
+    private object RequestWindowMenu()
+    {
+        _openWindowMenuRequested = true;
+        return new { queued = true };
+    }
+
     private object QueueOpenProject(JsonElement request)
     {
         var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
@@ -701,6 +724,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         style.Colors[(int)ImGuiCol.Tab] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TabHovered] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.TabSelected] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.TabDimmed] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.TabDimmedSelected] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.TabDimmedSelectedOverline] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.TabSelectedOverline] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.SliderGrab] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.SliderGrabActive] = ToColor(EditorPalette.Accent);
@@ -733,6 +760,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawModelingTools();
         DrawFloodConfirmModal();
         DrawInspector();
+        DrawExtraInspectors();
         DrawRenderConfig();
         DrawProjectAssets();
         DrawPluginPanels();
@@ -808,17 +836,31 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.EndMenu();
         }
 
-        if (ImGui.BeginMenu("视图"))
+        if (_openWindowMenuRequested) { ImGui.OpenPopup("窗口"); _openWindowMenuRequested = false; }
+        if (ImGui.BeginMenu("窗口"))
         {
-            if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
-            if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
-            ImGui.Separator();
-            if (ImGui.MenuItem("层级", null, ref _showHierarchy)) { }
-            if (ImGui.MenuItem("调色板", null, ref _showModelingTools)) { }
-            if (ImGui.MenuItem("项目资产", null, ref _showProjectAssets)) { }
-            if (ImGui.MenuItem("检查器", null, ref _showInspector)) { }
-            if (ImGui.MenuItem("渲染配置", null, ref _showRenderConfig) && _showRenderConfig) _requestedInspectorTab = 1;
-            if (ImGui.MenuItem("生成器", null, ref _showGeneratorPanel)) { }
+            if (ImGui.BeginMenu("常规"))
+            {
+                if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
+                if (ImGui.MenuItem("层级")) { _showHierarchy = true; ImGui.SetWindowFocus("层级##层级面板"); }
+                if (ImGui.MenuItem("检查器")) { _showInspector = true; _requestedInspectorTab = 0; }
+                if (ImGui.MenuItem("调色板")) { _showModelingTools = true; _focusModelingTools = true; }
+                if (ImGui.MenuItem("项目资产")) { _showProjectAssets = true; ImGui.SetWindowFocus("项目资产##资源浏览器"); }
+                ImGui.EndMenu();
+            }
+            if (ImGui.BeginMenu("渲染"))
+            {
+                if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
+                if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
+                ImGui.EndMenu();
+            }
+            if (ImGui.BeginMenu("工具"))
+            {
+                if (ImGui.MenuItem("生成器")) { _showGeneratorPanel = true; ImGui.SetWindowFocus("生成器##生成器面板"); }
+                if (ImGui.MenuItem("体素度量")) { _showVoxelMeasurements = true; ImGui.SetWindowFocus("体素度量"); }
+                if (ImGui.MenuItem("性能分析器")) { _showPerformanceAnalyzer = true; ImGui.SetWindowFocus("性能分析器"); }
+                ImGui.EndMenu();
+            }
             ImGui.EndMenu();
         }
 
@@ -860,8 +902,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
             ImGui.Separator();
             ImGui.TextDisabled("体素编辑工具");
-            if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw)) _activeTool = EditorTool.Draw;
-            if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase)) _activeTool = EditorTool.Erase;
+            if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw, _voxelEditTargetId is not null)) _activeTool = EditorTool.Draw;
+            if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase, _voxelEditTargetId is not null)) _activeTool = EditorTool.Erase;
             ImGui.Separator();
             ImGui.TextDisabled("场景对象");
             if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
@@ -890,6 +932,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 SaveEditorSettings();
             }
 
+            ImGui.Separator();
+            if (ImGui.MenuItem("主题管理")) OpenSettings(_project is null ? 0 : 1, _project is null ? 4 : 4, "editor.appearance.theme");
             ImGui.EndMenu();
         }
 
@@ -909,8 +953,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("帮助"))
         {
-            if (ImGui.MenuItem("快速入门")) OpenGuide(0);
-            if (ImGui.MenuItem("MagicaVoxel 迁移指南")) OpenGuide(2);
+            if (ImGui.MenuItem("教学文档")) OpenGuide(0);
             ImGui.Separator();
             if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
             ImGui.EndMenu();
@@ -974,6 +1017,13 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        DrawPanelWindowMenu();
+        DrawHierarchyContent();
+        ImGui.End();
+    }
+
+    private void DrawHierarchyContent()
+    {
         ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
         ImGui.SameLine();
         ImGui.TextDisabled(_project is null ? "未打开项目" : Path.GetFileNameWithoutExtension(_activeSceneRelativePath));
@@ -1015,7 +1065,6 @@ DockId=0x6A3C3007,0
             DrawHierarchyCreateMenu(null);
             ImGui.EndPopup();
         }
-        ImGui.End();
     }
 
     private bool MatchesHierarchySearch(SceneObject sceneObject, IReadOnlyList<SceneObject> objects)
@@ -1096,8 +1145,7 @@ DockId=0x6A3C3007,0
         ImGui.SameLine(0F, iconGap);
         var modelObject = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel);
         var selectableClicked = DrawHierarchyIconButton($"##Selectable_{sceneObject.Id}",
-            modelObject ? "固定为体素编辑目标" : "允许选中对象",
-            modelObject ? "解除固定编辑目标" : "禁止选中对象",
+            "锁定场景选择", "解锁场景选择",
             !sceneObject.Locked, DrawLockIcon, iconWidth);
         if (selectableClicked)
         {
@@ -1105,33 +1153,36 @@ DockId=0x6A3C3007,0
         }
 
         if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked &&
-            (!sceneObject.Locked || modelObject))
+            true)
         {
+            UnlockSceneSelectionForHierarchy(sceneObject.Id);
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
-            if (modelObject) _activeTool = EditorTool.Draw;
+            if (_voxelEditTargetId != sceneObject.Id) { _activeTool = EditorTool.Pick; _voxelEditTargetId = null; }
         }
 
         // 不依赖 TreeNodeEx/InvisibleButton 哪一个拿到本次点击：双击判定只看
         // 当前行的实际悬停区域，避免树节点展开状态或 ImGui last-item 状态吞掉聚焦。
         if (rowDoubleClicked && !visibilityClicked && !selectableClicked &&
-            (!sceneObject.Locked || modelObject))
+            true)
         {
+            UnlockSceneSelectionForHierarchy(sceneObject.Id);
             _selectedSceneObjectId = sceneObject.Id;
             _selectedVoxel = null;
-            if (modelObject) _activeTool = EditorTool.Draw;
+            if (_voxelEditTargetId != sceneObject.Id) { _activeTool = EditorTool.Pick; _voxelEditTargetId = null; }
             FocusHierarchyObject(sceneObject);
         }
 
         if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
         {
+            UnlockSceneSelectionForHierarchy(sceneObject.Id);
             _selectedSceneObjectId = sceneObject.Id;
             ImGui.OpenPopup($"##SceneObjectRowMenu_{sceneObject.Id}");
         }
         if (ImGui.BeginPopup($"##SceneObjectRowMenu_{sceneObject.Id}"))
         {
             _selectedSceneObjectId = sceneObject.Id;
-            if (modelObject) _activeTool = EditorTool.Draw;
+            if (_voxelEditTargetId != sceneObject.Id) { _activeTool = EditorTool.Pick; _voxelEditTargetId = null; }
             DrawSceneObjectContextMenu(sceneObject);
             ImGui.EndPopup();
         }
@@ -1258,6 +1309,7 @@ DockId=0x6A3C3007,0
         }
         else
         {
+            DrawPanelWindowMenu();
             _centerTab = 0;
             DrawSceneView();
         }
@@ -1271,6 +1323,7 @@ DockId=0x6A3C3007,0
         }
         else
         {
+            DrawPanelWindowMenu();
             _centerTab = 1;
             var renderViewFocused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
             if (renderViewFocused && !_renderViewWasFocused)
@@ -1310,9 +1363,12 @@ DockId=0x6A3C3007,0
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
+        var floatingToolSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
+        var floatingToolsHovered = ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
+            origin + new Vector2(8F + floatingToolSize, 10F + 4F * (floatingToolSize + 3F)));
         _colorSampleSceneOrigin = origin;
         _colorSampleSceneSize = size;
-        var gizmoInput = !_screenColorSampling && HandleSceneGizmoInput(origin, size, camera, gizmoHovered);
+        var gizmoInput = !_screenColorSampling && HandleSceneGizmoInput(origin, size, camera, gizmoHovered || floatingToolsHovered);
         MVoxelLog.SetRuntimeContext(
             $"场景视图，视口={size.X:0}x{size.Y:0}，相机位置=({camera.Position.X:0.000},{camera.Position.Y:0.000},{camera.Position.Z:0.000})，" +
             $"距离={_sceneCameraDistance:0.000}，体素={_world.OccupiedVoxelCount}");
@@ -1334,7 +1390,9 @@ DockId=0x6A3C3007,0
                     GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
         }
 
-        if (!_screenColorSampling && _project is not null && !gizmoHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
+        drawList.PushClipRect(origin, origin + size, true);
+        DrawSceneFloatingTools(drawList, origin, size);
+        if (!_screenColorSampling && _project is not null && !gizmoHovered && !floatingToolsHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
             (showVoxelWorld || GetVoxelWorldObject() is null))
         {
             HandleVoxelToolInput(origin, size, camera);
@@ -1357,6 +1415,7 @@ DockId=0x6A3C3007,0
             DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
 
+        drawList.PopClipRect();
         ImGui.EndChild();
     }
 
@@ -1408,31 +1467,7 @@ DockId=0x6A3C3007,0
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var left = ImGui.GetCursorPosX();
         var available = ImGui.GetContentRegionAvail().X;
-        var modes = new[]
-        {
-            ("选择##SceneGizmoSelect", SceneGizmoMode.Select, "选择对象；左键继续用于体素编辑"),
-            ("移动##SceneGizmoMove", SceneGizmoMode.Move, "拖动 X/Y/Z 轴移动选中对象"),
-            ("旋转##SceneGizmoRotate", SceneGizmoMode.Rotate, "点击圆环把模型转 90 度，自由对象转 15 度"),
-            ("缩放##SceneGizmoScale", SceneGizmoMode.Scale, "拖动缩放点，按倍数重采样体素模型"),
-        };
-        for (var modeIndex = 0; modeIndex < modes.Length; modeIndex++)
-        {
-            if (modeIndex > 0) ImGui.SameLine(0F, 4F);
-            var (label, mode, tip) = modes[modeIndex];
-            if (SceneToolbarButton(label, _sceneGizmoMode == mode, 56F, buttonHeight, tip))
-                _sceneGizmoMode = mode;
-        }
-
-        ImGui.SameLine(0F, spacing);
-        var used = ImGui.GetCursorPosX() - left;
-        var rightStart = MathF.Max(used, available - buttonWidth * 4F - spacing * 3F);
-        if (rightStart < used + spacing)
-        {
-            ImGui.NewLine();
-            rightStart = 0F;
-        }
-
-        ImGui.SetCursorPosX(left + rightStart);
+        ImGui.SetCursorPosX(left + Math.Max(0F, available - buttonWidth * 4F - spacing * 3F));
 
         if (SceneToolbarButton("图层##SceneLayers", ImGui.IsPopupOpen("##SceneLayersPopup"),
                 buttonWidth, buttonHeight, "管理图层并设置场景窗口可见性，不影响相机的图层遮罩。"))
@@ -1467,6 +1502,37 @@ DockId=0x6A3C3007,0
             _showSceneStatistics = !_showSceneStatistics;
 
         DrawSceneCameraPopup();
+    }
+
+    private bool DrawSceneFloatingTools(ImDrawListPtr draw, Vector2 origin, Vector2 size)
+    {
+        var saved = ImGui.GetCursorScreenPos();
+        var buttonSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
+        var top = origin + new Vector2(8F, 10F);
+        var hovered = false;
+        for (var i = 0; i < 4; i++)
+        {
+            var position = top + new Vector2(0F, i * (buttonSize + 3F));
+            ImGui.SetCursorScreenPos(position);
+            ImGui.PushID(i);
+            if (ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize))) _sceneGizmoMode = (SceneGizmoMode)i;
+            var over = ImGui.IsItemHovered(); hovered |= over;
+            var color = ToPackedColor(i == (int)_sceneGizmoMode ? Color.FromArgb(230, EditorPalette.AccentSoft) :
+                over ? Color.FromArgb(220, EditorPalette.PanelHeader) : Color.FromArgb(190, EditorPalette.Window));
+            draw.AddRectFilled(position, position + new Vector2(buttonSize), color, 5F);
+            draw.AddRect(position, position + new Vector2(buttonSize), ToPackedColor(EditorPalette.Border), 5F);
+            var c = position + new Vector2(buttonSize * .5F);
+            var ink = ToPackedColor(EditorPalette.Text);
+            if (i == 0) draw.AddTriangle(c + new Vector2(-5, -8), c + new Vector2(-5, 6), c + new Vector2(5, 2), ink, 1.6F);
+            else if (i == 1)
+            { draw.AddLine(c + new Vector2(-8, 0), c + new Vector2(8, 0), ink, 1.8F); draw.AddLine(c + new Vector2(0, -8), c + new Vector2(0, 8), ink, 1.8F); draw.AddTriangleFilled(c + new Vector2(0, -9), c + new Vector2(-3, -5), c + new Vector2(3, -5), ink); }
+            else if (i == 2) { draw.AddCircle(c, 7F, ink, 24, 1.7F); draw.AddTriangleFilled(c + new Vector2(8, -3), c + new Vector2(3, -5), c + new Vector2(6, 1), ink); }
+            else { draw.AddLine(c + new Vector2(-6, 6), c + new Vector2(6, -6), ink, 1.8F); draw.AddRectFilled(c + new Vector2(3, -9), c + new Vector2(9, -3), ink); }
+            if (over) ImGui.SetTooltip(i switch { 0 => "选择", 1 => "移动", 2 => "旋转", _ => "缩放" });
+            ImGui.PopID();
+        }
+        ImGui.SetCursorScreenPos(saved);
+        return hovered;
     }
 
     private static bool SceneToolbarButton(string label, bool active, float width, float height, string tooltip)
@@ -1991,26 +2057,24 @@ DockId=0x6A3C3007,0
             item.Components.Any(SceneComponentTypes.IsVoxelModel));
     }
 
+    private void UnlockSceneSelectionForHierarchy(StableId selectedId)
+    {
+        foreach (var item in _sceneDocument?.Objects ?? [])
+            if (item.Id != selectedId && item.Locked) { item.Locked = false; MarkSceneDocumentDirty(); }
+    }
+
+    private bool IsSceneSelectionLockedAgainst(StableId id) =>
+        (_sceneDocument?.Objects ?? []).Any(item => item.Locked && item.Id != id);
+
     private void ToggleSceneObjectLock(SceneObject sceneObject)
     {
-        var modelObject = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel);
-        sceneObject.Locked = !sceneObject.Locked;
-        if (modelObject)
+        var locked = !sceneObject.Locked;
+        if (locked)
         {
-            if (sceneObject.Locked)
-            {
-                foreach (var other in _sceneDocument?.Objects ?? [])
-                    if (other.Id != sceneObject.Id && other.Components.Any(SceneComponentTypes.IsVoxelModel))
-                        other.Locked = false;
-                _pinnedVoxelModelId = sceneObject.Id;
-                _selectedSceneObjectId = sceneObject.Id;
-                _activeTool = EditorTool.Draw;
-            }
-            else if (_pinnedVoxelModelId == sceneObject.Id)
-                _pinnedVoxelModelId = null;
+            UnlockSceneSelectionForHierarchy(sceneObject.Id);
+            _selectedSceneObjectId = sceneObject.Id;
         }
-        else if (sceneObject.Locked && _selectedSceneObjectId == sceneObject.Id)
-            _selectedSceneObjectId = null;
+        sceneObject.Locked = locked;
         MarkSceneDocumentDirty();
     }
 
@@ -2683,6 +2747,7 @@ DockId=0x6A3C3007,0
         }
         else
         {
+            DrawPanelWindowMenu(true);
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8F, 8F));
             ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,
                 new Vector2(6F, MathF.Max(5F, ImGui.GetFontSize() * .2F)));
@@ -2694,6 +2759,99 @@ DockId=0x6A3C3007,0
             ImGui.PopStyleVar(3);
         }
         ImGui.End();
+    }
+
+    private void DrawExtraInspectors()
+    {
+        foreach (var inspector in _extraInspectors.ToArray())
+        {
+            ImGui.SetNextWindowSize(new Vector2(420F, 600F), ImGuiCond.FirstUseEver);
+            if (inspector.DockId != 0) ImGui.SetNextWindowDockID(inspector.DockId, ImGuiCond.FirstUseEver);
+            var mainLock = _inspectorLockedObjectId;
+            _inspectorLockedObjectId = inspector.Locked;
+            if (ImGui.Begin($"{inspector.Kind} {inspector.Id}##ExtraInspector{inspector.Id}", ref inspector.Open, ImGuiWindowFlags.NoCollapse))
+            {
+                FloatingWindowShadow.Draw();
+                DrawPanelWindowMenu();
+                DrawExtraWindowContents(inspector.Kind);
+            }
+            ImGui.End();
+            inspector.Locked = _inspectorLockedObjectId;
+            _inspectorLockedObjectId = mainLock;
+        }
+        _extraInspectors.RemoveAll(item => !item.Open);
+    }
+
+    private void DrawExtraWindowContents(string kind)
+    {
+        switch (kind)
+        {
+            case "检查器": DrawInspectorProperties(); break;
+            case "层级": DrawHierarchyContent(); break;
+            case "场景": _centerTab = 0; DrawSceneView(); break;
+            case "渲染": _centerTab = 1; DrawRenderView(); break;
+            case "调色板": DrawPaletteContents(); break;
+            case "项目资产":
+                _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset,
+                    ExportVoxAsset, OpenGeneratorAsset, ExportQubicleAsset,
+                    path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
+                break;
+            case "渲染配置": DrawConfigurationPanel(); break;
+            case "生成器": DrawGeneratorToolbar(); ImGui.Separator(); DrawGeneratorEditor(); ImGui.Separator(); DrawGeneratorParameters(); DrawGeneratorMessage(); break;
+            case "体素度量": DrawExtraMeasurements(); break;
+            case "性能分析器": DrawExtraPerformance(); break;
+        }
+    }
+
+    private void DrawPanelWindowMenu(bool inspectorPanel = false)
+    {
+        var dockId = ImGui.GetWindowDockID();
+        if (dockId == 0) return;
+        var cursor = ImGui.GetCursorScreenPos();
+        var position = ImGui.GetWindowPos();
+        var size = ImGui.GetWindowSize();
+        var height = ImGui.GetFrameHeight();
+        var buttonMin = new Vector2(position.X + size.X - height - ImGui.GetStyle().WindowPadding.X - 2F, position.Y);
+        ImGui.PushClipRect(position, position + size, false);
+        ImGui.SetCursorScreenPos(buttonMin);
+        ImGui.PushID($"PanelMenu{dockId}");
+        if (inspectorPanel && _openInspectorPanelMenuRequested)
+        {
+            ImGui.OpenPopup("##添加窗口");
+            _openInspectorPanelMenuRequested = false;
+        }
+        if (ImGui.InvisibleButton("##窗口菜单", new Vector2(height))) ImGui.OpenPopup("##添加窗口");
+        var draw = ImGui.GetWindowDrawList();
+        var color = ToPackedColor(EditorPalette.Text);
+        var center = buttonMin + new Vector2(height * .5F);
+        for (var i = -1; i <= 1; i++) draw.AddCircleFilled(center + new Vector2(0F, i * 4F), 1.3F, color);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("添加窗口标签");
+        ImGui.SetNextWindowPos(buttonMin + new Vector2(height, height), ImGuiCond.Appearing, new Vector2(1F, 0F));
+        if (ImGui.BeginPopup("##添加窗口"))
+        {
+            if (ImGui.BeginMenu("常规"))
+            {
+                foreach (var name in new[] { "场景", "层级", "检查器", "调色板", "项目资产" })
+                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                ImGui.EndMenu();
+            }
+            if (ImGui.BeginMenu("渲染"))
+            {
+                foreach (var name in new[] { "渲染", "渲染配置" })
+                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                ImGui.EndMenu();
+            }
+            if (ImGui.BeginMenu("工具"))
+            {
+                foreach (var name in new[] { "生成器", "体素度量", "性能分析器" })
+                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                ImGui.EndMenu();
+            }
+            ImGui.EndPopup();
+        }
+        ImGui.PopID();
+        ImGui.PopClipRect();
+        ImGui.SetCursorScreenPos(cursor);
     }
 
     private void DrawExportQueueWindow(Vector2 display)
@@ -2755,14 +2913,15 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawInspectorProperties()
     {
-        if (_selectedSceneObjectId is null &&
+        if (_inspectorLockedObjectId is null && _selectedSceneObjectId is null &&
             (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector() || TryDrawSelectedEnvironmentInspector() ||
              TryDrawSelectedAssetInspector()))
         {
             return;
         }
 
-        var selectedObject = _selectedSceneObjectId is { } selectedObjectId
+        var inspectedObjectId = _inspectorLockedObjectId ?? _selectedSceneObjectId;
+        var selectedObject = inspectedObjectId is { } selectedObjectId
             ? _sceneDocument?.Objects.FirstOrDefault(item => item.Id == selectedObjectId)
             : null;
         if (selectedObject is null)
@@ -2823,11 +2982,10 @@ DockId=0x6A3C3007,0
                 MarkSceneDocumentDirty();
             }
             ImGui.SameLine(0F, 4F);
-            var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
-                modelObject ? "固定为体素编辑目标" : "允许选中对象",
-                modelObject ? "取消固定编辑目标" : "禁止选中对象",
-                !selectedObject.Locked, DrawLockIcon, objectIconSize);
-            if (selectableClicked) ToggleSceneObjectLock(selectedObject);
+            var inspectorLocked = _inspectorLockedObjectId is not null;
+            if (DrawHierarchyIconButton("##InspectorObjectSelectable", "锁定检查器", "解锁检查器",
+                    !inspectorLocked, DrawLockIcon, objectIconSize))
+                _inspectorLockedObjectId = inspectorLocked ? null : selectedObject.Id;
             ImGui.SameLine(0F, 6F);
             ImGui.AlignTextToFramePadding();
             ImGui.TextDisabled("图层");
@@ -3016,8 +3174,21 @@ DockId=0x6A3C3007,0
                 ImGui.Separator();
                 foreach (var definition in SceneComponentTypes.BuiltInDefinitions)
                 {
-                    if (selectedObject.Components.Any(item => item.TypeId == definition.TypeId)) continue;
+                    if (definition.TypeId == SceneComponentTypes.Transform) continue;
+                    var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
                     if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
+                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light))
+                    {
+                        _componentWarning = $"{definition.DisplayName}组件不可重复添加";
+                        SetStatus(_componentWarning);
+                        continue;
+                    }
+                    if (alreadyPresent && definition.TypeId == SceneComponentTypes.VoxelModel)
+                    {
+                        _componentWarning = "同一对象的多个模型组件尚不支持，请暂时使用不同对象";
+                        SetStatus(_componentWarning);
+                        continue;
+                    }
                     if (definition.TypeId == SceneComponentTypes.VoxelModel &&
                         selectedObject.Components.Any(SceneComponentTypes.IsCamera))
                     {
@@ -3301,6 +3472,15 @@ DockId=0x6A3C3007,0
 
         if (SceneComponentTypes.IsVoxelModel(component))
         {
+            var editing = _voxelEditTargetId == selectedObject.Id && _activeTool == EditorTool.Draw;
+            if (ImGui.Button(editing ? "退出绘制模式" : "绘制模式", new Vector2(-1F, 0F)))
+            {
+                _voxelEditTargetId = editing ? null : selectedObject.Id;
+                _activeTool = editing ? EditorTool.Pick : EditorTool.Draw;
+                _sceneGizmoMode = SceneGizmoMode.Select;
+                if (!editing) _selectedSceneObjectId = selectedObject.Id;
+            }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅编辑此模型的体素；再次点击退出绘制模式。");
             var data = SceneComponentTypes.ReadVoxelModel(component);
             BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。右键内嵌数据可提取。");
             var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
@@ -3481,6 +3661,7 @@ DockId=0x6A3C3007,0
         }
         else
         {
+            DrawPanelWindowMenu();
             ImGui.TextColored(ToColor(EditorPalette.Text), "渲染配置");
             DrawConfigurationPanel();
             if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && ImGui.IsAnyItemActive())
@@ -3528,12 +3709,13 @@ DockId=0x6A3C3007,0
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
-        if (!ImGui.Begin("项目资产##资源浏览器", PanelWindowFlags))
+        if (!ImGui.Begin("项目资产##资源浏览器", PanelWindowFlags & ~ImGuiWindowFlags.HorizontalScrollbar))
         {
             ImGui.End();
             return;
         }
 
+        DrawPanelWindowMenu();
         _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
             path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
@@ -4089,8 +4271,10 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
-        _activeTool = EditorTool.Draw;
         TryRestoreRecovery(project);
+        _activeTool = EditorTool.Pick;
+        _voxelEditTargetId = null;
+        _inspectorLockedObjectId = null;
         ReloadMaterialTable();
         _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = _sceneValidationErrors.Count == 0

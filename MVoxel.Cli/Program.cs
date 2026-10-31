@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using System.IO.Pipes;
 using System.Text;
@@ -472,6 +472,9 @@ internal static class Program
             "editor.closeProject" => CallEditor("editor.closeProject", arguments),
             "editor.openProject" => CallEditor("editor.openProject", arguments),
             "editor.captureView" => CallEditor("editor.captureView", arguments),
+            "editor.captureWindow" => CallEditor("editor.captureWindow", arguments),
+            "editor.showWindowMenu" => CallEditor("editor.showWindowMenu", arguments),
+            "editor.showPanelMenu" => CallEditor("editor.showPanelMenu", arguments),
             "editor.captureStatus" => CallEditor("editor.captureStatus", arguments),
             "editor.invokeAutomation" => CallEditor("editor.invokeAutomation", arguments),
             "editor.invokeCommand" => CallEditor("editor.invokeCommand", arguments),
@@ -705,6 +708,9 @@ internal static class Program
         new { name = "editor.saveProject", description = "请求运行中的编辑器保存当前项目", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.closeProject", description = "请求运行中的编辑器关闭当前项目；有未保存修改时需传 discard=true", inputSchema = new { type = "object", properties = new { discard = new { type = "boolean", description = "明确丢弃未保存场景修改" } } } },
         new { name = "editor.openProject", description = "请求运行中的编辑器打开项目", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
+        new { name = "editor.showPanelMenu", description = "打开检查器停靠面板的窗口创建菜单", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.showWindowMenu", description = "在编辑器中打开窗口分类菜单", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.captureWindow", description = "从 Vulkan 帧捕获编辑器画面（不含系统标题栏），不受窗口遮挡影响；使用 editor.captureStatus 查询", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.captureView", description = "切换到渲染视图并将当前画面保存为PNG，已有文件不会覆盖", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, cameraName = new { type = "string", description = "可选的场景相机名称，名称必须唯一" }, position = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 }, target = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 } }, required = new[] { "path" } } },
         new { name = "editor.captureStatus", description = "查询截图任务状态", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },

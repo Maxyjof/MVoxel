@@ -271,6 +271,9 @@ internal sealed partial class ImGuiEditorWindow
         _paletteIsProjectLevel = true;
         _worldLoadFailed = false;
         LoadObjectVoxelWorlds(project);
+        _activeTool = EditorTool.Pick;
+        _voxelEditTargetId = null;
+        _sceneGizmoMode = SceneGizmoMode.Select;
 
         // 项目创建/打开完成回调不能在 UI 线程同步构建和上传 GPU 工作集，
         // 否则大模板会让进度弹窗停在 98%。场景视图不依赖该工作集，
@@ -1175,6 +1178,22 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        if (_activeTool == EditorTool.Pick && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+        {
+            var hit = PickVoxel(mouse, origin, size, camera);
+            if (hit is { } picked && _sceneDocument is not null &&
+                _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, picked.Coordinate, out var owner, out _))
+            {
+                var target = _sceneDocument.Objects.FirstOrDefault(item => item.Id == owner);
+                if (target is not null && !IsSceneSelectionLockedAgainst(target.Id))
+                {
+                    _toolDragAnchor = null; _toolDragCurrent = null; _toolDragTargetId = null;
+                    FocusHierarchyObject(target);
+                    return;
+                }
+            }
+        }
+
         var capsLockMode = IsCapsLockEnabled();
         var shiftPressed = IsShiftPressed();
         // 相机和选择是观察工具，绝不能因为默认左键动作是 Place 而修改体素。
@@ -1274,27 +1293,12 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>命中模型自动成为编辑目标；锁定模型时始终固定归属，不随命中切换。</summary>
     private StableId? ResolveVoxelEditTarget(VoxelCoord64? hitCoordinate)
     {
-        if (GetPinnedVoxelModelObject() is { } pinned)
-        {
-            _selectedSceneObjectId = pinned.Id;
-            return pinned.Id;
-        }
-
-        var primaryId = GetVoxelWorldObject()?.Id;
-        var objects = _sceneDocument?.Objects;
-        if (hitCoordinate is { } hit && objects is not null)
-        {
-            StableId? owner = _sceneDocument is not null && _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var visibleOwner, out _) ? visibleOwner : null;
-            if (owner is { } ownerId && objects.Any(item => item.Id == ownerId))
-            {
-                _selectedSceneObjectId = ownerId;
-                return ownerId;
-            }
-        }
-
-        var selected = objects?.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
-            item.Components.Any(SceneComponentTypes.IsVoxelModel));
-        return selected?.Id ?? primaryId;
+        if (_activeTool == EditorTool.Draw || _activeTool == EditorTool.Erase)
+            return _voxelEditTargetId;
+        if (hitCoordinate is { } hit && _sceneDocument is not null &&
+            _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var owner, out _))
+        { if (IsSceneSelectionLockedAgainst(owner)) return null; _selectedSceneObjectId = owner; return owner; }
+        return null;
     }
 
     private void ApplyStroke(VoxelDda.Hit hit, bool erase, StableId? targetId)
@@ -1338,12 +1342,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("请先新建或打开项目");
             return;
         }
-        if (!value.IsEmpty && GetVoxelWorldObject() is null)
-        {
-            var activeTool = _activeTool;
-            CreateVoxelModel();
-            _activeTool = activeTool;
-        }
+        if (_voxelEditTargetId is null) { SetStatus("请先在模型组件中进入绘制模式"); return; }
         var primaryId = GetVoxelWorldObject()?.Id;
         var objects = _sceneDocument?.Objects ?? [];
         targetId ??= ResolveVoxelEditTarget(null);
@@ -1386,7 +1385,8 @@ internal sealed partial class ImGuiEditorWindow
         if (!firstModel) _layerOwnership[model.Id] = new HashSet<VoxelCoord64>();
         _selectedSceneObjectId = model.Id;
         _composedRenderWorld = null;
-        _activeTool = EditorTool.Draw;
+        _activeTool = EditorTool.Pick;
+        _voxelEditTargetId = null;
         _showModelingTools = true;
         MarkSceneDocumentDirty();
         SetStatus($"已创建 {name}，可在网格上绘制；Ctrl+S 保存项目");
@@ -1731,8 +1731,8 @@ internal sealed partial class ImGuiEditorWindow
         if (ShortcutBindingRouter.IsPressed(scheme, "project.open")) ShowProjectPathDialog(create: false);
         if (ShortcutBindingRouter.IsPressed(scheme, "project.save")) SaveProject();
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.camera")) _activeTool = EditorTool.Camera;
-        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
-        if (ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
+        if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
+        if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.toggleGrid")) _showGrid = !_showGrid;
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.togglePanels"))
         {

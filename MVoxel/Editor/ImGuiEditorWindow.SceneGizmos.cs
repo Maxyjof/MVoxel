@@ -23,6 +23,14 @@ internal sealed partial class ImGuiEditorWindow
     private int _sceneGizmoDragAxis;
     private bool _sceneGizmoDragRange;
     private bool _sceneGizmoDragScale;
+    private bool _sceneGizmoDragRotation;
+    private int _sceneGizmoDragPlane = -1;
+    private Quaternion _sceneGizmoStartRotation;
+    private float _sceneGizmoStartAngle;
+    private float _sceneGizmoRotationDelta;
+    private Vector2 _sceneGizmoPivotScreen;
+    private Vector2 _sceneGizmoPlaneU;
+    private Vector2 _sceneGizmoPlaneV;
     private Vector2 _sceneGizmoDragStartMouse;
     private Vector3 _sceneGizmoDragStartPosition;
     private VoxelCoord64 _sceneGizmoDragStartGrid;
@@ -44,24 +52,25 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_project is null || _sceneDocument is null) return;
         var selected = GetSelectedSceneObject();
-        if (selected is not null && !_sceneDocument.IsLayerVisible(selected.LayerIndex)) selected = null;
+        if (selected is not null && (!IsSceneObjectVisible(selected) || !_sceneDocument.IsLayerVisible(selected.LayerIndex))) selected = null;
         foreach (var sceneObject in _sceneDocument.Objects)
         {
             var lightComponent = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsLight);
-            if (lightComponent is null || !IsSceneObjectVisible(sceneObject) ||
+            if (lightComponent is null || !lightComponent.Enabled || !IsSceneObjectVisible(sceneObject) ||
                 !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex)) continue;
             var selectedLight = selected?.Id == sceneObject.Id;
             if (!selectedLight)
             {
-                // 未选中的灯光只画一个小标记，避免大范围圆环铺满视口
-                if (SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera,
-                        out var marker, out _))
+                // 与渲染光源和拾取共用对象位置；外圈标明这是光源，而非体素。
+                if (SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _) &&
+                    marker.X >= origin.X && marker.X < origin.X + size.X && marker.Y >= origin.Y && marker.Y < origin.Y + size.Y)
                 {
-                    var data = SceneComponentTypes.ReadLight(lightComponent);
-                    drawList.AddCircleFilled(marker, 3F, ToPackedColor(Color.FromArgb(170,
-                        Math.Clamp((int)(data.ColorR * 255F), 0, 255),
-                        Math.Clamp((int)(data.ColorG * 255F), 0, 255),
-                        Math.Clamp((int)(data.ColorB * 255F), 0, 255))));
+                    var light = SceneComponentTypes.ReadLight(lightComponent);
+                    var color = ToPackedColor(Color.FromArgb(220, Math.Clamp((int)(light.ColorR * 255F), 0, 255),
+                        Math.Clamp((int)(light.ColorG * 255F), 0, 255), Math.Clamp((int)(light.ColorB * 255F), 0, 255)));
+                    DrawSceneLightIcon(drawList, marker, color);
+                    if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 8F)
+                        ImGui.SetTooltip(sceneObject.Name);
                 }
                 continue;
             }
@@ -69,6 +78,28 @@ internal sealed partial class ImGuiEditorWindow
             DrawLightGizmo(drawList, origin, size, camera, sceneObject, lightComponent, selected: true);
         }
 
+        foreach (var sceneObject in _sceneDocument.Objects)
+        {
+            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
+                !sceneObject.Components.Any(component => SceneComponentTypes.IsCamera(component) && component.Enabled)) continue;
+            if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _) ||
+                marker.X < origin.X || marker.X >= origin.X + size.X || marker.Y < origin.Y || marker.Y >= origin.Y + size.Y) continue;
+            var color = ToPackedColor(selected?.Id == sceneObject.Id ? EditorPalette.Accent : EditorPalette.Icon);
+            DrawSceneCameraIcon(drawList, marker, color);
+            if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 9F)
+                ImGui.SetTooltip(sceneObject.Name);
+        }
+        foreach (var sceneObject in _sceneDocument.Objects)
+        {
+            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
+                sceneObject.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) || SceneComponentTypes.IsCamera(component) || SceneComponentTypes.IsLight(component))) continue;
+            if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _)) continue;
+            var color = ToPackedColor(selected?.Id == sceneObject.Id ? EditorPalette.Accent : EditorPalette.Icon);
+            drawList.AddRect(marker - new Vector2(5F), marker + new Vector2(5F), color, 1F, ImDrawFlags.None, 1.3F);
+            drawList.AddLine(marker - new Vector2(3F, 0F), marker + new Vector2(3F, 0F), color);
+            drawList.AddLine(marker - new Vector2(0F, 3F), marker + new Vector2(0F, 3F), color);
+            if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 8F) ImGui.SetTooltip(sceneObject.Name);
+        }
         if (selected is null) return;
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return;
@@ -85,6 +116,25 @@ internal sealed partial class ImGuiEditorWindow
                 DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
                 break;
         }
+    }
+
+    private static void DrawSceneLightIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var bulb = center + new Vector2(0F, -1F);
+        draw.AddCircle(bulb, 4F, color, 16, 1.4F);
+        draw.AddLine(center + new Vector2(-2F, 4F), center + new Vector2(2F, 4F), color, 1.5F);
+        draw.AddLine(center + new Vector2(-1.5F, 6F), center + new Vector2(1.5F, 6F), color, 1.4F);
+        foreach (var direction in new[] { new Vector2(0F, -1F), new Vector2(-1F, 0F), new Vector2(1F, 0F),
+                     new Vector2(-.7F, -.7F), new Vector2(.7F, -.7F) })
+            draw.AddLine(bulb + direction * 6F, bulb + direction * 8F, color, 1.2F);
+    }
+
+    private static void DrawSceneCameraIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        draw.AddRect(center + new Vector2(-7F, -4F), center + new Vector2(4F, 5F), color, 1F, ImDrawFlags.None, 1.4F);
+        draw.AddCircle(center + new Vector2(-1F, .5F), 2.5F, color, 12, 1.2F);
+        draw.AddTriangle(center + new Vector2(4F, -2F), center + new Vector2(8F, -4F),
+            center + new Vector2(8F, 4F), color, 1.4F);
     }
 
     private Vector3 GetObjectPivot(SceneObject sceneObject)
@@ -149,8 +199,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (!SceneProjection.Project(position, origin, size, camera, out var centerScreen, out _)) return;
-        drawList.AddCircleFilled(centerScreen, selected ? 4F : 3F, packed);
-        if (!selected) return;
+        DrawSceneLightIcon(drawList, centerScreen, packed);
+        if (!selected || data.Shape == LightShape.Directional) return;
 
         // 范围手柄：沿屏幕右方向的世界向量放置，拖动即可修改 Range
         var handle = position + camera.Right * range;
@@ -165,6 +215,13 @@ internal sealed partial class ImGuiEditorWindow
         Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel)
     {
         var length = unitsPerPixel * 82F;
+        for (var plane = 0; plane < 3; plane++)
+        {
+            var (u, v) = AxisPlane(plane);
+            if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _)) continue;
+            var color = ToPackedColor(Color.FromArgb(180, AxisColor(plane)));
+            drawList.AddRectFilled(point - new Vector2(5F), point + new Vector2(5F), color, 1F);
+        }
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
             var axis = AxisVector(axisIndex);
@@ -197,14 +254,12 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawScaleGizmo(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         SceneObject sceneObject, Vector3 pivot, Vector2 pivotScreen)
     {
-        var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return;
-        var data = SceneComponentTypes.ReadVoxelModel(component);
         var handle = pivotScreen + new Vector2(0F, -72F);
         var color = ToPackedColor(EditorPalette.Accent);
         drawList.AddLine(pivotScreen, handle, color, 2F);
         drawList.AddRectFilled(handle - new Vector2(5F), handle + new Vector2(5F), color);
-        drawList.AddText(handle + new Vector2(10F, -6F), color, $"{data.Scale:0.##}x");
+        drawList.AddText(handle + new Vector2(10F, -6F), color,
+            $"{sceneObject.Transform.ScaleX} · {sceneObject.Transform.ScaleY} · {sceneObject.Transform.ScaleZ}");
     }
 
     private static Vector3 AxisVector(int axisIndex) =>
@@ -294,26 +349,48 @@ internal sealed partial class ImGuiEditorWindow
 
         foreach (var sceneObject in _sceneDocument.Objects)
         {
-            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
-                !sceneObject.Components.Any(SceneComponentTypes.IsLight)) continue;
+            if (_voxelEditTargetId is not null && _activeTool == EditorTool.Draw) break;
+            if (IsSceneSelectionLockedAgainst(sceneObject.Id) || !IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
+                sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel)) continue;
+            var markers = sceneObject.Components.Where(component => component.Enabled &&
+                (SceneComponentTypes.IsLight(component) || SceneComponentTypes.IsCamera(component))).ToArray();
+            if (markers.Length == 0 && sceneObject.Components.Any(component => SceneComponentTypes.IsLight(component) || SceneComponentTypes.IsCamera(component))) continue;
             if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera,
                     out var screen, out _) || Vector2.Distance(mouse, screen) > 12F) continue;
             _selectedSceneObjectId = sceneObject.Id;
+            _activeTool = EditorTool.Pick;
+            if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)) FocusHierarchyObject(sceneObject);
             return true;
         }
 
-        if (selected is null || !_sceneDocument.IsLayerVisible(selected.LayerIndex)) return false;
+        if (selected is null || !IsSceneObjectVisible(selected) || !_sceneDocument.IsLayerVisible(selected.LayerIndex)) return false;
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
+                for (var plane = 0; plane < 3; plane++)
+                {
+                    var (u, v) = AxisPlane(plane);
+                    if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _) ||
+                        Vector2.Distance(mouse, point) > 9F ||
+                        !SceneProjection.Project(pivot + u, origin, size, camera, out var pu, out _) ||
+                        !SceneProjection.Project(pivot + v, origin, size, camera, out var pv, out _)) continue;
+                    var su = pu - pivotScreen; var sv = pv - pivotScreen;
+                    if (MathF.Abs(su.X * sv.Y - su.Y * sv.X) < .0001F) continue;
+                    _sceneGizmoDragPlane = plane; _sceneGizmoPlaneU = su; _sceneGizmoPlaneV = sv;
+                    _sceneGizmoDragStartMouse = mouse; _sceneGizmoDragStartPosition = pivot;
+                    _sceneGizmoDragging = true; _sceneGizmoDragRotation = false;
+                    return true;
+                }
                 for (var axisIndex = 0; axisIndex < 3; axisIndex++)
                 {
                     if (!TryProjectAxis(origin, size, camera, pivot, AxisVector(axisIndex),
                             out var end, out var pixelsPerUnit)) continue;
                     if (DistanceToSegment(mouse, pivotScreen, end) > 9F) continue;
+                    _sceneGizmoDragPlane = -1;
+                    _sceneGizmoDragRotation = false;
                     _sceneGizmoDragAxis = axisIndex;
                     _sceneGizmoDragStartMouse = mouse;
                     _sceneGizmoDragStartPosition = pivot;
@@ -342,18 +419,24 @@ internal sealed partial class ImGuiEditorWindow
                     }
 
                     if (bestDistance > 10F) continue;
-                    RotateSceneObject(selected, axisIndex);
+                    _sceneGizmoDragAxis = axisIndex;
+                    _sceneGizmoDragStartMouse = mouse;
+                    _sceneGizmoPivotScreen = pivotScreen;
+                    _sceneGizmoStartAngle = MathF.Atan2(mouse.Y - pivotScreen.Y, mouse.X - pivotScreen.X);
+                    _sceneGizmoStartRotation = selected.Transform.Free.Rotation;
+                    _sceneGizmoRotationDelta = 0F;
+                    _sceneGizmoDragRotation = true;
+                    _sceneGizmoDragging = true;
                     return true;
                 }
 
                 return false;
             case SceneGizmoMode.Scale:
-                if (selected.Components.Any(SceneComponentTypes.IsVoxelModel) &&
-                    Vector2.Distance(mouse, pivotScreen + new Vector2(0F, -72F)) <= 12F)
+                if (Vector2.Distance(mouse, pivotScreen + new Vector2(0F, -72F)) <= 12F)
                 {
-                    var component = selected.Components.First(SceneComponentTypes.IsVoxelModel);
+                    var component = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                     _sceneGizmoDragStartMouse = mouse;
-                    _sceneGizmoDragStartValue = SceneComponentTypes.ReadVoxelModel(component).Scale;
+                    _sceneGizmoDragStartValue = component is null ? 1F : SceneComponentTypes.ReadVoxelModel(component).Scale;
                     _sceneGizmoDragScale = true;
                     _sceneGizmoDragRange = false;
                     _sceneGizmoDragging = true;
@@ -371,6 +454,30 @@ internal sealed partial class ImGuiEditorWindow
         var selected = GetSelectedSceneObject();
         if (selected is null) return;
         var mouse = ImGui.GetIO().MousePos;
+        if (_sceneGizmoDragRotation)
+        {
+            var angle = MathF.Atan2(mouse.Y - _sceneGizmoPivotScreen.Y, mouse.X - _sceneGizmoPivotScreen.X);
+            _sceneGizmoRotationDelta = MathF.Atan2(MathF.Sin(angle - _sceneGizmoStartAngle), MathF.Cos(angle - _sceneGizmoStartAngle));
+            if (selected.Transform.Mode == TransformMode.Free)
+            {
+                var axis = AxisVector(_sceneGizmoDragAxis);
+                var delta = Quaternion.CreateFromAxisAngle(new System.Numerics.Vector3(axis.X, axis.Y, axis.Z), _sceneGizmoRotationDelta);
+                selected.Transform.SetFree(new FreeTransform(selected.Transform.Free.Position, Quaternion.Normalize(delta * _sceneGizmoStartRotation)));
+                UpdateTransformMarker(selected); _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
+        if (_sceneGizmoDragPlane >= 0)
+        {
+            if (selected.Transform.Mode == TransformMode.Free)
+            {
+                var delta = PlaneDragDelta(mouse);
+                var position = _sceneGizmoDragStartPosition + delta;
+                selected.Transform.SetFree(new FreeTransform(new Double3(position.X, position.Y, position.Z), selected.Transform.Free.Rotation));
+                UpdateTransformMarker(selected); _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
         if (_sceneGizmoDragRange)
         {
             var light = selected.Components.FirstOrDefault(SceneComponentTypes.IsLight);
@@ -428,6 +535,26 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var mouse = ImGui.GetIO().MousePos;
+        if (_sceneGizmoDragRotation)
+        {
+            _sceneGizmoDragRotation = false;
+            if (selected.Transform.Mode == TransformMode.Grid)
+            {
+                var steps = (int)MathF.Round(_sceneGizmoRotationDelta / (MathF.PI / 2F));
+                for (var i = 0; i < ((steps % 4 + 4) % 4); i++) RotateModelObjectBy90(selected, _sceneGizmoDragAxis);
+            }
+            else if (MathF.Abs(_sceneGizmoRotationDelta) > .0001F) MarkSceneDocumentDirty();
+            return;
+        }
+        if (_sceneGizmoDragPlane >= 0)
+        {
+            var delta = PlaneDragDelta(mouse);
+            _sceneGizmoDragPlane = -1;
+            if (selected.Transform.Mode == TransformMode.Grid)
+                MoveModelObjectByGrid(selected, new VoxelCoord64((long)MathF.Round(delta.X), (long)MathF.Round(delta.Y), (long)MathF.Round(delta.Z)));
+            else MarkSceneDocumentDirty();
+            return;
+        }
         if (_sceneGizmoDragRange)
         {
             _sceneGizmoDragRange = false;
@@ -441,7 +568,22 @@ internal sealed partial class ImGuiEditorWindow
         {
             _sceneGizmoDragScale = false;
             var component = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-            if (component is null) return;
+            if (component is null)
+            {
+                var multiplier = MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F);
+                var before = SceneSerializer.CloneObject(selected);
+                selected.Transform.ScaleX = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleX * multiplier));
+                selected.Transform.ScaleY = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleY * multiplier));
+                selected.Transform.ScaleZ = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleZ * multiplier));
+                var after = SceneSerializer.CloneObject(selected);
+                if (!SceneSerializer.ObjectsEqual(before, after))
+                {
+                    _voxelHistory.RecordExecuted(new SceneObjectStateCommand(selected, before, after,
+                        () => { MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }));
+                    MarkSceneDocumentDirty();
+                }
+                return;
+            }
             var factor = SceneComponentTypes.ReadVoxelModel(component).Scale;
             SceneComponentTypes.WriteVoxelModel(component,
                 SceneComponentTypes.ReadVoxelModel(component) with { Scale = _sceneGizmoDragStartValue });
@@ -469,6 +611,16 @@ internal sealed partial class ImGuiEditorWindow
         {
             MarkSceneDocumentDirty();
         }
+    }
+
+    private Vector3 PlaneDragDelta(Vector2 mouse)
+    {
+        var d = mouse - _sceneGizmoDragStartMouse;
+        var u = _sceneGizmoPlaneU; var v = _sceneGizmoPlaneV;
+        var determinant = u.X * v.Y - u.Y * v.X;
+        if (MathF.Abs(determinant) < .0001F) return Vector3.Zero;
+        var (axisU, axisV) = AxisPlane(_sceneGizmoDragPlane);
+        return axisU * ((d.X * v.Y - d.Y * v.X) / determinant) + axisV * ((u.X * d.Y - u.Y * d.X) / determinant);
     }
 
     /// <summary>平移格变换模型的所有体素，并同步对象原点</summary>

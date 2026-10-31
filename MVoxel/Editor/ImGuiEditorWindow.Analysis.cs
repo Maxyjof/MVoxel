@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using ImGuiNET;
 using MVoxel.Editor.Rendering.Vulkan;
@@ -63,6 +63,25 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SetNextWindowSize(new Vector2(unit * 35F, unit * 18F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("体素度量", ref _showVoxelMeasurements))
         {
+            DrawExtraMeasurements();
+        }
+        ImGui.End();
+    }
+
+    private void DrawPerformanceAnalyzer()
+    {
+        var unit = ImGui.GetFontSize();
+        ImGui.SetNextWindowSize(new Vector2(unit * 42F, unit * 36F), ImGuiCond.FirstUseEver);
+        if (ImGui.Begin("性能分析器", ref _showPerformanceAnalyzer))
+        {
+            DrawExtraPerformance();
+        }
+        ImGui.End();
+    }
+
+    private void DrawExtraMeasurements()
+    {
+
             if (_project is null) ImGui.TextDisabled("打开项目后显示当前工作世界的统计");
             else
             {
@@ -81,16 +100,13 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Text($"渲染视口工作集  {_pipeline?.SyncTotalCells ?? 0:N0}");
                 ImGui.TextWrapped("体素数统计当前加载并合并的工作世界，包含隐藏内容；重叠位置按一个格子计算。它不是项目目录下所有资产的体素总和。工作集是渲染数据，可能经过合并或过滤，不能等同于体素数。");
             }
-        }
-        ImGui.End();
+
     }
 
-    private void DrawPerformanceAnalyzer()
+    private void DrawExtraPerformance()
     {
         var unit = ImGui.GetFontSize();
-        ImGui.SetNextWindowSize(new Vector2(unit * 42F, unit * 36F), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("性能分析器", ref _showPerformanceAnalyzer))
-        {
+
             if (ImGui.Button("清空帧记录"))
             {
                 _analysisFrameCount = 0;
@@ -120,8 +136,7 @@ internal sealed partial class ImGuiEditorWindow
             DrawAnalysisPipeline("场景", _scenePipeline);
             DrawAnalysisPipeline("渲染", _pipeline);
             ImGui.TextDisabled("显存数字为体素和 BVH 缓冲容量，不代表总显存；GPU 耗时尚未采集");
-        }
-        ImGui.End();
+
     }
 
     private static double ToMiB(double bytes) => bytes / (1024D * 1024D);

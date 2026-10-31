@@ -450,7 +450,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectSettingsSurface()
     {
-        var categories = new[] { "项目", "画面", "资产", "调色板" };
+        var categories = new[] { "项目", "画面", "资产", "调色板", "主题管理" };
         DrawSettingsSidebar(categories, ref _projectSettingsCategory, "##项目设置分类", () =>
         {
             switch (_projectSettingsCategory)
@@ -458,7 +458,8 @@ internal sealed partial class ImGuiEditorWindow
                 case 0: DrawProjectGeneralSettings(); break;
                 case 1: DrawProjectVisualSettings(); break;
                 case 2: DrawProjectAssetSettings(); break;
-                default: DrawProjectPaletteSettings(); break;
+                case 3: DrawProjectPaletteSettings(); break;
+                default: DrawThemeManager(); break;
             }
         });
         _projectSettings.ShowGrid = _showGrid;
@@ -920,6 +921,7 @@ internal sealed partial class ImGuiEditorWindow
 
             if (BeginSettingsSubTab("主题", "editor.appearance.theme"))
             {
+                DrawThemeManager();
                 var theme = _editorSettings.Theme;
                 if (ImGui.BeginCombo("主题", theme))
                 {

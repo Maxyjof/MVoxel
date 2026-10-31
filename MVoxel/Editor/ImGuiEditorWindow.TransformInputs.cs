@@ -19,12 +19,12 @@ internal sealed partial class ImGuiEditorWindow
         var id = $"{_selectedSceneObjectId}:{key}:{axis}";
         if (!_transformInputBuffers.TryGetValue(id, out var text)) text = value.ToString("0.###", CultureInfo.InvariantCulture);
         ImGui.PushID(id);
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted(axis);
-        var axisMin = ImGui.GetItemRectMin();
-        var axisMax = ImGui.GetItemRectMax();
-        ImGui.SetCursorScreenPos(axisMin);
-        ImGui.InvisibleButton("##拖拽轴标签", axisMax - axisMin);
+        var axisTextSize = ImGui.CalcTextSize(axis);
+        var axisMin = ImGui.GetCursorScreenPos();
+        var axisHeight = ImGui.GetFrameHeight();
+        ImGui.InvisibleButton("##拖拽轴标签", new Vector2(axisTextSize.X, axisHeight));
+        ImGui.GetWindowDrawList().AddText(axisMin + new Vector2(0F, (axisHeight - axisTextSize.Y) * .5F),
+            ImGui.GetColorU32(ImGuiCol.Text), axis);
         if (ImGui.IsItemHovered()) { ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW); ImGui.SetTooltip("左右拖动调整数值"); }
         if (ImGui.IsItemActivated()) { _axisDragId = id; _axisDragStart = value; _axisDragMouseX = ImGui.GetIO().MousePos.X; _axisDragPreview = value; }
         var dragCommitted = false;

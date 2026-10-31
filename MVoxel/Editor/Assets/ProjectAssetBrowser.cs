@@ -225,7 +225,8 @@ internal sealed class ProjectAssetBrowser
         }
 
         var available = ImGui.GetContentRegionAvail();
-        var tileWidth = Math.Max(80F, _tileSize + 28F);
+        // 平铺始终按可见宽度换行；窄窗口至少容纳一列，不产生横向滚动。
+        var tileWidth = Math.Min(Math.Max(1F, available.X), Math.Max(80F, _tileSize + 28F));
         var tileHeight = _tileSize + 46F;
         var columns = Math.Max(1, (int)((available.X + 6F) / (tileWidth + 6F)));
         var draw = ImGui.GetWindowDrawList();
