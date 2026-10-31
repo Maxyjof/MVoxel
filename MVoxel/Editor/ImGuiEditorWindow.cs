@@ -1523,16 +1523,52 @@ DockId=0x6A3C3007,0
             draw.AddRect(position, position + new Vector2(buttonSize), ToPackedColor(EditorPalette.Border), 5F);
             var c = position + new Vector2(buttonSize * .5F);
             var ink = ToPackedColor(EditorPalette.Text);
-            if (i == 0) draw.AddTriangle(c + new Vector2(-5, -8), c + new Vector2(-5, 6), c + new Vector2(5, 2), ink, 1.6F);
-            else if (i == 1)
-            { draw.AddLine(c + new Vector2(-8, 0), c + new Vector2(8, 0), ink, 1.8F); draw.AddLine(c + new Vector2(0, -8), c + new Vector2(0, 8), ink, 1.8F); draw.AddTriangleFilled(c + new Vector2(0, -9), c + new Vector2(-3, -5), c + new Vector2(3, -5), ink); }
-            else if (i == 2) { draw.AddCircle(c, 7F, ink, 24, 1.7F); draw.AddTriangleFilled(c + new Vector2(8, -3), c + new Vector2(3, -5), c + new Vector2(6, 1), ink); }
-            else { draw.AddLine(c + new Vector2(-6, 6), c + new Vector2(6, -6), ink, 1.8F); draw.AddRectFilled(c + new Vector2(3, -9), c + new Vector2(9, -3), ink); }
+            DrawSceneToolIcon(draw, i, c, buttonSize, ink);
             if (over) ImGui.SetTooltip(i switch { 0 => "选择", 1 => "移动", 2 => "旋转", _ => "缩放" });
             ImGui.PopID();
         }
         ImGui.SetCursorScreenPos(saved);
         return hovered;
+    }
+
+    /// <summary>使用方向箭头、旋转箭头和缩放手柄区分变换工具。</summary>
+    private static void DrawSceneToolIcon(ImDrawListPtr draw, int tool, Vector2 center, float buttonSize, uint color)
+    {
+        var unit = buttonSize / 28F;
+        Vector2 P(float x, float y) => center + new Vector2(x * unit, y * unit);
+        var line = Math.Max(1.4F, 1.6F * unit);
+        if (tool == 0)
+        {
+            draw.AddTriangle(P(-5F, -8F), P(-5F, 6F), P(5F, 2F), color, line);
+            return;
+        }
+        if (tool == 1)
+        {
+            draw.AddLine(P(-7F, 0F), P(7F, 0F), color, line);
+            draw.AddLine(P(0F, -7F), P(0F, 7F), color, line);
+            draw.AddTriangleFilled(P(0F, -10F), P(-3F, -6F), P(3F, -6F), color);
+            draw.AddTriangleFilled(P(0F, 10F), P(-3F, 6F), P(3F, 6F), color);
+            draw.AddTriangleFilled(P(-10F, 0F), P(-6F, -3F), P(-6F, 3F), color);
+            draw.AddTriangleFilled(P(10F, 0F), P(6F, -3F), P(6F, 3F), color);
+            return;
+        }
+        if (tool == 2)
+        {
+            var previous = P(0F, -8F);
+            for (var segment = 1; segment <= 20; segment++)
+            {
+                var angle = -MathF.PI / 2F + segment * (MathF.PI * 1.65F / 20F);
+                var next = P(MathF.Cos(angle) * 8F, MathF.Sin(angle) * 8F);
+                draw.AddLine(previous, next, color, line);
+                previous = next;
+            }
+            draw.AddTriangleFilled(P(-8.5F, -7.5F), P(-3.5F, -8F), P(-6.5F, -3.5F), color);
+            return;
+        }
+        draw.AddRect(P(-7F, -7F), P(3F, 3F), color, 0F, ImDrawFlags.None, line);
+        draw.AddLine(P(1F, 1F), P(8F, 8F), color, line);
+        draw.AddRectFilled(P(5F, 5F), P(10F, 10F), color);
+        draw.AddRectFilled(P(-9F, -9F), P(-5F, -5F), color);
     }
 
     private static bool SceneToolbarButton(string label, bool active, float width, float height, string tooltip)
