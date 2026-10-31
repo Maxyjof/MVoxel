@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text.Json;
 using MVoxel.Core;
 
@@ -155,7 +155,7 @@ public static class PrefabOverrides
 
         instanceObject.Name = source.Name;
         instanceObject.Transform = new TransformComponent(source.Transform.Mode, source.Transform.Grid,
-            source.Transform.Free);
+            source.Transform.Free) { ScaleX = source.Transform.ScaleX, ScaleY = source.Transform.ScaleY, ScaleZ = source.Transform.ScaleZ };
         instanceObject.LayerIndex = source.LayerIndex;
         instanceObject.Visible = source.Visible;
         instanceObject.Locked = source.Locked;
@@ -237,6 +237,7 @@ public static class PrefabOverrides
     /// </summary>
     private static bool TransformEquals(TransformComponent left, TransformComponent right)
     {
+        if (left.ScaleX != right.ScaleX || left.ScaleY != right.ScaleY || left.ScaleZ != right.ScaleZ) return false;
         if (left.Mode != right.Mode)
         {
             return false;

@@ -237,5 +237,35 @@ internal sealed partial class ImGuiEditorWindow
         _pickVersion++;
     }
 
+    private void ApplyAxisScale(SceneObject sceneObject, int x, int y, int z)
+    {
+        if (x < 1 || y < 1 || z < 1) { SetStatus("缩放倍数必须为正整数"); return; }
+        var transform = sceneObject.Transform;
+        var oldX = Math.Max(1, transform.ScaleX); var oldY = Math.Max(1, transform.ScaleY); var oldZ = Math.Max(1, transform.ScaleZ);
+        if (x == oldX && y == oldY && z == oldZ) return;
+        var world = _objectVoxels.GetOrCreate(sceneObject.Id);
+        if (!world.TryGetBounds(out var origin, out _)) { SetStatus("模型为空，无法缩放"); return; }
+        try
+        {
+            var scaled = VoxelRescaler.Scale(world, (float)x / oldX, (float)y / oldY, (float)z / oldZ,
+                origin, out var newOrigin, _scaleCancellation.Token);
+            var changes = world.EnumerateOccupied().ToDictionary(cell => cell.Coordinate, _ => default(VoxelValue));
+            foreach (var cell in scaled.EnumerateOccupied()) changes[cell.Coordinate] = cell.Value;
+            var before = transform.Grid;
+            var after = new GridTransform(newOrigin, before.Rotation);
+            _voxelHistory.Execute(new VoxelStrokeCommand("缩放模型", world,
+                changes.Select(cell => (cell.Key, cell.Value)), ObjectEditCallback(sceneObject.Id, forward =>
+                {
+                    var target = sceneObject.Transform;
+                    target.SetGrid(forward ? after : before);
+                    target.ScaleX = forward ? x : oldX; target.ScaleY = forward ? y : oldY; target.ScaleZ = forward ? z : oldZ;
+                    UpdateTransformMarker(sceneObject);
+                })));
+            MarkSceneDocumentDirty(); ResetAfterVoxelTransform();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or OverflowException)
+        { SetStatus($"缩放失败：{exception.Message}"); }
+    }
+
     private readonly CancellationTokenSource _scaleCancellation = new();
 }

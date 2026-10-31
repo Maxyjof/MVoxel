@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Project;
@@ -390,6 +390,16 @@ internal partial class ImGuiEditorWindow
     /// </summary>
     private void DrawSceneObjectContextMenu(SceneObject sceneObject)
     {
+        if (ImGui.MenuItem("聚焦对象")) FocusHierarchyObject(sceneObject);
+        if (ImGui.MenuItem(sceneObject.Visible ? "隐藏对象" : "显示对象"))
+        { sceneObject.Visible = !sceneObject.Visible; MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }
+        if (ImGui.MenuItem(sceneObject.Locked ? "解锁" : "锁定")) ToggleSceneObjectLock(sceneObject);
+        if (ImGui.BeginMenu("创建子对象"))
+        {
+            DrawHierarchyCreateMenu(sceneObject);
+            ImGui.EndMenu();
+        }
+        ImGui.Separator();
         if (sceneObject.Prefab is null)
         {
             if (ImGui.MenuItem("创建为预制体"))

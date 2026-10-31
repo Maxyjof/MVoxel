@@ -1,4 +1,4 @@
-using ImGuiNET;
+﻿using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
@@ -372,6 +372,7 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Begin("设置##MVoxelSettings", ref open,
                 ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
         {
+            FloatingWindowShadow.Draw();
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9F, 7F));
             if (ImGui.BeginChild("##SettingsHeader", new Vector2(0F, 78F), ImGuiChildFlags.Borders))
             {

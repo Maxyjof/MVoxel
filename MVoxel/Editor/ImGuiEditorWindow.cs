@@ -289,7 +289,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         base.OnUpdateFrame(args);
         var desiredTitle = _project is null ? "MVoxel 体素建模" :
-            $"MVoxel 体素建模 - {_project.Manifest.Name} - {Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}";
+            $"MVoxel 体素建模 - {(_sceneDocumentDirty || _generatorDirty ? "*" : "")}{_project.Manifest.Name} - {Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}";
         if (!string.Equals(Title, desiredTitle, StringComparison.Ordinal)) Title = desiredTitle;
         if (!IsFocused || !IsCapsLockEnabled())
         {
@@ -910,9 +910,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (ImGui.BeginMenu("帮助"))
         {
             if (ImGui.MenuItem("快速入门")) OpenGuide(0);
-            if (ImGui.MenuItem("完整教程")) OpenGuide(1);
             if (ImGui.MenuItem("MagicaVoxel 迁移指南")) OpenGuide(2);
-            if (ImGui.MenuItem("快捷键对照")) OpenGuide(3);
             ImGui.Separator();
             if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
             ImGui.EndMenu();
@@ -989,7 +987,7 @@ DockId=0x6A3C3007,0
         else
         {
             var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
-            if (ImGui.TreeNodeEx($"{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}##ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
+            if (ImGui.TreeNodeEx($"{(_sceneDocumentDirty ? "*" : "")}{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}###ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 if (objects.Count == 0)
                 {
@@ -1009,6 +1007,14 @@ DockId=0x6A3C3007,0
             }
         }
 
+        if (_project is not null && ImGui.IsWindowHovered() &&
+            ImGui.IsMouseClicked(ImGuiMouseButton.Right) && !ImGui.IsAnyItemHovered())
+            ImGui.OpenPopup("##HierarchyBlankMenu");
+        if (ImGui.BeginPopup("##HierarchyBlankMenu"))
+        {
+            DrawHierarchyCreateMenu(null);
+            ImGui.EndPopup();
+        }
         ImGui.End();
     }
 
@@ -1117,7 +1123,12 @@ DockId=0x6A3C3007,0
             FocusHierarchyObject(sceneObject);
         }
 
-        if (ImGui.BeginPopupContextItem($"##SceneObjectRowMenu_{sceneObject.Id}"))
+        if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+        {
+            _selectedSceneObjectId = sceneObject.Id;
+            ImGui.OpenPopup($"##SceneObjectRowMenu_{sceneObject.Id}");
+        }
+        if (ImGui.BeginPopup($"##SceneObjectRowMenu_{sceneObject.Id}"))
         {
             _selectedSceneObjectId = sceneObject.Id;
             if (modelObject) _activeTool = EditorTool.Draw;
@@ -2782,7 +2793,7 @@ DockId=0x6A3C3007,0
         var objectRowGap = ImGui.GetStyle().ItemSpacing.Y;
         const float objectPadding = 7F;
         var modelObject = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
-        var objectHeaderHeight = objectRowHeight * (modelObject ? 3F : 2F) + objectRowGap * (modelObject ? 2F : 1F) + objectPadding * 2F;
+        var objectHeaderHeight = objectRowHeight + objectPadding * 2F;
         var objectIconSize = objectRowHeight;
         ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.PanelHeader));
         if (ImGui.BeginChild("##InspectorObjectHeader", new Vector2(-1F, objectHeaderHeight),
@@ -2801,27 +2812,29 @@ DockId=0x6A3C3007,0
             }
             ImGui.SameLine();
             var objectName = selectedObject.Name;
-            ImGui.SetNextItemWidth(Math.Max(40F, ImGui.GetContentRegionAvail().X - (modelObject ? 8F : objectIconSize + 12F)));
+            var headerAvailable = ImGui.GetContentRegionAvail().X;
+            var layerWidth = Math.Max(ImGui.GetFontSize() * 5F, headerAvailable * 0.34F);
+            var layerLabelWidth = ImGui.CalcTextSize("图层").X;
+            ImGui.SetNextItemWidth(Math.Max(ImGui.GetFontSize() * 3F, headerAvailable - layerWidth - layerLabelWidth - (objectIconSize + 30F)));
             if (ImGui.InputText("##InspectorObjectName", ref objectName, 128) &&
                 !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
             {
                 selectedObject.Name = objectName.Trim();
                 MarkSceneDocumentDirty();
             }
-            if (!modelObject)
-            {
-                ImGui.SameLine(0F, 4F);
-                var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
-                    "允许选中对象", "禁止选中对象", !selectedObject.Locked, DrawLockIcon, objectIconSize);
-                if (selectableClicked) ToggleSceneObjectLock(selectedObject);
-            }
-            ImGui.SetCursorPos(new Vector2(8F, objectPadding + objectRowHeight + objectRowGap));
+            ImGui.SameLine(0F, 4F);
+            var selectableClicked = DrawHierarchyIconButton("##InspectorObjectSelectable",
+                modelObject ? "固定为体素编辑目标" : "允许选中对象",
+                modelObject ? "取消固定编辑目标" : "禁止选中对象",
+                !selectedObject.Locked, DrawLockIcon, objectIconSize);
+            if (selectableClicked) ToggleSceneObjectLock(selectedObject);
+            ImGui.SameLine(0F, 6F);
             ImGui.AlignTextToFramePadding();
             ImGui.TextDisabled("图层");
             ImGui.SameLine();
             var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
             var currentLayer = Math.Clamp(selectedObject.LayerIndex, 0, layerNames.Count - 1);
-            ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 8F));
+            ImGui.SetNextItemWidth(Math.Max(ImGui.GetFontSize() * 4F, ImGui.GetContentRegionAvail().X - 8F));
             if (ImGui.BeginCombo("##InspectorObjectLayer", layerNames[currentLayer]))
             {
                 for (var layerIndex = 0; layerIndex < layerNames.Count; layerIndex++)
@@ -2839,18 +2852,11 @@ DockId=0x6A3C3007,0
             }
 
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；渲染窗口中相机的图层遮罩决定本对象是否被该相机渲染");
-            if (modelObject)
-            {
-                ImGui.SetCursorPos(new Vector2(8F, objectPadding + (objectRowHeight + objectRowGap) * 2F));
-                var pinned = selectedObject.Locked;
-                if (ImGui.Checkbox("固定为体素编辑目标", ref pinned)) ToggleSceneObjectLock(selectedObject);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("固定后笔刷只修改此模型，不会擦除或覆盖其他模型已有的方块；再次取消即可恢复自动选择。");
-            }
+
         }
         ImGui.EndChild();
         ImGui.PopStyleColor();
         ImGui.Dummy(new Vector2(0F, 3F));
-        if (modelObject) DrawRepaintModelAction(selectedObject);
         DrawPrefabInspectorSection(selectedObject);
 
         var removeComponentIndex = -1;
@@ -2967,7 +2973,7 @@ DockId=0x6A3C3007,0
                 ImGui.BeginDisabled(isTransformComponent);
                 if (ImGui.MenuItem("移除组件")) removeComponentIndex = componentIndex;
                 ImGui.EndDisabled();
-                if (isTransformComponent) ImGui.TextDisabled("坐标组件不能移除");
+                if (isTransformComponent) ImGui.TextDisabled("变换组件不能移除");
                 ImGui.EndPopup();
             }
             ImGui.SetCursorScreenPos(new Vector2(headerMin.X, headerMax.Y));
@@ -3289,47 +3295,7 @@ DockId=0x6A3C3007,0
     {
         if (SceneComponentTypes.IsTransform(component))
         {
-            if (selectedObject.Transform.Mode == TransformMode.Free)
-            {
-                var position = selectedObject.Transform.Free.Position;
-                var rotation = selectedObject.Transform.Free.Rotation;
-                var positionValue = new NumVector3((float)position.X, (float)position.Y, (float)position.Z);
-                BeginInspectorField("位置", "对象在场景中的位置。");
-                if (ImGui.InputFloat3("##TransformPosition", ref positionValue))
-                {
-                    selectedObject.Transform.SetFree(new FreeTransform(
-                        new Double3(positionValue.X, positionValue.Y, positionValue.Z), rotation));
-                    UpdateTransformMarker(selectedObject);
-                    MarkSceneDocumentDirty();
-                }
-                var euler = selectedObject.Transform.GetEulerDegrees();
-                var eulerValue = new NumVector3((float)euler.X, (float)euler.Y, (float)euler.Z);
-                BeginInspectorField("旋转", "对象的 XYZ 旋转角度。");
-                if (ImGui.InputFloat3("##TransformRotation", ref eulerValue))
-                {
-                    selectedObject.Transform.SetFreeEuler(
-                        position,
-                        new Double3(eulerValue.X, eulerValue.Y, eulerValue.Z));
-                    UpdateTransformMarker(selectedObject);
-                    MarkSceneDocumentDirty();
-                }
-            }
-            else
-            {
-                var grid = selectedObject.Transform.Grid;
-                BeginInspectorField("位置", "体素对象的整数网格坐标。");
-                ImGui.TextUnformatted($"X  {grid.Position.X}     Y  {grid.Position.Y}     Z  {grid.Position.Z}");
-                BeginInspectorField("旋转", "模型按 90 度为单位旋转。");
-                var thirdWidth = Math.Max(46F, (ImGui.GetContentRegionAvail().X - 12F) / 3F);
-                if (ImGui.Button("X +90°##TransformRotateX", new Vector2(thirdWidth, 0F)))
-                    RotateModel(selectedObject, OrthogonalRotation.AroundX90);
-                ImGui.SameLine(0F, 6F);
-                if (ImGui.Button("Y +90°##TransformRotateY", new Vector2(thirdWidth, 0F)))
-                    RotateModel(selectedObject, OrthogonalRotation.AroundY90);
-                ImGui.SameLine(0F, 6F);
-                if (ImGui.Button("Z +90°##TransformRotateZ", new Vector2(thirdWidth, 0F)))
-                    RotateModel(selectedObject, OrthogonalRotation.AroundZ90);
-            }
+            DrawTransformInputs(selectedObject);
             return;
         }
 
@@ -3358,43 +3324,16 @@ DockId=0x6A3C3007,0
             }
             BeginInspectorField("排序顺序", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
             var sortingOrder = data.SortingOrder;
-            if (ImGui.InputInt("##VoxelSortingOrder", ref sortingOrder))
+            if (ExpressionInput.Int("##VoxelSortingOrder", ref sortingOrder))
             {
                 data = data with { SortingOrder = sortingOrder };
                 SceneComponentTypes.WriteVoxelModel(component, data);
                 MarkSceneDocumentDirty();
             }
-            BeginInspectorField("部件", "引用资产中的部件信息；由资产数据提供，不能直接输入字符串。");
-            ImGui.TextDisabled(string.IsNullOrWhiteSpace(data.Part) ? "默认部件" : data.Part);
             BeginInspectorField("体素数量", "当前模型包含的体素数量。");
             var voxelCount = _objectVoxels.TryGetWorld(selectedObject.Id, out var objectWorld)
                 ? objectWorld.OccupiedVoxelCount : data.VoxelCount;
             ImGui.TextDisabled($"{voxelCount:N0}");
-            BeginInspectorField("模板", "生成当前模型的示例模板名称。");
-            ImGui.TextDisabled(data.Template switch { "" => "未指定", _ => data.Template });
-            BeginInspectorField("缩放", "按倍数从原始模型重采样；缩小后体素数量减少，重置可恢复原始数据。");
-            ImGui.TextDisabled($"当前 {data.Scale:0.###}x");
-            foreach (var factor in new[] { 0.25F, 0.5F, 1F, 2F, 4F })
-            {
-                ImGui.PushID($"Scale{factor}");
-                if (ImGui.SmallButton($"{factor * 100F:0}%"))
-                {
-                    if (Math.Abs(factor - 1F) < 0.001F && !HasScaleOriginal(selectedObject))
-                        SetStatus("当前模型尚未创建原始备份，100% 无需缩放");
-                    else ApplyModelScale(selectedObject, factor);
-                }
-                ImGui.PopID();
-                if (factor < 4F) ImGui.SameLine(0F, 4F);
-            }
-
-            if (HasScaleOriginal(selectedObject))
-            {
-                if (ImGui.Button("重置为原始模型##ResetModelScale", new Vector2(-1F, 0F)))
-                    ApplyModelScale(selectedObject, 1F);
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("从缩放原件恢复；在缩放级别上做过的体素编辑会被原始内容覆盖");
-            }
-
             if (changed)
             {
                 ApplyVoxelModelReference(selectedObject, component, model);

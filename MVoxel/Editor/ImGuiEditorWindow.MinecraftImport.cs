@@ -183,6 +183,7 @@ internal partial class ImGuiEditorWindow
             return;
         }
 
+        FloatingWindowShadow.Draw();
         if (_mcImportInfo is not { } info || _mcImportDimensions is null)
         {
             ImGui.End();

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
@@ -15,6 +15,7 @@
         <PackageReference Include="Silk.NET.Shaderc" />
         <PackageReference Include="MoonSharp" />
         <PackageReference Include="Jint" />
+        <Content Include="Editor\Guide\Docs\*.md" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Brand\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Brand\*.ico" CopyToOutputDirectory="PreserveNewest" />

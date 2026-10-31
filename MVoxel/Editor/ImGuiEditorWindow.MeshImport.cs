@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using ImGuiNET;
 using MVoxel.Project;
 using MVoxel.Voxels;
@@ -66,6 +66,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        FloatingWindowShadow.Draw();
         ImGui.TextDisabled(_meshImportSummary);
         ImGui.SliderInt("分辨率（最长轴体素数）", ref _meshImportResolution, 4, 256, "%d", ImGuiSliderFlags.Logarithmic);
         ImGui.Checkbox("实体填充", ref _meshImportFill);

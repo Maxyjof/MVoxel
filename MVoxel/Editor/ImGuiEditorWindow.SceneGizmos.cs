@@ -445,7 +445,13 @@ internal sealed partial class ImGuiEditorWindow
             var factor = SceneComponentTypes.ReadVoxelModel(component).Scale;
             SceneComponentTypes.WriteVoxelModel(component,
                 SceneComponentTypes.ReadVoxelModel(component) with { Scale = _sceneGizmoDragStartValue });
-            if (MathF.Abs(factor - _sceneGizmoDragStartValue) > 0.01F) ApplyModelScale(selected, factor);
+            if (MathF.Abs(factor - _sceneGizmoDragStartValue) > 0.01F)
+            {
+                var multiplier = factor / Math.Max(0.125F, _sceneGizmoDragStartValue);
+                ApplyAxisScale(selected, Math.Max(1, (int)MathF.Round(selected.Transform.ScaleX * multiplier)),
+                    Math.Max(1, (int)MathF.Round(selected.Transform.ScaleY * multiplier)),
+                    Math.Max(1, (int)MathF.Round(selected.Transform.ScaleZ * multiplier)));
+            }
             return;
         }
 

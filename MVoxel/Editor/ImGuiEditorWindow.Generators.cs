@@ -195,6 +195,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        FloatingWindowShadow.Draw();
         DrawGeneratorToolbar();
         ImGui.Separator();
         DrawGeneratorEditor();
@@ -328,7 +329,7 @@ internal sealed partial class ImGuiEditorWindow
             case GeneratorParameterType.Int:
             {
                 var value = (int)ParameterAsLong(parameter.Id);
-                if (ImGui.InputInt(label, ref value))
+                if (ExpressionInput.Int(label, ref value))
                 {
                     if (parameter.Min is { } minimum) value = (int)Math.Max(value, Math.Ceiling(minimum));
                     if (parameter.Max is { } maximum) value = (int)Math.Min(value, Math.Floor(maximum));
@@ -340,7 +341,7 @@ internal sealed partial class ImGuiEditorWindow
             case GeneratorParameterType.Float:
             {
                 var single = (float)ParameterAsDouble(parameter.Id);
-                if (ImGui.InputFloat(label, ref single))
+                if (ExpressionInput.Float(label, ref single))
                 {
                     var updated = (double)single;
                     if (parameter.Min is { } minimum) updated = Math.Max(updated, minimum);

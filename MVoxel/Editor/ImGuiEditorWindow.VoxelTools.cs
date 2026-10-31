@@ -1577,7 +1577,7 @@ internal sealed partial class ImGuiEditorWindow
         var name = material.Name;
         if (ImGui.InputText("名称", ref name, 48)) material.Name = name;
         var slot = material.Slot;
-        if (ImGui.InputInt("槽位", ref slot)) material.Slot = Math.Clamp(slot, 0, Project.MaterialAsset.TableSlots - 1);
+        if (ExpressionInput.Int("槽位", ref slot)) material.Slot = Math.Clamp(slot, 0, Project.MaterialAsset.TableSlots - 1);
 
         DrawFollowableSlider("粗糙度", "粗糙度##mat", 0.01F, 1F, material.Roughness, value => material.Roughness = value);
         DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);

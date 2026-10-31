@@ -1,4 +1,4 @@
-using MVoxel.Core;
+﻿using MVoxel.Core;
 
 namespace MVoxel.Voxels;
 
@@ -40,10 +40,17 @@ public static class VoxelRescaler
         Action<long>? progress = null,
         long maximumOutputVoxels = 50_000_000)
     {
+        return Scale(source, factor, factor, factor, pivot, out newOrigin, cancellation, progress, maximumOutputVoxels);
+    }
+
+    public static VoxelWorld Scale(VoxelWorld source, float factorX, float factorY, float factorZ,
+        VoxelCoord64 pivot, out VoxelCoord64 newOrigin, CancellationToken cancellation = default,
+        Action<long>? progress = null, long maximumOutputVoxels = 50_000_000)
+    {
         ArgumentNullException.ThrowIfNull(source);
-        if (!float.IsFinite(factor) || factor <= 0f)
+        if (!float.IsFinite(factorX) || factorX <= 0f || !float.IsFinite(factorY) || factorY <= 0f || !float.IsFinite(factorZ) || factorZ <= 0f)
         {
-            throw new ArgumentOutOfRangeException(nameof(factor), factor, "缩放倍数必须是大于零的有限数值");
+            throw new ArgumentOutOfRangeException(nameof(factorX), factorX, "缩放倍数必须是大于零的有限数值");
         }
 
         cancellation.ThrowIfCancellationRequested();
@@ -54,12 +61,12 @@ public static class VoxelRescaler
         }
 
         //连续缩放范围：下界向下取整，上界按格子的外沿向上取整，保证缩小后仍完整覆盖源模型
-        var lowerX = ScaleContinuous(sourceMinimum.X, pivot.X, factor);
-        var lowerY = ScaleContinuous(sourceMinimum.Y, pivot.Y, factor);
-        var lowerZ = ScaleContinuous(sourceMinimum.Z, pivot.Z, factor);
-        var upperX = ScaleContinuous((double)sourceMaximum.X + 1.0, pivot.X, factor);
-        var upperY = ScaleContinuous((double)sourceMaximum.Y + 1.0, pivot.Y, factor);
-        var upperZ = ScaleContinuous((double)sourceMaximum.Z + 1.0, pivot.Z, factor);
+        var lowerX = ScaleContinuous(sourceMinimum.X, pivot.X, factorX);
+        var lowerY = ScaleContinuous(sourceMinimum.Y, pivot.Y, factorY);
+        var lowerZ = ScaleContinuous(sourceMinimum.Z, pivot.Z, factorZ);
+        var upperX = ScaleContinuous((double)sourceMaximum.X + 1.0, pivot.X, factorX);
+        var upperY = ScaleContinuous((double)sourceMaximum.Y + 1.0, pivot.Y, factorY);
+        var upperZ = ScaleContinuous((double)sourceMaximum.Z + 1.0, pivot.Z, factorZ);
         var outputMinimum = new VoxelCoord64(
             FloorBound(lowerX),
             FloorBound(lowerY),
@@ -85,7 +92,9 @@ public static class VoxelRescaler
                 $"缩放后输出包围盒为 {sizeX}x{sizeY}x{sizeZ}，超过体素预算 {maximumOutputVoxels}，请降低缩放倍数");
         }
 
-        var inverse = 1.0 / factor;
+        var inverseX = 1.0 / factorX;
+        var inverseY = 1.0 / factorY;
+        var inverseZ = 1.0 / factorZ;
         var destination = new VoxelWorld();
         var writer = destination.CreateBulkWriter();
 
@@ -102,10 +111,10 @@ public static class VoxelRescaler
 
         for (var z = outputMinimum.Z; z <= outputMaximum.Z; z++)
         {
-            var sourceZ = MapAxis(z, pivot.Z, inverse, sourceMinimum.Z, sourceMaximum.Z);
+            var sourceZ = MapAxis(z, pivot.Z, inverseZ, sourceMinimum.Z, sourceMaximum.Z);
             for (var y = outputMinimum.Y; y <= outputMaximum.Y; y++)
             {
-                var sourceY = MapAxis(y, pivot.Y, inverse, sourceMinimum.Y, sourceMaximum.Y);
+                var sourceY = MapAxis(y, pivot.Y, inverseY, sourceMinimum.Y, sourceMaximum.Y);
                 for (var x = outputMinimum.X; x <= outputMaximum.X; x++)
                 {
                     processed++;
@@ -115,7 +124,7 @@ public static class VoxelRescaler
                         progress?.Invoke(written);
                     }
 
-                    var sourceX = MapAxis(x, pivot.X, inverse, sourceMinimum.X, sourceMaximum.X);
+                    var sourceX = MapAxis(x, pivot.X, inverseX, sourceMinimum.X, sourceMaximum.X);
                     var sourceCoordinate = new VoxelCoord64(sourceX, sourceY, sourceZ);
                     var (chunkCoordinate, localCoordinate) = VoxelWorld.Split(sourceCoordinate);
                     if (!hasCache || chunkCoordinate != cachedCoordinate)

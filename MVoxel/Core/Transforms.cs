@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 
 namespace MVoxel.Core;
 
@@ -307,6 +307,11 @@ public enum TransformMode
 /// </summary>
 public sealed class TransformComponent
 {
+    /// <summary>各轴整数缩放倍数。</summary>
+    public int ScaleX { get; set; } = 1;
+    public int ScaleY { get; set; } = 1;
+    public int ScaleZ { get; set; } = 1;
+
     private static readonly OrthogonalRotation[] VoxelRotations = BuildVoxelRotations();
     /// <summary>
     /// 用显式模式与两套值构造组件

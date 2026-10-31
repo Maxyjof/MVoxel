@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using MVoxel.Core;
 
@@ -30,7 +30,7 @@ public static class SceneComponentTypes
 
     public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
     [
-        new(Transform, "坐标", "基础", true),
+        new(Transform, "变换", "基础", true),
         new(VoxelModel, "模型", "体素", true),
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),

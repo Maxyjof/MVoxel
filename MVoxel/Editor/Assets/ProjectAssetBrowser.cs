@@ -172,13 +172,9 @@ internal sealed class ProjectAssetBrowser
     {
         if (project is not null)
         {
-            if (ImGui.Button("创建文件夹"))
+            if (ImGui.BeginPopupContextWindow("##资产空白菜单", ImGuiPopupFlags.MouseButtonRight | ImGuiPopupFlags.NoOpenOverItems))
             {
-                _newFolderName = string.Empty;
-                ImGui.OpenPopup("##创建资产文件夹");
-            }
-            if (ImGui.BeginPopup("##创建资产文件夹"))
-            {
+                ImGui.TextUnformatted("创建文件夹");
                 ImGui.SetNextItemWidth(Math.Max(180F, ImGui.GetFontSize() * 16F));
                 ImGui.InputTextWithHint("##新文件夹名", "文件夹名称", ref _newFolderName, 128);
                 if (ImGui.Button("创建"))
@@ -210,7 +206,6 @@ internal sealed class ProjectAssetBrowser
                 }
                 ImGui.EndPopup();
             }
-            ImGui.Separator();
         }
         var entries = CollectEntries(project);
         if (entries.Count == 0)

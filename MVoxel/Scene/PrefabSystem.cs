@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using MVoxel.Core;
 
 namespace MVoxel.Scene;
@@ -368,9 +368,11 @@ public static class PrefabSystem
     /// </summary>
     private static TransformComponent CloneTransform(TransformComponent transform)
     {
-        return transform.Mode == TransformMode.Grid
+        var copy = transform.Mode == TransformMode.Grid
             ? TransformComponent.FromGrid(transform.Grid)
             : TransformComponent.FromFree(transform.Free);
+        copy.ScaleX = transform.ScaleX; copy.ScaleY = transform.ScaleY; copy.ScaleZ = transform.ScaleZ;
+        return copy;
     }
 
     /// <summary>
