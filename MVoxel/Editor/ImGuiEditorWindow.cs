@@ -972,7 +972,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     ImGuiWindowFlags.NoNavFocus | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelDockspaceHost", flags);
         ImGui.DockSpace(MainDockspaceId, Vector2.Zero,
-            ImGuiDockNodeFlags.PassthruCentralNode | ImGuiDockNodeFlags.AutoHideTabBar);
+            ImGuiDockNodeFlags.PassthruCentralNode);
         ImGui.End();
     }
 
