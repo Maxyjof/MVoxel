@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text.Json;
 using ImGuiNET;
 using MVoxel.Core;
@@ -614,7 +614,7 @@ internal partial class ImGuiEditorWindow
 
             _sceneDocument = document;
             // 地形对象已在后台完成树体素回填，直接就是完整工作世界，免去整世界复制
-            _world = result.Terrain;
+            LoadObjectVoxelWorlds(_project!);
             _voxelHistory.Clear();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());

@@ -184,8 +184,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsLight);
             if (component is null || !component.Enabled || !IsSceneObjectVisible(sceneObject)) continue;
-            if (!RenderWorldComposer.LayerAllowed(cullingMask, sceneObject.LayerIndex) ||
-                !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex)) continue;
+            if (!RenderWorldComposer.LayerAllowed(cullingMask, sceneObject.LayerIndex)) continue;
             var data = SceneComponentTypes.ReadLight(component);
             var position = GetObjectWorldPosition(sceneObject);
             var direction = GetObjectWorldForward(sceneObject);

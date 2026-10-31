@@ -1,4 +1,4 @@
-using ImGuiNET;
+﻿using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Scene;
 using MVoxel.Voxels;
@@ -44,10 +44,12 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_project is null || _sceneDocument is null) return;
         var selected = GetSelectedSceneObject();
+        if (selected is not null && !_sceneDocument.IsLayerVisible(selected.LayerIndex)) selected = null;
         foreach (var sceneObject in _sceneDocument.Objects)
         {
             var lightComponent = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsLight);
-            if (lightComponent is null || !IsSceneObjectVisible(sceneObject)) continue;
+            if (lightComponent is null || !IsSceneObjectVisible(sceneObject) ||
+                !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex)) continue;
             var selectedLight = selected?.Id == sceneObject.Id;
             if (!selectedLight)
             {
@@ -292,7 +294,7 @@ internal sealed partial class ImGuiEditorWindow
 
         foreach (var sceneObject in _sceneDocument.Objects)
         {
-            if (!IsSceneObjectVisible(sceneObject) ||
+            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
                 !sceneObject.Components.Any(SceneComponentTypes.IsLight)) continue;
             if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera,
                     out var screen, out _) || Vector2.Distance(mouse, screen) > 12F) continue;
@@ -300,7 +302,7 @@ internal sealed partial class ImGuiEditorWindow
             return true;
         }
 
-        if (selected is null) return false;
+        if (selected is null || !_sceneDocument.IsLayerVisible(selected.LayerIndex)) return false;
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
@@ -441,6 +443,8 @@ internal sealed partial class ImGuiEditorWindow
             var component = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
             if (component is null) return;
             var factor = SceneComponentTypes.ReadVoxelModel(component).Scale;
+            SceneComponentTypes.WriteVoxelModel(component,
+                SceneComponentTypes.ReadVoxelModel(component) with { Scale = _sceneGizmoDragStartValue });
             if (MathF.Abs(factor - _sceneGizmoDragStartValue) > 0.01F) ApplyModelScale(selected, factor);
             return;
         }
@@ -465,32 +469,16 @@ internal sealed partial class ImGuiEditorWindow
     private void MoveModelObjectByGrid(SceneObject sceneObject, VoxelCoord64 delta)
     {
         if (delta == VoxelCoord64.Zero) return;
-        var primary = IsPrimaryModelObject(sceneObject);
-        var owned = CollectOwnedUnion();
-        var cells = new List<(VoxelCoord64 Coordinate, VoxelValue Value)>();
-        if (primary)
-        {
-            foreach (var cell in _world.EnumerateOccupied())
-                if (!owned.Contains(cell.Coordinate)) cells.Add(cell);
-        }
-        else if (_layerOwnership.TryGetValue(sceneObject.Id, out var layerCells))
-        {
-            foreach (var coordinate in layerCells)
-                if (_world.TryGet(coordinate, out var value)) cells.Add((coordinate, value));
-        }
-
-        foreach (var (coordinate, _) in cells) _world.Remove(coordinate);
-        if (!primary) _layerOwnership[sceneObject.Id] = new HashSet<VoxelCoord64>();
-        foreach (var (coordinate, value) in cells)
-        {
-            var target = coordinate + delta;
-            if (_layerOwnership.Any(entry => entry.Key != sceneObject.Id && entry.Value.Contains(target))) continue;
-            _world.Set(target, value);
-            if (!primary) _layerOwnership[sceneObject.Id].Add(target);
-        }
-
-        sceneObject.Transform.SetGrid(new GridTransform(
-            sceneObject.Transform.Grid.Position + delta, sceneObject.Transform.Grid.Rotation));
+        var before = sceneObject.Transform.Grid;
+        var after = new GridTransform(before.Position + delta, before.Rotation);
+        var command = _objectVoxels.CreateTransform(sceneObject.Id, "移动模型", coordinate => coordinate + delta,
+            forward =>
+            {
+                sceneObject.Transform.SetGrid(forward ? after : before);
+                UpdateTransformMarker(sceneObject);
+                RebuildObjectVoxelWorld();
+            });
+        _voxelHistory.Execute(command);
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
@@ -504,22 +492,8 @@ internal sealed partial class ImGuiEditorWindow
         var pivot = new Vector3(
             (minimum.X + maximum.X) * 0.5F, (minimum.Y + maximum.Y) * 0.5F, (minimum.Z + maximum.Z) * 0.5F);
         var rotated = new VoxelWorld();
-        var primary = IsPrimaryModelObject(sceneObject);
-        var owned = CollectOwnedUnion();
-        if (primary)
-        {
-            foreach (var cell in _world.EnumerateOccupied())
-            {
-                if (owned.Contains(cell.Coordinate)) continue;
-                rotated.Set(RotateCoordinate(cell.Coordinate, pivot, axisIndex), cell.Value);
-            }
-        }
-        else if (_layerOwnership.TryGetValue(sceneObject.Id, out var layerCells))
-        {
-            foreach (var coordinate in layerCells)
-                if (_world.TryGet(coordinate, out var value))
-                    rotated.Set(RotateCoordinate(coordinate, pivot, axisIndex), value);
-        }
+        foreach (var cell in _objectVoxels.GetOrCreate(sceneObject.Id).EnumerateOccupied())
+            rotated.Set(RotateCoordinate(cell.Coordinate, pivot, axisIndex), cell.Value);
 
         if (!rotated.TryGetBounds(out var newMinimum, out _)) return;
         var newRotation = sceneObject.Transform.Grid.Rotation.Compose(AxisRotation(axisIndex));
@@ -576,40 +550,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool TryGetObjectCellBounds(SceneObject sceneObject, out VoxelCoord64 minimum, out VoxelCoord64 maximum)
     {
-        minimum = VoxelCoord64.Zero;
-        maximum = VoxelCoord64.Zero;
-        var first = true;
-        var primary = IsPrimaryModelObject(sceneObject);
-        var owned = CollectOwnedUnion();
-        IEnumerable<VoxelCoord64> Coordinates()
-        {
-            if (primary)
-            {
-                foreach (var cell in _world.EnumerateOccupied())
-                    if (!owned.Contains(cell.Coordinate)) yield return cell.Coordinate;
-                yield break;
-            }
-
-            if (_layerOwnership.TryGetValue(sceneObject.Id, out var cells))
-                foreach (var coordinate in cells) yield return coordinate;
-        }
-
-        foreach (var coordinate in Coordinates())
-        {
-            if (first)
-            {
-                minimum = maximum = coordinate;
-                first = false;
-                continue;
-            }
-
-            minimum = new VoxelCoord64(Math.Min(minimum.X, coordinate.X), Math.Min(minimum.Y, coordinate.Y),
-                Math.Min(minimum.Z, coordinate.Z));
-            maximum = new VoxelCoord64(Math.Max(maximum.X, coordinate.X), Math.Max(maximum.Y, coordinate.Y),
-                Math.Max(maximum.Z, coordinate.Z));
-        }
-
-        return !first;
+        return _objectVoxels.GetOrCreate(sceneObject.Id).TryGetBounds(out minimum, out maximum);
     }
     private bool TryGetSelectedLightRangeHandle(Vector2 origin, Vector2 size, SceneCamera camera,
         SceneObject sceneObject, out Vector2 screen)

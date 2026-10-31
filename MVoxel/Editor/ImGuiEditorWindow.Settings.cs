@@ -187,6 +187,15 @@ internal sealed partial class ImGuiEditorWindow
         else SaveProjectSettings();
     }
 
+    private static string RenderPresetKey(ProjectHandle project, string path)
+    {
+        var relative = Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/');
+        var withoutExtension = relative[..^Path.GetExtension(relative).Length];
+        return withoutExtension.StartsWith("RenderPresets/", StringComparison.OrdinalIgnoreCase) &&
+               !withoutExtension["RenderPresets/".Length..].Contains('/')
+            ? withoutExtension["RenderPresets/".Length..] : withoutExtension;
+    }
+
     private IReadOnlyList<string> GetProjectRenderPresetNames()
     {
         var names = new List<string> { "默认" };
@@ -195,15 +204,15 @@ internal sealed partial class ImGuiEditorWindow
 
         try
         {
-            var directory = Path.Combine(_project.AssetsPath, "RenderPresets");
+            var directory = _project.AssetsPath;
             if (Directory.Exists(directory))
             {
-                foreach (var path in Directory.EnumerateFiles(directory)
+                foreach (var path in Directory.EnumerateFiles(directory, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true })
                              .Where(path => string.Equals(Path.GetExtension(path), ".mvrenderpreset", StringComparison.OrdinalIgnoreCase) ||
                                             string.Equals(Path.GetExtension(path), ".mvrender", StringComparison.OrdinalIgnoreCase))
                              .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
                 {
-                    var name = Path.GetFileNameWithoutExtension(path);
+                    var name = RenderPresetKey(_project, path);
                     if (!string.IsNullOrWhiteSpace(name) &&
                         !names.Contains(name, StringComparer.OrdinalIgnoreCase))
                         names.Add(name);
@@ -239,11 +248,11 @@ internal sealed partial class ImGuiEditorWindow
             }
             else
             {
-                var directory = Path.Combine(_project.AssetsPath, "RenderPresets");
-                var path = Directory.EnumerateFiles(directory)
+                var directory = _project.AssetsPath;
+                var path = Directory.EnumerateFiles(directory, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true })
                     .Where(candidate => string.Equals(Path.GetExtension(candidate), ".mvrenderpreset", StringComparison.OrdinalIgnoreCase) ||
                                         string.Equals(Path.GetExtension(candidate), ".mvrender", StringComparison.OrdinalIgnoreCase))
-                    .FirstOrDefault(candidate => string.Equals(Path.GetFileNameWithoutExtension(candidate), name, StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(candidate => string.Equals(RenderPresetKey(_project, candidate), name, StringComparison.OrdinalIgnoreCase));
                 if (path is null)
                 {
                     SetStatus($"渲染预设不存在：{name}");
@@ -1128,9 +1137,42 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _ = newLayerName;
+        ImGui.Separator();
+        ImGui.TextUnformatted("排序图层");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("列表由低到高决定同一坐标的模型显示优先级。");
+        for (var i = 0; i < document.SortingLayerNames.Count; i++)
+        {
+            ImGui.PushID($"SortingLayer{i}");
+            var name = document.SortingLayerNames[i];
+            ImGui.SetNextItemWidth(160F);
+            if (ImGui.InputText("##排序图层名", ref name, 32) && document.RenameSortingLayer(i, name))
+                MarkSceneDocumentDirty();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("↑") && document.MoveSortingLayer(i, -1)) MarkSceneDocumentDirty();
+            ImGui.SameLine();
+            if (ImGui.SmallButton("↓") && document.MoveSortingLayer(i, 1)) MarkSceneDocumentDirty();
+            ImGui.SameLine();
+            ImGui.BeginDisabled(document.SortingLayerNames[i] == "默认");
+            if (ImGui.SmallButton("删除") && document.RemoveSortingLayer(i)) MarkSceneDocumentDirty();
+            ImGui.EndDisabled();
+            ImGui.PopID();
+        }
+        ImGui.SetNextItemWidth(160F);
+        ImGui.InputText("##新排序图层名", ref _newSortingLayerName, 32);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("新增排序图层"))
+        {
+            if (document.AddSortingLayer(_newSortingLayerName))
+            {
+                _newSortingLayerName = string.Empty;
+                MarkSceneDocumentDirty();
+            }
+            else SetStatus("新增排序图层失败：名称为空或重复");
+        }
     }
 
     private string _newLayerName = string.Empty;
+    private string _newSortingLayerName = string.Empty;
 
     private void DrawProjectAssetSettings()
     {

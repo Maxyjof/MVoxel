@@ -161,7 +161,13 @@ public static class VoxelFlags
 /// </summary>
 public sealed class SparseVoxelChunk
 {
-    private readonly Dictionary<int, VoxelValue> _voxels = new();
+    private readonly Dictionary<int, VoxelValue> _voxels;
+
+    public SparseVoxelChunk() => _voxels = new Dictionary<int, VoxelValue>();
+
+    private SparseVoxelChunk(Dictionary<int, VoxelValue> voxels) => _voxels = voxels;
+
+    internal SparseVoxelChunk Clone() => new(new Dictionary<int, VoxelValue>(_voxels));
 
     /// <summary>
     /// 本区块已占用的体素数
@@ -405,6 +411,17 @@ public sealed class VoxelWorld
         }
 
         return list;
+    }
+
+    /// <summary>
+    /// 复制全部区块，副本和原世界可独立修改
+    /// </summary>
+    internal VoxelWorld Clone()
+    {
+        var copy = new VoxelWorld();
+        foreach (var (coordinate, chunk) in _chunks)
+            copy.AdoptChunk(coordinate, chunk.Clone());
+        return copy;
     }
 
     /// <summary>

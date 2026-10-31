@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using ImGuiNET;
 
 namespace MVoxel.Editor;
@@ -34,7 +34,7 @@ internal sealed class ProjectLocationForm
             ImGui.OpenPopup("选择项目保存位置");
         }
         ImGui.SetNextWindowSize(new Vector2(620F, 450F), ImGuiCond.Appearing);
-        if (ImGui.BeginPopupModal("选择项目保存位置", ImGuiWindowFlags.AlwaysAutoResize))
+        if (CenteredModal.Begin("选择项目保存位置", ImGuiWindowFlags.AlwaysAutoResize))
         {
             ImGui.TextWrapped(_browsePath);
             if (ImGui.Button("上一级")) Navigate(Path.GetDirectoryName(_browsePath) ?? _browsePath);

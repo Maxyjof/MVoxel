@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -58,7 +58,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _hierarchySearch = string.Empty;
 
     /// <summary>层级面板的图层过滤，-1 表示全部图层</summary>
-    private int _hierarchyLayerFilter = -1;
     private string _newSceneLayerName = string.Empty;
     private int _renamingSceneLayer = -1;
     private string _sceneLayerRenameBuffer = string.Empty;
@@ -982,33 +981,6 @@ DockId=0x6A3C3007,0
         ImGui.TextDisabled(_project is null ? "未打开项目" : Path.GetFileNameWithoutExtension(_activeSceneRelativePath));
         ImGui.SetNextItemWidth(-1F);
         ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
-        ImGui.TextDisabled("图层筛选");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(-1F);
-        var filterLayers = _sceneDocument?.LayerNames ?? ["默认"];
-        if (_hierarchyLayerFilter >= filterLayers.Count)
-        {
-            _hierarchyLayerFilter = -1;
-        }
-
-        if (ImGui.BeginCombo("##层级图层过滤", _hierarchyLayerFilter < 0 ? "全部图层" : filterLayers[_hierarchyLayerFilter]))
-        {
-            if (ImGui.Selectable("全部图层", _hierarchyLayerFilter < 0))
-            {
-                _hierarchyLayerFilter = -1;
-            }
-
-            for (var layerIndex = 0; layerIndex < filterLayers.Count; layerIndex++)
-            {
-                if (ImGui.Selectable($"{layerIndex + 1}. {filterLayers[layerIndex]}", _hierarchyLayerFilter == layerIndex))
-                {
-                    _hierarchyLayerFilter = layerIndex;
-                }
-            }
-
-            ImGui.EndCombo();
-        }
-
         ImGui.Separator();
         if (_project is null)
         {
@@ -1037,86 +1009,6 @@ DockId=0x6A3C3007,0
             }
         }
 
-        ImGui.Separator();
-        var layerCount = _sceneDocument?.LayerNames.Count ?? 0;
-        if (ImGui.CollapsingHeader($"图层（{layerCount}）", ImGuiTreeNodeFlags.None) &&
-            _sceneDocument is { } layerDocument)
-        {
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景图层控制对象可见性与过滤，最多 32 层");
-            ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 66F));
-            ImGui.InputTextWithHint("##新建场景图层", "新图层名称", ref _newSceneLayerName, 64);
-            ImGui.SameLine();
-            if (ImGui.SmallButton("添加##新场景图层"))
-            {
-                var added = layerDocument.AddLayer(_newSceneLayerName);
-                if (added >= 0)
-                {
-                    _newSceneLayerName = string.Empty;
-                    MarkSceneDocumentDirty();
-                    SetStatus($"已添加图层：{layerDocument.LayerNames[added]}");
-                }
-                else SetStatus("图层名称为空、重复或已达到 32 层上限");
-            }
-
-            var layerUsageCounts = layerDocument.LayerUsageCounts();
-            for (var i = 0; i < layerDocument.LayerNames.Count; i++)
-            {
-                ImGui.PushID($"LayerRow{i}");
-                var visible = layerDocument.IsLayerVisible(i);
-                if (ImGui.Checkbox("##图层显隐", ref visible))
-                {
-                    layerDocument.SetLayerVisible(i, visible);
-                    MarkSceneDocumentDirty();
-                    _pipeline?.ResetAccumulation();
-                    _accumulationSignature = string.Empty;
-                }
-                ImGui.SameLine();
-                ImGui.TextUnformatted($"{layerDocument.LayerNames[i]} ({layerUsageCounts[i]})");
-                ImGui.SameLine();
-                ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - 42F));
-                var removeLayer = false;
-                if (ImGui.SmallButton("...##图层操作")) ImGui.OpenPopup("##图层操作菜单");
-                if (ImGui.BeginPopup("##图层操作菜单"))
-                {
-                    if (ImGui.MenuItem("重命名"))
-                    {
-                        _renamingSceneLayer = i;
-                        _sceneLayerRenameBuffer = layerDocument.LayerNames[i];
-                    }
-                    if (i > 0)
-                    {
-                        if (ImGui.MenuItem("上移", null, false, i > 1) && layerDocument.MoveLayer(i, -1)) MarkSceneDocumentDirty();
-                        if (ImGui.MenuItem("下移", null, false, i < layerDocument.LayerNames.Count - 1) && layerDocument.MoveLayer(i, 1)) MarkSceneDocumentDirty();
-                        ImGui.Separator();
-                        removeLayer = ImGui.MenuItem("删除图层");
-                    }
-                    ImGui.EndPopup();
-                }
-
-                if (_renamingSceneLayer == i)
-                {
-                    ImGui.SetNextItemWidth(Math.Max(90F, ImGui.GetContentRegionAvail().X - 95F));
-                    ImGui.InputText("##图层新名称", ref _sceneLayerRenameBuffer, 64);
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("确定##图层改名"))
-                    {
-                        if (layerDocument.RenameLayer(i, _sceneLayerRenameBuffer)) MarkSceneDocumentDirty();
-                        else SetStatus("图层名称不能为空或与其他图层重复");
-                        _renamingSceneLayer = -1;
-                    }
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("取消##图层改名")) _renamingSceneLayer = -1;
-                }
-                if (removeLayer && layerDocument.RemoveLayer(i))
-                {
-                    if (_hierarchyLayerFilter == i) _hierarchyLayerFilter = -1;
-                    else if (_hierarchyLayerFilter > i) _hierarchyLayerFilter--;
-                    MarkSceneDocumentDirty();
-                }
-                ImGui.PopID();
-            }
-        }
-
         ImGui.End();
     }
 
@@ -1124,8 +1016,7 @@ DockId=0x6A3C3007,0
     {
         var searchMatched = string.IsNullOrWhiteSpace(_hierarchySearch) ||
             sceneObject.Name.Contains(_hierarchySearch.Trim(), StringComparison.CurrentCultureIgnoreCase);
-        var layerMatched = _hierarchyLayerFilter < 0 || sceneObject.LayerIndex == _hierarchyLayerFilter;
-        if (searchMatched && layerMatched)
+        if (searchMatched)
             return true;
         return objects.Where(item => item.ParentId == sceneObject.Id)
             .Any(child => MatchesHierarchySearch(child, objects));
@@ -1429,7 +1320,7 @@ DockId=0x6A3C3007,0
             if (_showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
             if (showVoxelWorld && _project is not null)
                 DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
-                    GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)));
+                    GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
         }
 
         if (!_screenColorSampling && _project is not null && !gizmoHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
@@ -1523,7 +1414,7 @@ DockId=0x6A3C3007,0
 
         ImGui.SameLine(0F, spacing);
         var used = ImGui.GetCursorPosX() - left;
-        var rightStart = MathF.Max(used, available - buttonWidth * 3F - spacing * 2F);
+        var rightStart = MathF.Max(used, available - buttonWidth * 4F - spacing * 3F);
         if (rightStart < used + spacing)
         {
             ImGui.NewLine();
@@ -1531,6 +1422,16 @@ DockId=0x6A3C3007,0
         }
 
         ImGui.SetCursorPosX(left + rightStart);
+
+        if (SceneToolbarButton("图层##SceneLayers", ImGui.IsPopupOpen("##SceneLayersPopup"),
+                buttonWidth, buttonHeight, "管理图层并设置场景窗口可见性，不影响相机的图层遮罩。"))
+            ImGui.OpenPopup("##SceneLayersPopup");
+        if (ImGui.BeginPopup("##SceneLayersPopup"))
+        {
+            DrawSceneLayers();
+            ImGui.EndPopup();
+        }
+        ImGui.SameLine(0F, spacing);
 
         if (SceneToolbarButton("切面查看##SceneSlice", _sceneSliceEnabled, buttonWidth, buttonHeight,
                 "非破坏性切面，仅影响场景窗口；启用后可选择轴和位置。"))
@@ -2869,6 +2770,7 @@ DockId=0x6A3C3007,0
         }
 
         var inspectorBefore = SceneSerializer.CloneObject(selectedObject);
+        var inspectorUndoCount = _voxelHistory.UndoCount;
 
         var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
                                      selectedObject.Components.Any(SceneComponentTypes.IsCamera);
@@ -3159,7 +3061,7 @@ DockId=0x6A3C3007,0
             }
 
         var inspectorAfter = SceneSerializer.CloneObject(selectedObject);
-        if (!SceneSerializer.ObjectsEqual(inspectorBefore, inspectorAfter))
+        if (_voxelHistory.UndoCount == inspectorUndoCount && !SceneSerializer.ObjectsEqual(inspectorBefore, inspectorAfter))
         {
             _voxelHistory.RecordExecuted(new SceneObjectStateCommand(
                 selectedObject,
@@ -3279,13 +3181,14 @@ DockId=0x6A3C3007,0
     /// <summary>
     /// 绘制 Unity 风格的体素资产引用字段。字段本身不是文本框，资产路径只能通过项目中的可用资产选择。
     /// </summary>
-    private bool DrawVoxelModelReference(string current, out string selected)
+    private unsafe bool DrawVoxelModelReference(string current, bool hasEmbeddedData, out string selected, out bool extractRequested)
     {
         selected = current;
+        extractRequested = false;
         var references = GetVoxelModelReferences();
         var known = references.Any(path => string.Equals(path, current, StringComparison.OrdinalIgnoreCase));
         var display = string.IsNullOrWhiteSpace(current)
-            ? "无引用（选择体素资产）"
+            ? hasEmbeddedData ? "内嵌数据" : "无引用（选择体素资产）"
             : known
                 ? Path.GetFileNameWithoutExtension(current)
                 : $"丢失引用 · {Path.GetFileName(current)}";
@@ -3332,6 +3235,22 @@ DockId=0x6A3C3007,0
             ImGui.EndCombo();
         }
 
+        if (ImGui.BeginDragDropTarget())
+        {
+            var payload = ImGui.AcceptDragDropPayload("MVoxelVoxelAsset");
+            if (payload.NativePtr != null && !string.IsNullOrEmpty(_assetBrowser.DraggingVoxelAssetPath))
+            {
+                selected = "Assets/" + _assetBrowser.DraggingVoxelAssetPath;
+                changed = true;
+            }
+            ImGui.EndDragDropTarget();
+        }
+        if (hasEmbeddedData && string.IsNullOrWhiteSpace(current) &&
+            ImGui.BeginPopupContextItem("##EmbeddedVoxelMenu"))
+        {
+            extractRequested = ImGui.MenuItem("提取体素数据…");
+            ImGui.EndPopup();
+        }
         if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(current))
             ImGui.SetTooltip(known ? current : "引用的体素资产不存在，请重新选择。");
         return changed;
@@ -3417,12 +3336,40 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsVoxelModel(component))
         {
             var data = SceneComponentTypes.ReadVoxelModel(component);
-            BeginInspectorField("模型", "对象引用的体素资产；点击字段后从项目资产中选择，不能直接输入路径。");
-            var changed = DrawVoxelModelReference(data.Model, out var model);
+            BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。右键内嵌数据可提取。");
+            var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
+                (EmbeddedVoxelData.HasData(component) || _objectVoxels.GetOrCreate(selectedObject.Id).OccupiedVoxelCount > 0);
+            var changed = DrawVoxelModelReference(data.Model, hasEmbeddedData, out var model, out var extractRequested);
+            if (extractRequested) ExtractEmbeddedVoxelData(selectedObject, component);
+            BeginInspectorField("排序图层", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
+            var sortingLayer = data.SortingLayer;
+            if (_sceneDocument is { } sortingDocument && ImGui.BeginCombo("##VoxelSortingLayer", sortingLayer))
+            {
+                foreach (var layer in sortingDocument.SortingLayerNames)
+                {
+                    if (ImGui.Selectable(layer, layer == sortingLayer))
+                    {
+                        data = data with { SortingLayer = layer };
+                        SceneComponentTypes.WriteVoxelModel(component, data);
+                        MarkSceneDocumentDirty();
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            BeginInspectorField("排序顺序", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
+            var sortingOrder = data.SortingOrder;
+            if (ImGui.InputInt("##VoxelSortingOrder", ref sortingOrder))
+            {
+                data = data with { SortingOrder = sortingOrder };
+                SceneComponentTypes.WriteVoxelModel(component, data);
+                MarkSceneDocumentDirty();
+            }
             BeginInspectorField("部件", "引用资产中的部件信息；由资产数据提供，不能直接输入字符串。");
             ImGui.TextDisabled(string.IsNullOrWhiteSpace(data.Part) ? "默认部件" : data.Part);
             BeginInspectorField("体素数量", "当前模型包含的体素数量。");
-            ImGui.TextDisabled($"{data.VoxelCount:N0}");
+            var voxelCount = _objectVoxels.TryGetWorld(selectedObject.Id, out var objectWorld)
+                ? objectWorld.OccupiedVoxelCount : data.VoxelCount;
+            ImGui.TextDisabled($"{voxelCount:N0}");
             BeginInspectorField("模板", "生成当前模型的示例模板名称。");
             ImGui.TextDisabled(data.Template switch { "" => "未指定", _ => data.Template });
             BeginInspectorField("缩放", "按倍数从原始模型重采样；缩小后体素数量减少，重置可恢复原始数据。");
@@ -3450,9 +3397,7 @@ DockId=0x6A3C3007,0
 
             if (changed)
             {
-                SceneComponentTypes.WriteVoxelModel(component,
-                    data with { Model = model });
-                MarkSceneDocumentDirty();
+                ApplyVoxelModelReference(selectedObject, component, model);
             }
             return;
         }
@@ -3560,12 +3505,8 @@ DockId=0x6A3C3007,0
     private void RotateModel(SceneObject sceneObject, OrthogonalRotation rotation)
     {
         if (sceneObject.Transform.Mode != TransformMode.Grid) return;
-        var current = sceneObject.Transform.Grid;
-        sceneObject.Transform.SetGrid(new GridTransform(current.Position, current.Rotation.Compose(rotation)));
-        UpdateTransformMarker(sceneObject);
-        MarkSceneDocumentDirty();
-        _componentWarning = null;
-        _pipeline?.ResetAccumulation();
+        RotateModelObjectBy90(sceneObject, rotation.Equals(OrthogonalRotation.AroundX90) ? 0 :
+            rotation.Equals(OrthogonalRotation.AroundY90) ? 1 : 2);
     }
 
     private static void UpdateTransformMarker(SceneObject sceneObject)
@@ -3595,7 +3536,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染配置##渲染配置窗口", ref _showRenderConfig, PanelWindowFlags))
+        if (!ImGui.Begin("渲染配置##渲染配置窗口", PanelWindowFlags))
         {
             _requestedInspectorTab = null;
         }
@@ -3709,7 +3650,7 @@ DockId=0x6A3C3007,0
             }
 
             updatedReferences += AssetReferences.UpdatePrefabReferences(
-                Path.Combine(_project.AssetsPath, "Prefabs"), oldPath, newPath);
+                _project.AssetsPath, oldPath, newPath);
             SetStatus(updatedReferences > 0
                 ? $"已跟随更新 {updatedReferences} 处对 {oldPath} 的引用"
                 : $"移动完成；未发现对 {oldPath} 的引用，请检查外部引用是否断链");
@@ -4171,7 +4112,13 @@ DockId=0x6A3C3007,0
         const string main = "Scenes/主场景.mvox";
         var example = "Scenes/" + ExampleSceneTemplate.FileName;
         if (File.Exists(Path.Combine(project.AssetsPath, main.Replace('/', Path.DirectorySeparatorChar)))) return main;
-        return File.Exists(Path.Combine(project.AssetsPath, example.Replace('/', Path.DirectorySeparatorChar))) ? example : main;
+        if (File.Exists(Path.Combine(project.AssetsPath, example.Replace('/', Path.DirectorySeparatorChar)))) return example;
+        if (!Directory.Exists(project.AssetsPath)) return main;
+        var found = Directory.EnumerateFiles(project.AssetsPath, "*.mvox", new EnumerationOptions
+        {
+            RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true,
+        }).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+        return found is null ? main : Path.GetRelativePath(project.AssetsPath, found).Replace('\\', '/');
     }
 
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null)
@@ -4252,6 +4199,7 @@ DockId=0x6A3C3007,0
         ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();
+        _objectVoxels.Clear();
         _editingJournal = null;
         _voxelHistory.Clear();
         _selectedVoxel = null;
@@ -4278,7 +4226,7 @@ DockId=0x6A3C3007,0
             _exitConfirmationRequested = false;
         }
 
-        if (!ImGui.BeginPopupModal("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        if (!CenteredModal.Begin("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
         ImGui.TextWrapped("当前项目有未保存的修改。退出前要保存吗？");
         ImGui.Spacing();
         if (ImGui.Button("保存并退出", new Vector2(120F, 30F)))
@@ -4324,7 +4272,7 @@ DockId=0x6A3C3007,0
             _closeProjectDialogRequested = false;
         }
 
-        if (!ImGui.BeginPopupModal("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        if (!CenteredModal.Begin("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
         ImGui.TextWrapped("当前场景有未保存修改。请选择如何处理这些修改。");
         ImGui.Spacing();
         if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
@@ -4403,7 +4351,7 @@ DockId=0x6A3C3007,0
             }
 
             RecoveryStore.Write(_project.RootPath,
-                Scene.SceneSerializer.ToJson(_sceneDocument ?? new Scene.SceneDocument { Name = "主场景" }),
+                CreateObjectRecoveryJson(),
                 worldModelSource: null);
             _editingJournal?.Clear();
             _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
@@ -4425,7 +4373,8 @@ DockId=0x6A3C3007,0
         try
         {
             var restored = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
-            if (File.Exists(snapshot.WorldModelPath))
+            if (!restored.Objects.SelectMany(item => item.Components).Any(EmbeddedVoxelData.HasData) &&
+                File.Exists(snapshot.WorldModelPath))
             {
                 _world = Voxels.LargeWorldFormat.Read(snapshot.WorldModelPath);
                 // 快照之后的事务重放：日志逐格还原未落盘的编辑，还原后清空日志
@@ -4447,6 +4396,7 @@ DockId=0x6A3C3007,0
             }
 
             _sceneDocument = restored;
+            LoadObjectVoxelWorlds(project);
             _voxelHistory.Clear();
             MarkSceneDocumentDirty();
             SetStatus($"已从恢复区还原未保存工作（{snapshot.SavedAt.ToLocalTime():MM-dd HH:mm}），确认无误后请正式保存");
@@ -4581,6 +4531,7 @@ DockId=0x6A3C3007,0
             target.ParentId = source.ParentId;
             target.Visible = source.Visible;
             target.Locked = source.Locked;
+            target.LayerIndex = source.LayerIndex;
             target.Transform = source.Transform;
             target.Components = source.Components.Select(component => new ComponentRecord
             {

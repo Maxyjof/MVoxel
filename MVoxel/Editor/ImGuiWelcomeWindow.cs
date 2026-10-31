@@ -1,4 +1,4 @@
-using ImGuiNET;
+﻿using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Editor.Rendering;
@@ -375,7 +375,7 @@ internal sealed class ImGuiWelcomeContent
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         if (_pathMode == 1) flags |= ImGuiWindowFlags.AlwaysAutoResize;
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 24F));
-        if (ImGui.BeginPopupModal("##WelcomeProjectPathDialog", flags))
+        if (CenteredModal.Begin("##WelcomeProjectPathDialog", flags))
         {
             var draw = ImGui.GetWindowDrawList();
             var window = ImGui.GetWindowPos();

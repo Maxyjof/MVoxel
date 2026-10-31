@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Diagnostics;
 using ImGuiNET;
 using MVoxel.Editor.Assets;
@@ -19,6 +19,7 @@ internal sealed class ProjectAssetBrowser
     private string _selectedFolder = string.Empty;
     private string _selectedAsset = string.Empty;
     private string _searchText = string.Empty;
+    private string _newFolderName = string.Empty;
     private ProjectAssetKind? _filter;
     private bool _searchAll = true;
     private float _tileSize = 76F;
@@ -47,6 +48,7 @@ internal sealed class ProjectAssetBrowser
     private bool _openMoveDialog;
 
     internal string SelectedAssetPath => _selectedAsset;
+    internal string DraggingVoxelAssetPath { get; private set; } = string.Empty;
 
     internal void SelectAsset(string relativePath)
     {
@@ -168,6 +170,48 @@ internal sealed class ProjectAssetBrowser
         Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
         Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null)
     {
+        if (project is not null)
+        {
+            if (ImGui.Button("创建文件夹"))
+            {
+                _newFolderName = string.Empty;
+                ImGui.OpenPopup("##创建资产文件夹");
+            }
+            if (ImGui.BeginPopup("##创建资产文件夹"))
+            {
+                ImGui.SetNextItemWidth(Math.Max(180F, ImGui.GetFontSize() * 16F));
+                ImGui.InputTextWithHint("##新文件夹名", "文件夹名称", ref _newFolderName, 128);
+                if (ImGui.Button("创建"))
+                {
+                    var name = _newFolderName.Trim();
+                    if (name.Length == 0 || name is "." or ".." ||
+                        name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.'))
+                        reportStatus("文件夹名称无效");
+                    else
+                    {
+                        try
+                        {
+                            var relative = CombineRelative(_selectedFolder, name);
+                            var path = ResolveAssetPath(project, relative);
+                            if (path is null || Directory.Exists(path) || File.Exists(path))
+                                reportStatus("文件夹已存在或路径无效");
+                            else
+                            {
+                                Directory.CreateDirectory(path);
+                                reportStatus($"已创建文件夹：{relative}");
+                                ImGui.CloseCurrentPopup();
+                            }
+                        }
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+                        {
+                            reportStatus($"创建文件夹失败：{exception.Message}");
+                        }
+                    }
+                }
+                ImGui.EndPopup();
+            }
+            ImGui.Separator();
+        }
         var entries = CollectEntries(project);
         if (entries.Count == 0)
         {
@@ -231,6 +275,21 @@ internal sealed class ProjectAssetBrowser
                 openGeneratorRequest?.Invoke(entry.RelativePath);
             }
 
+            if (!entry.IsFolder && entry.Kind == ProjectAssetKind.VoxelModel &&
+                (entry.RelativePath.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
+                 entry.RelativePath.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase)) &&
+                ImGui.BeginDragDropSource())
+            {
+                DraggingVoxelAssetPath = entry.RelativePath;
+                unsafe
+                {
+                    var marker = 1;
+                    ImGui.SetDragDropPayload("MVoxelVoxelAsset", (nint)(&marker), sizeof(int));
+                }
+                ImGui.TextUnformatted(entry.DisplayName);
+                ImGui.EndDragDropSource();
+            }
+
             if (ImGui.BeginPopupContextItem("##资源右键菜单"))
             {
                 _selectedAsset = entry.RelativePath;
@@ -275,22 +334,22 @@ internal sealed class ProjectAssetBrowser
                 {
                     openGeneratorRequest?.Invoke(entry.RelativePath);
                 }
-                if (entry.IsFolder && entry.RelativePath.Equals("Generators", StringComparison.OrdinalIgnoreCase) &&
+                if (entry.IsFolder &&
                     ImGui.MenuItem("新建生成器（JavaScript）"))
                 {
-                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, false);
+                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, false, entry.RelativePath);
                 }
-                if (entry.IsFolder && entry.RelativePath.Equals("Generators", StringComparison.OrdinalIgnoreCase) &&
+                if (entry.IsFolder &&
                     ImGui.MenuItem("新建生成器（Lua）"))
                 {
-                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, true);
+                    CreateGeneratorAsset(project, reportStatus, assetChanged, openGeneratorRequest, true, entry.RelativePath);
                 }
                 if (ImGui.MenuItem("在资源管理器中打开"))
                     RevealInExplorer(project, entry.RelativePath, reportStatus);
-                if (entry.IsFolder && entry.RelativePath.Equals("Materials", StringComparison.OrdinalIgnoreCase) &&
+                if (entry.IsFolder &&
                     ImGui.MenuItem("新建材质"))
                 {
-                    CreateMaterialAsset(project, reportStatus, assetChanged);
+                    CreateMaterialAsset(project, reportStatus, assetChanged, entry.RelativePath);
                 }
                 if (!entry.IsFolder)
                 {
@@ -367,7 +426,7 @@ internal sealed class ProjectAssetBrowser
     {
         if (project is null) return;
 
-        if (_renamePath is not null && ImGui.BeginPopupModal("##资源重命名", ImGuiWindowFlags.AlwaysAutoResize))
+        if (_renamePath is not null && CenteredModal.Begin("##资源重命名", ImGuiWindowFlags.AlwaysAutoResize))
         {
             ImGui.TextUnformatted("重命名文件");
             ImGui.SetNextItemWidth(360F);
@@ -391,7 +450,7 @@ internal sealed class ProjectAssetBrowser
             ImGui.EndPopup();
         }
 
-        if (_movePath is not null && ImGui.BeginPopupModal("##资源移动", ImGuiWindowFlags.AlwaysAutoResize))
+        if (_movePath is not null && CenteredModal.Begin("##资源移动", ImGuiWindowFlags.AlwaysAutoResize))
         {
             ImGui.TextUnformatted("移动文件到 Assets 下的目标文件夹");
             ImGui.SetNextItemWidth(360F);
@@ -420,7 +479,7 @@ internal sealed class ProjectAssetBrowser
             ImGui.EndPopup();
         }
 
-        if (_deletePath is not null && ImGui.BeginPopupModal("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
+        if (_deletePath is not null && CenteredModal.Begin("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
         {
             var referenceCount = countReferences?.Invoke(_deletePath) ?? 0;
             var referencingFiles = GetReferencingFiles(project, _deletePath);
@@ -604,7 +663,7 @@ internal sealed class ProjectAssetBrowser
     private void DrawFooter(ProjectHandle? project)
     {
         var description = project is null
-            ? "未打开项目：显示新项目的标准资产目录"
+            ? "未打开项目：显示新项目的默认资产目录"
             : _selectedAsset.Length == 0
                 ? $"当前文件夹：{ProjectAssetCatalog.DisplayPath(_selectedFolder)}"
                 : $"已选择：{ProjectAssetCatalog.DisplayPath(_selectedAsset)}";
@@ -670,31 +729,20 @@ internal sealed class ProjectAssetBrowser
     }
 
     /// <summary>
-    /// 在 Materials 目录创建新材质：占用槽位自动跳过，文件名带槽号，创建后直接选中
+    /// 在指定目录创建新材质，自动跳过已占用的材质槽
     /// </summary>
     private void CreateMaterialAsset(ProjectHandle? project, Action<string> reportStatus,
-        Action<ProjectAssetChange> assetChanged)
+        Action<ProjectAssetChange> assetChanged, string folder)
     {
         if (project is null)
         {
             reportStatus("请先打开项目再创建材质");
             return;
         }
-        var directory = Path.Combine(project.AssetsPath, "Materials");
-        Directory.CreateDirectory(directory);
+        var directory = ResolveAssetPath(project, folder)!;
         var usedSlots = new HashSet<int>();
-        foreach (var file in Directory.EnumerateFiles(directory, "*.material"))
-        {
-            try
-            {
-                usedSlots.Add(MaterialAsset.Load(file).Slot);
-            }
-            catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException
-                or InvalidDataException or UnauthorizedAccessException)
-            {
-                // 损坏文件不登记槽位，其槽位可被新材质复用
-            }
-        }
+        foreach (var material in MaterialAsset.LoadFromProject(project))
+            usedSlots.Add(material.Slot);
 
         var slot = 0;
         while (slot < MaterialAsset.TableSlots && usedSlots.Contains(slot)) slot++;
@@ -704,7 +752,7 @@ internal sealed class ProjectAssetBrowser
             return;
         }
 
-        var relativePath = $"Materials/材质{slot}.material";
+        var relativePath = CombineRelative(folder, $"材质{slot}.material");
         try
         {
             var material = MaterialAsset.CreateDefault(slot);
@@ -721,24 +769,23 @@ internal sealed class ProjectAssetBrowser
     }
 
     /// <summary>
-    /// 在 Generators 目录创建新生成器，选中并请求在生成器面板打开
+    /// 在指定目录创建新生成器并打开
     /// </summary>
     private void CreateGeneratorAsset(ProjectHandle? project, Action<string> reportStatus,
-        Action<ProjectAssetChange> assetChanged, Action<string>? openGeneratorRequest, bool lua)
+        Action<ProjectAssetChange> assetChanged, Action<string>? openGeneratorRequest, bool lua, string folder)
     {
         if (project is null)
         {
             reportStatus("请先打开项目再创建生成器");
             return;
         }
-        var directory = Path.Combine(project.AssetsPath, "Generators");
-        Directory.CreateDirectory(directory);
+        var directory = ResolveAssetPath(project, folder)!;
         string relativePath;
         string absolutePath;
         var index = 1;
         do
         {
-            relativePath = $"Generators/生成器{index}.mvgenerator";
+            relativePath = CombineRelative(folder, $"生成器{index}.mvgenerator");
             absolutePath = Path.Combine(directory, $"生成器{index}.mvgenerator");
             index++;
         }

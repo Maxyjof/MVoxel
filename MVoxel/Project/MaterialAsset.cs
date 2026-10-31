@@ -160,7 +160,7 @@ public sealed class MaterialAsset
     }
 
     /// <summary>
-    /// 从项目 Materials 目录加载全部材质
+    /// 从项目资产目录递归加载材质
     /// </summary>
     /// <param name="project">项目句柄</param>
     /// <returns>材质列表，损坏文件跳过并记日志</returns>
@@ -168,9 +168,9 @@ public sealed class MaterialAsset
     {
         ArgumentNullException.ThrowIfNull(project);
         var materials = new List<MaterialAsset>();
-        var directory = Path.Combine(project.AssetsPath, "Materials");
+        var directory = project.AssetsPath;
         if (!System.IO.Directory.Exists(directory)) return materials;
-        foreach (var file in System.IO.Directory.EnumerateFiles(directory, "*.material"))
+        foreach (var file in System.IO.Directory.EnumerateFiles(directory, "*.material", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true }))
         {
             try
             {

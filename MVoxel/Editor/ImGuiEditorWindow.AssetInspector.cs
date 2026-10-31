@@ -194,9 +194,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.TextDisabled($"曝光  {settings.Exposure:0.00}    视场角  {settings.CameraFovDegrees:0.0}°");
             if (ImGui.Button("应用到当前项目", new Vector2(145F, 30F)))
             {
-                var presetDirectory = Path.Combine(_project!.AssetsPath, "RenderPresets");
-                var name = string.Equals(Path.GetDirectoryName(path), presetDirectory, StringComparison.OrdinalIgnoreCase)
-                    ? Path.GetFileNameWithoutExtension(path) : null;
+                var name = RenderPresetKey(_project!, path);
                 ApplyRenderPresetSettings(settings, name);
             }
         }

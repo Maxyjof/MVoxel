@@ -39,6 +39,71 @@ public sealed class SceneDocument
     /// <summary>按名称记录被隐藏的图层；使用名称保证图层重排时状态不串位。</summary>
     public List<string> HiddenLayerNames { get; set; } = [];
 
+    /// <summary>排序图层由低到高排列，仅用于重叠体素的显示优先级</summary>
+    public List<string> SortingLayerNames { get; set; } = ["默认"];
+
+    /// <summary>
+    /// 新增排序图层，列表后面的图层具有更高优先级
+    /// </summary>
+    public bool AddSortingLayer(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0 || SortingLayerNames.Contains(trimmed, StringComparer.Ordinal)) return false;
+        SortingLayerNames.Add(trimmed);
+        return true;
+    }
+
+    /// <summary>
+    /// 重命名排序图层并更新模型组件引用
+    /// </summary>
+    public bool RenameSortingLayer(int index, string name)
+    {
+        var trimmed = name.Trim();
+        if (index < 0 || index >= SortingLayerNames.Count || trimmed.Length == 0 ||
+            SortingLayerNames[index] == "默认" ||
+            SortingLayerNames.Where((_, other) => other != index).Contains(trimmed, StringComparer.Ordinal))
+            return false;
+        var oldName = SortingLayerNames[index];
+        SortingLayerNames[index] = trimmed;
+        RemapSortingLayer(oldName, trimmed);
+        return true;
+    }
+
+    /// <summary>
+    /// 调整排序图层优先级，不改变模型组件的图层引用
+    /// </summary>
+    public bool MoveSortingLayer(int index, int delta)
+    {
+        if (delta is not (-1 or 1)) return false;
+        var target = index + delta;
+        if (index < 0 || index >= SortingLayerNames.Count || target < 0 || target >= SortingLayerNames.Count)
+            return false;
+        (SortingLayerNames[index], SortingLayerNames[target]) = (SortingLayerNames[target], SortingLayerNames[index]);
+        return true;
+    }
+
+    /// <summary>
+    /// 删除排序图层，原有模型回到默认排序图层
+    /// </summary>
+    public bool RemoveSortingLayer(int index)
+    {
+        if (index < 0 || index >= SortingLayerNames.Count || SortingLayerNames[index] == "默认") return false;
+        var removed = SortingLayerNames[index];
+        SortingLayerNames.RemoveAt(index);
+        RemapSortingLayer(removed, "默认");
+        return true;
+    }
+
+    private void RemapSortingLayer(string from, string to)
+    {
+        foreach (var component in Objects.SelectMany(item => item.Components).Where(SceneComponentTypes.IsVoxelModel))
+        {
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            if (string.Equals(data.SortingLayer, from, StringComparison.Ordinal))
+                SceneComponentTypes.WriteVoxelModel(component, data with { SortingLayer = to });
+        }
+    }
+
     public bool IsLayerVisible(int index) => index >= 0 && index < LayerNames.Count &&
         !HiddenLayerNames.Contains(LayerNames[index], StringComparer.Ordinal);
 
@@ -106,6 +171,7 @@ public sealed class SceneDocument
     /// <returns>是否成功</returns>
     public bool MoveLayer(int index, int delta)
     {
+        if (delta is not (-1 or 1)) return false;
         var target = index + delta;
         if (index <= 0 || index >= LayerNames.Count || target < 1 || target >= LayerNames.Count)
         {
@@ -131,6 +197,7 @@ public sealed class SceneDocument
             }
         }
 
+        RemapCameraMasks(index, target, false);
         return true;
     }
 
@@ -161,7 +228,29 @@ public sealed class SceneDocument
             }
         }
 
+        RemapCameraMasks(index, 0, true);
         return true;
+    }
+
+    private void RemapCameraMasks(int index, int target, bool removed)
+    {
+        foreach (var component in Objects.SelectMany(item => item.Components).Where(SceneComponentTypes.IsCamera))
+        {
+            var data = SceneComponentTypes.ReadCamera(component);
+            var mask = data.CullingMask;
+            uint updated = 0;
+            for (var bit = 0; bit < MaximumLayerCount; bit++)
+            {
+                if ((mask & (1u << bit)) == 0) continue;
+                if (removed && bit == index) continue;
+                var destination = removed ? (bit > index ? bit - 1 : bit) :
+                    bit == index ? target : bit == target ? index : bit;
+                updated |= 1u << destination;
+            }
+            //保留未分配图层的默认可见性
+            if (removed && (mask & 0x80000000u) != 0) updated |= 0x80000000u;
+            SceneComponentTypes.WriteCamera(component, data with { CullingMask = updated });
+        }
     }
 
     /// <summary>
@@ -526,6 +615,11 @@ public static class SceneSerializer
             var layerName = (scene.LayerNames[nameIndex] ?? string.Empty).Trim();
             scene.LayerNames[nameIndex] = layerName.Length == 0 ? $"图层 {nameIndex}" : layerName;
         }
+        scene.SortingLayerNames = (scene.SortingLayerNames ?? [])
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        if (!scene.SortingLayerNames.Contains("默认", StringComparer.Ordinal))
+            scene.SortingLayerNames.Insert(0, "默认");
         scene.HiddenLayerNames ??= [];
         var knownLayerNames = scene.LayerNames.ToHashSet(StringComparer.Ordinal);
         scene.HiddenLayerNames = scene.HiddenLayerNames

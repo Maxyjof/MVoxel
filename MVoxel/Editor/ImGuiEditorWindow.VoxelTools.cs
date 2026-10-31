@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -40,6 +40,7 @@ internal sealed partial class ImGuiEditorWindow
     // 场景与渲染窗口可以同时可见，不能共享会被另一窗口重建的输出纹理。
     private VulkanVoxelRenderPipeline? _scenePipeline;
     private bool _worldLoadFailed;
+    private readonly ObjectVoxelStore _objectVoxels = new();
     private Rgba32? _sampledBrushColor;
     private bool _settingsToggleSun;
     private bool _settingsToggleAo;
@@ -126,7 +127,9 @@ internal sealed partial class ImGuiEditorWindow
 
     internal sealed record PreloadedModels(IReadOnlyDictionary<ModelLoadKey, VoxelWorld> Worlds,
         IReadOnlyDictionary<StableId, HashSet<VoxelCoord64>> LayerOwnership, int MergedLayers,
-        bool MergeCompleted);
+        bool MergeCompleted, bool HasOverlappingVoxels = false,
+        IReadOnlyList<(StableId ObjectId, ModelLoadKey Key)>? ObjectModels = null,
+        bool ReferencedModelLoadFailed = false);
 
     /// <summary>在项目操作线程预读场景实际引用的模型，避免完成回调在 UI 线程逐格解码。</summary>
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
@@ -140,23 +143,8 @@ internal sealed partial class ImGuiEditorWindow
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException) { }
         }
 
-        var assetsRoot = Path.GetFullPath(project.AssetsPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var keys = new List<ModelLoadKey>();
-        if (scene is not null)
-        {
-            foreach (var sceneObject in scene.Objects)
-            foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
-            {
-                var relativePath = SceneComponentTypes.ReadVoxelModel(component).Model;
-                if (string.IsNullOrWhiteSpace(relativePath) ||
-                    !(relativePath.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase) ||
-                      relativePath.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase))) continue;
-                var path = Path.GetFullPath(Path.Combine(project.RootPath,
-                    relativePath.Replace('/', Path.DirectorySeparatorChar)));
-                if (path.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(path))
-                    keys.Add(new ModelLoadKey(path, GetSceneModelOrigin(sceneObject)));
-            }
-        }
+        var objectModels = GetObjectModelLoadKeys(project, scene);
+        var keys = objectModels.Select(item => item.Key).ToList();
 
         if (keys.Count == 0)
         {
@@ -194,16 +182,24 @@ internal sealed partial class ImGuiEditorWindow
             completedBytes += length;
         }
 
+        var referencedCount = scene?.Objects.SelectMany(item => item.Components)
+            .Where(SceneComponentTypes.IsVoxelModel)
+            .Count(component => !string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(component).Model)) ?? 0;
+        var referencedModelLoadFailed = referencedCount != objectModels.Count || loaded.Count != keys.Count;
         var ownership = new Dictionary<StableId, HashSet<VoxelCoord64>>();
-        var primaryPath = FindReferencedModelPath(project, scene, ".mvworld") ??
-                          FindReferencedModelPath(project, scene, ".mvmodel");
-        if (primaryPath is null && keys.Count > 0) primaryPath = keys[0].Path;
+        var firstModel = scene?.Objects.FirstOrDefault(item => item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        var firstComponent = firstModel?.Components.First(SceneComponentTypes.IsVoxelModel);
+        if (firstComponent is not null && string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(firstComponent).Model))
+            return new PreloadedModels(loaded, ownership, 0, MergeCompleted: false, ObjectModels: objectModels, ReferencedModelLoadFailed: referencedModelLoadFailed);
+        var primaryPath = FindPrimaryModelPath(project, scene);
+        if (primaryPath is null && firstModel is null && keys.Count > 0) primaryPath = keys[0].Path;
         var primaryObject = primaryPath is null ? null : FindReferencedModelObject(project, scene, primaryPath);
         var primaryKey = primaryPath is null ? default : new ModelLoadKey(primaryPath, GetSceneModelOrigin(primaryObject));
         if (scene is null || primaryPath is null || !loaded.TryGetValue(primaryKey, out var primaryWorld))
-            return new PreloadedModels(loaded, ownership, 0, MergeCompleted: false);
+            return new PreloadedModels(loaded, ownership, 0, MergeCompleted: false, ObjectModels: objectModels, ReferencedModelLoadFailed: referencedModelLoadFailed);
 
         var merged = 0;
+        var hasOverlappingVoxels = false;
         var mergeTotal = loaded.Where(entry => !string.Equals(entry.Key.Path, primaryPath,
             StringComparison.OrdinalIgnoreCase)).Sum(entry => (long)entry.Value.OccupiedVoxelCount);
         long mergedCells = 0;
@@ -225,6 +221,7 @@ internal sealed partial class ImGuiEditorWindow
             var copied = 0;
             foreach (var item in layerWorld.EnumerateOccupied())
             {
+                if (primaryWorld.TryGet(item.Coordinate, out _)) hasOverlappingVoxels = true;
                 primaryWorld.Set(item.Coordinate, item.Value);
                 owned.Add(item.Coordinate);
                 copied++;
@@ -240,7 +237,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return new PreloadedModels(new Dictionary<ModelLoadKey, VoxelWorld> { [primaryKey] = primaryWorld },
-            ownership, merged, MergeCompleted: true);
+            ownership, merged, MergeCompleted: true, HasOverlappingVoxels: hasOverlappingVoxels, ObjectModels: objectModels,
+            ReferencedModelLoadFailed: referencedModelLoadFailed);
     }
 
     private void LoadWorldForProject(ProjectHandle project,
@@ -271,63 +269,8 @@ internal sealed partial class ImGuiEditorWindow
         _palette = EditorPalettes.ResolveProjectPalette(project, _selectedProjectPalettePath);
         _sampledBrushColor = null;
         _paletteIsProjectLevel = true;
-        var referencedLargeWorldPath = FindReferencedModelPath(project, _sceneDocument, ".mvworld");
-        var referencedNativePath = FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
-        var hasModelReference = HasModelReference(_sceneDocument);
-        var largeWorldPath = referencedLargeWorldPath ??
-            (!hasModelReference && referencedNativePath is null && Directory.Exists(Path.Combine(project.AssetsPath, "Worlds"))
-                ? Directory.EnumerateFiles(Path.Combine(project.AssetsPath, "Worlds"), "*.mvworld")
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-                : null);
-        var modelPath = referencedNativePath ?? Path.Combine(project.AssetsPath, "Worlds", "主世界.mvmodel");
-        var primaryObject = FindReferencedModelObject(project, _sceneDocument, modelPath);
-        var primaryOrigin = GetSceneModelOrigin(primaryObject);
-        try
-        {
-            if (largeWorldPath is not null && File.Exists(largeWorldPath))
-            {
-                _world = preload is not null &&
-                         preload.Worlds.TryGetValue(new ModelLoadKey(largeWorldPath, primaryOrigin), out var loadedLarge)
-                    ? loadedLarge : LargeWorldFormat.Read(largeWorldPath, primaryOrigin);
-                SetStatus($"已载入体素世界：{Path.GetFileName(largeWorldPath)}（{_world.OccupiedVoxelCount:N0} 体素）");
-            }
-            else if (File.Exists(modelPath))
-            {
-                _world = preload is not null &&
-                         preload.Worlds.TryGetValue(new ModelLoadKey(modelPath, primaryOrigin), out var loadedModel)
-                    ? loadedModel : LargeWorldFormat.Read(modelPath, primaryOrigin);
-                SetStatus($"已载入体素世界：{Path.GetFileName(modelPath)}（{_world.OccupiedVoxelCount} 体素）");
-            }
-            else if (string.Equals(_projectSettings.TemplateId, ProjectTemplateId.Empty.ToString(), StringComparison.Ordinal))
-            {
-                _world = new VoxelWorld();
-                SetStatus("已载入空项目，可以从零开始建模");
-            }
-            else
-            {
-                _world = new VoxelWorld();
-                _worldLoadFailed = true;
-                SetStatus("引用的体素数据不存在，未使用示范模型替代；请检查资产路径");
-            }
-        }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-        {
-            _world = new VoxelWorld();
-            MVoxelLog.Error("模型读取失败，已保留场景引用", exception);
-            _worldLoadFailed = true;
-            SetStatus($"模型读取失败，未使用其他模型替代：{exception.Message}");
-        }
-
-        var primaryPath = largeWorldPath is not null && File.Exists(largeWorldPath) ? largeWorldPath : modelPath;
-        var mergedLayers = preload?.MergeCompleted == true
-            ? preload.MergedLayers
-            : MergeSceneModelWorlds(project, primaryPath, preload?.Worlds);
-        if (preload?.MergeCompleted == true)
-            foreach (var (objectId, owned) in preload.LayerOwnership) _layerOwnership[objectId] = owned;
-        if (mergedLayers > 0)
-        {
-            SetStatus($"{_statusText}，已合并 {mergedLayers} 个分层对象");
-        }
+        _worldLoadFailed = false;
+        LoadObjectVoxelWorlds(project);
 
         // 项目创建/打开完成回调不能在 UI 线程同步构建和上传 GPU 工作集，
         // 否则大模板会让进度弹窗停在 98%。场景视图不依赖该工作集，
@@ -339,26 +282,11 @@ internal sealed partial class ImGuiEditorWindow
         FrameCameraOnWorld();
     }
 
-    /// <summary>
-    /// 按场景中的模型组件解析资源，避免项目同时存在多个模型时误载入其他文件。
-    /// 解析范围限定在 Assets 内，场景文件中的外部路径不会被访问。
-    /// </summary>
-    private static string? FindReferencedModelPath(ProjectHandle project, Scene.SceneDocument? document,
-        string extension)
+    private static string? FindPrimaryModelPath(ProjectHandle project, SceneDocument? document)
     {
-        var model = document?.Objects
-            .SelectMany(item => item.Components)
-            .Where(SceneComponentTypes.IsVoxelModel)
-            .Select(SceneComponentTypes.ReadVoxelModel)
-            .Select(data => data.Model)
-            .FirstOrDefault(path => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(model)) return null;
-
-        var candidate = Path.GetFullPath(Path.Combine(project.RootPath, model.Replace('/', Path.DirectorySeparatorChar)));
-        var assetsRoot = Path.GetFullPath(project.AssetsPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        return candidate.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate)
-            ? candidate
-            : null;
+        var first = document?.Objects.FirstOrDefault(item => item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        if (first is null) return null;
+        return GetObjectModelLoadKeys(project, document).FirstOrDefault(item => item.ObjectId == first.Id).Key.Path;
     }
 
     /// <summary>
@@ -485,22 +413,20 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="cullingMask">相机图层遮罩</param>
     /// <returns>可同步到 GPU 的渲染世界</returns>
-    private VoxelWorld GetRenderWorld(uint cullingMask)
+    private VoxelWorld GetRenderWorld(uint cullingMask, bool sceneVisibility = false)
     {
         if (_sceneDocument is null)
         {
             return _world;
         }
 
-        var signature = RenderStateSignature();
+        var signature = RenderStateSignature() ^ (sceneVisibility ? long.MinValue : 0);
         if (_composedRenderWorld is { } cached && _composedSignature == signature && _composedMask == cullingMask)
         {
             return cached;
         }
 
-        var primaryId = GetVoxelWorldObject()?.Id ?? default;
-        var composed = Scene.RenderWorldComposer.Compose(_world, primaryId, _sceneDocument.Objects,
-            _layerOwnership, cullingMask, _sceneDocument.LayerNames, _sceneDocument.HiddenLayerNames, allowSharedWorld: true);
+        var composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility);
         _composedRenderWorld = composed;
         _composedSignature = signature;
         _composedMask = cullingMask;
@@ -515,6 +441,7 @@ internal sealed partial class ImGuiEditorWindow
         unchecked
         {
             var hash = (long)_world.ContentVersion * 397;
+            foreach (var layer in _sceneDocument?.SortingLayerNames ?? []) hash = hash * 31 + StringComparer.Ordinal.GetHashCode(layer);
             foreach (var sceneObject in _sceneDocument?.Objects ?? [])
             {
                 hash = hash * 31 + sceneObject.Id.GetHashCode();
@@ -522,7 +449,12 @@ internal sealed partial class ImGuiEditorWindow
                 hash = hash * 31 + (sceneObject.Visible ? 7 : 3);
                 hash = hash * 31 + sceneObject.LayerIndex;
                 foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
+                {
+                    var model = SceneComponentTypes.ReadVoxelModel(component);
                     hash = hash * 31 + (component.Enabled ? 7 : 3);
+                    hash = hash * 31 + StringComparer.Ordinal.GetHashCode(model.SortingLayer);
+                    hash = hash * 31 + model.SortingOrder;
+                }
             }
 
             foreach (var layer in _sceneDocument?.HiddenLayerNames ?? [])
@@ -664,7 +596,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (!_sceneSliceEnabled) return;
 
-        var world = GetRenderWorld(uint.MaxValue);
+        var world = GetRenderWorld(uint.MaxValue, sceneVisibility: true);
         if (!TryGetSceneSliceBounds(world, out var min, out var max))
         {
             ImGui.TextDisabled("场景中没有体素");
@@ -701,6 +633,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
+
         if (_worldLoadFailed)
         {
             SetStatus("体素资产未完整加载，已阻止保存覆盖；请修复资产路径或重新打开项目");
@@ -714,86 +647,9 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneDocument ?? new SceneDocument { Name = "主场景" });
                 return true;
             }
-            var modelAssetPath = ResolveCurrentWorldAssetPath(project);
-            var modelPath = Path.Combine(project.RootPath, modelAssetPath.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(modelPath)!);
-            // 分层模式下 _world 是合并态：主世界文件只写非分层体素，
-            // 各分层对象按所有权分别写回自己的文件，分层在保存后依然成立
-            var primaryVoxelCount = _world.OccupiedVoxelCount;
-            var primaryWorldForBounds = _world;
-            if (_layerOwnership.Count == 0)
-            {
-                if (_world.OccupiedVoxelCount > 0)
-                {
-                    LargeWorldFormat.Write(modelPath, _world);
-                }
-                else LargeWorldFormat.WriteEmpty(modelPath);
-            }
-            else
-            {
-                var ownedUnion = new HashSet<VoxelCoord64>();
-                foreach (var owned in _layerOwnership.Values)
-                {
-                    ownedUnion.UnionWith(owned);
-                }
-
-                var terrainOnly = new VoxelWorld();
-                foreach (var item in _world.EnumerateOccupied())
-                {
-                    if (!ownedUnion.Contains(item.Coordinate))
-                    {
-                        terrainOnly.Set(item.Coordinate, item.Value);
-                    }
-                }
-
-                primaryVoxelCount = terrainOnly.OccupiedVoxelCount;
-                primaryWorldForBounds = terrainOnly;
-                if (primaryVoxelCount > 0)
-                {
-                    LargeWorldFormat.Write(modelPath, terrainOnly);
-                }
-                else
-                {
-                    LargeWorldFormat.WriteEmpty(modelPath);
-                }
-
-                SaveOwnedLayers(project);
-            }
-
+            SaveObjectVoxelWorlds(project);
             var scenePath = Path.Combine(project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var document = _sceneDocument ?? new Scene.SceneDocument { Name = "主场景" };
-            var graph = new Scene.SceneGraph(document);
-            var modelObject = document.Objects.FirstOrDefault(item =>
-                item.Components.Any(SceneComponentTypes.IsVoxelModel));
-            modelObject ??= graph.Add("体素世界", transform: TransformComponent.FromGrid(GridTransform.Identity));
-            AlignModelOriginToBounds(modelObject, primaryWorldForBounds);
-            var modelComponent = modelObject.Components.FirstOrDefault(component =>
-                SceneComponentTypes.IsVoxelModel(component));
-            if (modelComponent is null)
-            {
-                modelObject.Components.Add(new Scene.ComponentRecord
-                {
-                    TypeId = SceneComponentTypes.VoxelModel,
-                    SchemaVersion = 1,
-                    Data = JsonSerializer.SerializeToElement(new
-                    {
-                        model = modelAssetPath,
-                        voxelCount = primaryVoxelCount,
-                        part = "场景模型",
-                    }),
-                });
-            }
-            else
-            {
-                modelComponent.Data = JsonSerializer.SerializeToElement(new
-                {
-                    model = modelAssetPath,
-                    voxelCount = primaryVoxelCount,
-                    part = "场景模型",
-                });
-            }
-            _sceneDocument = document;
-            Scene.SceneSerializer.Save(scenePath, document);
+            SceneSerializer.Save(scenePath, _sceneDocument ?? new SceneDocument { Name = "主场景" });
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -806,55 +662,6 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 把每个分层对象当前拥有的体素写回它引用的模型文件，并同步组件里的体素数
     /// </summary>
-    private void SaveOwnedLayers(ProjectHandle project)
-    {
-        if (_sceneDocument is null)
-        {
-            return;
-        }
-
-        foreach (var sceneObject in _sceneDocument.Objects)
-        {
-            if (!_layerOwnership.TryGetValue(sceneObject.Id, out var owned))
-            {
-                continue;
-            }
-
-            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-            if (component is null)
-            {
-                _layerOwnership.Remove(sceneObject.Id);
-                continue;
-            }
-
-            var data = SceneComponentTypes.ReadVoxelModel(component);
-            var layerPath = Path.GetFullPath(
-                Path.Combine(project.RootPath, data.Model.Replace('/', Path.DirectorySeparatorChar)));
-            Directory.CreateDirectory(Path.GetDirectoryName(layerPath)!);
-            var layerWorld = new VoxelWorld();
-            foreach (var coordinate in owned)
-            {
-                if (_world.TryGet(coordinate, out var value))
-                {
-                    layerWorld.Set(coordinate, value);
-                }
-            }
-
-            if (layerWorld.OccupiedVoxelCount > 0)
-            {
-                LargeWorldFormat.Write(layerPath, layerWorld);
-                AlignModelOriginToBounds(sceneObject, layerWorld);
-            }
-            else LargeWorldFormat.WriteEmpty(layerPath);
-            component.Data = JsonSerializer.SerializeToElement(new
-            {
-                model = data.Model,
-                voxelCount = layerWorld.OccupiedVoxelCount,
-                part = string.IsNullOrWhiteSpace(data.Part) ? "分层对象" : data.Part,
-            });
-        }
-    }
-
     /// <summary>格式使用包围盒最小角作为局部原点；保存后同步场景对象原点，保证重载位置不变。</summary>
     internal static void AlignModelOriginToBounds(SceneObject sceneObject, VoxelWorld world)
     {
@@ -869,8 +676,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private string ResolveCurrentWorldAssetPath(ProjectHandle project)
     {
-        var referenced = FindReferencedModelPath(project, _sceneDocument, ".mvworld")
-            ?? FindReferencedModelPath(project, _sceneDocument, ".mvmodel");
+        var referenced = FindPrimaryModelPath(project, _sceneDocument);
         return referenced is not null ? ToAssetRelativePath(project, referenced) : "Assets/Worlds/主世界.mvmodel";
     }
 
@@ -912,7 +718,12 @@ internal sealed partial class ImGuiEditorWindow
         }
         else
         {
-            modelComponent.Data = JsonSerializer.SerializeToElement(data);
+            var existing = SceneComponentTypes.ReadVoxelModel(modelComponent);
+            SceneComponentTypes.WriteVoxelModel(modelComponent, existing with
+            {
+                Model = assetRelativePath,
+                VoxelCount = _world.OccupiedVoxelCount,
+            });
         }
 
         _sceneDocument = document;
@@ -982,6 +793,7 @@ internal sealed partial class ImGuiEditorWindow
                     Path.Combine(_project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar)), _sceneDocument);
             }
 
+            LoadObjectVoxelWorlds(_project);
             _voxelHistory.Clear();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
@@ -1002,58 +814,6 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="project">项目句柄</param>
     /// <param name="primaryPath">主世界文件绝对路径，与它相同的引用不再合并</param>
     /// <returns>成功合并的对象数量</returns>
-    private int MergeSceneModelWorlds(ProjectHandle project, string primaryPath,
-        IReadOnlyDictionary<ModelLoadKey, VoxelWorld>? preloadedModels = null)
-    {
-        if (_sceneDocument is null) return 0;
-        var mergedCount = 0;
-        var mergedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var sceneObject in _sceneDocument.Objects)
-        {
-            foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
-            {
-                var model = SceneComponentTypes.ReadVoxelModel(component).Model;
-                if (string.IsNullOrWhiteSpace(model)) continue;
-                var absolute = Path.GetFullPath(
-                    Path.Combine(project.RootPath, model.Replace('/', Path.DirectorySeparatorChar)));
-                if (string.Equals(absolute, primaryPath, StringComparison.OrdinalIgnoreCase) ||
-                    !File.Exists(absolute) || !mergedPaths.Add(absolute))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var origin = GetSceneModelOrigin(sceneObject);
-                    var layerWorld = preloadedModels is not null &&
-                                     preloadedModels.TryGetValue(new ModelLoadKey(absolute, origin), out var loadedLayer)
-                        ? loadedLayer : LargeWorldFormat.Read(absolute, origin);
-                    var owned = new HashSet<VoxelCoord64>();
-                    foreach (var item in layerWorld.EnumerateOccupied())
-                    {
-                        _world.Set(item.Coordinate, item.Value);
-                        owned.Add(item.Coordinate);
-                    }
-
-                    _layerOwnership[sceneObject.Id] = owned;
-                    mergedCount++;
-                }
-                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-                {
-                    MVoxelLog.Warn($"分层对象读取失败，已跳过：{sceneObject.Name}");
-                }
-            }
-        }
-
-        return mergedCount;
-    }
-
-    /// <summary>
-    /// 移除主世界之外模型对象上的模型组件，供切换世界时清理旧上下文的分层引用
-    /// </summary>
-    /// <param name="document">待整理的场景文档</param>
-    /// <param name="primaryAssetPath">主世界资产的相对路径</param>
-    /// <returns>移除的模型组件数量</returns>
     private static int ConsolidateSecondaryModelObjects(Scene.SceneDocument document, string primaryAssetPath)
     {
         var removed = 0;
@@ -1192,7 +952,7 @@ internal sealed partial class ImGuiEditorWindow
             _scenePipeline ??= new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
             var pipeline = _scenePipeline;
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
-            pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
+            pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 greedyMerge: false,
                 includeInterior: IsCameraInsideOccupiedVoxel(camera));
@@ -1386,7 +1146,7 @@ internal sealed partial class ImGuiEditorWindow
         var origin3 = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
         var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
         // 拾取应与场景实际显示一致：隐藏图层和切面后的体素不能抢占可见模型的命中。
-        var visibleWorld = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue));
+        var visibleWorld = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true));
         var distance = _sceneCameraDistance * 8F + 256F;
         if (ReferenceEquals(_pickWorld, visibleWorld) && _pickVersion == visibleWorld.ContentVersion &&
             _pickOrigin == origin3 && _pickDirection == direction3 && _pickDistance == distance) return _pickResult;
@@ -1408,8 +1168,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var mouse = io.MousePos;
-        if (!ImGui.IsWindowHovered() || mouse.X < origin.X || mouse.X > origin.X + size.X ||
-            mouse.Y < origin.Y || mouse.Y > origin.Y + size.Y)
+        if (_toolDragAnchor is null && (!ImGui.IsWindowHovered() || mouse.X < origin.X || mouse.X > origin.X + size.X ||
+            mouse.Y < origin.Y || mouse.Y > origin.Y + size.Y))
         {
             _brushPreview = null;
             return;
@@ -1434,7 +1194,7 @@ internal sealed partial class ImGuiEditorWindow
                 if (_selectedVoxel is { } pickedVoxel)
                 {
                     _ = ResolveVoxelEditTarget(pickedVoxel.Coordinate);
-                    if (_activeTool == EditorTool.Eyedropper && _world.TryGet(pickedVoxel.Coordinate, out var value))
+                    if (_activeTool == EditorTool.Eyedropper && GetRenderWorld(uint.MaxValue, true).TryGet(pickedVoxel.Coordinate, out var value))
                     {
                         _sampledBrushColor = value.Color;
                         _brushMaterialSlot = value.MaterialSlot;
@@ -1458,7 +1218,7 @@ internal sealed partial class ImGuiEditorWindow
         var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
         _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
         _brushPreviewErase = hoverErase;
-        if (_activeTool is EditorTool.Line or EditorTool.Box &&
+        if (_activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box &&
             HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
         {
             return;
@@ -1522,9 +1282,9 @@ internal sealed partial class ImGuiEditorWindow
 
         var primaryId = GetVoxelWorldObject()?.Id;
         var objects = _sceneDocument?.Objects;
-        if (hitCoordinate is { } hit && objects is not null && _world.TryGet(hit, out _))
+        if (hitCoordinate is { } hit && objects is not null)
         {
-            var owner = VoxelEditOwnership.ResolveOwner(hit, primaryId, objects, _layerOwnership);
+            StableId? owner = _sceneDocument is not null && _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var visibleOwner, out _) ? visibleOwner : null;
             if (owner is { } ownerId && objects.Any(item => item.Id == ownerId))
             {
                 _selectedSceneObjectId = ownerId;
@@ -1595,23 +1355,13 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("编辑目标不可见或模型组件未启用；请显示目标对象及其图层后再编辑");
             return;
         }
-        var editable = VoxelEditOwnership.FilterEditableCells(cells, _world, targetId, primaryId,
-            objects, _layerOwnership, value.IsEmpty);
-        if (editable.Count == 0)
-        {
-            SetStatus("当前格子属于其他体素模型，未修改；可选择该模型或解除编辑目标锁定");
-            return;
-        }
-
-        VoxelEditOwnership.Change[] ownershipChanges = [];
-        var command = new VoxelStrokeCommand(name, _world, editable, value,
-            forward => VoxelEditOwnership.Apply(ownershipChanges, forward, primaryId, _layerOwnership));
+        var command = new VoxelStrokeCommand(name, _objectVoxels.GetOrCreate(target.Id), cells, value,
+            ObjectEditCallback(target.Id));
         if (command.ChangedCellCount == 0)
         {
             SetStatus("此操作没有改变方块，撤销历史保持不变");
             return;
         }
-        ownershipChanges = VoxelEditOwnership.Capture(command.Edits, targetId, primaryId, objects, _layerOwnership);
         _voxelHistory.Execute(command);
         _editingJournal?.Append(command.Name, command.Edits);
         SetStatus($"{name} · {target.Name} · {command.ChangedCellCount:N0} 格（可撤销）");
@@ -1631,7 +1381,8 @@ internal sealed partial class ImGuiEditorWindow
         var model = new SceneGraph(_sceneDocument).Add(name,
             transform: TransformComponent.FromGrid(GridTransform.Identity));
         var relative = firstModel ? "Assets/Worlds/主世界.mvmodel" : $"Assets/Worlds/模型_{model.Id}.mvmodel";
-        model.Components.Add(SceneComponentTypes.CreateVoxelModel(relative, 0, "手动创建", name));
+        model.Components.Add(SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动创建", name));
+        _objectVoxels.GetOrCreate(model.Id);
         if (!firstModel) _layerOwnership[model.Id] = new HashSet<VoxelCoord64>();
         _selectedSceneObjectId = model.Id;
         _composedRenderWorld = null;
@@ -1647,14 +1398,23 @@ internal sealed partial class ImGuiEditorWindow
     private bool HandleDragShapeToolInput(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera,
         ViewportMouseAction leftAction, ViewportMouseAction rightAction)
     {
-        var place = leftAction == ViewportMouseAction.Place;
-        var destroy = !place && (leftAction == ViewportMouseAction.Destroy || rightAction == ViewportMouseAction.Destroy);
+        if (_toolDragAnchor is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+        {
+            _toolDragAnchor = null;
+            _toolDragCurrent = null;
+            _toolDragTargetId = null;
+            _brushPreview = null;
+            SetStatus("已取消绘制");
+            return true;
+        }
+        var destroy = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
+        var place = !destroy && leftAction == ViewportMouseAction.Place;
         if (!place && !destroy)
         {
             return false;
         }
 
-        var button = place || leftAction == ViewportMouseAction.Destroy ? ImGuiMouseButton.Left : ImGuiMouseButton.Right;
+        var button = ImGuiMouseButton.Left;
         var ioState = ImGui.GetIO();
         if (ioState.MouseClicked[(int)button])
         {
@@ -1687,7 +1447,7 @@ internal sealed partial class ImGuiEditorWindow
                 : _toolDragCurrent ?? anchor;
             var cells = _activeTool == EditorTool.Line
                 ? VoxelEditingTools.LineCells(anchor, to)
-                : VoxelEditingTools.BoxCells(anchor, to, hollow: _hollowBox);
+                : VoxelEditingTools.BoxCells(anchor, to, hollow: _activeTool == EditorTool.Box && _hollowBox);
             CommitCells(_activeTool == EditorTool.Line
                 ? (_toolDragErase ? "擦除直线" : "绘制直线")
                 : (_toolDragErase ? "擦除长方体" : "绘制长方体"), cells, CurrentBrushValue(_toolDragErase),
@@ -1707,8 +1467,9 @@ internal sealed partial class ImGuiEditorWindow
         var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
         if (!VoxelDda.TryGroundHit(new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 new NumVector3(ray.X, ray.Y, ray.Z), _sceneCameraDistance * 8F + 256F, out var point)) return null;
-        return new VoxelDda.Hit(new VoxelCoord64((long)MathF.Floor(point.X), -1, (long)MathF.Floor(point.Z)),
-            new VoxelCoord64(0, 1, 0), 0F, point);
+        var above = camera.Position.Y >= 0F;
+        return new VoxelDda.Hit(new VoxelCoord64((long)MathF.Floor(point.X), above ? -1 : 0, (long)MathF.Floor(point.Z)),
+            new VoxelCoord64(0, above ? 1 : -1, 0), 0F, point);
     }
 
     /// <summary>
@@ -2049,7 +1810,7 @@ internal sealed partial class ImGuiEditorWindow
                 _previewShapeHollow = _hollowBox;
                 _previewShapeCells = _activeTool == EditorTool.Line
                     ? VoxelEditingTools.LineCells(anchor, end)
-                    : VoxelEditingTools.BoxCells(anchor, end, _hollowBox);
+                    : VoxelEditingTools.BoxCells(anchor, end, _activeTool == EditorTool.Box && _hollowBox);
             }
             var color = ToPackedColor(_toolDragErase
                 ? Color.FromArgb(210, 255, 112, 120) : Color.FromArgb(235, 93, 187, 255));
@@ -2115,7 +1876,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var cellCount = _pendingFloodCells.Count;
         ImGui.SetNextWindowSize(new Vector2(420F, 0F));
-        if (ImGui.BeginPopupModal("洪水填充达到上限##flood_confirm", ref _pendingFloodOpen,
+        if (CenteredModal.Begin("洪水填充达到上限##flood_confirm", ref _pendingFloodOpen,
                 ImGuiWindowFlags.AlwaysAutoResize))
         {
             ImGui.Text($"填充区域达到 {MaximumFloodCells:N0} 格安全上限，结果已被截断。");

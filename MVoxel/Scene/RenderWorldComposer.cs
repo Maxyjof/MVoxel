@@ -28,6 +28,7 @@ public static class RenderWorldComposer
         var objectsById = objects.ToDictionary(item => item.Id);
         var primary = objects.FirstOrDefault(item => item.Id == primaryId);
         bool Included(SceneObject item) => IsObjectVisible(item, objectsById) &&
+            item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled) &&
             LayerAllowed(cullingMask, item.LayerIndex) && IsLayerVisible(item.LayerIndex, layerNames, hiddenLayers);
 
         //全部体素都可见时直接使用工作世界，避免每次编辑后复制整座场景
@@ -43,8 +44,7 @@ public static class RenderWorldComposer
             ownedUnion.UnionWith(owned);
         }
 
-        if (primary is null || (IsObjectVisible(primary, objectsById) && LayerAllowed(cullingMask, primary.LayerIndex) &&
-                                IsLayerVisible(primary.LayerIndex, layerNames, hiddenLayers)))
+        if (primary is null || Included(primary))
         {
             foreach (var item in merged.EnumerateOccupied())
             {
@@ -57,9 +57,7 @@ public static class RenderWorldComposer
 
         foreach (var sceneObject in objects)
         {
-            if (sceneObject.Id == primaryId || !IsObjectVisible(sceneObject, objectsById) ||
-                !LayerAllowed(cullingMask, sceneObject.LayerIndex) ||
-                !IsLayerVisible(sceneObject.LayerIndex, layerNames, hiddenLayers) ||
+            if (sceneObject.Id == primaryId || !Included(sceneObject) ||
                 !ownership.TryGetValue(sceneObject.Id, out var owned))
             {
                 continue;

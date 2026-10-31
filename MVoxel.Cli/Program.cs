@@ -586,10 +586,8 @@ internal static class Program
     {
         var project = ProjectLayout.Open(arguments.GetProperty("projectPath").GetString()!, ensureDirectories: false);
         var errors = new List<string>();
-        var missingDirectories = ProjectLayout.AssetDirectories
-            .Where(directory => !Directory.Exists(Path.Combine(project.AssetsPath, directory)))
-            .ToArray();
-        errors.AddRange(missingDirectories.Select(directory => $"缺少资产目录：Assets/{directory}"));
+        var missingDirectories = Directory.Exists(project.AssetsPath) ? Array.Empty<string>() : ["Assets"];
+        errors.AddRange(missingDirectories.Select(directory => $"缺少资产目录：{directory}"));
         var scenePaths = Directory.Exists(project.AssetsPath)
             ? Directory.EnumerateFiles(project.AssetsPath, "*.mvox", SearchOption.AllDirectories).ToArray()
             : [];

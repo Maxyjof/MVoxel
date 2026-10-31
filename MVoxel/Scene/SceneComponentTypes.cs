@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using MVoxel.Core;
 
 namespace MVoxel.Scene;
@@ -77,7 +78,9 @@ public static class SceneComponentTypes
             data.TryGetProperty("scale", out var scale) && scale.TryGetSingle(out var scaleValue) &&
             float.IsFinite(scaleValue)
                 ? Math.Clamp(scaleValue, 0.125F, 8F)
-                : 1F);
+                : 1F,
+            ReadString(data, "sortingLayer", "默认"),
+            data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0);
     }
 
     /// <summary>
@@ -86,13 +89,20 @@ public static class SceneComponentTypes
     public static void WriteVoxelModel(ComponentRecord component, VoxelModelComponentData data)
     {
         if (!IsVoxelModel(component)) throw new ArgumentException("组件记录不是体素模型组件", nameof(component));
-        component.Data = JsonSerializer.SerializeToElement(data with
+        var updated = JsonSerializer.SerializeToNode(data with
         {
             Model = data.Model.Trim(),
             Part = string.IsNullOrWhiteSpace(data.Part) ? "模型" : data.Part.Trim(),
             VoxelCount = Math.Max(0, data.VoxelCount),
             Scale = Math.Clamp(float.IsFinite(data.Scale) ? data.Scale : 1F, 0.125F, 8F),
-        }, JsonOptions);
+            SortingLayer = string.IsNullOrWhiteSpace(data.SortingLayer) ? "默认" : data.SortingLayer.Trim(),
+        }, JsonOptions)!.AsObject();
+        var merged = component.Data.ValueKind == JsonValueKind.Object
+            ? JsonNode.Parse(component.Data.GetRawText())!.AsObject() : new JsonObject();
+        foreach (var property in updated)
+            merged[property.Key] = property.Value?.DeepClone();
+        if (!string.IsNullOrWhiteSpace(data.Model)) merged.Remove(EmbeddedVoxelData.PropertyName);
+        component.Data = JsonSerializer.SerializeToElement(merged, JsonOptions);
     }
 
     public static ComponentRecord CreateLight(LightComponentData data) => new()
@@ -258,7 +268,8 @@ public static class SceneComponentTypes
 /// 体素模型组件保存的资源引用信息
 /// </summary>
 public readonly record struct VoxelModelComponentData(
-    string Model, string Part, int VoxelCount, string Template, float Scale = 1F)
+    string Model, string Part, int VoxelCount, string Template, float Scale = 1F,
+    string SortingLayer = "默认", int SortingOrder = 0)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }

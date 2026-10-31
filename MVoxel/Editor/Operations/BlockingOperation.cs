@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using ImGuiNET;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
@@ -289,7 +289,7 @@ internal static class BlockingOperationDialog
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 22F));
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
-        if (ImGui.BeginPopupModal(id, flags))
+        if (CenteredModal.Begin(id, flags))
         {
             var draw = ImGui.GetWindowDrawList();
             var window = ImGui.GetWindowPos();

@@ -1,4 +1,4 @@
-using ImGuiNET;
+﻿using ImGuiNET;
 using MVoxel.Project;
 using MVoxel.Voxels;
 using Vector2 = System.Numerics.Vector2;
@@ -222,12 +222,12 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SetNextItemWidth(220F);
         if (ImGui.BeginCombo("##生成器选择", currentLabel))
         {
-            var directory = Path.Combine(_project.AssetsPath, "Generators");
+            var directory = _project.AssetsPath;
             if (Directory.Exists(directory))
             {
-                foreach (var file in Directory.EnumerateFiles(directory, "*.mvgenerator").OrderBy(path => path))
+                foreach (var file in Directory.EnumerateFiles(directory, "*.mvgenerator", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true }).OrderBy(path => path))
                 {
-                    var relative = $"Generators/{Path.GetFileName(file)}";
+                    var relative = Path.GetRelativePath(_project.AssetsPath, file).Replace('\\', '/');
                     var selected = string.Equals(relative, _generatorRelativePath, StringComparison.OrdinalIgnoreCase);
                     if (ImGui.Selectable(Path.GetFileName(file), selected)) OpenGeneratorAsset(relative);
                 }
@@ -489,9 +489,12 @@ internal sealed partial class ImGuiEditorWindow
                 Language = _generatorAsset.Language,
                 Source = _generatorSource,
             };
-            var staged = GeneratorRunner.Run(asset, _world, _generatorParameters, TimeSpan.FromSeconds(10));
+            var targetId = ResolveVoxelEditTarget(null);
+            if (targetId is null) { SetStatus("请先选择体素模型"); return; }
+            var targetWorld = _objectVoxels.GetOrCreate(targetId.Value);
+            var staged = GeneratorRunner.Run(asset, targetWorld, _generatorParameters, TimeSpan.FromSeconds(10));
             var command = new VoxelStrokeCommand(
-                $"运行生成器：{_generatorDefinition.Name}", _world, staged);
+                $"运行生成器：{_generatorDefinition.Name}", targetWorld, staged, ObjectEditCallback(targetId.Value));
             _voxelHistory.Execute(command);
             if (command.ChangedCellCount == 0)
             {
@@ -503,6 +506,7 @@ internal sealed partial class ImGuiEditorWindow
                 return;
             }
 
+            MarkSceneDocumentDirty();
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
             _generatorMessage = $"已应用 {command.ChangedCellCount} 个体素，可 Ctrl+Z 整体撤销";

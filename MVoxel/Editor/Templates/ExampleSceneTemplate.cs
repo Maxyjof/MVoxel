@@ -45,7 +45,7 @@ internal static class ExampleSceneTemplate
         for (var z = min.Z; z <= max.Z; z++)
         for (var y = min.Y; y <= max.Y; y++)
         for (var x = min.X; x <= max.X; x++) world.Set(new VoxelCoord64(x, y, z), value);
-        var relative = $"Assets/Worlds/示例{name}.mvmodel";
+        var relative = $"Assets/Scenes/示例{name}.mvmodel";
         LargeWorldFormat.Write(Path.Combine(project.RootPath, relative.Replace('/', Path.DirectorySeparatorChar)), world);
         var model = graph.Add(name, transform: TransformComponent.FromGrid(new GridTransform(min, OrthogonalRotation.Identity)));
         model.Components.Add(SceneComponentTypes.CreateVoxelModel(relative, world.OccupiedVoxelCount, "Empty", name));

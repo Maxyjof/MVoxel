@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using MVoxel.Core;
 using MVoxel.Scene;
 using MVoxel.Voxels;
@@ -92,22 +92,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private VoxelWorld CaptureObjectVoxels(SceneObject sceneObject)
     {
-        var world = new VoxelWorld();
-        if (IsPrimaryModelObject(sceneObject))
-        {
-            var owned = CollectOwnedUnion();
-            foreach (var cell in _world.EnumerateOccupied())
-                if (!owned.Contains(cell.Coordinate))
-                    world.Set(cell.Coordinate, cell.Value);
-        }
-        else if (_layerOwnership.TryGetValue(sceneObject.Id, out var cells))
-        {
-            foreach (var coordinate in cells)
-                if (_world.TryGet(coordinate, out var value))
-                    world.Set(coordinate, value);
-        }
-
-        return world;
+        return _objectVoxels.GetOrCreate(sceneObject.Id).Clone();
     }
 
     private HashSet<VoxelCoord64> CollectOwnedUnion()
@@ -169,7 +154,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             var scaled = VoxelRescaler.Scale(source, factor, sourceOrigin, out var newOrigin,
                 _scaleCancellation.Token, null, 50_000_000);
-            if (!ReplaceObjectVoxels(sceneObject, scaled, newOrigin))
+            if (!ReplaceObjectVoxels(sceneObject, scaled, newOrigin, scale: factor))
             {
                 SetStatus("缩放结果与其他对象重叠，未应用");
                 return;
@@ -200,7 +185,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (!ReplaceObjectVoxels(sceneObject, original, origin))
+        if (!ReplaceObjectVoxels(sceneObject, original, origin, scale: 1F))
         {
             SetStatus("恢复结果与其他对象重叠，未应用");
             return;
@@ -217,47 +202,26 @@ internal sealed partial class ImGuiEditorWindow
     /// 用缩放结果替换对象当前体素；主模型对象保留无归属体素语义，分层对象更新所有权集合
     /// </summary>
     private bool ReplaceObjectVoxels(SceneObject sceneObject, VoxelWorld replacement, VoxelCoord64 origin,
-        OrthogonalRotation? newRotation = null)
+        OrthogonalRotation? newRotation = null, float? scale = null)
     {
         if (_sceneDocument is null) return false;
-        var primary = IsPrimaryModelObject(sceneObject);
-        var owned = CollectOwnedUnion();
-        var oldCells = new HashSet<VoxelCoord64>();
-        if (primary)
-        {
-            foreach (var cell in _world.EnumerateOccupied())
-                if (!owned.Contains(cell.Coordinate))
-                    oldCells.Add(cell.Coordinate);
-        }
-        else if (_layerOwnership.TryGetValue(sceneObject.Id, out var layerCells))
-        {
-            oldCells.UnionWith(layerCells);
-        }
-
-        // 先确认新体素不会占用其他分层对象已经拥有的格子，避免悄悄改变归属
-        if (!primary)
-        {
-            foreach (var cell in replacement.EnumerateOccupied())
+        var world = _objectVoxels.GetOrCreate(sceneObject.Id);
+        var before = sceneObject.Transform.Grid;
+        var after = new GridTransform(origin, newRotation ?? before.Rotation);
+        var changes = world.EnumerateOccupied().ToDictionary(cell => cell.Coordinate, _ => default(VoxelValue));
+        foreach (var cell in replacement.EnumerateOccupied()) changes[cell.Coordinate] = cell.Value;
+        _voxelHistory.Execute(new VoxelStrokeCommand("变换模型", world,
+            changes.Select(cell => (cell.Key, cell.Value)), ObjectEditCallback(sceneObject.Id, forward =>
             {
-                if (!owned.Contains(cell.Coordinate) || oldCells.Contains(cell.Coordinate)) continue;
-                if (_layerOwnership.Any(entry => entry.Key != sceneObject.Id && entry.Value.Contains(cell.Coordinate)))
-                    return false;
-            }
-        }
-
-        foreach (var coordinate in oldCells) _world.Remove(coordinate);
-        if (!primary) _layerOwnership[sceneObject.Id] = new HashSet<VoxelCoord64>();
-
-        foreach (var cell in replacement.EnumerateOccupied())
-        {
-            if (primary && owned.Contains(cell.Coordinate)) continue;
-            _world.Set(cell.Coordinate, cell.Value);
-            if (!primary) _layerOwnership[sceneObject.Id].Add(cell.Coordinate);
-        }
-
-        var rotation = newRotation ?? sceneObject.Transform.Grid.Rotation;
-        sceneObject.Transform.SetGrid(new GridTransform(origin, rotation));
-        UpdateTransformMarker(sceneObject);
+                sceneObject.Transform.SetGrid(forward ? after : before);
+                UpdateTransformMarker(sceneObject);
+                if (forward && scale is { } factor)
+                {
+                    var component = sceneObject.Components.First(SceneComponentTypes.IsVoxelModel);
+                    SceneComponentTypes.WriteVoxelModel(component,
+                        SceneComponentTypes.ReadVoxelModel(component) with { Scale = factor });
+                }
+            })));
         return true;
     }
 

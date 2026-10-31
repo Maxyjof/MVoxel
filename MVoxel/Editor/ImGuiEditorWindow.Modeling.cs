@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Scene;
@@ -113,7 +113,7 @@ internal sealed partial class ImGuiEditorWindow
             new Vector2(layout.RightWidth, layout.MainHeight));
         if (_focusModelingTools) ImGui.SetNextWindowFocus();
         _focusModelingTools = false;
-        if (ImGui.Begin("调色板##建模工具窗口", ref _showModelingTools, PanelWindowFlags))
+        if (ImGui.Begin("调色板##建模工具窗口", PanelWindowFlags))
         {
             var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
             ImGui.ColorButton("当前笔刷色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F), ImGuiColorEditFlags.NoTooltip,
@@ -151,7 +151,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.OpenPopup("重绘模型确认");
         }
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前颜色、材质槽与发光标记应用到此模型已有方块，不添加新方块；整次操作可撤销。");
-        if (ImGui.BeginPopupModal("重绘模型确认", ImGuiWindowFlags.AlwaysAutoResize))
+        if (CenteredModal.Begin("重绘模型确认", ImGuiWindowFlags.AlwaysAutoResize))
         {
             var repaintTarget = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _repaintModelId);
             ImGui.TextWrapped($"将当前笔刷应用到“{repaintTarget?.Name}”的所有已有方块。共享材质的参数不会被修改。");
@@ -159,9 +159,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 if (repaintTarget is not null)
                 {
-                    var primaryId = GetVoxelWorldObject()?.Id;
-                    var cells = _world.EnumerateOccupied().Where(cell =>
-                        VoxelEditOwnership.ResolveOwner(cell.Coordinate, primaryId, _sceneDocument!.Objects, _layerOwnership) == repaintTarget.Id)
+                    var cells = _objectVoxels.GetOrCreate(repaintTarget.Id).EnumerateOccupied()
                         .Select(cell => cell.Coordinate).ToArray();
                     CommitCells("重绘模型", cells, CurrentBrushValue(false), repaintTarget.Id);
                 }
@@ -182,6 +180,7 @@ internal sealed partial class ImGuiEditorWindow
             var target = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
             if (selectedOnly && target is null) { SetStatus("请先选择一个体素模型"); return; }
+            source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
             var name = selectedOnly ? target!.Name : _project.Manifest.Name;
             var objects = _sceneDocument?.Objects ?? [];
             var primary = GetVoxelWorldObject()?.Id;
@@ -190,7 +189,7 @@ internal sealed partial class ImGuiEditorWindow
             var safeName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
             var extension = obj ? ".obj" : native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
             var path = Path.Combine(directory, UniqueAssetFileName(directory, safeName, extension));
-            var scope = selectedOnly ? $"选中模型：{name}" : "整个场景体素（含隐藏对象）";
+            var scope = selectedOnly ? $"选中模型：{name}" : "场景可见体素（重叠按排序合成）";
             _projectOperation.TryStart($"导出 {extension} · {scope}", path,
                 (cancellation, report) =>
                 {
@@ -204,8 +203,7 @@ internal sealed partial class ImGuiEditorWindow
                             report(new BlockingOperationProgress($"收集体素 {processed:N0} / {source.OccupiedVoxelCount:N0}\n{path}",
                                 .7F * processed / Math.Max(1, source.OccupiedVoxelCount), CanCancel: true));
                         }
-                        if (!selectedOnly || VoxelEditOwnership.ResolveOwner(cell.Coordinate, primary, objects, _layerOwnership) == target!.Id)
-                            world.Set(cell.Coordinate, cell.Value);
+                        world.Set(cell.Coordinate, cell.Value);
                     }
                     cancellation.ThrowIfCancellationRequested();
                     report(new BlockingOperationProgress($"写入 {extension} · {world.OccupiedVoxelCount:N0} 体素\n{path}", .85F, CanCancel: obj));

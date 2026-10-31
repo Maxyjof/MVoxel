@@ -69,17 +69,17 @@ public static class EditorPalettes
     }
 
     /// <summary>
-    /// 列出项目内全部调色板资产，允许 Palettes 下建立子目录。
+    /// 列出项目资产目录内的全部调色板。
     /// </summary>
     public static IReadOnlyList<string> EnumerateProjectPalettePaths(ProjectHandle project)
     {
         ArgumentNullException.ThrowIfNull(project);
-        var directory = ProjectPalettesDirectory(project);
+        var directory = project.AssetsPath;
         if (!Directory.Exists(directory)) return Array.Empty<string>();
 
         try
         {
-            return Directory.EnumerateFiles(directory, "*.*", SearchOption.AllDirectories)
+            return Directory.EnumerateFiles(directory, "*.*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true })
                 .Where(path => IsPaletteExtension(Path.GetExtension(path)))
                 .Select(path => Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/'))
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
@@ -96,13 +96,13 @@ public static class EditorPalettes
     }
 
     /// <summary>
-    /// 规范化项目设置中的调色板路径。项目设置只接受 Assets/Palettes 下的 .palette/.pal。
+    /// 规范化项目设置中的调色板路径，仅接受 Assets 下的 .palette/.pal。
     /// </summary>
     public static string NormalizeProjectPalettePath(string? relativePath)
     {
         var normalized = (relativePath ?? string.Empty).Trim().Replace('\\', '/');
         if (normalized.Length == 0) return ProjectPaletteRelativePath;
-        if (!normalized.StartsWith("Palettes/", StringComparison.OrdinalIgnoreCase) ||
+        if (Path.IsPathRooted(normalized) ||
             normalized.Contains("../", StringComparison.Ordinal) ||
             normalized.Contains("/..", StringComparison.Ordinal) ||
             normalized.Contains("./", StringComparison.Ordinal) ||
@@ -121,9 +121,8 @@ public static class EditorPalettes
         var assetsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(project.AssetsPath));
         var path = Path.GetFullPath(Path.Combine(assetsRoot,
             normalized.Replace('/', Path.DirectorySeparatorChar)));
-        var paletteRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ProjectPalettesDirectory(project)));
-        if (!path.StartsWith(paletteRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("调色板路径必须位于 Assets/Palettes 下", nameof(relativePath));
+        if (!path.StartsWith(assetsRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("调色板路径必须位于 Assets 下", nameof(relativePath));
         return path;
     }
 

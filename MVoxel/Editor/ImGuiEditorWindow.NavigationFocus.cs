@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Scene;
@@ -257,17 +257,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (!visited.Add(item.Id)) return;
             var hasModel = item.Components.Any(SceneComponentTypes.IsVoxelModel);
-            var primary = GetVoxelWorldObject();
-            if (hasModel && primary?.Id == item.Id)
+            if (hasModel && _objectVoxels.TryGetWorld(item.Id, out var objectWorld))
             {
-                foreach (var cell in _world.EnumerateOccupied())
-                {
-                    if (!ownedUnion.Contains(cell.Coordinate)) IncludeVoxel(cell.Coordinate);
-                }
-            }
-            else if (hasModel && _layerOwnership.TryGetValue(item.Id, out var owned))
-            {
-                foreach (var coordinate in owned) IncludeVoxel(coordinate);
+                foreach (var cell in objectWorld.EnumerateOccupied()) IncludeVoxel(cell.Coordinate);
             }
             else if (!hasModel)
             {

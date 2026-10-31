@@ -126,7 +126,7 @@ public sealed class ProjectHandle
 
 /// <summary>
 /// 项目文件夹结构的唯一权威：一个项目就是一个文件夹，
-/// 固定资产目录由这里强制维护，任何模块不得绕过
+/// 资产分类目录仅在创建新项目时提供默认值
 /// </summary>
 public static class ProjectLayout
 {
@@ -136,21 +136,9 @@ public static class ProjectLayout
     public const string ProjectFileName = "Project.mvoxproj";
 
     /// <summary>
-    /// Assets 下强制存在的一级分类目录，场景 .mvox、预制体 .prefab、
-    /// 材质 .material、项目级调色板 .palette 都存放在对应目录中
+    /// 新项目默认提供的资产目录，用户可自行组织其他文件夹
     /// </summary>
-    public static readonly string[] AssetDirectories =
-    {
-        "Scenes",
-        "Prefabs",
-        "Worlds",
-        "Materials",
-        "Palettes",
-        "Environments",
-        "RenderPresets",
-        "Generators",
-        "Exports",
-    };
+    public static readonly string[] AssetDirectories = ["Scenes", "Materials", "Palettes"];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -172,6 +160,8 @@ public static class ProjectLayout
             Name = string.IsNullOrWhiteSpace(name) ? new DirectoryInfo(absolutePath).Name : name,
         };
         EnsureDirectories(absolutePath);
+        foreach (var directory in AssetDirectories)
+            Directory.CreateDirectory(Path.Combine(absolutePath, "Assets", directory));
         WriteJson(Path.Combine(absolutePath, ProjectFileName), manifest);
         WriteJson(Path.Combine(absolutePath, "Plugins", "manifest.json"), new PluginManifest());
         WriteJson(Path.Combine(absolutePath, "Plugins", "plugins-lock.json"), new PluginLockFile());
@@ -179,7 +169,7 @@ public static class ProjectLayout
     }
 
     /// <summary>
-    /// 打开已有项目；默认会补齐用户手动删除的固定目录。
+    /// 打开已有项目；只确保项目基础目录存在
     /// </summary>
     /// <param name="rootPath">项目文件夹路径</param>
     /// <returns>项目句柄</returns>
@@ -199,7 +189,7 @@ public static class ProjectLayout
     }
 
     /// <summary>
-    /// 幂等确保全部固定目录存在
+    /// 幂等确保项目基础目录存在
     /// </summary>
     /// <param name="rootPath">项目根目录</param>
     public static void EnsureDirectories(string rootPath)
@@ -207,10 +197,6 @@ public static class ProjectLayout
         Directory.CreateDirectory(Path.Combine(rootPath, "Assets"));
         Directory.CreateDirectory(Path.Combine(rootPath, "Plugins"));
         Directory.CreateDirectory(Path.Combine(rootPath, "ProjectSettings"));
-        foreach (var directory in AssetDirectories)
-        {
-            Directory.CreateDirectory(Path.Combine(rootPath, "Assets", directory));
-        }
     }
 
     private static void WriteJson<T>(string path, T value)
