@@ -2718,6 +2718,25 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
                     float topPlane = values[17] + float(hitCell.y) + float(hitExtent.y);
+                    // 折射：只有材质显式设置了折射率才偏折；未设置时 mediumDirection 与 rayDirection 相同，
+                    // 纯吸收介质的画面与改动前逐像素一致
+                    float mediumIor = material.optics.x > 1.001 ? material.optics.x : 1.0;
+                    vec3 mediumDirection = rayDirection;
+                    if (mediumIor > 1.0)
+                    {
+                        vec3 refracted = refract(rayDirection, hitNormal, 1.0 / mediumIor);
+                        if (dot(refracted, refracted) < 1e-6)
+                        {
+                            // 全内反射：这条路径改为镜面反射，交给下一轮弹射
+                            rayOrigin = hitPoint + hitNormal * 0.0005;
+                            rayDirection = reflect(rayDirection, hitNormal);
+                            lastTranslucentCell = hitCell;
+                            continue;
+                        }
+
+                        mediumDirection = normalize(refracted);
+                    }
+
                     vec3 slabEntry = backfaceHit ? rayOrigin : hitPoint;
                     // 柱底：垂直向下探测第一段不透明面（跳过全部半透明）。起点必须落在
                     // 水格中心而非水面平面上：起点恰在边界平面时 fromInside 判定随 fp
@@ -2746,17 +2765,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     ivec3 forwardExtent;
                     float tForward = 3.4e38;
                     bool forwardHit = false;
-                    if (TraceClosest(slabEntry + rayDirection * 0.001, rayDirection,
+                    if (TraceClosest(slabEntry + mediumDirection * 0.001, mediumDirection,
                         forwardDistance, forwardNormal, forwardColor, forwardFlags, forwardSlot, forwardCell, forwardExtent, true))
                     {
                         tForward = forwardDistance + 0.001;
                         forwardHit = true;
                     }
                     float tSlabExit;
-                    if (rayDirection.y < -0.000001)
-                        tSlabExit = (bottomPlane - slabEntry.y) / rayDirection.y;
-                    else if (rayDirection.y > 0.000001)
-                        tSlabExit = (topPlane - slabEntry.y) / rayDirection.y;
+                    if (mediumDirection.y < -0.000001)
+                        tSlabExit = (bottomPlane - slabEntry.y) / mediumDirection.y;
+                    else if (mediumDirection.y > 0.000001)
+                        tSlabExit = (topPlane - slabEntry.y) / mediumDirection.y;
                     else
                         tSlabExit = tForward;
                     float chord = clamp(min(tSlabExit, tForward), 0.0, 256.0);
@@ -2770,12 +2789,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (max(max(throughput.r, throughput.g), throughput.b) < 0.004) break;
                     // 出口：柱底平面（或岸壁）处微越界落到下一介质表面，
                     // 着色点锚回精确界面
-                    vec3 exitPoint = slabEntry + rayDirection * chord;
+                    vec3 exitPoint = slabEntry + mediumDirection * chord;
                     pendingInterface = exitPoint;
                     pendingInterfaceNormal = forwardHit && tForward <= tSlabExit
                         ? forwardNormal
                         : (rayDirection.y < 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0));
                     hasPendingInterface = true;
+                    // 出射界面再按同一折射率偏折回来；全内反射时沿用介质内方向
+                    if (mediumIor > 1.0)
+                    {
+                        vec3 refractedOut = refract(mediumDirection, -pendingInterfaceNormal, mediumIor);
+                        if (dot(refractedOut, refractedOut) > 1e-6) rayDirection = normalize(refractedOut);
+                        else rayDirection = mediumDirection;
+                    }
+
                     rayOrigin = exitPoint + rayDirection * 0.0005;
                     lastTranslucentCell = hitCell;
                     continue;
