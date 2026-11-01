@@ -19,6 +19,13 @@ try {
             throw "Self-contained publish output missing native dependency: $native"
         }
     }
+    # 自包含发布会把原生库平铺到根目录，.NET 宿主按 deps.json 能直接加载；
+    # 但 Silk.NET 的加载器按 runtimes/<rid>/native 探测，这里再放一份兼容副本
+    $nativeDir = Join-Path $package 'runtimes\win-x64\native'
+    New-Item -ItemType Directory -Path $nativeDir -Force | Out-Null
+    foreach ($native in @('cimgui.dll', 'glfw3.dll', 'shaderc_shared.dll')) {
+        Copy-Item -LiteralPath (Join-Path $package $native) -Destination (Join-Path $nativeDir $native)
+    }
     foreach ($content in @('Editor\Fonts', 'Editor\Guide\Docs')) {
         if (-not (Test-Path -LiteralPath (Join-Path $package $content))) {
             throw "Self-contained publish output missing content directory: $content"
