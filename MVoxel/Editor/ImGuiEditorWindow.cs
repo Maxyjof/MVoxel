@@ -467,6 +467,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.captureStatus" => CaptureStatus(request),
             "editor.selectObject" => QueueSelectObject(request),
             "editor.selection" => DescribeSelection(),
+            "editor.commands" => ListEditorCommands(request),
+            "editor.exec" => ExecuteEditorCommand(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
             "editor.reloadPlugins" => QueueReloadPlugins(),
@@ -4764,6 +4766,11 @@ DockId=0x6A3C3007,0
         using var historySuspended = FileEditHistory.Suspend();
         _autoSaveQueued = false;
         if (_project is null || _worldLoadFailed || !_editorSettings.AutoSave || !_sceneDocumentDirty) return;
+        if (_editorSettings.AutoSaveMode == AutoSaveMode.Project)
+        {
+            SaveProject(automatic: true);
+            return;
+        }
 
         try
         {

@@ -127,6 +127,10 @@ internal static class Program
         Console.WriteLine("      调用运行中插件的自动化入口");
         Console.WriteLine("  --invoke-command <命令 ID> [JSON 参数]");
         Console.WriteLine("      调用运行中插件的编辑器命令");
+        Console.WriteLine("  --editor-commands [分类]");
+        Console.WriteLine("      列出编辑器里全部可由 MCP 调用的命令与参数");
+        Console.WriteLine("  --editor-exec <命令编号> [JSON 参数]");
+        Console.WriteLine("      执行一条编辑器命令，等同在界面里做同样的操作");
     }
 
     /// <summary>
@@ -359,6 +363,21 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.invokeCommand", arguments.RootElement), JsonOptions));
                 return 0;
             }
+            case "--editor-commands" when args.Length is 1 or 2:
+            {
+                object filter = args.Length == 2 ? new { category = args[1] } : new { category = (string?)null };
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(filter, JsonOptions));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.commands", arguments.RootElement), JsonOptions));
+                return 0;
+            }
+            case "--editor-exec" when args.Length is 2 or 3:
+            {
+                using var payload = JsonDocument.Parse(args.Length == 3 ? args[2] : "{}");
+                using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(
+                    new { commandId = args[1], arguments = payload.RootElement }));
+                Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.exec", arguments.RootElement), JsonOptions));
+                return 0;
+            }
             case "--mc-model" when args.Length == 7:
             {
                 var info = MinecraftSaveScanner.Inspect(args[1], "overworld");
@@ -549,6 +568,8 @@ internal static class Program
             "editor.selection" => CallEditor("editor.selection", arguments),
             "editor.invokeAutomation" => CallEditor("editor.invokeAutomation", arguments),
             "editor.invokeCommand" => CallEditor("editor.invokeCommand", arguments),
+            "editor.commands" => CallEditor("editor.commands", arguments),
+            "editor.exec" => CallEditor("editor.exec", arguments),
             "editor.reloadPlugins" => CallEditor("editor.reloadPlugins", arguments),
             "editor.installPlugin" => CallEditor("editor.installPlugin", arguments),
             "editor.setPluginEnabled" => CallEditor("editor.setPluginEnabled", arguments),
@@ -785,6 +806,8 @@ internal static class Program
         new { name = "editor.captureView", description = "按样本数累积后保存渲染PNG；采样选项仅作用于本次截图，captureStatus返回实际样本与采样元数据，已有文件不会覆盖", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, cameraName = new { type = "string", description = "可选的场景相机名称，名称必须唯一" }, width = new { type = "integer", minimum = 16, maximum = 8192 }, height = new { type = "integer", minimum = 16, maximum = 8192 }, samples = new { type = "integer", minimum = 1, maximum = 16384, description = "累积样本数，默认64" }, timeoutSeconds = new { type = "integer", minimum = 1, maximum = 600 }, directSampling = new { type = "boolean" }, lightTree = new { type = "boolean" }, denoise = new { type = "boolean" }, position = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 }, target = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 } }, required = new[] { "path" } } },
         new { name = "editor.selectObject", description = "选中场景对象，供界面验证使用", inputSchema = new { type = "object", properties = new { id = new { type = "string", description = "对象标识，优先使用" }, name = new { type = "string", description = "对象名称，id 缺省时按名称精确匹配" } } } },
         new { name = "editor.selection", description = "读取当前选中对象的摘要与缩放倍数", inputSchema = new { type = "object", properties = new { } } },
+        new { name = "editor.commands", description = "列出编辑器里全部可由 MCP 调用的命令：场景、图层、相机、材质、渲染设置、模型缩放与界面面板。先用它发现能力，再用 editor.exec 调用", inputSchema = new { type = "object", properties = new { category = new { type = "string", description = "可选分类过滤：场景、图层、相机、材质、渲染、模型、界面、项目" } } } },
+        new { name = "editor.exec", description = "执行一条编辑器命令，等同在界面里做同样的操作（新建/改名/删除对象、改变换、改相机、改材质、改渲染设置、缩放模型、开关面板）", inputSchema = new { type = "object", properties = new { commandId = new { type = "string", description = "命令编号，见 editor.commands" }, arguments = new { type = "object", description = "命令参数对象" } }, required = new[] { "commandId" } } },
         new { name = "editor.captureStatus", description = "查询截图任务状态", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
         new { name = "editor.invokeCommand", description = "调用当前项目插件注册的编辑器命令", inputSchema = new { type = "object", properties = new { commandId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "commandId" } } },
