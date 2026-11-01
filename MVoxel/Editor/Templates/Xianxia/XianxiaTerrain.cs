@@ -278,12 +278,14 @@ internal static class XianxiaTerrain
                     (byte)(packed >> 8), (byte)packed));
 
                 // 地表两层加崖壁裙边：陡坡侧面自动补齐，平缓处只留薄壳
+                // 裙边必须一直补到相邻列的地表，不能截断成固定格数：
+                // 棱脊与平台落差超过截断值时，侧面会留下一条能看穿山体内部的缝，
+                // 从山外能直接看到内壁和背后的分件
                 var lowest = height - 1;
                 if (x > 0 && MountainColumns[index - 1]) lowest = Math.Min(lowest, Heights[index - 1] - 1);
                 if (x < Size - 1 && MountainColumns[index + 1]) lowest = Math.Min(lowest, Heights[index + 1] - 1);
                 if (z > 0 && MountainColumns[index - Size]) lowest = Math.Min(lowest, Heights[index - Size] - 1);
                 if (z < Size - 1 && MountainColumns[index + Size]) lowest = Math.Min(lowest, Heights[index + Size] - 1);
-                lowest = Math.Max(lowest, height - 16);
 
                 world.Set(new VoxelCoord64(x, height, z), surface);
                 for (var y = lowest; y < height; y++)

@@ -82,6 +82,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private VkBuffer _materialTableBuffer;
     private DeviceMemory _materialTableMemory;
     private float[] _materialTable = [];
+    // 上传暂存缓冲持久复用：切换视图会触发工作集重传，
+    // 每次同步都新建再销毁缓冲会让驱动分配器频繁抖动，也放大了驱动异常的概率
+    private VkBuffer _stagingBuffer;
+    private DeviceMemory _stagingMemory;
+    private ulong _stagingCapacity;
     private VkBuffer _environmentBuffer;
     private DeviceMemory _environmentMemory;
     private int _environmentWidth;
@@ -256,6 +261,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bool includeInterior = false)
     {
         ArgumentNullException.ThrowIfNull(world);
+        // 设备已经丢失时不再构建和上传工作集：故障设备上的每个原生调用都可能再次触发驱动异常
+        if (_context?.IsDeviceLost == true)
+        {
+            return;
+        }
+
         // 编辑类同步不带相机与 LOD：沿用上一次的活动配置，避免笔刷提交把 LOD 分档重置
         if (lod is not null)
         {
@@ -871,6 +882,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (_context?.IsDeviceLost == true)
             {
                 _hardwareRayTracingPipeline = null;
+                // 只清理纯托管的句柄记录，不再调用故障设备上的描述符释放
                 _displayTextureId = IntPtr.Zero;
                 return;
             }
@@ -916,6 +928,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             {
                 api.DestroyBuffer(_device, _sceneLightBuffer, null);
                 api.FreeMemory(_device, _sceneLightMemory, null);
+            }
+
+            if (_stagingBuffer.Handle != 0)
+            {
+                api.DestroyBuffer(_device, _stagingBuffer, null);
+                api.FreeMemory(_device, _stagingMemory, null);
+                _stagingBuffer = default;
+                _stagingMemory = default;
+                _stagingCapacity = 0;
             }
 
             DestroyBvhBuffer(api);
@@ -1556,6 +1577,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UpdateComputeDescriptors()
     {
+        if (_context?.IsDeviceLost == true) return;
         if (_voxelBuffer.Handle == 0 || _bvhBuffer.Handle == 0 ||
             _outputView.Handle == 0 || _accumulationView.Handle == 0 || _guideView.Handle == 0) return;
         // 砖表绑定在布局中恒存在（着色器静态引用），即使传统路径也要绑定最小缓冲
@@ -3188,11 +3210,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="workset">待上传的工作集</param>
     private void UploadWorkset(VoxelGpuWorkset workset)
     {
-        if (_context is null || _api is not { } api)
+        if (_context is null || _api is not { } api || _context.IsDeviceLost)
         {
             return;
         }
 
+        // 描述符和缓冲会在本次同步里改写，必须等上一轮分块计算结束
+        WaitForComputeIdle();
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var bvh = VoxelGpuBvh.Build(workset);
         SyncBvhBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
@@ -3227,64 +3251,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _bvhBufferCapacity = NextCapacity(bvhRequired);
         }
 
-        var (stagingBuffer, stagingMemory) = CreateBuffer(
-            (ulong)bytes.Length,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        try
-        {
-            void* mapped = null;
-            Check(api.MapMemory(_device, stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射体素工作集暂存缓冲");
-            try
-            {
-                fixed (byte* source = bytes)
-                {
-                    System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
-                }
-            }
-            finally
-            {
-                api.UnmapMemory(_device, stagingMemory);
-            }
-
-            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, stagingBuffer, _voxelBuffer, bytes.Length));
-        }
-        finally
-        {
-            api.DestroyBuffer(_device, stagingBuffer, null);
-            api.FreeMemory(_device, stagingMemory, null);
-        }
-
-        var bvhStagingSize = Math.Max(bvh.NodeBytes.Length, VoxelGpuBvh.PackedNodeSize);
-        var (bvhStagingBuffer, bvhStagingMemory) = CreateBuffer(
-            (ulong)bvhStagingSize,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        try
-        {
-            void* mapped = null;
-            Check(api.MapMemory(_device, bvhStagingMemory, 0, (ulong)nodeBytes.Length, 0, &mapped),
-                "映射体素 BVH 暂存缓冲");
-            try
-            {
-                fixed (byte* source = nodeBytes)
-                {
-                    System.Buffer.MemoryCopy(source, mapped, nodeBytes.Length, nodeBytes.Length);
-                }
-            }
-            finally
-            {
-                api.UnmapMemory(_device, bvhStagingMemory);
-            }
-
-            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, bvhStagingBuffer,
-                _bvhBuffer, nodeBytes.Length));
-        }
-        finally
-        {
-            api.DestroyBuffer(_device, bvhStagingBuffer, null);
-            api.FreeMemory(_device, bvhStagingMemory, null);
-        }
+        UploadBytes(bytes, _voxelBuffer, 0);
+        UploadBytes(nodeBytes, _bvhBuffer, 0);
 
         _bvhNodeCount = bvh.NodeCount;
         _usingBrickPath = false;
@@ -3372,6 +3340,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private void UploadBrickFull(BrickResidency residency)
     {
         var api = _api!;
+        WaitForComputeIdle();
         var cellBytes = PackCells(residency.Cells);
         var nodeBytes = PackResidencyNodes(residency.Nodes, 0, residency.Nodes.Length);
         var cellRequired = checked((ulong)Math.Max(cellBytes.Length, PackedCellSize));
@@ -3397,8 +3366,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         EnsureBrickTableBuffer(1);
-        UploadStaging(cellBytes, _voxelBuffer);
-        UploadStaging(nodeBytes, _bvhBuffer);
+        UploadBytes(cellBytes, _voxelBuffer, 0);
+        UploadBytes(nodeBytes, _bvhBuffer, 0);
         _bvhNodeCount = residency.Nodes.Length;
         UpdateComputeDescriptors();
     }
@@ -3408,6 +3377,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private void UploadBrickRanges(BrickResidency.UploadPlan plan)
     {
+        WaitForComputeIdle();
         foreach (var (start, count) in plan.CellRanges)
         {
             if (count <= 0)
@@ -3416,7 +3386,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             var bytes = PackCellsRange(_brickResidency!.Cells, start, count);
-            UploadStagingRange(bytes, _voxelBuffer, (long)start * PackedCellSize);
+            UploadBytes(bytes, _voxelBuffer, (long)start * PackedCellSize);
         }
 
         foreach (var (start, count) in plan.NodeRanges)
@@ -3427,7 +3397,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             var bytes = PackResidencyNodes(_brickResidency!.Nodes, start, count);
-            UploadStagingRange(bytes, _bvhBuffer, (long)start * 48);
+            UploadBytes(bytes, _bvhBuffer, (long)start * 48);
         }
 
         _bvhNodeCount = _brickResidency!.Nodes.Length;
@@ -3463,113 +3433,88 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 把主机端字节上传到设备缓冲指定字节偏移处
     /// </summary>
-    private void UploadStagingRange(byte[] bytes, VkBuffer destination, long destinationByteOffset)
+    /// <remarks>
+    /// 暂存缓冲按最大需求扩容后长期复用
+    /// 每次上传都等待立即提交栅栏返回，所以连续上传可以安全复用同一块暂存内存
+    /// </remarks>
+    private void UploadBytes(byte[] bytes, VkBuffer destination, long destinationByteOffset)
     {
-        if (_context is not { } context || _api is not { } api)
+        if (bytes.Length == 0 || _context is null || _api is not { } api || _context.IsDeviceLost)
         {
             return;
         }
 
-        if (bytes.Length == 0)
-        {
-            return;
-        }
-
-        var (stagingBuffer, stagingMemory) = CreateBuffer((ulong)bytes.Length,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        EnsureStagingCapacity((ulong)bytes.Length);
+        void* mapped = null;
+        Check(api.MapMemory(_device, _stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射上传暂存缓冲");
         try
         {
-            void* mapped = null;
-            Check(api.MapMemory(_device, stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射区间暂存缓冲");
-            try
+            fixed (byte* source = bytes)
             {
-                fixed (byte* source = bytes)
-                {
-                    System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
-                }
+                System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
             }
-            finally
-            {
-                api.UnmapMemory(_device, stagingMemory);
-            }
-
-            _context.ExecuteImmediate(commandBuffer =>
-                RecordUploadRange(commandBuffer, stagingBuffer, destination, bytes.Length, destinationByteOffset));
         }
         finally
         {
-            api.DestroyBuffer(_device, stagingBuffer, null);
-            api.FreeMemory(_device, stagingMemory, null);
+            api.UnmapMemory(_device, _stagingMemory);
         }
+
+        _context.ExecuteImmediate(commandBuffer =>
+            RecordUploadRange(commandBuffer, _stagingBuffer, destination, bytes.Length, destinationByteOffset));
     }
 
     /// <summary>
-    /// 记录暂存缓冲到设备缓冲指定偏移的复制与同步
+    /// 确保上传暂存缓冲容量足够，不足时扩容复用
     /// </summary>
-    private void RecordUploadRange(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destination,
-        int byteCount, long destinationByteOffset)
+    /// <param name="required">本次上传需要的字节数</param>
+    private void EnsureStagingCapacity(ulong required)
     {
+        if (_stagingBuffer.Handle != 0 && _stagingCapacity >= required)
+        {
+            return;
+        }
+
         var api = _api!;
-        var copy = new BufferCopy(0, (ulong)destinationByteOffset, (ulong)byteCount);
-        api.CmdCopyBuffer(commandBuffer, stagingBuffer, destination, 1, in copy);
-        BufferMemoryBarrier barrier = new()
+        WaitForComputeIdle();
+        if (_stagingBuffer.Handle != 0)
         {
-            SType = StructureType.BufferMemoryBarrier,
-            SrcAccessMask = AccessFlags.TransferWriteBit,
-            DstAccessMask = AccessFlags.ShaderReadBit,
-            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Buffer = destination,
-            Offset = (ulong)destinationByteOffset,
-            Size = (ulong)byteCount,
-        };
-        api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
-            PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.FragmentShaderBit,
-            0, 0, null, 1, in barrier, 0, null);
+            api.DestroyBuffer(_device, _stagingBuffer, null);
+            api.FreeMemory(_device, _stagingMemory, null);
+            _stagingBuffer = default;
+            _stagingMemory = default;
+            _stagingCapacity = 0;
+        }
+
+        _stagingCapacity = NextCapacity(required);
+        (_stagingBuffer, _stagingMemory) = CreateBuffer(
+            _stagingCapacity,
+            BufferUsageFlags.TransferSrcBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
     }
 
     /// <summary>
-    /// 把主机端字节经暂存缓冲上传到设备本地 Storage Buffer
+    /// 等待所有分块计算提交完成并回收环形槽位
     /// </summary>
-    private void UploadStaging(byte[] bytes, VkBuffer destination)
+    /// <remarks>
+    /// 描述符集、设备缓冲和输出图像在改写或销毁前必须确认没有命令缓冲仍在引用
+    /// 在部分显卡驱动上，改写使用中的描述符会直接导致设备丢失
+    /// </remarks>
+    private void WaitForComputeIdle()
     {
-        if (_context is not { } context || _api is not { } api)
+        if (_context is null || _context.IsDeviceLost)
         {
             return;
         }
 
-        if (bytes.Length == 0)
+        for (var slot = 0; slot < TileRingDepth; slot++)
         {
-            return;
-        }
-
-        var (stagingBuffer, stagingMemory) = CreateBuffer(
-            (ulong)bytes.Length,
-            BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        try
-        {
-            void* mapped = null;
-            Check(api.MapMemory(_device, stagingMemory, 0, (ulong)bytes.Length, 0, &mapped), "映射暂存缓冲");
-            try
+            if (!_ringInFlight[slot])
             {
-                fixed (byte* source = bytes)
-                {
-                    System.Buffer.MemoryCopy(source, mapped, bytes.Length, bytes.Length);
-                }
-            }
-            finally
-            {
-                api.UnmapMemory(_device, stagingMemory);
+                continue;
             }
 
-            _context.ExecuteImmediate(commandBuffer => RecordUpload(commandBuffer, stagingBuffer, destination, bytes.Length));
-        }
-        finally
-        {
-            api.DestroyBuffer(_device, stagingBuffer, null);
-            api.FreeMemory(_device, stagingMemory, null);
+            _context.WaitAndResetFence(_ringFences[slot]);
+            _ringInFlight[slot] = false;
         }
     }
 
@@ -3585,17 +3530,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 记录暂存缓冲到体素 Storage Buffer 的复制和同步
+    /// 记录暂存缓冲到目标 Storage Buffer 指定偏移的复制与同步
     /// </summary>
     /// <param name="commandBuffer">当前命令缓冲</param>
     /// <param name="stagingBuffer">主机可见暂存缓冲</param>
+    /// <param name="destination">目标设备缓冲</param>
     /// <param name="byteCount">复制字节数</param>
-    private void RecordUpload(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destinationBuffer,
-        int byteCount)
+    /// <param name="destinationByteOffset">目标字节偏移</param>
+    private void RecordUploadRange(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destination,
+        int byteCount, long destinationByteOffset)
     {
         var api = _api!;
-        var copy = new BufferCopy(0, 0, (ulong)byteCount);
-        api.CmdCopyBuffer(commandBuffer, stagingBuffer, destinationBuffer, 1, in copy);
+        var copy = new BufferCopy(0, (ulong)destinationByteOffset, (ulong)byteCount);
+        api.CmdCopyBuffer(commandBuffer, stagingBuffer, destination, 1, in copy);
         BufferMemoryBarrier barrier = new()
         {
             SType = StructureType.BufferMemoryBarrier,
@@ -3603,8 +3550,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             DstAccessMask = AccessFlags.ShaderReadBit,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-            Buffer = destinationBuffer,
-            Offset = 0,
+            Buffer = destination,
+            Offset = (ulong)destinationByteOffset,
             Size = (ulong)byteCount
         };
         api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.TransferBit,
@@ -3662,8 +3609,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         uint index = 0;
         for (; index < memoryProperties.MemoryTypeCount; index++)
         {
+            var type = memoryProperties.MemoryTypes[(int)index];
+            // 跳过受保护内存：未启用受保护设备特性时使用它属于无效用法
             if ((requirements.MemoryTypeBits & (1u << (int)index)) != 0 &&
-                (memoryProperties.MemoryTypes[(int)index].PropertyFlags & properties) == properties)
+                (type.PropertyFlags & MemoryPropertyFlags.ProtectedBit) == 0 &&
+                (type.PropertyFlags & properties) == properties)
             {
                 break;
             }

@@ -589,16 +589,18 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
     /// </summary>
     private DescriptorPool CreateDescriptorPool()
     {
+        // 每个纹理占一个描述符集：字体、Logo、资产预览、三条管线的输出纹理，
+        // 再加资源浏览器缩略图。容量要按缩略图数量留够余量，池耗尽会让后续注册失败
         DescriptorPoolSize* poolSizes = stackalloc DescriptorPoolSize[2]
         {
-            new DescriptorPoolSize(DescriptorType.SampledImage, 64),
+            new DescriptorPoolSize(DescriptorType.SampledImage, 512),
             new DescriptorPoolSize(DescriptorType.Sampler, 1)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
             Flags = DescriptorPoolCreateFlags.FreeDescriptorSetBit,
-            MaxSets = 65,
+            MaxSets = 513,
             PoolSizeCount = 2,
             PPoolSizes = poolSizes
         };
@@ -864,8 +866,11 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         uint index = 0;
         for (; index < memoryProperties.MemoryTypeCount; index++)
         {
+            var type = memoryProperties.MemoryTypes[(int)index];
+            // 跳过受保护内存：未启用受保护设备特性时使用它属于无效用法
             if ((requirements.MemoryTypeBits & (1u << (int)index)) != 0 &&
-                (memoryProperties.MemoryTypes[(int)index].PropertyFlags & properties) == properties)
+                (type.PropertyFlags & MemoryPropertyFlags.ProtectedBit) == 0 &&
+                (type.PropertyFlags & properties) == properties)
             {
                 break;
             }

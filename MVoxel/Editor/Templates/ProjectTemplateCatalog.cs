@@ -207,6 +207,62 @@ public static class ProjectTemplateCatalog
     }
 
     /// <summary>
+    /// 用外部 MagicaVoxel 单模型文件生成项目内容：写入原生体素资产，并建立只包含该模型的主场景
+    /// </summary>
+    /// <param name="project">已经创建好的空项目</param>
+    /// <param name="voxFilePath">MagicaVoxel .vox 文件绝对路径</param>
+    /// <param name="report">进度回调</param>
+    /// <returns>导入的体素数</returns>
+    internal static int PopulateFromVox(ProjectHandle project, string voxFilePath, Action<string, float, bool>? report = null)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentException.ThrowIfNullOrWhiteSpace(voxFilePath);
+        report?.Invoke("正在读取 MagicaVoxel 文件…", .72F, true);
+        var world = VoxFormat.Read(voxFilePath);
+        var modelName = Path.GetFileNameWithoutExtension(voxFilePath).Trim();
+        if (modelName.Length == 0) modelName = "导入模型";
+
+        report?.Invoke("正在写入项目体素资产…", .82F, true);
+        var fileName = ToSafeFileName(modelName) + ".mvmodel";
+        var relativePath = "Assets/Worlds/" + fileName;
+        var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
+        if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
+        else LargeWorldFormat.Write(absolutePath, world);
+        AssetMetaStore.EnsureMeta(absolutePath);
+
+        report?.Invoke("正在生成主场景…", .90F, true);
+        // 单模型场景：对象原点取模型自身的世界最小坐标，读取时按对象原点还原世界坐标
+        var definition = new ProjectTemplateDefinition(ProjectTemplateId.Empty, modelName,
+            "由 MagicaVoxel 文件创建", "MagicaVoxel 兼容导入", "单模型", "继续在原生格式上编辑");
+        WriteScene(project, definition, world.OccupiedVoxelCount, relativePath, cameraCount: 1,
+            modelParts: [new SceneModelPart(modelName, "MagicaVoxel 导入", relativePath,
+                world.OccupiedVoxelCount, GetWorldOrigin(world))],
+            framingWorld: world);
+
+        report?.Invoke("正在写入项目设置…", .94F, false);
+        var settings = CreateSettings(ProjectTemplateId.Empty);
+        settings.TemplateId = "MagicaVoxel 导入";
+        SettingsStore.SaveProject(project, settings);
+        return world.OccupiedVoxelCount;
+    }
+
+    /// <summary>
+    /// 把用户提供的名字转换为可用于资产文件的安全文件名
+    /// </summary>
+    private static string ToSafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var builder = new System.Text.StringBuilder(name.Length);
+        foreach (var character in name)
+        {
+            builder.Append(Array.IndexOf(invalid, character) >= 0 ? '_' : character);
+        }
+
+        var result = builder.ToString().Trim().TrimEnd('.');
+        return result.Length == 0 ? "导入模型" : result;
+    }
+
+    /// <summary>
     /// 构建模板对应的内存世界，供测试和编辑器初始化使用
     /// </summary>
     /// <param name="id">模板 ID</param>

@@ -17,6 +17,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             EmissiveFace emissiveFaces[];
         };
 
+        // 树按面数平衡切分，实际下降层数约 ceil(log2(面数/8))；
+        // 遍历上限取节点数：树有 N 个节点，任何路径都不超过 N 步，数据异常成环也会退出。
+        // 着色器里的死循环会被驱动判成 GPU 超时并直接丢失设备。
         bool UseLightTree()
         {
             return values[118] > 0.5 && emissiveHeader.y > 0 && emissiveHeader.x > 32;
@@ -52,8 +55,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             vec3 receiver = origin - vec3(values[16], values[17], values[18]);
             int index = 0;
             float probability = 1.0;
-            while (true)
+            for (int step = 0; step < emissiveHeader.y; step++)
             {
+                if (index < 0 || index >= emissiveHeader.y) break;
                 EmissiveFace node = LightNode(index);
                 if (node.key.x < 0) return probability / float(node.key.w - node.key.z);
                 float leftProbability = LightLeftProbability(node, receiver);
@@ -61,6 +65,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
                 { probability *= leftProbability; index = node.key.x; }
                 else { probability *= 1.0 - leftProbability; index = node.key.y; }
             }
+
+            return 1.0 / float(max(emissiveHeader.x, 1));
         }
 
         int DrawLightFace(vec3 origin, inout uint state, out float probability)
@@ -74,20 +80,24 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             vec3 receiver = origin - vec3(values[16], values[17], values[18]);
             int index = 0;
             probability = 1.0;
-            while (true)
+            for (int step = 0; step < emissiveHeader.y; step++)
             {
+                if (index < 0 || index >= emissiveHeader.y) break;
                 EmissiveFace node = LightNode(index);
                 if (node.key.x < 0)
                 {
                     int length = node.key.w - node.key.z;
-                    probability /= float(length);
-                    return node.key.z + min(int(Random(state) * float(length)), length - 1);
+                    probability /= float(max(length, 1));
+                    return node.key.z + min(int(Random(state) * float(max(length, 1))), max(length, 1) - 1);
                 }
                 float leftProbability = LightLeftProbability(node, receiver);
                 if (Random(state) < leftProbability)
                 { probability *= leftProbability; index = node.key.x; }
                 else { probability *= 1.0 - leftProbability; index = node.key.y; }
             }
+
+            probability = 1.0 / float(max(count, 1));
+            return min(int(Random(state) * float(max(count, 1))), max(count, 1) - 1);
         }
 
         vec3 EmissiveNormal(int direction)
@@ -235,12 +245,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.DeviceLocalBit);
         // 所有描述符始终绑定有效缓冲；未同步世界时头部数量为零。
-        UploadStaging(new byte[16], _emissiveBuffer);
+        UploadBytes(new byte[16], _emissiveBuffer, 0);
     }
 
     private void UploadEmissiveFaces()
     {
-        if (_context is null || _api is null) return;
+        if (_context is null || _api is null || _context.IsDeviceLost) return;
+        // 描述符会在本次同步后重新写入，先等上一轮分块计算结束
+        WaitForComputeIdle();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         // 相对锚点的 8³ 空间砖排序与 Shader 的 CompareFaceKey 保持一致。
         var faces = _emissiveCatalog.Faces.OrderBy(f => (f.Voxel.X - _workset.Origin.X) / 8)
@@ -312,7 +324,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
     private void UploadChangedEmissiveRanges(byte[] bytes)
     {
         if (_emissiveUploadedBytes.Length != bytes.Length)
-            UploadStaging(bytes, _emissiveBuffer);
+            UploadBytes(bytes, _emissiveBuffer, 0);
         else
         {
             // 按 256 字节块合并连续脏区；范围过多时一次上传，避免大量队列提交。
@@ -326,9 +338,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
                 if (!changed && start >= 0) { ranges.Add((start, offset)); start = -1; }
             }
             if (start >= 0) ranges.Add((start, bytes.Length));
-            if (ranges.Count > 32) UploadStaging(bytes, _emissiveBuffer);
+            if (ranges.Count > 32) UploadBytes(bytes, _emissiveBuffer, 0);
             else foreach (var range in ranges)
-                UploadStagingRange(bytes[range.Start..range.End], _emissiveBuffer, range.Start);
+                UploadBytes(bytes[range.Start..range.End], _emissiveBuffer, range.Start);
         }
         _emissiveUploadedBytes = bytes;
     }

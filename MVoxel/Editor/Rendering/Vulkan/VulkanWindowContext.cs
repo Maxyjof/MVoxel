@@ -35,6 +35,10 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private readonly uint _queueFamilyIndex;
     private readonly CommandPool _commandPool;
     private readonly CommandBuffer _commandBuffer;
+    // 立即提交专用命令缓冲与栅栏：帧命令缓冲可能仍在 GPU 执行，
+    // 上传等同步操作必须等待自己的栅栏，不能复用正在执行中的帧命令缓冲
+    private readonly CommandBuffer _immediateCommandBuffer;
+    private readonly Fence _immediateFence;
     private readonly VkSemaphore _imageAvailable;
     private readonly VkSemaphore _renderFinished;
     private readonly Fence _inFlight;
@@ -76,6 +80,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         CreateSwapchainImages();
         _commandPool = CreateCommandPool();
         _commandBuffer = AllocateCommandBuffer();
+        _immediateCommandBuffer = AllocateImmediateCommandBuffer();
+        _immediateFence = CreateImmediateFence();
         _imageAvailable = CreateSemaphore();
         _renderFinished = CreateSemaphore();
         _inFlight = CreateFence();
@@ -157,24 +163,32 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// <summary>
     /// 执行一次立即提交并等待完成的初始化命令
     /// </summary>
+    /// <remarks>
+    /// 使用独立的命令缓冲和栅栏
+    /// 帧命令缓冲可能仍在 GPU 上执行，复用它重置或提交属于未定义行为
+    /// 在部分显卡驱动上会直接表现为设备丢失
+    /// </remarks>
     internal void ExecuteImmediate(Action<CommandBuffer> recordCommands)
     {
         ArgumentNullException.ThrowIfNull(recordCommands);
+        if (_deviceLost || _disposed) return;
         var submitWatch = System.Diagnostics.Stopwatch.StartNew();
-        _api.ResetCommandBuffer(_commandBuffer, 0);
+        Check(_api.ResetCommandBuffer(_immediateCommandBuffer, 0), "重置 Vulkan 立即提交命令缓冲");
         CommandBufferBeginInfo beginInfo = new() { SType = StructureType.CommandBufferBeginInfo };
-        Check(_api.BeginCommandBuffer(_commandBuffer, in beginInfo), "开始 Vulkan 初始化命令");
-        recordCommands(_commandBuffer);
-        Check(_api.EndCommandBuffer(_commandBuffer), "结束 Vulkan 初始化命令");
-        CommandBuffer commandBuffer = _commandBuffer;
+        Check(_api.BeginCommandBuffer(_immediateCommandBuffer, in beginInfo), "开始 Vulkan 立即提交命令");
+        recordCommands(_immediateCommandBuffer);
+        Check(_api.EndCommandBuffer(_immediateCommandBuffer), "结束 Vulkan 立即提交命令");
+        CommandBuffer commandBuffer = _immediateCommandBuffer;
         SubmitInfo submitInfo = new()
         {
             SType = StructureType.SubmitInfo,
             CommandBufferCount = 1,
             PCommandBuffers = &commandBuffer
         };
-        Check(_api.QueueSubmit(_queue, 1, in submitInfo, default), "提交 Vulkan 初始化命令");
-        Check(_api.QueueWaitIdle(_queue), "等待 Vulkan 初始化命令");
+        Fence fence = _immediateFence;
+        Check(_api.QueueSubmit(_queue, 1, in submitInfo, fence), "提交 Vulkan 立即提交命令");
+        Check(_api.WaitForFences(_device, 1, in fence, true, ulong.MaxValue), "等待 Vulkan 立即提交命令");
+        Check(_api.ResetFences(_device, 1, in fence), "复位 Vulkan 立即提交栅栏");
         ImmediateSubmitCount += 1;
         ImmediateSubmitMs += submitWatch.Elapsed.TotalMilliseconds;
     }
@@ -293,9 +307,11 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             throw new InvalidOperationException($"Vulkan 获取交换链图像失败：{result}");
         }
 
-        _api.WaitForFences(_device, 1, in _inFlight, true, ulong.MaxValue);
-        _api.ResetFences(_device, 1, in _inFlight);
-        _api.ResetCommandBuffer(_commandBuffer, 0);
+        // 必须先等上一帧的命令缓冲执行完，才能重置并重新录制它
+        Fence frameFence = _inFlight;
+        Check(_api.WaitForFences(_device, 1, in frameFence, true, ulong.MaxValue), "等待 Vulkan 帧栅栏");
+        Check(_api.ResetFences(_device, 1, in frameFence), "复位 Vulkan 帧栅栏");
+        Check(_api.ResetCommandBuffer(_commandBuffer, 0), "重置 Vulkan 帧命令缓冲");
 
         CommandBufferBeginInfo beginInfo = new()
         {
@@ -459,9 +475,11 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
 
         _disposed = true;
         _api.DeviceWaitIdle(_device);
+        _api.DestroyFence(_device, _immediateFence, null);
         _api.DestroyFence(_device, _inFlight, null);
         _api.DestroySemaphore(_device, _renderFinished, null);
         _api.DestroySemaphore(_device, _imageAvailable, null);
+        _api.FreeCommandBuffers(_device, _commandPool, 1, in _immediateCommandBuffer);
         _api.FreeCommandBuffers(_device, _commandPool, 1, in _commandBuffer);
         _api.DestroyCommandPool(_device, _commandPool, null);
         foreach (Framebuffer framebuffer in _framebuffers)
@@ -480,6 +498,47 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         _surfaceApi.DestroySurface(_instance, _surface, null);
         _api.DestroyInstance(_instance, null);
         _api.Dispose();
+    }
+
+    /// <summary>
+    /// 设备丢失后放弃原生资源，跳过等待与同步，避免在故障设备上再次触发驱动异常
+    /// </summary>
+    /// <remarks>
+    /// 只做尽力而为的销毁，失败也不影响重建
+    /// 不释放共享的 Vulkan API 绑定，因为后续重建还要继续使用
+    /// </remarks>
+    internal void Abandon()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        try
+        {
+            foreach (Framebuffer framebuffer in _framebuffers)
+            {
+                _api.DestroyFramebuffer(_device, framebuffer, null);
+            }
+
+            _framebuffers.Clear();
+            foreach (ImageView imageView in _imageViews)
+            {
+                _api.DestroyImageView(_device, imageView, null);
+            }
+
+            _imageViews.Clear();
+            _api.DestroyRenderPass(_device, _renderPass, null);
+            _swapchainApi.DestroySwapchain(_device, _swapchain, null);
+            _api.DestroyDevice(_device, null);
+            _surfaceApi.DestroySurface(_instance, _surface, null);
+            _api.DestroyInstance(_instance, null);
+        }
+        catch
+        {
+            // 故障设备上的销毁失败可以忽略，剩余原生对象随进程结束统一回收
+        }
     }
 
     /// <summary>
@@ -952,6 +1011,34 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         CommandBuffer commandBuffer = default;
         Check(_api.AllocateCommandBuffers(_device, &allocateInfo, &commandBuffer), "分配 Vulkan 命令缓冲");
         return commandBuffer;
+    }
+
+    /// <summary>
+    /// 分配立即提交专用命令缓冲，与帧命令缓冲互不干扰
+    /// </summary>
+    private CommandBuffer AllocateImmediateCommandBuffer()
+    {
+        CommandBufferAllocateInfo allocateInfo = new()
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = _commandPool,
+            Level = CommandBufferLevel.Primary,
+            CommandBufferCount = 1
+        };
+        CommandBuffer commandBuffer = default;
+        Check(_api.AllocateCommandBuffers(_device, &allocateInfo, &commandBuffer), "分配 Vulkan 立即提交命令缓冲");
+        return commandBuffer;
+    }
+
+    /// <summary>
+    /// 创建立即提交栅栏，初始为未触发状态
+    /// </summary>
+    private Fence CreateImmediateFence()
+    {
+        FenceCreateInfo createInfo = new() { SType = StructureType.FenceCreateInfo };
+        Fence fence = default;
+        Check(_api.CreateFence(_device, &createInfo, null, &fence), "创建 Vulkan 立即提交栅栏");
+        return fence;
     }
 
     /// <summary>

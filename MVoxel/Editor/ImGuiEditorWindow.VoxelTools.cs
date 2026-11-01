@@ -7,6 +7,7 @@ using MVoxel.Project;
 using MVoxel.Rendering;
 using MVoxel.Editor.Settings;
 using MVoxel.Editor.Templates;
+using MVoxel.Editor.Assets;
 using MVoxel.Voxels;
 using MVoxel.Scene;
 using MVoxel.Editor.Rendering;
@@ -39,6 +40,9 @@ internal sealed partial class ImGuiEditorWindow
 {
     // 场景与渲染窗口可以同时可见，不能共享会被另一窗口重建的输出纹理。
     private VulkanVoxelRenderPipeline? _scenePipeline;
+    // 设备丢失后的重建次数上限，连续失败时保持 CPU 预览不再反复申请设备
+    private const int MaxVulkanRecoveryAttempts = 2;
+    private int _vulkanRecoveryAttempts;
     private bool _worldLoadFailed;
     private readonly ObjectVoxelStore _objectVoxels = new();
     private Rgba32? _sampledBrushColor;
@@ -119,6 +123,66 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline = null;
         _scenePipeline?.Dispose();
         _scenePipeline = null;
+    }
+
+    /// <summary>
+    /// 设备丢失后重建窗口 Vulkan 上下文与 ImGui 渲染后端
+    /// </summary>
+    /// <remarks>
+    /// 设备丢失时交换链已经无法再呈现，只切换 CPU 预览会让整个编辑器窗口停止刷新
+    /// 因此这里直接重建 Vulkan 设备、ImGui 后端和缩略图缓存，让视图继续可用
+    /// 旧设备上的原生对象不再逐个销毁，避免在故障设备上再次触发驱动异常
+    /// </remarks>
+    /// <returns>完成重建返回 true</returns>
+    private bool RecoverVulkanDeviceIfNeeded()
+    {
+        if (_vulkan is null || !_vulkan.IsDeviceLost)
+        {
+            _vulkanRecoveryAttempts = 0;
+            return false;
+        }
+
+        // 连续失败时不再尝试，避免在不可用的驱动状态里反复申请设备
+        if (_vulkanRecoveryAttempts >= MaxVulkanRecoveryAttempts)
+        {
+            return false;
+        }
+
+        _vulkanRecoveryAttempts++;
+        MVoxelLog.Warn($"检测到 Vulkan 设备丢失，重建渲染设备（第 {_vulkanRecoveryAttempts} 次）");
+        try
+        {
+            _pipeline = null;
+            _scenePipeline = null;
+            _exportPipeline = null;
+            _imguiRenderer = null;
+            _thumbnailCache = null;
+            _assetPreviewTextureId = 0;
+            _pipelineInitializationAttempted = false;
+            var lostContext = _vulkan;
+            _vulkan = null;
+            lostContext.Abandon();
+
+            var context = new VulkanWindowContext(this);
+            _vulkan = context;
+            _imguiRenderer = new VulkanImGuiRenderer(context, _controller!);
+            _thumbnailCache = new ThumbnailCache(_imguiRenderer);
+            _assetBrowser.Thumbnails = _thumbnailCache;
+            _gpuRenderingDisabled = false;
+            _pipelineStatus = string.Empty;
+            _accumulationSignature = string.Empty;
+            _renderViewNeedsInitialRender = true;
+            _lastRenderGpuSubmitMs = 0;
+            MVoxelLog.Info("Vulkan 渲染设备已重建，视图继续使用显卡渲染");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _gpuRenderingDisabled = true;
+            _pipelineStatus = "显卡设备不可用，当前使用 CPU 预览";
+            MVoxelLog.Error("重建 Vulkan 渲染设备失败", exception);
+            return false;
+        }
     }
 
     internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin);
@@ -933,6 +997,30 @@ internal sealed partial class ImGuiEditorWindow
     private readonly VoxelWorld _emptyScenePreviewWorld = new();
 
     /// <summary>
+    /// 按输出图像的真实宽高比绘制渲染纹理。
+    /// 视图尺寸与渲染尺寸不一致时（截图指定分辨率、复用上一帧纹理）等比居中，
+    /// 不把任意比例的图像拉伸铺满视图，否则画面会横向变形。
+    /// </summary>
+    private static void DrawPipelineImage(ImDrawListPtr drawList, VulkanVoxelRenderPipeline pipeline,
+        Vector2 origin, Vector2 size)
+    {
+        var uvMax = pipeline.DisplayUvMax;
+        var textureWidth = pipeline.OutputWidth * uvMax.X;
+        var textureHeight = pipeline.OutputHeight * uvMax.Y;
+        if (textureWidth <= 0F || textureHeight <= 0F || size.X <= 0F || size.Y <= 0F) return;
+        var textureAspect = textureWidth / textureHeight;
+        var viewAspect = size.X / size.Y;
+        // 常规帧只差像素取整的千分之一以内，直接铺满；比例明显不同才等比留边
+        var target = MathF.Abs(textureAspect / viewAspect - 1F) > 0.01F
+            ? textureAspect > viewAspect
+                ? new Vector2(size.X, size.X / textureAspect)
+                : new Vector2(size.Y * textureAspect, size.Y)
+            : size;
+        var position = origin + (size - target) * 0.5F;
+        drawList.AddImage(pipeline.DisplayTextureId, position, position + target, Vector2.Zero, uvMax);
+    }
+
+    /// <summary>
     /// 用 Vulkan Compute 绘制场景基础几何和无限网格，空场景也保留网格。
     /// </summary>
     private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
@@ -958,8 +1046,7 @@ internal sealed partial class ImGuiEditorWindow
                 showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
 
-            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                Vector2.Zero, pipeline.DisplayUvMax);
+            DrawPipelineImage(drawList, pipeline, origin, size);
             return true;
         }
         catch (Exception exception)
@@ -1038,8 +1125,7 @@ internal sealed partial class ImGuiEditorWindow
 
                 _lastRenderGpuSubmitMs = nowMs;
                 _renderViewNeedsInitialRender = false;
-                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                    Vector2.Zero, pipeline.DisplayUvMax);
+                DrawPipelineImage(drawList, pipeline, origin, size);
                 return true;
             }
 
@@ -1047,8 +1133,7 @@ internal sealed partial class ImGuiEditorWindow
             if (!IsFocused && _capturePath is null && !_renderViewNeedsInitialRender &&
                 pipeline.DisplayTextureId != IntPtr.Zero)
             {
-                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                    Vector2.Zero, pipeline.DisplayUvMax);
+                DrawPipelineImage(drawList, pipeline, origin, size);
                 return true;
             }
 
@@ -1058,8 +1143,7 @@ internal sealed partial class ImGuiEditorWindow
             if (settingsInteracting && pipeline.DisplayTextureId != IntPtr.Zero &&
                 nowMs - _lastRenderGpuSubmitMs < 33)
             {
-                drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                    Vector2.Zero, pipeline.DisplayUvMax);
+                DrawPipelineImage(drawList, pipeline, origin, size);
                 return true;
             }
             // 相机移动同样使用完整路径追踪配置；不能因导航临时关闭照明或减少反弹。
@@ -1093,8 +1177,7 @@ internal sealed partial class ImGuiEditorWindow
                 _renderViewNeedsInitialRender = false;
             }
 
-            drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size,
-                Vector2.Zero, pipeline.DisplayUvMax);
+            DrawPipelineImage(drawList, pipeline, origin, size);
             return true;
         }
         catch (Exception exception)

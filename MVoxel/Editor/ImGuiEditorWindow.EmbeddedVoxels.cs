@@ -1,4 +1,4 @@
-﻿using MVoxel.Core;
+using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Scene;
 using MVoxel.Voxels;
@@ -33,6 +33,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             var world = _objectVoxels.GetOrCreate(sceneObject.Id);
             var before = component.Data.Clone();
+            var beforeScale = (sceneObject.Transform.ScaleX, sceneObject.Transform.ScaleY, sceneObject.Transform.ScaleZ);
             var changes = world.EnumerateOccupied().ToDictionary(cell => cell.Coordinate, _ => default(VoxelValue));
             foreach (var cell in loaded.EnumerateOccupied()) changes[cell.Coordinate] = cell.Value;
             _voxelHistory.Execute(new VoxelStrokeCommand("更换体素数据", world,
@@ -46,6 +47,12 @@ internal sealed partial class ImGuiEditorWindow
                         { Model = reference, VoxelCount = loaded.OccupiedVoxelCount });
                         EmbeddedVoxelData.Remove(active);
                     }
+                    //新模型按 1x 载入，重置缩放标记，避免下次缩放拿旧原件替换掉刚载入的模型
+                    var target = sceneObject.Transform;
+                    target.ScaleX = forward ? 1 : beforeScale.ScaleX;
+                    target.ScaleY = forward ? 1 : beforeScale.ScaleY;
+                    target.ScaleZ = forward ? 1 : beforeScale.ScaleZ;
+                    InvalidateScaleBase(sceneObject.Id);
                     RebuildObjectVoxelWorld();
                 }));
             ResetAfterVoxelTransform();

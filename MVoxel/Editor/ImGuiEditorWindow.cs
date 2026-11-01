@@ -195,6 +195,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     public void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId) =>
         _pendingActions.Enqueue(() => BeginCreateProject(path, templateId, fromWelcome: true));
 
+    public void StartVoxProjectFromWelcome(string voxFilePath) =>
+        _pendingActions.Enqueue(() => BeginCreateVoxProject(voxFilePath, fromWelcome: true));
+
     public void OpenProjectFromWelcome(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: true));
 
     public void OpenRecentProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: true));
@@ -336,6 +339,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         try
         {
             base.OnRenderFrame(args);
+            //设备丢失后先重建 Vulkan 设备，否则整个窗口会因为无法呈现而冻结
+            RecoverVulkanDeviceIfNeeded();
             ImGui.SetCurrentContext(_imguiContext);
             _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
             _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
@@ -4148,26 +4153,7 @@ DockId=0x6A3C3007,0
                         var project = ProjectLayout.Create(absolutePath, name);
                         ProjectTemplateCatalog.Populate(project, templateId,
                             (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
-                        var projectSettings = SettingsStore.LoadProject(project);
-                        projectSettings.ShowGrid = _editorSettings.ShowSceneGrid;
-                        projectSettings.ShowVoxelOutlines = _editorSettings.ShowVoxelOutlines;
-                        projectSettings.SceneMoveSpeed = _editorSettings.SceneMoveSpeed;
-                        projectSettings.SceneNearClip = _editorSettings.SceneNearClip;
-                        projectSettings.SceneFarClip = _editorSettings.SceneFarClip;
-                        projectSettings.SceneFieldOfView = _editorSettings.SceneFieldOfView;
-                        if (templateId == ProjectTemplateId.Empty)
-                        {
-                            projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings.CloneForExport();
-                            projectSettings.RenderSettings = _editorSettings.RenderViewSettings.CloneForExport();
-                            projectSettings.RenderSettings.ShowGround = false;
-                            projectSettings.RenderSettings.SunEnabled = false;
-                            projectSettings.RenderSettings.SkyAmbient = .16F;
-                            projectSettings.RenderSettings.PathTracingEnabled = false;
-                        }
-                        projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
-                        projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
-                        projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
-                        SettingsStore.SaveProject(project, projectSettings);
+                        ApplyNewProjectEditorSettings(project, templateId == ProjectTemplateId.Empty);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
@@ -4186,6 +4172,127 @@ DockId=0x6A3C3007,0
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
             ShowProjectOperationError("创建项目失败", exception, fromWelcome, editorDialogMode: 1, path);
+        }
+    }
+
+    /// <summary>
+    /// 把编辑器默认设置写入新项目。空项目模板还要套用更暗的渲染默认值，
+    /// 避免刚创建时相机和光照设置与示例场景不匹配
+    /// </summary>
+    /// <param name="project">目标项目</param>
+    /// <param name="useEmptyTemplateRenderDefaults">是否套用空项目模板的渲染默认值</param>
+    private void ApplyNewProjectEditorSettings(ProjectHandle project, bool useEmptyTemplateRenderDefaults)
+    {
+        var projectSettings = SettingsStore.LoadProject(project);
+        projectSettings.ShowGrid = _editorSettings.ShowSceneGrid;
+        projectSettings.ShowVoxelOutlines = _editorSettings.ShowVoxelOutlines;
+        projectSettings.SceneMoveSpeed = _editorSettings.SceneMoveSpeed;
+        projectSettings.SceneNearClip = _editorSettings.SceneNearClip;
+        projectSettings.SceneFarClip = _editorSettings.SceneFarClip;
+        projectSettings.SceneFieldOfView = _editorSettings.SceneFieldOfView;
+        if (useEmptyTemplateRenderDefaults)
+        {
+            projectSettings.SceneRenderSettings = _editorSettings.SceneRenderSettings.CloneForExport();
+            projectSettings.RenderSettings = _editorSettings.RenderViewSettings.CloneForExport();
+            projectSettings.RenderSettings.ShowGround = false;
+            projectSettings.RenderSettings.SunEnabled = false;
+            projectSettings.RenderSettings.SkyAmbient = .16F;
+            projectSettings.RenderSettings.PathTracingEnabled = false;
+        }
+        projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
+        projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
+        projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
+        SettingsStore.SaveProject(project, projectSettings);
+    }
+
+    /// <summary>
+    /// 以 MagicaVoxel .vox 文件为内容创建项目：项目名取文件名，位置取默认项目根目录
+    /// </summary>
+    /// <param name="voxFilePath">MagicaVoxel 文件路径</param>
+    /// <param name="fromWelcome">是否由欢迎界面发起，用于失败后回到对应入口</param>
+    private void BeginCreateVoxProject(string voxFilePath, bool fromWelcome)
+    {
+        if (DeferProjectReplacement(() => BeginCreateVoxProject(voxFilePath, fromWelcome))) return;
+        try
+        {
+            var absoluteVoxPath = Path.GetFullPath(voxFilePath.Trim().Trim('"'));
+            if (!File.Exists(absoluteVoxPath))
+            {
+                ShowProjectOperationError("新建项目失败",
+                    new FileNotFoundException($"MagicaVoxel 文件不存在：{absoluteVoxPath}", absoluteVoxPath),
+                    fromWelcome, editorDialogMode: 1, absoluteVoxPath);
+                return;
+            }
+
+            if (!string.Equals(Path.GetExtension(absoluteVoxPath), ".vox", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowProjectOperationError("新建项目失败",
+                    new InvalidDataException($"只支持 MagicaVoxel .vox 文件：{Path.GetFileName(absoluteVoxPath)}"),
+                    fromWelcome, editorDialogMode: 1, absoluteVoxPath);
+                return;
+            }
+
+            var projectName = Path.GetFileNameWithoutExtension(absoluteVoxPath).Trim();
+            if (projectName.Length == 0) projectName = "导入模型";
+            var absolutePath = GetNewProjectPath(Path.Combine(DefaultProjectRootPath, projectName));
+            //路径是本次新建的空文件夹时，导入失败要把它删掉，避免留下半个项目占用名字
+            var projectFolderExisted = Directory.Exists(absolutePath);
+            if (!_projectOperation.TryStart(
+                    "正在从 MagicaVoxel 文件创建项目",
+                    "正在检查 MagicaVoxel 文件…",
+                    (cancellation, report) =>
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在建立标准资产目录…", .34F, CanCancel: true));
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在写入项目文件…", .62F, CanCancel: false));
+                        var project = ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name);
+                        try
+                        {
+                            ProjectTemplateCatalog.PopulateFromVox(project, absoluteVoxPath,
+                                (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                            ApplyNewProjectEditorSettings(project, useEmptyTemplateRenderDefaults: false);
+                        }
+                        catch
+                        {
+                            if (!projectFolderExisted) TryDeleteDirectory(absolutePath);
+                            throw;
+                        }
+
+                        report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
+                        return project;
+                    },
+                    project => OpenProject(project),
+                    exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, absolutePath),
+                    () => SetStatus("已取消创建项目")))
+            {
+                SetStatus("已有项目操作正在进行");
+                return;
+            }
+
+            _projectPathDialogMode = 0;
+            _projectPathError = string.Empty;
+            SetStatus($"正在用 {Path.GetFileName(absoluteVoxPath)} 创建项目…");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
+        {
+            ShowProjectOperationError("创建项目失败", exception, fromWelcome, editorDialogMode: 1, voxFilePath);
+        }
+    }
+
+    /// <summary>
+    /// 尽力删除本次新建的项目文件夹，失败时保留现场供用户手动处理
+    /// </summary>
+    /// <param name="path">项目根目录</param>
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            MVoxelLog.Warn($"清理未完成的项目文件夹失败：{path}，{exception.Message}");
         }
     }
 

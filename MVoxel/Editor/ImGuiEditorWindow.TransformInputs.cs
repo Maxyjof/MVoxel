@@ -188,7 +188,7 @@ internal sealed partial class ImGuiEditorWindow
                 if (value < 1 || value > int.MaxValue) { SetStatus("缩放必须为正整数"); return; }
                 scaleValues[axis] = Math.Truncate(value);
                 ApplyAxisScale(item, (int)scaleValues[0], (int)scaleValues[1], (int)scaleValues[2]);
-            });
+            }, "缩放始终以原模型（1x）为基准重采样，逐字输入和拖动都会即时生效，反复缩放不会累积精度损失。在非 1x 尺寸上绘制的方块只存在于当前尺寸，再次缩放会按原模型重算替换。");
     }
 
     /// <summary>
@@ -199,9 +199,11 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="dragStep">拖动一格对应的数值变化</param>
     /// <param name="pixelsPerStep">拖动多少像素算一格</param>
     /// <param name="apply">写回单个轴的回调</param>
-    private void DrawTransformRow(string label, double[] values, double dragStep, double pixelsPerStep, Action<int, double> apply)
+    /// <param name="tooltip">字段的悬停说明，省略时使用通用说明</param>
+    private void DrawTransformRow(string label, double[] values, double dragStep, double pixelsPerStep,
+        Action<int, double> apply, string? tooltip = null)
     {
-        BeginInspectorField(label, "输入数字或表达式时数值立即应用到对象，输入中的不完整内容会等解析成功再生效；按住 X、Y、Z 标签左右拖动也能实时调值，指针会变成左右调整光标。体素旋转为 90 度整数倍。");
+        BeginInspectorField(label, tooltip ?? "输入数字或表达式时数值立即应用到对象，输入中的不完整内容会等解析成功再生效；按住 X、Y、Z 标签左右拖动也能实时调值，指针会变成左右调整光标。体素旋转为 90 度整数倍。");
         string[] axes = ["X", "Y", "Z"];
         var labelWidth = 0F;
         foreach (var axis in axes)

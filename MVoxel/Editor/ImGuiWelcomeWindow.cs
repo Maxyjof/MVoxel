@@ -20,6 +20,7 @@ internal interface IEditorWelcomeHost
     BlockingOperationSnapshot? ProjectOperationSnapshot { get; }
     string DefaultProjectRootPath { get; }
     void StartNewProjectFromWelcome(string path, ProjectTemplateId templateId);
+    void StartVoxProjectFromWelcome(string voxFilePath);
     void OpenProjectFromWelcome(string path);
     void OpenRecentProject(string path);
     void CancelProjectOperation();
@@ -181,9 +182,13 @@ internal sealed class ImGuiWelcomeContent
 
         ImGui.Dummy(new Vector2(0F, 16F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
-        if (ImGui.Button("新建项目", new Vector2(210F, 40F))) BeginPathDialog(1);
+        if (ImGui.Button("新建项目", new Vector2(200F, 40F))) BeginPathDialog(1);
         ImGui.SameLine();
-        if (ImGui.Button("打开项目", new Vector2(210F, 40F))) BeginPathDialog(2);
+        if (ImGui.Button("打开项目", new Vector2(200F, 40F))) BeginPathDialog(2);
+        ImGui.SameLine();
+        if (ImGui.Button("从 .vox 新建", new Vector2(200F, 40F))) CreateProjectFromVoxFile();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("选择 MagicaVoxel .vox 文件\n自动在默认项目根目录创建同名项目并导入模型\n当前只支持单模型文件");
 
         ImGui.Dummy(new Vector2(0F, 12F));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
@@ -335,6 +340,22 @@ internal sealed class ImGuiWelcomeContent
         }
 
         ImGui.EndChild();
+    }
+
+    /// <summary>
+    /// 选择 MagicaVoxel 文件并让编辑器围绕它创建新项目
+    /// </summary>
+    private void CreateProjectFromVoxFile()
+    {
+        var path = NativeDialogs.PickFile("选择 MagicaVoxel 文件",
+            "MagicaVoxel 模型\0*.vox\0全部文件\0*.*\0\0");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        _errorText = string.Empty;
+        _editor.StartVoxProjectFromWelcome(path);
     }
 
     private void BeginPathDialog(int mode)

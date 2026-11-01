@@ -35,6 +35,11 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private readonly KhrBufferDeviceAddress _addressApi;
     private readonly PhysicalDeviceRayTracingPipelinePropertiesKHR _properties;
 
+    /// <summary>
+    /// 加速结构构建 scratch 地址要求的对齐字节数
+    /// </summary>
+    private readonly ulong _scratchAlignment;
+
     private VkBuffer _vertexBuffer;
     private DeviceMemory _vertexMemory;
     private VkBuffer _indexBuffer;
@@ -49,6 +54,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private DeviceMemory _tlasMemory;
     private VkBuffer _scratchBuffer;
     private DeviceMemory _scratchMemory;
+    private ulong _scratchAddress;
     private VkBuffer _parameterBuffer;
     private DeviceMemory _parameterMemory;
     private VkBuffer _sbtBuffer;
@@ -88,7 +94,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _accelerationApi = new KhrAccelerationStructure(_api.Context);
         _rayTracingApi = new KhrRayTracingPipeline(_api.Context);
         _addressApi = new KhrBufferDeviceAddress(_api.Context);
-        _properties = QueryProperties();
+        _properties = QueryProperties(out _scratchAlignment);
     }
 
     /// <summary>
@@ -400,7 +406,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out _blas), "创建体素 BLAS");
         CreateScratch(sizes.BuildScratchSize);
         info.DstAccelerationStructure = _blas;
-        info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = GetAddress(_scratchBuffer) };
+        info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
         AccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
         _context.ExecuteImmediate(commandBuffer =>
@@ -475,7 +481,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out _tlas), "创建体素 TLAS");
         CreateScratch(sizes.BuildScratchSize);
         info.DstAccelerationStructure = _tlas;
-        info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = GetAddress(_scratchBuffer) };
+        info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
         AccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
         _context.ExecuteImmediate(commandBuffer =>
@@ -761,12 +767,16 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// 查询设备 RT 管线对 SBT 的对齐约束
     /// </summary>
     /// <returns>设备 RT 属性</returns>
-    private PhysicalDeviceRayTracingPipelinePropertiesKHR QueryProperties()
+    private PhysicalDeviceRayTracingPipelinePropertiesKHR QueryProperties(out ulong scratchAlignment)
     {
         PhysicalDeviceProperties2 properties = new() { SType = StructureType.PhysicalDeviceProperties2 };
         PhysicalDeviceRayTracingPipelinePropertiesKHR rayTracing = new() { SType = StructureType.PhysicalDeviceRayTracingPipelinePropertiesKhr };
+        PhysicalDeviceAccelerationStructurePropertiesKHR acceleration = new() { SType = StructureType.PhysicalDeviceAccelerationStructurePropertiesKhr };
         properties.PNext = &rayTracing;
+        rayTracing.PNext = &acceleration;
         _api.GetPhysicalDeviceProperties2(_context.PhysicalDevice, &properties);
+        // scratch 设备地址必须按该对齐值对齐，部分驱动（含 AMD）会对未对齐地址直接报设备丢失
+        scratchAlignment = Math.Max(acceleration.MinAccelerationStructureScratchOffsetAlignment, 16U);
         return rayTracing;
     }
 
@@ -811,7 +821,10 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private void CreateScratch(ulong size)
     {
         DestroyScratch();
-        _scratchBuffer = CreateDeviceBuffer(size, BufferUsageFlags.StorageBufferBit, out _scratchMemory);
+        // 多分配一段对齐余量，保证设备地址可以向上对齐到驱动要求
+        _scratchBuffer = CreateDeviceBuffer(size + _scratchAlignment - 1,
+            BufferUsageFlags.StorageBufferBit, out _scratchMemory);
+        _scratchAddress = AlignUp(GetAddress(_scratchBuffer), _scratchAlignment);
     }
 
     /// <summary>
@@ -823,7 +836,14 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         if (_scratchMemory.Handle != 0) _api.FreeMemory(_device, _scratchMemory, null);
         _scratchBuffer = default;
         _scratchMemory = default;
+        _scratchAddress = 0;
     }
+
+    /// <summary>
+    /// 向上对齐设备地址
+    /// </summary>
+    private static ulong AlignUp(ulong value, ulong alignment) =>
+        (value + alignment - 1UL) / alignment * alignment;
 
     /// <summary>
     /// 将数据写入主机可见内存
@@ -876,8 +896,10 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         uint index = 0;
         for (; index < memoryProperties.MemoryTypeCount; index++)
         {
+            var type = memoryProperties.MemoryTypes[(int)index];
             if ((requirements.MemoryTypeBits & (1U << (int)index)) != 0 &&
-                (memoryProperties.MemoryTypes[(int)index].PropertyFlags & properties) == properties) break;
+                (type.PropertyFlags & MemoryPropertyFlags.ProtectedBit) == 0 &&
+                (type.PropertyFlags & properties) == properties) break;
         }
         if (index >= memoryProperties.MemoryTypeCount) throw new InvalidOperationException($"没有满足硬件 RT 内存属性的 Vulkan 内存类型：{properties}");
         MemoryAllocateInfo info = new() { SType = StructureType.MemoryAllocateInfo, AllocationSize = requirements.Size, MemoryTypeIndex = index };
