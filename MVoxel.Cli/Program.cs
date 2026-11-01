@@ -165,6 +165,60 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
                 return result.Valid ? 0 : 1;
             }
+            case "--export-scene-vox" when args.Length is 3 or 4:
+            {
+                var project = ProjectLayout.Open(args[1]);
+                var scenePath = args.Length == 4 ? args[3] : Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
+                var scene = SceneSerializer.Load(scenePath);
+                var parts = new List<VoxFormat.VoxScenePart>();
+                var skipped = 0;
+                foreach (var sceneObject in scene.Objects)
+                {
+                    if (!sceneObject.Visible) continue;
+                    var model = sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel)
+                        .Select(SceneComponentTypes.ReadVoxelModel).FirstOrDefault();
+                    if (string.IsNullOrWhiteSpace(model.Model)) continue;
+                    // 组件的 model 是从项目根开始的 Assets/... 相对路径
+                    var worldPath = Path.Combine(project.RootPath,
+                        model.Model.Replace('/', Path.DirectorySeparatorChar));
+                    if (!File.Exists(worldPath)) continue;
+                    // 只有格变换能无损落到 .vox 的整数平移；自由变换只记录跳过，不做近似
+                    if (sceneObject.Transform.Mode != TransformMode.Grid)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    var placement = sceneObject.Transform.Grid.Position;
+                    parts.Add(new VoxFormat.VoxScenePart(sceneObject.Name, LargeWorldFormat.Read(worldPath), placement));
+                }
+
+                if (parts.Count == 0) throw new InvalidOperationException("场景里没有可导出的体素模型对象");
+                VoxFormat.WriteScene(args[2], parts);
+                Console.WriteLine($"已导出场景 .vox：{args[2]}");
+                Console.WriteLine($"对象 {parts.Count} 个，体素 {parts.Sum(part => part.World.OccupiedVoxelCount):N0}" +
+                                  (skipped > 0 ? $"，跳过 {skipped} 个非网格变换对象" : ""));
+                return 0;
+            }
+            case "--create-vox-project" when args.Length is 2 or 3:
+            {
+                var voxPath = Path.GetFullPath(args[1]);
+                if (!File.Exists(voxPath)) throw new FileNotFoundException("找不到 .vox 文件", voxPath);
+                var root = Path.GetFullPath(args.Length == 3
+                    ? args[2]
+                    : MVoxel.Editor.Settings.SettingsStore.LoadEditor().ProjectRootPath);
+                var baseName = Path.GetFileNameWithoutExtension(voxPath).Trim();
+                if (baseName.Length == 0) baseName = "导入模型";
+                var name = baseName;
+                for (var suffix = 2; Directory.Exists(Path.Combine(root, name)); suffix++)
+                    name = $"{baseName} {suffix}";
+                var project = ProjectLayout.Create(Path.Combine(root, name), name);
+                var voxels = ProjectTemplateCatalog.PopulateFromVox(project, voxPath);
+                Console.WriteLine($"已从 .vox 创建项目：{project.Manifest.Name}");
+                Console.WriteLine($"路径：{project.RootPath}");
+                Console.WriteLine($"体素：{voxels:N0}");
+                return 0;
+            }
             case "--create-project" when args.Length is 2 or 3 or 4:
             {
                 var templateId = ProjectTemplateId.Empty;

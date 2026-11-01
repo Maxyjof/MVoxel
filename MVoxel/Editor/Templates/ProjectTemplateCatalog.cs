@@ -213,37 +213,73 @@ public static class ProjectTemplateCatalog
     /// <param name="voxFilePath">MagicaVoxel .vox 文件绝对路径</param>
     /// <param name="report">进度回调</param>
     /// <returns>导入的体素数</returns>
-    internal static int PopulateFromVox(ProjectHandle project, string voxFilePath, Action<string, float, bool>? report = null)
+    public static int PopulateFromVox(ProjectHandle project, string voxFilePath, Action<string, float, bool>? report = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrWhiteSpace(voxFilePath);
         report?.Invoke("正在读取 MagicaVoxel 文件…", .72F, true);
-        var world = VoxFormat.Read(voxFilePath);
+        var document = VoxFormat.ReadDocument(voxFilePath);
         var modelName = Path.GetFileNameWithoutExtension(voxFilePath).Trim();
         if (modelName.Length == 0) modelName = "导入模型";
+        var safeName = ToSafeFileName(modelName);
+        var multiple = document.Instances.Count > 1 || document.Models.Count > 1;
 
         report?.Invoke("正在写入项目体素资产…", .82F, true);
-        var fileName = ToSafeFileName(modelName) + ".mvmodel";
-        var relativePath = "Assets/Worlds/" + fileName;
-        var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
-        if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
-        else LargeWorldFormat.Write(absolutePath, world);
-        AssetMetaStore.EnsureMeta(absolutePath);
+        // 一个模型写一份资产，多个实例共享同一份，和 MagicaVoxel 的 Reference 语义一致
+        var assets = new string[document.Models.Count];
+        var voxelCounts = new int[document.Models.Count];
+        var worldOrigins = new VoxelCoord64[document.Models.Count];
+        for (var index = 0; index < document.Models.Count; index++)
+        {
+            var world = BuildModelWorld(document.Models[index]);
+            var fileName = (multiple ? $"{safeName}_{index + 1}" : safeName) + ".mvmodel";
+            var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
+            if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
+            else LargeWorldFormat.Write(absolutePath, world);
+            AssetMetaStore.EnsureMeta(absolutePath);
+            assets[index] = "Assets/Worlds/" + fileName;
+            voxelCounts[index] = world.OccupiedVoxelCount;
+            worldOrigins[index] = GetWorldOrigin(world);
+        }
 
         report?.Invoke("正在生成主场景…", .90F, true);
-        // 单模型场景：对象原点取模型自身的世界最小坐标，读取时按对象原点还原世界坐标
+        var layerIndexById = new Dictionary<int, int>();
+        for (var index = 0; index < document.Layers.Count; index++) layerIndexById[document.Layers[index].Id] = index;
+        var parts = new List<SceneModelPart>(document.Instances.Count);
+        long totalVoxels = 0;
+        foreach (var instance in document.Instances)
+        {
+            var name = document.Instances.Count == 1 ? modelName : instance.Name;
+            parts.Add(new SceneModelPart(name, "MagicaVoxel 导入", assets[instance.ModelIndex],
+                voxelCounts[instance.ModelIndex], instance.Offset + worldOrigins[instance.ModelIndex],
+                layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, instance.Rotation));
+            totalVoxels += voxelCounts[instance.ModelIndex];
+        }
+
+        var layers = document.Layers.Count == 0
+            ? null
+            : document.Layers.Select(layer => (layer.Name, layer.Hidden)).ToList();
         var definition = new ProjectTemplateDefinition(ProjectTemplateId.Empty, modelName,
-            "由 MagicaVoxel 文件创建", "MagicaVoxel 兼容导入", "单模型", "继续在原生格式上编辑");
-        WriteScene(project, definition, world.OccupiedVoxelCount, relativePath, cameraCount: 1,
-            modelParts: [new SceneModelPart(modelName, "MagicaVoxel 导入", relativePath,
-                world.OccupiedVoxelCount, GetWorldOrigin(world))],
-            framingWorld: world);
+            "由 MagicaVoxel 文件创建", "MagicaVoxel 兼容导入",
+            multiple ? $"{parts.Count} 个对象" : "单模型", "继续在原生格式上编辑");
+        WriteScene(project, definition, (int)Math.Min(totalVoxels, int.MaxValue), assets[0], cameraCount: 1,
+            modelParts: parts, framingWorld: VoxFormat.Compose(document), layers: layers);
 
         report?.Invoke("正在写入项目设置…", .94F, false);
         var settings = CreateSettings(ProjectTemplateId.Empty);
         settings.TemplateId = "MagicaVoxel 导入";
         SettingsStore.SaveProject(project, settings);
-        return world.OccupiedVoxelCount;
+        return (int)Math.Min(totalVoxels, int.MaxValue);
+    }
+
+    /// <summary>把 .vox 里的一个模型转成原生体素世界：MagicaVoxel 的 Z 轴映射到 MVoxel 的 Y 轴</summary>
+    private static VoxelWorld BuildModelWorld(VoxModel model)
+    {
+        var world = new VoxelWorld();
+        foreach (var voxel in model.Voxels)
+            world.Set(new VoxelCoord64(voxel.X, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
+                Flags: voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
+        return world;
     }
 
     /// <summary>
@@ -665,17 +701,21 @@ public static class ProjectTemplateCatalog
         string modelAssetPath = "Assets/Worlds/主世界.mvmodel", int cameraCount = 1,
         IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position)>? layerParts = null,
         IReadOnlyList<SceneModelPart>? modelParts = null,
-        VoxelWorld? framingWorld = null)
+        VoxelWorld? framingWorld = null,
+        IReadOnlyList<(string Name, bool Hidden)>? layers = null)
     {
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
         if (modelParts is not null)
         {
+            ApplyImportLayers(scene, layers);
             foreach (var modelPart in modelParts)
             {
                 var modelObject = graph.Add(modelPart.Name,
                     transform: TransformComponent.FromGrid(new GridTransform(
-                        modelPart.Position, OrthogonalRotation.Identity)));
+                        modelPart.Position, modelPart.Rotation ?? OrthogonalRotation.Identity)));
+                modelObject.LayerIndex = Math.Clamp(modelPart.LayerIndex, 0, Math.Max(0, scene.LayerNames.Count - 1));
+                modelObject.Visible = !modelPart.Hidden;
                 modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
                     modelPart.ModelAssetPath, modelPart.VoxelCount, template.Id.ToString(), modelPart.Part));
             }
@@ -738,7 +778,8 @@ public static class ProjectTemplateCatalog
     }
 
     private readonly record struct SceneModelPart(
-        string Name, string Part, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position);
+        string Name, string Part, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position,
+        int LayerIndex = 0, bool Hidden = false, OrthogonalRotation? Rotation = null);
 
     /// <summary>
     /// 写入模板拆分后的独立模型，并返回场景层级所需的模型组件数据。
@@ -797,6 +838,17 @@ public static class ProjectTemplateCatalog
         return world is not null && world.TryGetBounds(out var minimum, out _)
             ? minimum
             : VoxelCoord64.Zero;
+    }
+
+    /// <summary>
+    /// 把 MagicaVoxel 的图层映射成场景图层：第 0 层固定为默认层，
+    /// 被隐藏的图层一并记入 HiddenLayerNames，保留原文件的显隐意图。
+    /// </summary>
+    private static void ApplyImportLayers(SceneDocument scene, IReadOnlyList<(string Name, bool Hidden)>? layers)
+    {
+        if (layers is not { Count: > 0 }) return;
+        scene.LayerNames = ["默认", .. layers.Skip(1).Select(layer => layer.Name)];
+        scene.HiddenLayerNames = [.. scene.LayerNames.Where((_, index) => index < layers.Count && layers[index].Hidden)];
     }
 
     private static IReadOnlyList<(string Name, string Part, VoxelCoord64 Position)> GetTemplateParts(ProjectTemplateId id)

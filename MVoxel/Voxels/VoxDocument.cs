@@ -1,0 +1,391 @@
+using System.Text;
+using MVoxel.Core;
+
+namespace MVoxel.Voxels;
+
+/// <summary>MagicaVoxel 文件里的一块体素网格：只有尺寸与体素，没有世界位置</summary>
+public sealed class VoxModel
+{
+    internal VoxModel(int sizeX, int sizeY, int sizeZ, List<VoxModelVoxel> voxels)
+    {
+        SizeX = sizeX;
+        SizeY = sizeY;
+        SizeZ = sizeZ;
+        Voxels = voxels;
+    }
+
+    /// <summary>网格 X 尺寸</summary>
+    public int SizeX { get; }
+
+    /// <summary>网格 Y 尺寸</summary>
+    public int SizeY { get; }
+
+    /// <summary>网格 Z 尺寸（MagicaVoxel 的重力方向）</summary>
+    public int SizeZ { get; }
+
+    /// <summary>该网格的全部非空体素，坐标是网格局部坐标</summary>
+    public IReadOnlyList<VoxModelVoxel> Voxels { get; }
+}
+
+/// <summary>模型内的一个体素，坐标沿用 MagicaVoxel 的 x/y/z 轴向</summary>
+public readonly record struct VoxModelVoxel(byte X, byte Y, byte Z, Rgba32 Color);
+
+/// <summary>场景图展开后的一个模型实例：把某块网格按平移和旋转摆到世界里</summary>
+public readonly record struct VoxInstance(
+    int ModelIndex, string Name, int LayerId, bool Hidden, VoxelCoord64 Offset, OrthogonalRotation Rotation);
+
+/// <summary>MagicaVoxel 图层：只用于分组与显隐，不承载体素数据</summary>
+public readonly record struct VoxLayer(int Id, string Name, bool Hidden);
+
+/// <summary>解析后的 MagicaVoxel 文件：模型、实例、图层三层结构</summary>
+public sealed class VoxDocument
+{
+    internal VoxDocument(IReadOnlyList<VoxModel> models, IReadOnlyList<VoxInstance> instances,
+        IReadOnlyList<VoxLayer> layers, bool hasSceneGraph)
+    {
+        Models = models;
+        Instances = instances;
+        Layers = layers;
+        HasSceneGraph = hasSceneGraph;
+    }
+
+    /// <summary>文件内的全部模型，索引即模型 id</summary>
+    public IReadOnlyList<VoxModel> Models { get; }
+
+    /// <summary>按场景图展开的实例；旧格式没有场景图时每个模型一个实例</summary>
+    public IReadOnlyList<VoxInstance> Instances { get; }
+
+    /// <summary>文件声明的图层；没有 LAYR 时为空</summary>
+    public IReadOnlyList<VoxLayer> Layers { get; }
+
+    /// <summary>文件是否带 MagicaVoxel 场景图</summary>
+    public bool HasSceneGraph { get; }
+}
+
+/// <summary>
+/// 读取 MagicaVoxel .vox：多个 SIZE/XYZI 是多个模型，nTRN/nGRP/nSHP 是场景图，LAYR 是图层。
+/// 图层只决定分组和显隐，真正能拆成对象的是模型实例。
+/// </summary>
+internal static class VoxDocumentReader
+{
+    private const int MaximumVoxels = 4_000_000;
+    private const int MaximumAxisExtent = 256;
+    private const int MaximumModels = 4096;
+
+    internal static VoxDocument Read(byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes, writable: false);
+        using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+        var palette = VoxFormat.DefaultPalette();
+        var models = new List<VoxModel>();
+        var transitions = new Dictionary<int, TransitionNode>();
+        var groups = new Dictionary<int, GroupNode>();
+        var shapes = new Dictionary<int, ShapeNode>();
+        var layers = new Dictionary<int, VoxLayer>();
+        var size = (X: 0, Y: 0, Z: 0);
+        var pendingSize = false;
+
+        void Chunks(long start, long end, int depth)
+        {
+            if (depth > 32) throw new InvalidDataException("VOX 块嵌套过深。");
+            var cursor = start;
+            while (cursor < end)
+            {
+                if (end - cursor < 12) throw new InvalidDataException("VOX 块头被截断。");
+                stream.Position = cursor;
+                var id = new string(reader.ReadChars(4));
+                var contentSize = reader.ReadInt32();
+                var childrenSize = reader.ReadInt32();
+                var contentEnd = cursor + 12L + contentSize;
+                var next = contentEnd + childrenSize;
+                if (contentSize < 0 || childrenSize < 0 || next > end)
+                    throw new InvalidDataException("VOX 块越过父块边界。");
+                var contentStart = cursor + 12L;
+                switch (id)
+                {
+                    case "SIZE":
+                        if (contentSize != 12) throw new InvalidDataException("VOX SIZE 长度无效。");
+                        size = (reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32());
+                        if (size.X is < 1 or > MaximumAxisExtent || size.Y is < 1 or > MaximumAxisExtent ||
+                            size.Z is < 1 or > MaximumAxisExtent)
+                            throw new InvalidDataException("VOX 单模型尺寸必须在 1–256 格之间。");
+                        pendingSize = true;
+                        break;
+                    case "XYZI" or "XYZA":
+                        if (!pendingSize) throw new InvalidDataException("VOX 缺少有效 SIZE。");
+                        if (models.Count >= MaximumModels) throw new InvalidDataException("VOX 模型数量超过上限。");
+                        var count = reader.ReadInt32();
+                        var stride = id == "XYZA" ? 7 : 4;
+                        if (count is < 0 or > MaximumVoxels || count * (long)stride != contentSize - 4L)
+                            throw new InvalidDataException("VOX 体素数量与块长度不符。");
+                        var voxels = new List<VoxModelVoxel>(count);
+                        for (var index = 0; index < count; index++)
+                        {
+                            var x = reader.ReadByte(); var y = reader.ReadByte(); var z = reader.ReadByte();
+                            if (x >= size.X || y >= size.Y || z >= size.Z) throw new InvalidDataException("VOX 坐标超出 SIZE。");
+                            var color = id == "XYZA"
+                                ? new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte())
+                                : palette[reader.ReadByte()];
+                            if (color.A == 0) continue;
+                            voxels.Add(new VoxModelVoxel(x, y, z, color));
+                        }
+                        models.Add(new VoxModel(size.X, size.Y, size.Z, voxels));
+                        pendingSize = false;
+                        break;
+                    case "RGBA":
+                        if (contentSize != 1024) throw new InvalidDataException("VOX 色板长度无效。");
+                        for (var index = 1; index <= 256; index++)
+                        {
+                            var color = new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte());
+                            if (index < 256) palette[index] = color;
+                        }
+                        break;
+                    case "LAYR":
+                    {
+                        var layerId = reader.ReadInt32();
+                        var attributes = ReadDictionary(reader, contentStart + contentSize);
+                        reader.ReadInt32();
+                        var name = ReadText(attributes, "_name");
+                        layers[layerId] = new VoxLayer(layerId,
+                            string.IsNullOrWhiteSpace(name) ? $"图层 {layerId}" : name.Trim(),
+                            ReadFlag(attributes, "_hidden"));
+                        break;
+                    }
+                    case "nTRN":
+                        ReadTransition(reader, contentStart + contentSize, transitions);
+                        break;
+                    case "nGRP":
+                        ReadGroup(reader, contentStart + contentSize, groups);
+                        break;
+                    case "nSHP":
+                        ReadShape(reader, contentStart + contentSize, shapes);
+                        break;
+                }
+                if (childrenSize > 0) Chunks(contentEnd, next, depth + 1);
+                cursor = next;
+            }
+        }
+
+        Chunks(8, bytes.Length, 0);
+        if (models.Count == 0) throw new InvalidDataException("VOX 文件没有模型数据。");
+        var hasSceneGraph = transitions.Count > 0 || shapes.Count > 0;
+        var instances = hasSceneGraph
+            ? BuildInstances(transitions, groups, shapes, layers, models.Count)
+            : BuildLooseInstances(models);
+        if (instances.Count == 0) throw new InvalidDataException("VOX 文件场景图没有引用任何模型。");
+        return new VoxDocument(models, instances, [.. layers.Values.OrderBy(layer => layer.Id)],
+            hasSceneGraph && transitions.Count > 0);
+    }
+
+    /// <summary>没有场景图的旧文件：每个模型一个实例，按包围盒沿 X 依次排开避免重叠</summary>
+    private static List<VoxInstance> BuildLooseInstances(List<VoxModel> models)
+    {
+        var instances = new List<VoxInstance>(models.Count);
+        long offset = 0;
+        for (var index = 0; index < models.Count; index++)
+        {
+            var model = models[index];
+            instances.Add(new VoxInstance(index, $"模型 {index + 1}", 0, false,
+                new VoxelCoord64(offset, 0, 0), OrthogonalRotation.Identity));
+            offset += model.SizeX + 1;
+        }
+
+        return instances;
+    }
+
+    /// <summary>从场景图根节点递归展开实例，累积平移与旋转</summary>
+    private static List<VoxInstance> BuildInstances(Dictionary<int, TransitionNode> transitions,
+        Dictionary<int, GroupNode> groups, Dictionary<int, ShapeNode> shapes,
+        Dictionary<int, VoxLayer> layers, int modelCount)
+    {
+        var referenced = new HashSet<int>();
+        foreach (var node in transitions.Values) referenced.Add(node.ChildId);
+        foreach (var node in groups.Values)
+        foreach (var child in node.Children)
+            referenced.Add(child);
+        var roots = transitions.Keys.Where(id => !referenced.Contains(id)).OrderBy(id => id).ToArray();
+        if (roots.Length == 0) roots = [.. transitions.Keys.OrderBy(id => id)];
+
+        var instances = new List<VoxInstance>();
+        var visiting = new HashSet<int>();
+        void Walk(int nodeId, VoxelCoord64 offset, OrthogonalRotation rotation, int layerId, bool hidden,
+            string? branchName)
+        {
+            if (instances.Count >= MaximumModels * 64) throw new InvalidDataException("VOX 实例数量超过上限。");
+            if (!visiting.Add(nodeId)) throw new InvalidDataException("VOX 场景图存在环。");
+            try
+            {
+                if (transitions.TryGetValue(nodeId, out var transition))
+                {
+                    var childOffset = offset + rotation.Apply(transition.Offset);
+                    var childRotation = Multiply(rotation, transition.Rotation);
+                    Walk(transition.ChildId, childOffset, childRotation,
+                        transition.LayerId ?? layerId, hidden || transition.Hidden || IsLayerHidden(layers, transition.LayerId ?? layerId),
+                        transition.Name ?? branchName);
+                }
+                else if (groups.TryGetValue(nodeId, out var group))
+                {
+                    foreach (var child in group.Children) Walk(child, offset, rotation, layerId, hidden, branchName);
+                }
+                else if (shapes.TryGetValue(nodeId, out var shape))
+                {
+                    for (var index = 0; index < shape.ModelIds.Count; index++)
+                    {
+                        var modelId = shape.ModelIds[index];
+                        if (modelId < 0 || modelId >= modelCount) continue;
+                        var name = branchName;
+                        if (string.IsNullOrWhiteSpace(name)) name = $"模型 {modelId + 1}";
+                        if (shape.ModelIds.Count > 1) name = $"{name} {index + 1}";
+                        instances.Add(new VoxInstance(modelId, name, layerId, hidden, offset, rotation));
+                    }
+                }
+            }
+            finally
+            {
+                visiting.Remove(nodeId);
+            }
+        }
+
+        foreach (var root in roots) Walk(root, VoxelCoord64.Zero, OrthogonalRotation.Identity, 0, false, null);
+        return instances;
+    }
+
+    private static bool IsLayerHidden(Dictionary<int, VoxLayer> layers, int layerId) =>
+        layers.TryGetValue(layerId, out var layer) && layer.Hidden;
+
+    /// <summary>两个带符号置换矩阵相乘，结果仍是带符号置换矩阵</summary>
+    private static OrthogonalRotation Multiply(OrthogonalRotation a, OrthogonalRotation b)
+    {
+        sbyte Element(int row, int column) => (sbyte)(a[row, 0] * b[0, column] +
+            a[row, 1] * b[1, column] + a[row, 2] * b[2, column]);
+        return new OrthogonalRotation(Element(0, 0), Element(0, 1), Element(0, 2),
+            Element(1, 0), Element(1, 1), Element(1, 2), Element(2, 0), Element(2, 1), Element(2, 2));
+    }
+
+    private static void ReadTransition(BinaryReader reader, long contentEnd,
+        Dictionary<int, TransitionNode> nodes)
+    {
+        var nodeId = reader.ReadInt32();
+        var attributes = ReadDictionary(reader, contentEnd);
+        var childId = reader.ReadInt32();
+        reader.ReadInt32();
+        var layerId = reader.ReadInt32();
+        var frames = reader.ReadInt32();
+        VoxelCoord64 offset = VoxelCoord64.Zero;
+        var rotation = OrthogonalRotation.Identity;
+        if (frames > 0)
+        {
+            var frame = ReadDictionary(reader, contentEnd);
+            offset = ReadTranslation(frame);
+            rotation = ReadRotation(frame);
+            for (var index = 1; index < frames; index++) ReadDictionary(reader, contentEnd);
+        }
+
+        nodes[nodeId] = new TransitionNode(childId, layerId, ReadText(attributes, "_name"),
+            ReadFlag(attributes, "_hidden"), offset, rotation);
+    }
+
+    private static void ReadGroup(BinaryReader reader, long contentEnd, Dictionary<int, GroupNode> nodes)
+    {
+        var nodeId = reader.ReadInt32();
+        ReadDictionary(reader, contentEnd);
+        var count = reader.ReadInt32();
+        if (count is < 0 or > ushort.MaxValue) throw new InvalidDataException("VOX 组节点子项数量无效。");
+        var children = new List<int>(count);
+        for (var index = 0; index < count; index++) children.Add(reader.ReadInt32());
+        nodes[nodeId] = new GroupNode(children);
+    }
+
+    private static void ReadShape(BinaryReader reader, long contentEnd, Dictionary<int, ShapeNode> nodes)
+    {
+        var nodeId = reader.ReadInt32();
+        ReadDictionary(reader, contentEnd);
+        var count = reader.ReadInt32();
+        if (count is < 0 or > ushort.MaxValue) throw new InvalidDataException("VOX 形状节点模型数量无效。");
+        var models = new List<int>(count);
+        for (var index = 0; index < count; index++)
+        {
+            models.Add(reader.ReadInt32());
+            ReadDictionary(reader, contentEnd);
+        }
+
+        nodes[nodeId] = new ShapeNode(models);
+    }
+
+    /// <summary>读取 DICT：键和值都是 STRING（长度前缀 + 原始字节），值可能是打包的二进制</summary>
+    private static Dictionary<string, byte[]> ReadDictionary(BinaryReader reader, long contentEnd)
+    {
+        var count = reader.ReadInt32();
+        if (count is < 0 or > 256) throw new InvalidDataException("VOX 字典条目数量无效。");
+        var result = new Dictionary<string, byte[]>(count, StringComparer.Ordinal);
+        for (var index = 0; index < count; index++)
+        {
+            var keyLength = reader.ReadInt32();
+            if (keyLength is < 0 or > 256 || reader.BaseStream.Position + keyLength > contentEnd)
+                throw new InvalidDataException("VOX 字典键长度无效。");
+            var key = Encoding.UTF8.GetString(reader.ReadBytes(keyLength));
+            var valueLength = reader.ReadInt32();
+            if (valueLength is < 0 or > 4096 || reader.BaseStream.Position + valueLength > contentEnd)
+                throw new InvalidDataException("VOX 字典值长度无效。");
+            result[key] = reader.ReadBytes(valueLength);
+        }
+
+        return result;
+    }
+
+    private static string? ReadText(Dictionary<string, byte[]> attributes, string key) =>
+        attributes.TryGetValue(key, out var value) ? Encoding.UTF8.GetString(value) : null;
+
+    private static bool ReadFlag(Dictionary<string, byte[]> attributes, string key) =>
+        attributes.TryGetValue(key, out var value) && value.Length > 0 && value[0] != (byte)'0';
+
+    /// <summary>_t 是三个 int32；坐标交换 Y/Z 以匹配 MVoxel 的 Y 轴向上</summary>
+    private static VoxelCoord64 ReadTranslation(Dictionary<string, byte[]> attributes)
+    {
+        if (!attributes.TryGetValue("_t", out var value) || value.Length != 12) return VoxelCoord64.Zero;
+        var x = BitConverter.ToInt32(value, 0);
+        var y = BitConverter.ToInt32(value, 4);
+        var z = BitConverter.ToInt32(value, 8);
+        return new VoxelCoord64(x, z, y);
+    }
+
+    /// <summary>_r 是一个字节编码的行主序置换矩阵，这里换算到交换 Y/Z 后的坐标系</summary>
+    private static OrthogonalRotation ReadRotation(Dictionary<string, byte[]> attributes)
+    {
+        if (!attributes.TryGetValue("_r", out var value) || value.Length != 1) return OrthogonalRotation.Identity;
+        var bits = value[0];
+        var rows = new int[3];
+        rows[0] = bits & 3;
+        rows[1] = (bits >> 2) & 3;
+        if (rows[0] > 2 || rows[1] > 2 || rows[0] == rows[1]) return OrthogonalRotation.Identity;
+        rows[2] = 3 - rows[0] - rows[1];
+        var matrix = new sbyte[3, 3];
+        for (var row = 0; row < 3; row++)
+            matrix[row, rows[row]] = (sbyte)(((bits >> (4 + row)) & 1) == 0 ? 1 : -1);
+        // MagicaVoxel 是 Z 轴向上，MVoxel 是 Y 轴向上：交换 Y/Z 需要左右各乘一次置换矩阵
+        var result = new sbyte[3, 3];
+        int[] swap = [0, 2, 1];
+        for (var row = 0; row < 3; row++)
+        for (var column = 0; column < 3; column++)
+            result[row, column] = matrix[swap[row], swap[column]];
+        for (var row = 0; row < 3; row++)
+        for (var column = 0; column < 3; column++)
+            if (result[row, column] != 0 && Math.Abs(result[row, column]) != 1) return OrthogonalRotation.Identity;
+        try
+        {
+            return new OrthogonalRotation(result[0, 0], result[0, 1], result[0, 2],
+                result[1, 0], result[1, 1], result[1, 2], result[2, 0], result[2, 1], result[2, 2]);
+        }
+        catch (ArgumentException)
+        {
+            return OrthogonalRotation.Identity;
+        }
+    }
+
+    private readonly record struct TransitionNode(int ChildId, int? LayerId, string? Name, bool Hidden,
+        VoxelCoord64 Offset, OrthogonalRotation Rotation);
+
+    private readonly record struct GroupNode(IReadOnlyList<int> Children);
+
+    private readonly record struct ShapeNode(IReadOnlyList<int> ModelIds);
+}

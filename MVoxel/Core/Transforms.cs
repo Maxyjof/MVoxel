@@ -107,11 +107,22 @@ public readonly struct OrthogonalRotation : IEquatable<OrthogonalRotation>
     public sbyte M22 { get; }
 
     /// <summary>
-    /// 恒等旋转
+    /// 按行列读取矩阵元素，供通用的旋转合成使用
     /// </summary>
-    public static OrthogonalRotation Identity => new(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    /// <param name="row">行号 0–2</param>
+    /// <param name="column">列号 0–2</param>
+    public sbyte this[int row, int column] => (row * 3 + column) switch
+    {
+        0 => M00, 1 => M01, 2 => M02,
+        3 => M10, 4 => M11, 5 => M12,
+        6 => M20, 7 => M21, 8 => M22,
+        _ => throw new ArgumentOutOfRangeException(nameof(row), "行号必须在 0–2 之间"),
+    };
 
     /// <summary>
+    /// 恒等旋转
+    /// </summary>
+    public static OrthogonalRotation Identity => new(1, 0, 0, 0, 1, 0, 0, 0, 1);    /// <summary>
     /// 绕 X 轴右转 90 度
     /// </summary>
     public static OrthogonalRotation AroundX90 => new(1, 0, 0, 0, 0, -1, 0, 1, 0);

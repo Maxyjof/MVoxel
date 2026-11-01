@@ -1,158 +1,357 @@
+using System.Buffers.Binary;
+using System.Text;
 using MVoxel.Core;
 
 namespace MVoxel.Voxels;
 
-/// <summary>MagicaVoxel 单模型 SIZE/XYZI/RGBA 交换；内部项目使用原生世界格式。</summary>
+/// <summary>
+/// MagicaVoxel .vox 交换格式。
+/// 一个文件可以包含多个模型（每个 ≤256³）和一张把它们摆到世界里的场景图；
+/// 内部项目始终使用原生世界格式，这里只做格式转换。
+/// </summary>
 public static class VoxFormat
 {
-    public const uint Magic = 0x0058_4F56;
-    public const int MaximumVoxels = 4_000_000;
-    public const int MaximumAxisExtent = 256;
-    private const int MaximumFileBytes = 128 * 1024 * 1024;
+    /// <summary>文件魔数 "VOX "（0x56 0x4F 0x58 0x20），小端读作 0x20584F56</summary>
+    public const uint Magic = 0x2058_4F56;
 
-    /// <summary>按占用包围盒重锚导出。超过单模型限制时拒绝，不裁剪或量化。</summary>
+    /// <summary>单模型体素上限</summary>
+    public const int MaximumVoxels = 4_000_000;
+
+    /// <summary>MagicaVoxel 单模型每轴上限</summary>
+    public const int MaximumAxisExtent = 256;
+
+    /// <summary>单文件最多携带的模型数</summary>
+    public const int MaximumModels = 4096;
+
+    private const int MaximumFileBytes = 128 * 1024 * 1024;
+    private const int MaximumPaletteColors = 255;
+
+    /// <summary>场景导出的一段：世界、它在场景中的原点、以及显示名</summary>
+    /// <param name="Name">段名称，仅用于导出说明</param>
+    /// <param name="World">体素世界</param>
+    /// <param name="Origin">该世界原点在世界坐标中的位置</param>
+    public readonly record struct VoxScenePart(string Name, VoxelWorld World, VoxelCoord64 Origin);
+
+    /// <summary>
+    /// 把世界导出为 .vox。超过 256 格时按 256 边界切成多个模型，再用场景图拼回原位。
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <param name="world">要导出的体素世界</param>
     public static void Write(string path, VoxelWorld world)
     {
         ArgumentNullException.ThrowIfNull(world);
-        if (!world.TryGetBounds(out var minimum, out var maximum))
+        if (!world.TryGetBounds(out var minimum, out _))
             throw new InvalidOperationException("空模型不能导出 VOX，请先绘制方块。");
-        var sx = checked(maximum.X - minimum.X + 1);
-        var sy = checked(maximum.Z - minimum.Z + 1);
-        var sz = checked(maximum.Y - minimum.Y + 1);
-        if (sx > MaximumAxisExtent || sy > MaximumAxisExtent || sz > MaximumAxisExtent)
-            throw new InvalidOperationException("VOX 单模型每轴最多 256 格；请导出较小的独立模型，或使用 QB/原生项目保留大场景。");
-        if (world.OccupiedVoxelCount > MaximumVoxels)
-            throw new InvalidOperationException("VOX 体素数量超过导出上限。");
-        var voxels = world.EnumerateOccupied().ToArray();
-        var palette = new Dictionary<Rgba32, byte>();
-        foreach (var cell in voxels)
-        {
-            if (palette.ContainsKey(cell.Value.Color)) continue;
-            if (palette.Count >= 255)
-                throw new InvalidOperationException("标准 VOX 单模型最多 255 个非空颜色；为避免颜色失真，请减少颜色或改用 QB。");
-            palette[cell.Value.Color] = (byte)(palette.Count + 1);
-        }
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        writer.Write(Magic); writer.Write(150);
-        Header(writer, "MAIN", 0, checked(24 + 16 + voxels.Length * 4 + 1036));
-        Header(writer, "SIZE", 12);
-        writer.Write((int)sx); writer.Write((int)sy); writer.Write((int)sz);
-        Header(writer, "XYZI", 4 + voxels.Length * 4);
-        writer.Write(voxels.Length);
-        foreach (var cell in voxels)
-        {
-            writer.Write((byte)(cell.Coordinate.X - minimum.X));
-            writer.Write((byte)(cell.Coordinate.Z - minimum.Z));
-            writer.Write((byte)(cell.Coordinate.Y - minimum.Y));
-            writer.Write(palette[cell.Value.Color]);
-        }
-        Header(writer, "RGBA", 1024);
-        foreach (var color in palette.Keys)
-        {
-            writer.Write(color.R); writer.Write(color.G); writer.Write(color.B); writer.Write(color.A);
-        }
-        for (var index = palette.Count; index < 256; index++) writer.Write(0U);
-        writer.Flush();
-        AtomicFile.WriteBytes(path, stream.ToArray());
+        WriteScene(path, [new VoxScenePart("模型", world, VoxelCoord64.Zero)]);
     }
 
+    /// <summary>
+    /// 把多个世界导出成一个 .vox：每段按 256 边界切块，块之间用 nTRN 摆到各自位置。
+    /// 所有段共用一张 255 色色板，超出的颜色按出现频率保留，其余映射到最近色。
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <param name="parts">场景段列表</param>
+    public static void WriteScene(string path, IReadOnlyList<VoxScenePart> parts)
+    {
+        ArgumentNullException.ThrowIfNull(parts);
+        var chunks = new List<Chunk>();
+        foreach (var part in parts)
+        {
+            if (part.World.OccupiedVoxelCount == 0) continue;
+            if (!part.World.TryGetBounds(out var minimum, out var maximum)) continue;
+            SplitIntoChunks(part.World, minimum, maximum, part.Origin, chunks);
+        }
+
+        if (chunks.Count == 0) throw new InvalidOperationException("没有可导出的体素，请先绘制方块。");
+        if (chunks.Count > MaximumModels) throw new InvalidOperationException("场景切块后超过 VOX 模型数量上限。");
+        var palette = BuildPalette(chunks);
+
+        var body = new MemoryStream();
+        using (var writer = new BinaryWriter(body, Encoding.ASCII, leaveOpen: true))
+        {
+            foreach (var chunk in chunks)
+            {
+                Header(writer, "SIZE", 12);
+                writer.Write(chunk.SizeX); writer.Write(chunk.SizeY); writer.Write(chunk.SizeZ);
+                Header(writer, "XYZI", 4 + chunk.Voxels.Count * 4);
+                writer.Write(chunk.Voxels.Count);
+                foreach (var voxel in chunk.Voxels)
+                {
+                    writer.Write(voxel.X); writer.Write(voxel.Y); writer.Write(voxel.Z);
+                    writer.Write(palette.Index[voxel.Color]);
+                }
+            }
+
+            Header(writer, "RGBA", 1024);
+            foreach (var color in palette.Colors)
+            {
+                writer.Write(color.R); writer.Write(color.G); writer.Write(color.B); writer.Write(color.A);
+            }
+
+            for (var index = palette.Colors.Count; index < 256; index++) writer.Write(0U);
+            WriteSceneGraph(writer, chunks);
+            writer.Flush();
+        }
+
+        var bytes = body.ToArray();
+        var file = new MemoryStream(12 + bytes.Length);
+        using (var writer = new BinaryWriter(file, Encoding.ASCII, leaveOpen: true))
+        {
+            writer.Write(Magic); writer.Write(150);
+            Header(writer, "MAIN", 0, bytes.Length);
+            writer.Write(bytes);
+            writer.Flush();
+        }
+
+        AtomicFile.WriteBytes(path, file.ToArray());
+    }
+
+    /// <summary>读取 .vox 并合并成单个世界；多模型按场景图摆位后合并</summary>
+    /// <param name="path">文件路径</param>
+    /// <returns>合并后的世界</returns>
     public static VoxelWorld Read(string path)
     {
         if (new FileInfo(path).Length > MaximumFileBytes) throw new InvalidDataException("VOX 文件超过读取上限。");
         return Read(File.ReadAllBytes(path));
     }
 
-    /// <summary>读取单模型与完整色板；多模型/动画拒绝，避免错误重叠合并。兼读旧 XYZA 交换数据。</summary>
-    public static VoxelWorld Read(byte[] bytes, VoxelCoord64 origin = default)
+    /// <summary>读取 .vox 并合并成单个世界</summary>
+    /// <param name="bytes">文件内容</param>
+    /// <param name="origin">世界原点偏移</param>
+    /// <returns>合并后的世界</returns>
+    public static VoxelWorld Read(byte[] bytes, VoxelCoord64 origin = default) =>
+        Compose(ReadDocument(bytes), origin);
+
+    /// <summary>读取 .vox 的模型、实例与图层结构，不合并</summary>
+    /// <param name="path">文件路径</param>
+    /// <returns>解析结果</returns>
+    public static VoxDocument ReadDocument(string path)
+    {
+        if (new FileInfo(path).Length > MaximumFileBytes) throw new InvalidDataException("VOX 文件超过读取上限。");
+        return ReadDocument(File.ReadAllBytes(path));
+    }
+
+    /// <summary>读取 .vox 的模型、实例与图层结构，不合并</summary>
+    /// <param name="bytes">文件内容</param>
+    /// <returns>解析结果</returns>
+    public static VoxDocument ReadDocument(byte[] bytes)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         if (bytes.Length < 20 || bytes.Length > MaximumFileBytes) throw new InvalidDataException("VOX 文件长度无效。");
-        using var stream = new MemoryStream(bytes, writable: false);
-        using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
-        if (reader.ReadUInt32() != Magic) throw new InvalidDataException("不是 VOX 文件。");
-        reader.ReadUInt32();
-        var palette = DefaultPalette();
-        var cells = new List<(VoxelCoord64 Coordinate, byte Index, Rgba32? Color)>();
-        var size = (X: 0, Y: 0, Z: 0);
-        var modelCount = 0;
-        void Chunks(long start, long end, int depth)
+        if (BinaryPrimitives.ReadUInt32LittleEndian(bytes) != Magic) throw new InvalidDataException("不是 VOX 文件。");
+        return VoxDocumentReader.Read(bytes);
+    }
+
+    /// <summary>把文档里的每个实例按平移与旋转摆好，合并成一个世界</summary>
+    /// <param name="document">解析结果</param>
+    /// <returns>合并后的世界</returns>
+    public static VoxelWorld Compose(VoxDocument document) => Compose(document, VoxelCoord64.Zero);
+
+    /// <summary>把文档里的每个实例按平移与旋转摆好，合并成一个世界</summary>
+    private static VoxelWorld Compose(VoxDocument document, VoxelCoord64 origin)
+    {
+        var world = new VoxelWorld();
+        foreach (var instance in document.Instances)
         {
-            if (depth > 32) throw new InvalidDataException("VOX 块嵌套过深。");
-            var cursor = start;
-            while (cursor < end)
+            var model = document.Models[instance.ModelIndex];
+            foreach (var voxel in model.Voxels)
             {
-                if (end - cursor < 12) throw new InvalidDataException("VOX 块头被截断。");
-                stream.Position = cursor;
-                var id = new string(reader.ReadChars(4));
-                var contentSize = reader.ReadInt32(); var childrenSize = reader.ReadInt32();
-                var contentEnd = cursor + 12L + contentSize;
-                var next = contentEnd + childrenSize;
-                if (contentSize < 0 || childrenSize < 0 || next > end)
-                    throw new InvalidDataException("VOX 块越过父块边界。");
-                switch (id)
-                {
-                    case "PACK":
-                        if (contentSize != 4 || reader.ReadInt32() != 1)
-                            throw new InvalidDataException("当前仅支持单模型 VOX；请在 MagicaVoxel 中将模型分别导出。");
-                        break;
-                    case "SIZE":
-                        if (contentSize != 12) throw new InvalidDataException("VOX SIZE 长度无效。");
-                        size = (reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32());
-                        if (size.X is < 1 or > MaximumAxisExtent || size.Y is < 1 or > MaximumAxisExtent || size.Z is < 1 or > MaximumAxisExtent)
-                            throw new InvalidDataException("VOX 单模型尺寸必须在 1–256 格之间。");
-                        break;
-                    case "XYZI" or "XYZA":
-                        if (++modelCount > 1) throw new InvalidDataException("当前仅支持单模型 VOX，不会将多个模型错误重叠导入。");
-                        if (contentSize < 4 || size.X == 0) throw new InvalidDataException("VOX 缺少有效 SIZE。");
-                        var count = reader.ReadInt32();
-                        var stride = id == "XYZA" ? 7 : 4;
-                        if (count is < 0 or > MaximumVoxels || count * (long)stride != contentSize - 4L)
-                            throw new InvalidDataException("VOX 体素数量与块长度不符。");
-                        cells.Capacity = count;
-                        for (var index = 0; index < count; index++)
-                        {
-                            var x = reader.ReadByte(); var y = reader.ReadByte(); var z = reader.ReadByte();
-                            if (x >= size.X || y >= size.Y || z >= size.Z) throw new InvalidDataException("VOX 坐标超出 SIZE。");
-                            var coordinate = origin + new VoxelCoord64(x, z, y);
-                            if (id == "XYZA") cells.Add((coordinate, 0, new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte())));
-                            else cells.Add((coordinate, reader.ReadByte(), null));
-                        }
-                        break;
-                    case "RGBA":
-                        if (contentSize != 1024) throw new InvalidDataException("VOX 色板长度无效。");
-                        for (var index = 1; index <= 256; index++)
-                        {
-                            var color = new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte());
-                            if (index < 256) palette[index] = color;
-                        }
-                        break;
-                }
-                if (childrenSize > 0) Chunks(contentEnd, next, depth + 1);
-                cursor = next;
+                // MagicaVoxel 的 Z 是重力方向，映射到 MVoxel 的 Y 轴向上
+                var local = new VoxelCoord64(voxel.X, voxel.Z, voxel.Y);
+                var coordinate = origin + instance.Offset + instance.Rotation.Apply(local);
+                world.Set(coordinate, new VoxelValue(voxel.Color,
+                    Flags: voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
             }
         }
-        Chunks(8, bytes.Length, 0);
-        if (modelCount == 0) throw new InvalidDataException("VOX 文件没有模型数据。");
-        var world = new VoxelWorld();
-        foreach (var cell in cells)
-        {
-            var color = cell.Color ?? palette[cell.Index];
-            if (color.A == 0) continue;
-            world.Set(cell.Coordinate, new VoxelValue(color, Flags: color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
-        }
+
         return world;
+    }
+
+    /// <summary>按 256 边界切块，块内坐标从零开始，块在世界中的位置交给场景图</summary>
+    private static void SplitIntoChunks(VoxelWorld world, VoxelCoord64 minimum, VoxelCoord64 maximum,
+        VoxelCoord64 origin, List<Chunk> chunks)
+    {
+        var spanX = maximum.X - minimum.X + 1;
+        var spanY = maximum.Y - minimum.Y + 1;
+        var spanZ = maximum.Z - minimum.Z + 1;
+        var totalChunks = ((spanX + MaximumAxisExtent - 1) / MaximumAxisExtent) *
+                          ((spanY + MaximumAxisExtent - 1) / MaximumAxisExtent) *
+                          ((spanZ + MaximumAxisExtent - 1) / MaximumAxisExtent);
+        if (chunks.Count + totalChunks > MaximumModels)
+            throw new InvalidOperationException("场景切块后超过 VOX 模型数量上限。");
+        // 先按块收集体素，避免为每个块都遍历整张世界
+        var buckets = new Dictionary<(long X, long Y, long Z), List<ChunkVoxel>>();
+        foreach (var (coordinate, value) in world.EnumerateOccupied())
+        {
+            if (value.Color.A == 0) continue;
+            var cell = new VoxelCoord64(coordinate.X - minimum.X, coordinate.Y - minimum.Y, coordinate.Z - minimum.Z);
+            var key = (cell.X / MaximumAxisExtent, cell.Y / MaximumAxisExtent, cell.Z / MaximumAxisExtent);
+            if (!buckets.TryGetValue(key, out var bucket)) buckets[key] = bucket = [];
+            bucket.Add(new ChunkVoxel((byte)(cell.X % MaximumAxisExtent), (byte)(cell.Z % MaximumAxisExtent),
+                (byte)(cell.Y % MaximumAxisExtent), value.Color));
+        }
+
+        foreach (var (key, voxels) in buckets.OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y)
+                     .ThenBy(item => item.Key.X))
+        {
+            var chunkMinimum = new VoxelCoord64(minimum.X + key.X * MaximumAxisExtent,
+                minimum.Y + key.Y * MaximumAxisExtent, minimum.Z + key.Z * MaximumAxisExtent);
+            var sizeX = (int)Math.Min(MaximumAxisExtent, maximum.X - chunkMinimum.X + 1);
+            var sizeY = (int)Math.Min(MaximumAxisExtent, maximum.Z - chunkMinimum.Z + 1);
+            var sizeZ = (int)Math.Min(MaximumAxisExtent, maximum.Y - chunkMinimum.Y + 1);
+            chunks.Add(new Chunk(sizeX, sizeY, sizeZ, voxels, chunkMinimum - minimum + origin));
+        }
+    }
+
+    /// <summary>收集所有块用到的颜色；超过 255 时按出现频率保留并映射其余颜色</summary>
+    private static PaletteResult BuildPalette(List<Chunk> chunks)
+    {
+        var counts = new Dictionary<Rgba32, int>();
+        foreach (var chunk in chunks)
+        foreach (var voxel in chunk.Voxels)
+            counts[voxel.Color] = counts.GetValueOrDefault(voxel.Color) + 1;
+
+        var colors = counts.Count <= MaximumPaletteColors
+            ? counts.Keys.ToList()
+            : counts.OrderByDescending(item => item.Value).Take(MaximumPaletteColors).Select(item => item.Key).ToList();
+        var index = new Dictionary<Rgba32, byte>(colors.Count);
+        for (var i = 0; i < colors.Count; i++) index[colors[i]] = (byte)(i + 1);
+        foreach (var color in counts.Keys)
+        {
+            if (index.ContainsKey(color)) continue;
+            var nearest = colors[0];
+            var best = int.MaxValue;
+            foreach (var candidate in colors)
+            {
+                var distance = Squared(color, candidate);
+                if (distance >= best) continue;
+                best = distance;
+                nearest = candidate;
+            }
+
+            index[color] = index[nearest];
+        }
+
+        return new PaletteResult(colors, index);
+    }
+
+    private static int Squared(Rgba32 a, Rgba32 b)
+    {
+        var dr = a.R - b.R; var dg = a.G - b.G; var db = a.B - b.B; var da = a.A - b.A;
+        return dr * dr + dg * dg + db * db + da * da;
+    }
+
+    /// <summary>写出场景图：根变换 → 组 → 每个模型一个变换 + 形状节点</summary>
+    private static void WriteSceneGraph(BinaryWriter writer, List<Chunk> chunks)
+    {
+        const int rootId = 0;
+        const int groupId = 1;
+        var transformStart = 2;
+        var shapeStart = transformStart + chunks.Count;
+
+        var rootPayload = new MemoryStream();
+        using (var node = new BinaryWriter(rootPayload, Encoding.ASCII, leaveOpen: true))
+        {
+            node.Write(rootId);
+            WriteDictionary(node, ("_name", "Scene"));
+            node.Write(groupId);
+            node.Write(-1);
+            node.Write(0);
+            node.Write(1);
+            WriteTransformFrame(node, 0, 0, 0);
+        }
+
+        WriteChunk(writer, "nTRN", rootPayload.ToArray());
+
+        var groupPayload = new MemoryStream();
+        using (var node = new BinaryWriter(groupPayload, Encoding.ASCII, leaveOpen: true))
+        {
+            node.Write(groupId);
+            WriteDictionary(node, ("_name", "Root"));
+            node.Write(chunks.Count);
+            for (var i = 0; i < chunks.Count; i++) node.Write(transformStart + i);
+        }
+
+        WriteChunk(writer, "nGRP", groupPayload.ToArray());
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var chunk = chunks[i];
+            var nodePayload = new MemoryStream();
+            using (var node = new BinaryWriter(nodePayload, Encoding.ASCII, leaveOpen: true))
+            {
+                node.Write(transformStart + i);
+                WriteDictionary(node, ("_name", $"Model {i + 1}"));
+                node.Write(shapeStart + i);
+                node.Write(-1);
+                node.Write(0);
+                node.Write(1);
+                // MagicaVoxel 的平移是 Z 轴向上：MVoxel 的 Y 换到 vox 的 Z
+                WriteTransformFrame(node, ToInt32(chunk.Origin.X), ToInt32(chunk.Origin.Z), ToInt32(chunk.Origin.Y));
+            }
+
+            WriteChunk(writer, "nTRN", nodePayload.ToArray());
+
+            var shapePayload = new MemoryStream();
+            using (var node = new BinaryWriter(shapePayload, Encoding.ASCII, leaveOpen: true))
+            {
+                node.Write(shapeStart + i);
+                WriteDictionary(node);
+                node.Write(1);
+                node.Write(i);
+                WriteDictionary(node, ("_f", "0"));
+            }
+
+            WriteChunk(writer, "nSHP", shapePayload.ToArray());
+        }
+    }
+
+    /// <summary>写出一帧变换：恒等旋转加平移。_r 的 4 对应单位矩阵（各行非零列依次为 0、1、2，全为正）</summary>
+    private static void WriteTransformFrame(BinaryWriter node, int x, int y, int z)
+    {
+        node.Write(3);
+        node.Write(2); node.Write("_r"u8.ToArray()); node.Write(1); node.Write(PackIdentityRotation());
+        node.Write(2); node.Write("_t"u8.ToArray()); node.Write(12);
+        node.Write(x); node.Write(y); node.Write(z);
+        node.Write(2); node.Write("_f"u8.ToArray()); node.Write(4); node.Write(0);
+    }
+
+    /// <summary>场景图平移是 int32，超出范围直接报错，不做静默截断</summary>
+    private static int ToInt32(long value) => value is < int.MinValue or > int.MaxValue
+        ? throw new InvalidOperationException("模型位置超出 .vox 场景图可表示的整数范围")
+        : (int)value;
+
+    /// <summary>单位旋转：bit0-1=0、bit2-3=1、符号位全为零</summary>
+    private static byte PackIdentityRotation() => (1 << 2);
+
+    private static void WriteDictionary(BinaryWriter node, params (string Key, string Value)[] entries)
+    {
+        node.Write(entries.Length);
+        foreach (var (key, value) in entries)
+        {
+            var keyBytes = Encoding.UTF8.GetBytes(key);
+            node.Write(keyBytes.Length); node.Write(keyBytes);
+            var valueBytes = Encoding.UTF8.GetBytes(value);
+            node.Write(valueBytes.Length); node.Write(valueBytes);
+        }
+    }
+
+    /// <summary>写出带长度头的独立块，用于场景图节点</summary>
+    private static void WriteChunk(BinaryWriter writer, string id, byte[] content)
+    {
+        Header(writer, id, content.Length);
+        writer.Write(content);
     }
 
     private static void Header(BinaryWriter writer, string id, int content, int children = 0)
     {
-        writer.Write(System.Text.Encoding.ASCII.GetBytes(id));
+        writer.Write(Encoding.ASCII.GetBytes(id));
         writer.Write(content); writer.Write(children);
     }
 
-    // 官方默认色板：6³ 色立方（不含黑色）加红/绿/蓝/灰各十级。
-    // https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox.txt
-    private static Rgba32[] DefaultPalette()
+    /// <summary>官方默认色板：6³ 色立方（不含黑色）加红/绿/蓝/灰各十级。</summary>
+    /// <remarks>https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox.txt</remarks>
+    internal static Rgba32[] DefaultPalette()
     {
         var palette = new Rgba32[256];
         var index = 1;
@@ -167,4 +366,10 @@ public static class VoxFormat
                 channel is 1 or 3 ? value : (byte)0, channel is 2 or 3 ? value : (byte)0, 255);
         return palette;
     }
+
+    private readonly record struct ChunkVoxel(byte X, byte Y, byte Z, Rgba32 Color);
+
+    private sealed record Chunk(int SizeX, int SizeY, int SizeZ, List<ChunkVoxel> Voxels, VoxelCoord64 Origin);
+
+    private sealed record PaletteResult(List<Rgba32> Colors, Dictionary<Rgba32, byte> Index);
 }
