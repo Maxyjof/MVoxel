@@ -11,6 +11,7 @@ namespace MVoxel.Editor;
 internal sealed partial class ImGuiEditorWindow
 {
     private bool _showFramePresetManager;
+    private bool _showExportDialog;
 
     /// <summary>
     /// 绘制渲染窗口顶部的画面比例与分辨率选择器
@@ -43,33 +44,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("自由比例铺满整个视图；选定比例后视图按该比例留黑边，导出也按这个比例出图。");
-
-        ImGui.SameLine();
-        ImGui.TextUnformatted("分辨率");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(170F);
-        var resolutionName = settings.FindResolutionPreset()?.Name ?? "跟随视图";
-        if (ImGui.BeginCombo("##RenderResolutionCombo", resolutionName))
-        {
-            if (ImGui.Selectable("跟随视图", settings.RenderResolutionPresetId.Length == 0))
-            {
-                settings.RenderResolutionPresetId = string.Empty;
-                ApplyRenderFrameChange();
-            }
-
-            foreach (var preset in settings.RenderResolutionPresets)
-            {
-                if (!ImGui.Selectable(preset.Name, preset.Id == settings.RenderResolutionPresetId)) continue;
-                settings.RenderResolutionPresetId = preset.Id;
-                ApplyRenderFrameChange();
-            }
-
-            ImGui.EndCombo();
-        }
-
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("选定分辨率后，预览按该像素数渲染，导出 PNG 也用它，所见即所得。");
+            ImGui.SetTooltip("自由比例铺满整个视图；选定比例后视图按该比例留黑边。\n导出时的分辨率与比例在导出对话框里单独设置。");
 
         ImGui.SameLine();
         if (ImGui.Button("管理…##RenderFramePresets")) _showFramePresetManager = true;
@@ -77,6 +52,154 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SetTooltip("增删改名、调整顺序。预设按项目保存，不影响其他项目。");
 
         if (_showFramePresetManager) DrawFramePresetManager(settings);
+    }
+
+    /// <summary>
+    /// 按导出对话框里的设置算出实际出图尺寸：自定义宽高优先，其次预设分辨率，
+    /// 都没选就按当前画面比例从视图尺寸推算。
+    /// </summary>
+    private (Vector2 Size, float Scale) ResolveExportCanvas()
+    {
+        var viewport = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
+            ? _lastRenderViewportSize
+            : new Vector2(1280, 720);
+        if (_projectSettings is { } settings)
+        {
+            if (settings.ExportDialogCustomSize)
+                return (new Vector2(settings.ExportDialogWidth, settings.ExportDialogHeight), 1F);
+            if (settings.RenderResolutionPresets.FirstOrDefault(preset =>
+                    preset.Id == settings.ExportDialogResolutionId) is { } preset)
+                return (new Vector2(preset.Width, preset.Height), 1F);
+        }
+
+        return (ResolveRenderFrameRect(viewport).Size, MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X));
+    }
+
+    /// <summary>
+    /// 导出对话框：格式、比例、分辨率；确认后按这些设置入队，下次打开沿用上次的选择
+    /// </summary>
+    private void DrawExportDialog()
+    {
+        if (!_showExportDialog) return;
+        if (_projectSettings is not { } settings)
+        {
+            _showExportDialog = false;
+            return;
+        }
+
+        ImGui.SetNextWindowSize(new Vector2(400F, 0F), ImGuiCond.FirstUseEver);
+        if (!ImGui.Begin("导出图片", ref _showExportDialog, ImGuiWindowFlags.NoCollapse))
+        {
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextUnformatted("格式");
+        foreach (var (id, label) in new[] { ("png", "当前相机 · PNG"), ("hdr", "当前相机 · HDR"), ("all", "全部相机 · PNG") })
+        {
+            if (ImGui.RadioButton(label, settings.ExportDialogFormat == id)) settings.ExportDialogFormat = id;
+        }
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("画面比例");
+        ImGui.SetNextItemWidth(-1F);
+        var aspectName = settings.FindAspectPreset()?.Name ?? "自由（跟随视图）";
+        if (ImGui.BeginCombo("##ExportAspectCombo", aspectName))
+        {
+            if (ImGui.Selectable("自由（跟随视图）", settings.RenderAspectPresetId.Length == 0))
+            {
+                settings.RenderAspectPresetId = string.Empty;
+                ApplyRenderFrameChange();
+            }
+
+            foreach (var preset in settings.RenderAspectPresets)
+            {
+                if (!ImGui.Selectable(preset.Name, preset.Id == settings.RenderAspectPresetId)) continue;
+                settings.RenderAspectPresetId = preset.Id;
+                ApplyRenderFrameChange();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("改这里会同时改变渲染视图的取景，方便边调边看。");
+
+        ImGui.TextUnformatted("分辨率");
+        ImGui.SetNextItemWidth(-1F);
+        var selectedResolution = settings.RenderResolutionPresets
+            .FirstOrDefault(preset => preset.Id == settings.ExportDialogResolutionId);
+        var resolutionLabel = settings.ExportDialogCustomSize
+            ? $"自定义 {settings.ExportDialogWidth} × {settings.ExportDialogHeight}"
+            : selectedResolution?.Name ?? "按比例从视图推算";
+        if (ImGui.BeginCombo("##ExportResolutionCombo", resolutionLabel))
+        {
+            if (ImGui.Selectable("按比例从视图推算", !settings.ExportDialogCustomSize && selectedResolution is null))
+            {
+                settings.ExportDialogCustomSize = false;
+                settings.ExportDialogResolutionId = string.Empty;
+            }
+
+            foreach (var preset in settings.RenderResolutionPresets)
+            {
+                var selected = !settings.ExportDialogCustomSize && preset.Id == settings.ExportDialogResolutionId;
+                if (!ImGui.Selectable(preset.Name, selected)) continue;
+                settings.ExportDialogCustomSize = false;
+                settings.ExportDialogResolutionId = preset.Id;
+            }
+
+            if (ImGui.Selectable("自定义…", settings.ExportDialogCustomSize))
+            {
+                settings.ExportDialogCustomSize = true;
+                // 从当前推算值起步，避免一上来就是占位数字
+                var (current, currentScale) = ResolveExportCanvas();
+                settings.ExportDialogWidth = Math.Clamp((int)(current.X * currentScale), 16, 8192);
+                settings.ExportDialogHeight = Math.Clamp((int)(current.Y * currentScale), 16, 8192);
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (settings.ExportDialogCustomSize)
+        {
+            ImGui.SetNextItemWidth(110F);
+            var width = settings.ExportDialogWidth;
+            if (ImGui.InputInt("宽", ref width)) settings.ExportDialogWidth = Math.Clamp(width, 16, 8192);
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(110F);
+            var height = settings.ExportDialogHeight;
+            if (ImGui.InputInt("高", ref height)) settings.ExportDialogHeight = Math.Clamp(height, 16, 8192);
+        }
+
+        var (canvas, canvasScale) = ResolveExportCanvas();
+        ImGui.TextDisabled($"输出 {(int)(canvas.X * canvasScale)} × {(int)(canvas.Y * canvasScale)} 像素");
+        if (settings.ExportDialogFormat == "all")
+            ImGui.TextDisabled("每个相机各出一张，尺寸同上，构图按各自相机取景");
+
+        ImGui.Separator();
+        if (ImGui.Button("导出", new Vector2(110F, 0F)))
+        {
+            SaveProjectSettings();
+            switch (settings.ExportDialogFormat)
+            {
+                case "hdr":
+                    ExportRenderHdr();
+                    break;
+                case "all":
+                    ExportAllCamerasPng();
+                    break;
+                default:
+                    ExportRenderPng();
+                    break;
+            }
+
+            _showExportDialog = false;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("取消", new Vector2(110F, 0F))) _showExportDialog = false;
+
+        ImGui.End();
     }
 
     /// <summary>

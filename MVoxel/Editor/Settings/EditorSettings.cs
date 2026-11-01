@@ -201,8 +201,23 @@ public sealed class ProjectSettingsDocument
     /// <summary>当前选中的比例预设 Id，空表示自由比例</summary>
     public string RenderAspectPresetId = string.Empty;
 
-    /// <summary>当前选中的分辨率预设 Id，空表示跟随视图</summary>
+    /// <summary>当前选中的分辨率预设 Id，空表示跟随视图；预览不使用它，仅导出对话框的默认值</summary>
     public string RenderResolutionPresetId = string.Empty;
+
+    /// <summary>导出对话框上次使用的格式：png / hdr / all</summary>
+    public string ExportDialogFormat = "png";
+
+    /// <summary>导出对话框上次选择的分辨率预设 Id，空表示按比例从视图推算</summary>
+    public string ExportDialogResolutionId = string.Empty;
+
+    /// <summary>导出对话框上次是否使用自定义宽高</summary>
+    public bool ExportDialogCustomSize;
+
+    /// <summary>导出对话框上次填写的自定义宽高</summary>
+    public int ExportDialogWidth = 1920;
+
+    /// <summary>导出对话框上次填写的自定义高</summary>
+    public int ExportDialogHeight = 1080;
 
     /// <summary>新建项目时的常见画面比例</summary>
     public static List<RenderFramePreset> CreateDefaultAspectPresets() =>
@@ -268,9 +283,14 @@ public sealed class ProjectSettingsDocument
             preset.Height = Math.Clamp(preset.Height, 1, 16384);
         }
 
+        ExportDialogWidth = Math.Clamp(ExportDialogWidth, 16, 8192);
+        ExportDialogHeight = Math.Clamp(ExportDialogHeight, 16, 8192);
+        if (ExportDialogFormat is not ("png" or "hdr" or "all")) ExportDialogFormat = "png";
+
         // 选中的预设被删掉时回落到自由比例 / 跟随视图
         if (RenderAspectPresets.All(preset => preset.Id != RenderAspectPresetId)) RenderAspectPresetId = string.Empty;
         if (RenderResolutionPresets.All(preset => preset.Id != RenderResolutionPresetId)) RenderResolutionPresetId = string.Empty;
+        if (RenderResolutionPresets.All(preset => preset.Id != ExportDialogResolutionId)) ExportDialogResolutionId = string.Empty;
         SceneRenderSettings.SanitizeNaN();
         SceneRenderSettings.ClampAll();
         RenderSettings.SanitizeNaN();

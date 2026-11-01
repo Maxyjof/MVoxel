@@ -2653,20 +2653,14 @@ DockId=0x6A3C3007,0
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
         if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight,
-                "导出当前相机 PNG/HDR 或全部相机 PNG；完整路径与进度见底部导出队列")) ImGui.OpenPopup("##RenderExportMenu");
-        if (ImGui.BeginPopup("##RenderExportMenu"))
-        {
-            if (ImGui.MenuItem("当前相机 → PNG")) ExportRenderPng();
-            if (ImGui.MenuItem("当前相机 → HDR")) ExportRenderHdr();
-            if (ImGui.MenuItem("全部相机 → PNG")) ExportAllCamerasPng();
-            ImGui.EndPopup();
-        }
+                "打开导出对话框：选择格式、比例与分辨率后再导出")) _showExportDialog = true;
         ImGui.EndDisabled();
         ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth + spacing, size.X - buttonWidth - 12F), 10F));
         if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight,
                 $"帧率、体素工作集、派发量和 CPU 更新耗时\n视场角 {activeRenderSettings.CameraFovDegrees:0}° · 视口 {size.X:0}×{size.Y:0}\n统计来自当前视图，不运行性能台架"))
             _showRenderStatistics = !_showRenderStatistics;
         if (_showRenderStatistics) DrawSceneStatistics(drawList, origin + new Vector2(0F, buttonHeight + 14F), renderView: true);
+        DrawExportDialog();
     }
 
     /// <summary>
@@ -2799,21 +2793,9 @@ DockId=0x6A3C3007,0
             }
             job.World = _exportSnapshot;
         }
-        var viewport = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
-            ? _lastRenderViewportSize
-            : new Vector2(1280, 720);
-        if (_projectSettings?.FindResolutionPreset() is { } resolution)
-        {
-            // 选定分辨率时直接按最终像素数出图，导出与预览一致
-            job.Size = new Vector2(resolution.Width, resolution.Height);
-            job.Scale = 1F;
-        }
-        else
-        {
-            // 只选了比例时，导出按该比例裁剪视图，与预览看到的构图一致
-            job.Size = ResolveRenderFrameRect(viewport).Size;
-            job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
-        }
+        var (exportSize, exportScale) = ResolveExportCanvas();
+        job.Size = exportSize;
+        job.Scale = exportScale;
         job.Materials = _project is null ? null : MaterialAsset.PackTable(MaterialAsset.LoadFromProject(_project));
         job.CameraName ??= GetActiveRenderCameraObject()?.Name ?? "场景视角";
         _exportQueue.Enqueue(job);

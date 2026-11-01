@@ -1118,13 +1118,6 @@ internal sealed partial class ImGuiEditorWindow
             var frameSize = frame.Size;
             var width = Math.Max(16, (int)(frameSize.X * scale * renderScale));
             var height = Math.Max(16, (int)(frameSize.Y * scale * renderScale));
-            // 选定分辨率时按它出图，预览也按最终像素数渲染，方便直接看最终效果
-            if (_projectSettings?.FindResolutionPreset() is { } resolution)
-            {
-                width = resolution.Width;
-                height = resolution.Height;
-            }
-
             if (_capturePath is not null && _captureWidth > 0)
             {
                 width = _captureWidth;
