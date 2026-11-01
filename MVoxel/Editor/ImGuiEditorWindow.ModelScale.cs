@@ -176,6 +176,29 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 在非 1x 尺寸上继续编辑前，把当前形态写成新的缩放原件并把缩放归 1。
+    /// 这样编辑过的内容成为新基准，不会在下次缩放时被旧原件覆盖掉。
+    /// </summary>
+    private void BakeScaleForEditing(SceneObject sceneObject)
+    {
+        if (_project is null) return;
+        var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+        if (component is null) return;
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        if (Math.Abs(data.Scale - 1F) < 0.0001F) return;
+        var current = CaptureObjectVoxels(sceneObject);
+        if (current.OccupiedVoxelCount == 0) return;
+        if (!TryWriteScaleOriginal(sceneObject, current)) return;
+        SceneComponentTypes.WriteVoxelModel(component, data with { Scale = 1F });
+        var transform = sceneObject.Transform;
+        transform.ScaleX = 1;
+        transform.ScaleY = 1;
+        transform.ScaleZ = 1;
+        sceneObject.Transform = transform;
+        SetStatus($"已在 {data.Scale:0.###}x 尺寸上继续编辑，当前尺寸成为新的 1x 基准");
+    }
+
+    /// <summary>
     /// 恢复模型原始尺寸；需要原件的备份仍存在
     /// </summary>
     private void ResetModelScale(SceneObject sceneObject, ComponentRecord modelComponent)

@@ -1460,6 +1460,9 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("编辑目标不可见或模型组件未启用；请显示目标对象及其图层后再编辑");
             return;
         }
+        // 缩放状态下继续雕刻时，先把当前尺寸定为新的 1x 基准，
+        // 否则下次改缩放会从旧原件重采样，把这次新增的方块丢掉
+        BakeScaleForEditing(target);
         var command = new VoxelStrokeCommand(name, _objectVoxels.GetOrCreate(target.Id), cells, value,
             ObjectEditCallback(target.Id));
         if (command.ChangedCellCount == 0)

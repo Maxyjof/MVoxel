@@ -59,23 +59,26 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SameLine(0, 3);
         ImGui.SetNextItemWidth(width);
-        var inputChanged = ImGui.InputText("##" + id, ref text, 128);
+        ImGui.InputText("##" + id, ref text, 128);
         var inputActive = ImGui.IsItemActive();
         var inputFinished = ImGui.IsItemDeactivatedAfterEdit();
 
-        //拖拽期间输入框只显示预览值，不参与文本解析
-        if (!dragging && inputChanged)
+        // 打字只在回车或失焦时提交：逐字写回会让缩放反复重采样大模型，
+        // 也会让 "1" → "12" 这种中间态先应用到对象上。拖动轴标签仍然实时。
+        if (!dragging && inputFinished)
         {
-            //边输入边写回；中间态（如 "-" 或 "3+"）解析失败时保持原值，不让对象乱跳
-            if (TryEvaluateTransformValue(text, out var typed) && !SameTransformValue(typed, value))
+            if (TryEvaluateTransformValue(text, out var typed))
             {
-                result = typed;
-                changed = true;
+                if (!SameTransformValue(typed, value))
+                {
+                    result = typed;
+                    changed = true;
+                }
             }
-        }
-        else if (!dragging && inputFinished && !TryEvaluateTransformValue(text, out _))
-        {
-            SetStatus("表达式无效，请检查数字和运算符");
+            else
+            {
+                SetStatus("表达式无效，请检查数字和运算符");
+            }
         }
 
         //编辑中保留用户原文，其余情况统一按最终值格式化，避免显示值与实际值不一致
