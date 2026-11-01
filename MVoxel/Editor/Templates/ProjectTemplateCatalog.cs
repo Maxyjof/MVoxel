@@ -356,7 +356,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathDenoiseStrength = .68F;
                 settings.RenderSettings.EmissiveIntensity = 18F;
                 settings.RenderSettings.TransmissiveAbsorption = .35F;
-                settings.RenderSettings.DirectLightingMIS = true;
+                settings.RenderSettings.SunDirectLighting = true;
                 break;
             case ProjectTemplateId.Showcase:
                 settings.DefaultRenderPreset = "基础展示";
@@ -546,7 +546,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.CameraFovDegrees = 46F;
                 settings.RenderSettings.Dither = true;
                 settings.RenderSettings.RadianceClamp = 8F;
-                settings.RenderSettings.DirectLightingMIS = true;
+                settings.RenderSettings.SunDirectLighting = true;
                 settings.RenderSettings.AutoPerformanceScaling = false;
                 break;
             case ProjectTemplateId.RenderingGallery:
@@ -590,7 +590,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathSpecularF0 = .06F;
                 settings.RenderSettings.RussianRouletteThreshold = .003F;
                 settings.RenderSettings.RadianceClamp = 28F;
-                settings.RenderSettings.DirectLightingMIS = true;
+                settings.RenderSettings.SunDirectLighting = true;
                 settings.RenderSettings.CameraFovDegrees = 48F;
                 break;
         }

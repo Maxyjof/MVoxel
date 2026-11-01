@@ -741,7 +741,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
-                ImGui.Checkbox("太阳直接光采样", ref settings.DirectLightingMIS);
+                ImGui.Checkbox("太阳直接光采样", ref settings.SunDirectLighting);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
         });
 

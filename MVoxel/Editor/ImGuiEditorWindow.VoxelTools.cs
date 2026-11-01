@@ -103,7 +103,7 @@ internal sealed partial class ImGuiEditorWindow
         _settingsTogglePath = settings.PathTracingEnabled;
         _settingsTogglePathDenoise = settings.PathDenoising;
         _settingsToggleDof = settings.DepthOfField;
-        _settingsToggleMis = settings.DirectLightingMIS;
+        _settingsToggleMis = settings.SunDirectLighting;
         _settingsToggleEmissive = settings.EmissiveVoxels;
         _settingsToggleDither = settings.Dither;
         _settingsToggleHueCycle = settings.HueCycle;
@@ -892,7 +892,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.PathSamplesPerFrame).Append(',').Append(settings.PathMaxAccumulatedSamples)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
-            .Append(',').Append(settings.DirectLightingMIS).Append(',').Append(settings.RussianRouletteThreshold)
+            .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
             .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
             .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees)
@@ -2203,7 +2203,7 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
-        Toggle("太阳直接光采样", ref _settingsToggleMis, value => settings.DirectLightingMIS = value);
+        Toggle("太阳直接光采样", ref _settingsToggleMis, value => settings.SunDirectLighting = value);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
     }
 

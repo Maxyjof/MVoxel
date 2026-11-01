@@ -28,7 +28,7 @@ public static class RenderQualityPresets
                 settings.PathMaxAccumulatedSamples == expected.PathMaxAccumulatedSamples && settings.MaxBounces == expected.MaxBounces &&
                 settings.ShadowSamples == expected.ShadowSamples && settings.AmbientOcclusionEnabled == expected.AmbientOcclusionEnabled &&
                 settings.AoSamples == expected.AoSamples && settings.BloomEnabled == expected.BloomEnabled &&
-                settings.PathDenoising == expected.PathDenoising && settings.DirectLightingMIS == expected.DirectLightingMIS &&
+                settings.PathDenoising == expected.PathDenoising && settings.SunDirectLighting == expected.SunDirectLighting &&
                 settings.RenderLod.Enabled == expected.RenderLod.Enabled && settings.RenderLod.LevelCount == expected.RenderLod.LevelCount &&
                 settings.RenderLod.Distances.SequenceEqual(expected.RenderLod.Distances)) return quality;
         }
@@ -57,7 +57,7 @@ public static class RenderQualityPresets
         settings.AoSamples = quality switch { RenderQualityPreset.Low => 4, RenderQualityPreset.Medium => 4, RenderQualityPreset.High => 8, _ => 16 };
         settings.BloomEnabled = true;
         settings.PathDenoising = quality is RenderQualityPreset.High or RenderQualityPreset.Ultra;
-        settings.DirectLightingMIS = true;
+        settings.SunDirectLighting = true;
         settings.RenderLod = new VoxelLodSettings { Enabled = false };
         settings.ClampAll();
     }

@@ -310,9 +310,9 @@ public sealed class RenderSettings
     public float PathSpecularF0 = 0.04F;
 
     /// <summary>
-    /// 路径追踪中的太阳直接光采样开关；字段名保留以兼容已有设置。
+    /// 路径追踪中的太阳直接光采样开关。
     /// </summary>
-    public bool DirectLightingMIS = true;
+    public bool SunDirectLighting = true;
 
     /// <summary>
     /// 自发光体素是否参与照明
@@ -406,7 +406,7 @@ public sealed class RenderSettings
         preview.ShadowSamples = 1;
         preview.ShadowSoftness = 0F;
         preview.AmbientOcclusionEnabled = false;
-        preview.DirectLightingMIS = false;
+        preview.SunDirectLighting = false;
         preview.BloomEnabled = false;
         preview.SceneLod = SceneLod.Clone();
         preview.RenderLod = RenderLod.Clone();

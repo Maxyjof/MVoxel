@@ -307,7 +307,7 @@ public sealed class VoxelRenderParameters
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;
         parameters[DepthOfField] = settings.DepthOfField ? 1F : 0F;
-        parameters[MisEnabled] = settings.DirectLightingMIS ? 1F : 0F;
+        parameters[MisEnabled] = settings.SunDirectLighting ? 1F : 0F;
         parameters[ModePath] = frame.PathMode ? 1F : 0F;
         parameters[FovDegrees] = settings.CameraFovDegrees;
         parameters[GridStep] = frame.GridStep;
