@@ -2255,6 +2255,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
+            // 两个调用方的直接光响应都包含 max(N·L, 0)，零贡献无需投射阴影射线。
+            if (dot(hitNormal, lightDirection) <= 0.0 || attenuation <= 0.0 ||
+                light.colorIntensity.w <= 0.0 ||
+                all(lessThanEqual(light.colorIntensity.rgb, vec3(0.0)))) return false;
+
             if (light.rangeSpot.w > 0.5 && shadowDistance > 0.0)
             {
                 // 沿法线离开表面半个体素，避免阴影射线从实体内部出发命中自身
