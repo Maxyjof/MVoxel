@@ -2678,7 +2678,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     {
                         vec3 reflected = reflect(rayDirection, hitNormal);
                         float cosView = max(dot(reflected, hitNormal), 0.0);
-                        float fresnel = clamp(0.04 + 0.96 * pow(1.0 - cosView, 5.0), 0.0, 1.0);
+                        // 界面 F0 由材质折射率决定：F0 = ((n-1)/(n+1))^2。
+                        // 未设置折射率时用 1.5，与原先写死的 0.04 完全等价，旧场景画面不变。
+                        float interfaceIor = material.optics.x > 1.0 ? material.optics.x : 1.5;
+                        float interfaceF0 = pow((interfaceIor - 1.0) / (interfaceIor + 1.0), 2.0);
+                        if (material.optics.y >= 0.0) interfaceF0 = clamp(interfaceF0 * material.optics.y, 0.0, 1.0);
+                        float fresnel = clamp(interfaceF0 + (1.0 - interfaceF0) * pow(1.0 - cosView, 5.0), 0.0, 1.0);
                         radiance += throughput * Sky(reflected) * fresnel;
                         if (values[33] > 0.5)
                         {

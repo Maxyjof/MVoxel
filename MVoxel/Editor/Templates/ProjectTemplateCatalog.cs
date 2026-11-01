@@ -242,6 +242,8 @@ public static class ProjectTemplateCatalog
             worldOrigins[index] = GetWorldOrigin(world);
         }
 
+        WriteVoxMaterials(project, document, safeName, modelName);
+
         report?.Invoke("正在生成主场景…", .90F, true);
         var layerIndexById = new Dictionary<int, int>();
         for (var index = 0; index < document.Layers.Count; index++) layerIndexById[document.Layers[index].Id] = index;
@@ -272,13 +274,53 @@ public static class ProjectTemplateCatalog
         return (int)Math.Min(totalVoxels, int.MaxValue);
     }
 
+    /// <summary>
+    /// 把 .vox 的 MATL 写成项目的 .material 资产：材质 id 就是调色板索引，
+    /// 体素的 MaterialSlot 早已指向同一个索引，导入后立刻能在材质面板里看到。
+    /// </summary>
+    private static void WriteVoxMaterials(ProjectHandle project, VoxDocument document,
+        string safeName, string modelName)
+    {
+        if (document.Materials.Count == 0) return;
+        var directory = Path.Combine(project.AssetsPath, "Materials");
+        Directory.CreateDirectory(directory);
+        foreach (var source in document.Materials)
+        {
+            var slot = Math.Clamp(source.Id, 0, MaterialAsset.TableSlots - 1);
+            var asset = new MaterialAsset { Name = $"{modelName} 材质 {slot}", Slot = slot };
+            if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
+            if (source.Specular >= 0F) asset.Specular = Math.Clamp(source.Specular, 0F, 1F);
+            if (source.Ior > 0F) asset.Ior = Math.Clamp(source.Ior, 1F, 2.5F);
+            if (source.Absorption >= 0F) asset.AbsorptionStep = Math.Clamp(source.Absorption, 0F, 8F);
+            switch (source.Type.ToLowerInvariant())
+            {
+                case "_metal":
+                    asset.Metallic = 1F;
+                    break;
+                case "_glass":
+                    asset.Metallic = 0F;
+                    asset.Ior ??= 1.5F;
+                    break;
+                case "_emit":
+                    asset.EmissiveScale = source.Flux > 0F ? Math.Clamp(source.Flux, 0F, 32F) : 1F;
+                    break;
+                case "_diffuse":
+                    asset.Metallic = 0F;
+                    break;
+            }
+
+            asset.Save(Path.Combine(directory, $"{safeName}_材质{slot:000}.material"));
+        }
+    }
+
     /// <summary>把 .vox 里的一个模型转成原生体素世界：MagicaVoxel 的 Z 轴映射到 MVoxel 的 Y 轴</summary>
     private static VoxelWorld BuildModelWorld(VoxModel model)
     {
         var world = new VoxelWorld();
         foreach (var voxel in model.Voxels)
             world.Set(new VoxelCoord64(voxel.X, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
-                Flags: voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
+                (ushort)Math.Clamp(voxel.PaletteIndex, 0, MaterialAsset.TableSlots - 1),
+                voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
         return world;
     }
 

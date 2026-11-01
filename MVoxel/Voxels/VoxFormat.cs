@@ -51,7 +51,18 @@ public static class VoxFormat
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="parts">场景段列表</param>
-    public static void WriteScene(string path, IReadOnlyList<VoxScenePart> parts)
+    public static void WriteScene(string path, IReadOnlyList<VoxScenePart> parts) =>
+        WriteScene(path, parts, materials: null);
+
+    /// <summary>
+    /// 把多个世界导出成一个 .vox，并把材质写成 MATL。
+    /// 材质按调色板索引绑定：这里先算出每个颜色主要使用的材质槽，再按导出后的新索引写回。
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <param name="parts">场景段列表</param>
+    /// <param name="materials">材质列表，Id 为材质槽号；为空时不写 MATL</param>
+    public static void WriteScene(string path, IReadOnlyList<VoxScenePart> parts,
+        IReadOnlyList<VoxMaterial>? materials)
     {
         ArgumentNullException.ThrowIfNull(parts);
         var chunks = new List<Chunk>();
@@ -89,6 +100,7 @@ public static class VoxFormat
             }
 
             for (var index = palette.Colors.Count; index < 256; index++) writer.Write(0U);
+            WriteMaterials(writer, palette, chunks, materials);
             WriteSceneGraph(writer, chunks);
             writer.Flush();
         }
@@ -188,7 +200,7 @@ public static class VoxFormat
             var key = (cell.X / MaximumAxisExtent, cell.Y / MaximumAxisExtent, cell.Z / MaximumAxisExtent);
             if (!buckets.TryGetValue(key, out var bucket)) buckets[key] = bucket = [];
             bucket.Add(new ChunkVoxel((byte)(cell.X % MaximumAxisExtent), (byte)(cell.Z % MaximumAxisExtent),
-                (byte)(cell.Y % MaximumAxisExtent), value.Color));
+                (byte)(cell.Y % MaximumAxisExtent), value.Color, value.MaterialSlot));
         }
 
         foreach (var (key, voxels) in buckets.OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y)
@@ -240,6 +252,56 @@ public static class VoxFormat
         var dr = a.R - b.R; var dg = a.G - b.G; var db = a.B - b.B; var da = a.A - b.A;
         return dr * dr + dg * dg + db * db + da * da;
     }
+
+    /// <summary>
+    /// 写出 MATL：材质按调色板索引绑定，所以先按“颜色 → 主材质槽”投票，
+    /// 再为该调色板索引写一份材质。没有材质的颜色不写，MagicaVoxel 侧按默认材质处理。
+    /// </summary>
+    private static void WriteMaterials(BinaryWriter writer, PaletteResult palette,
+        List<Chunk> chunks, IReadOnlyList<VoxMaterial>? materials)
+    {
+        if (materials is not { Count: > 0 }) return;
+        var bySlot = new Dictionary<int, VoxMaterial>();
+        foreach (var material in materials) bySlot.TryAdd(material.Id, material);
+        var votes = new Dictionary<Rgba32, Dictionary<ushort, int>>();
+        foreach (var chunk in chunks)
+        foreach (var voxel in chunk.Voxels)
+        {
+            if (!votes.TryGetValue(voxel.Color, out var perSlot)) votes[voxel.Color] = perSlot = [];
+            perSlot[voxel.MaterialSlot] = perSlot.GetValueOrDefault(voxel.MaterialSlot) + 1;
+        }
+
+        for (var index = 0; index < palette.Colors.Count; index++)
+        {
+            var color = palette.Colors[index];
+            if (!votes.TryGetValue(color, out var perSlot) || perSlot.Count == 0) continue;
+            var slot = perSlot.OrderByDescending(item => item.Value).First().Key;
+            if (!bySlot.TryGetValue(slot, out var material)) continue;
+            var payload = new MemoryStream();
+            using (var node = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
+            {
+                node.Write(index + 1);
+                // 未覆盖的字段（-1）不写：MagicaVoxel 见到缺失键会走默认值，写 -1 反而被当成有效数值
+                var properties = new List<(string Key, string Value)>
+                {
+                    ("_type", string.IsNullOrWhiteSpace(material.Type) ? "_diffuse" : material.Type),
+                    ("_weight", FloatText(material.Weight)),
+                };
+                if (material.Roughness >= 0F) properties.Add(("_rough", FloatText(material.Roughness)));
+                if (material.Specular >= 0F) properties.Add(("_spec", FloatText(material.Specular)));
+                if (material.Ior > 0F) properties.Add(("_ior", FloatText(material.Ior)));
+                if (material.Absorption >= 0F) properties.Add(("_att", FloatText(material.Absorption)));
+                if (material.Flux >= 0F) properties.Add(("_flux", FloatText(material.Flux)));
+                WriteDictionary(node, [.. properties]);
+            }
+
+            WriteChunk(writer, "MATL", payload.ToArray());
+        }
+    }
+
+    /// <summary>MagicaVoxel 把数值写在 STRING 里，统一用不受区域设置影响的小数格式</summary>
+    private static string FloatText(float value) =>
+        value.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>写出场景图：根变换 → 组 → 每个模型一个变换 + 形状节点</summary>
     private static void WriteSceneGraph(BinaryWriter writer, List<Chunk> chunks)
@@ -367,7 +429,7 @@ public static class VoxFormat
         return palette;
     }
 
-    private readonly record struct ChunkVoxel(byte X, byte Y, byte Z, Rgba32 Color);
+    private readonly record struct ChunkVoxel(byte X, byte Y, byte Z, Rgba32 Color, ushort MaterialSlot);
 
     private sealed record Chunk(int SizeX, int SizeY, int SizeZ, List<ChunkVoxel> Voxels, VoxelCoord64 Origin);
 

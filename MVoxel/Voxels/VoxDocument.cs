@@ -28,7 +28,12 @@ public sealed class VoxModel
 }
 
 /// <summary>模型内的一个体素，坐标沿用 MagicaVoxel 的 x/y/z 轴向</summary>
-public readonly record struct VoxModelVoxel(byte X, byte Y, byte Z, Rgba32 Color);
+/// <param name="X">网格 X</param>
+/// <param name="Y">网格 Y</param>
+/// <param name="Z">网格 Z（重力方向）</param>
+/// <param name="Color">调色板解析出的颜色</param>
+/// <param name="PaletteIndex">调色板索引，同时是 MATL 材质的绑定键</param>
+public readonly record struct VoxModelVoxel(byte X, byte Y, byte Z, Rgba32 Color, int PaletteIndex);
 
 /// <summary>场景图展开后的一个模型实例：把某块网格按平移和旋转摆到世界里</summary>
 public readonly record struct VoxInstance(
@@ -37,15 +42,28 @@ public readonly record struct VoxInstance(
 /// <summary>MagicaVoxel 图层：只用于分组与显隐，不承载体素数据</summary>
 public readonly record struct VoxLayer(int Id, string Name, bool Hidden);
 
+/// <summary>MagicaVoxel 材质：按调色板索引绑定，未写的字段保持 -1 表示不覆盖</summary>
+/// <param name="Id">调色板索引</param>
+/// <param name="Type">_diffuse / _metal / _glass / _emit</param>
+/// <param name="Weight">混合权重</param>
+/// <param name="Roughness">粗糙度，-1 表示未指定</param>
+/// <param name="Specular">镜面强度，-1 表示未指定</param>
+/// <param name="Ior">折射率，-1 表示未指定</param>
+/// <param name="Absorption">吸收系数，-1 表示未指定</param>
+/// <param name="Flux">发光强度，-1 表示未指定</param>
+public readonly record struct VoxMaterial(int Id, string Type, float Weight, float Roughness,
+    float Specular, float Ior, float Absorption, float Flux);
+
 /// <summary>解析后的 MagicaVoxel 文件：模型、实例、图层三层结构</summary>
 public sealed class VoxDocument
 {
     internal VoxDocument(IReadOnlyList<VoxModel> models, IReadOnlyList<VoxInstance> instances,
-        IReadOnlyList<VoxLayer> layers, bool hasSceneGraph)
+        IReadOnlyList<VoxLayer> layers, IReadOnlyList<VoxMaterial> materials, bool hasSceneGraph)
     {
         Models = models;
         Instances = instances;
         Layers = layers;
+        Materials = materials;
         HasSceneGraph = hasSceneGraph;
     }
 
@@ -57,6 +75,9 @@ public sealed class VoxDocument
 
     /// <summary>文件声明的图层；没有 LAYR 时为空</summary>
     public IReadOnlyList<VoxLayer> Layers { get; }
+
+    /// <summary>文件声明的材质；没有 MATL 时为空</summary>
+    public IReadOnlyList<VoxMaterial> Materials { get; }
 
     /// <summary>文件是否带 MagicaVoxel 场景图</summary>
     public bool HasSceneGraph { get; }
@@ -82,6 +103,7 @@ internal static class VoxDocumentReader
         var groups = new Dictionary<int, GroupNode>();
         var shapes = new Dictionary<int, ShapeNode>();
         var layers = new Dictionary<int, VoxLayer>();
+        var materials = new List<VoxMaterial>();
         var size = (X: 0, Y: 0, Z: 0);
         var pendingSize = false;
 
@@ -123,11 +145,23 @@ internal static class VoxDocumentReader
                         {
                             var x = reader.ReadByte(); var y = reader.ReadByte(); var z = reader.ReadByte();
                             if (x >= size.X || y >= size.Y || z >= size.Z) throw new InvalidDataException("VOX 坐标超出 SIZE。");
-                            var color = id == "XYZA"
-                                ? new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte())
-                                : palette[reader.ReadByte()];
+                            Rgba32 color;
+                            int paletteIndex;
+                            if (id == "XYZA")
+                            {
+                                color = new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(),
+                                    reader.ReadByte());
+                                paletteIndex = 0;
+                            }
+                            else
+                            {
+                                paletteIndex = reader.ReadByte();
+                                color = palette[paletteIndex];
+                            }
+
+                            // 透明体素不进入世界，但仍要消费掉它的字节
                             if (color.A == 0) continue;
-                            voxels.Add(new VoxModelVoxel(x, y, z, color));
+                            voxels.Add(new VoxModelVoxel(x, y, z, color, paletteIndex));
                         }
                         models.Add(new VoxModel(size.X, size.Y, size.Z, voxels));
                         pendingSize = false;
@@ -151,6 +185,9 @@ internal static class VoxDocumentReader
                             ReadFlag(attributes, "_hidden"));
                         break;
                     }
+                    case "MATL":
+                        ReadMaterial(reader, contentStart + contentSize, materials);
+                        break;
                     case "nTRN":
                         ReadTransition(reader, contentStart + contentSize, transitions);
                         break;
@@ -174,7 +211,7 @@ internal static class VoxDocumentReader
             : BuildLooseInstances(models);
         if (instances.Count == 0) throw new InvalidDataException("VOX 文件场景图没有引用任何模型。");
         return new VoxDocument(models, instances, [.. layers.Values.OrderBy(layer => layer.Id)],
-            hasSceneGraph && transitions.Count > 0);
+            [.. materials.OrderBy(material => material.Id)], hasSceneGraph && transitions.Count > 0);
     }
 
     /// <summary>没有场景图的旧文件：每个模型一个实例，按包围盒沿 X 依次排开避免重叠</summary>
@@ -259,6 +296,34 @@ internal static class VoxDocumentReader
             a[row, 1] * b[1, column] + a[row, 2] * b[2, column]);
         return new OrthogonalRotation(Element(0, 0), Element(0, 1), Element(0, 2),
             Element(1, 0), Element(1, 1), Element(1, 2), Element(2, 0), Element(2, 1), Element(2, 2));
+    }
+
+    /// <summary>
+    /// 读取 MATL：材质按调色板索引绑定。数值写在 STRING 里是 ASCII 文本，
+    /// 也有实现写 4 字节 float，两种都要认。
+    /// </summary>
+    private static void ReadMaterial(BinaryReader reader, long contentEnd, List<VoxMaterial> materials)
+    {
+        var id = reader.ReadInt32();
+        var properties = ReadDictionary(reader, contentEnd);
+        var type = ReadText(properties, "_type") ?? "_diffuse";
+        materials.Add(new VoxMaterial(id, type,
+            ReadNumber(properties, "_weight", 1F),
+            ReadNumber(properties, "_rough", -1F),
+            ReadNumber(properties, "_spec", -1F),
+            ReadNumber(properties, "_ior", -1F),
+            ReadNumber(properties, "_att", -1F),
+            ReadNumber(properties, "_flux", -1F)));
+    }
+
+    /// <summary>字典里的数值既可能是 ASCII 文本，也可能是打包的 4 字节 float</summary>
+    private static float ReadNumber(Dictionary<string, byte[]> attributes, string key, float fallback)
+    {
+        if (!attributes.TryGetValue(key, out var raw) || raw.Length == 0) return fallback;
+        var text = Encoding.UTF8.GetString(raw).Trim();
+        if (float.TryParse(text, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed)) return parsed;
+        return raw.Length == 4 ? BitConverter.ToSingle(raw, 0) : fallback;
     }
 
     private static void ReadTransition(BinaryReader reader, long contentEnd,

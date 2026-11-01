@@ -194,9 +194,15 @@ internal static class Program
                 }
 
                 if (parts.Count == 0) throw new InvalidOperationException("场景里没有可导出的体素模型对象");
-                VoxFormat.WriteScene(args[2], parts);
+                var materials = MaterialAsset.LoadFromProject(project)
+                    .Select(asset => new VoxMaterial(asset.Slot, MaterialType(asset), 1F,
+                        asset.Roughness ?? -1F, asset.Specular ?? -1F, asset.Ior ?? -1F,
+                        asset.AbsorptionStep ?? -1F, asset.EmissiveScale ?? -1F))
+                    .ToList();
+                VoxFormat.WriteScene(args[2], parts, materials);
                 Console.WriteLine($"已导出场景 .vox：{args[2]}");
-                Console.WriteLine($"对象 {parts.Count} 个，体素 {parts.Sum(part => part.World.OccupiedVoxelCount):N0}" +
+                Console.WriteLine($"对象 {parts.Count} 个，体素 {parts.Sum(part => part.World.OccupiedVoxelCount):N0}，" +
+                                  $"材质 {materials.Count} 个" +
                                   (skipped > 0 ? $"，跳过 {skipped} 个非网格变换对象" : ""));
                 return 0;
             }
@@ -446,6 +452,15 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>把材质资产的可覆盖字段还原成 MagicaVoxel 的材质类型</summary>
+    private static string MaterialType(MaterialAsset asset)
+    {
+        if (asset.EmissiveScale is > 0F) return "_emit";
+        if (asset.Metallic is >= 1F) return "_metal";
+        if (asset.Ior is > 1F) return "_glass";
+        return "_diffuse";
     }
 
     /// <summary>
