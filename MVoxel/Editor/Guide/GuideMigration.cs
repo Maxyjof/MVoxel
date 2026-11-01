@@ -40,7 +40,7 @@ internal static class GuideMigration
         new("给方块换表面质感", "选材质槽，或点“编辑共享材质”", "共享材质改动会影响所有引用它的方块"),
         new("管理颜色集合", "设置 → 项目设置 → 调色板", "可以创建多套调色板并切换"),
         new("出图", "切到渲染页，选相机，导出 PNG/HDR", "批量出图在渲染工具栏的导出菜单里"),
-        new("保存作品", "Ctrl+S 保存项目", "自动保存只是恢复快照"),
+        new("保存作品", "Ctrl+S 保存项目", "自动保存默认写入恢复快照"),
     ];
 
     internal static readonly string[] Steps =

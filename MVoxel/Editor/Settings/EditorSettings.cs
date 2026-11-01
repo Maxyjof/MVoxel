@@ -31,6 +31,13 @@ public sealed class ShortcutScheme
     }
 }
 
+/// <summary>自动保存写入恢复区或正式项目。</summary>
+public enum AutoSaveMode
+{
+    RecoverySnapshot,
+    Project,
+}
+
 /// <summary>
 /// 用户目录中的编辑器设置，只保存个人偏好，不把用户布局写入项目
 /// </summary>
@@ -68,6 +75,7 @@ public sealed class EditorSettingsDocument
     public int ExportParallelism = 1;
     public bool AutoSave = true;
     public int AutoSaveSeconds = 600;
+    public AutoSaveMode AutoSaveMode = AutoSaveMode.RecoverySnapshot;
 
     public static EditorSettingsDocument CreateDefault()
     {
@@ -94,6 +102,7 @@ public sealed class EditorSettingsDocument
 
         ExportParallelism = Math.Clamp(ExportParallelism, 1, 4);
         AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
+        if (!Enum.IsDefined(AutoSaveMode)) AutoSaveMode = AutoSaveMode.RecoverySnapshot;
         ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
             ? DefaultProjectRootPath
             : ProjectRootPath.Trim().Trim('"');
