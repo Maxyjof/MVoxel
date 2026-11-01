@@ -12,7 +12,10 @@ public sealed class VoxModel
         SizeY = sizeY;
         SizeZ = sizeZ;
         Voxels = voxels;
+        _voxels = voxels;
     }
+
+    private readonly List<VoxModelVoxel> _voxels;
 
     /// <summary>网格 X 尺寸</summary>
     public int SizeX { get; }
@@ -25,6 +28,27 @@ public sealed class VoxModel
 
     /// <summary>该网格的全部非空体素，坐标是网格局部坐标</summary>
     public IReadOnlyList<VoxModelVoxel> Voxels { get; }
+
+    /// <summary>
+    /// 用文件里最终的色板重算颜色并丢掉全透明体素。MagicaVoxel 允许 RGBA 块写在
+    /// XYZI 之后，解析体素时色板可能仍是默认值，必须在整份文件读完后再统一校正，
+    /// 否则颜色和透明度都会跟原文件不一致。
+    /// </summary>
+    /// <param name="palette">文件最终的 256 色色板，索引 0 为保留位</param>
+    internal void ApplyPalette(Rgba32[] palette)
+    {
+        var kept = 0;
+        for (var index = 0; index < _voxels.Count; index++)
+        {
+            var voxel = _voxels[index];
+            // XYZA 体素自带颜色，PaletteIndex 为 0，不参与色板解析
+            if (voxel.PaletteIndex > 0) voxel = voxel with { Color = palette[voxel.PaletteIndex] };
+            if (voxel.Color.A == 0) continue;
+            _voxels[kept++] = voxel;
+        }
+
+        if (kept < _voxels.Count) _voxels.RemoveRange(kept, _voxels.Count - kept);
+    }
 }
 
 /// <summary>模型内的一个体素，坐标沿用 MagicaVoxel 的 x/y/z 轴向</summary>
@@ -159,8 +183,7 @@ internal static class VoxDocumentReader
                                 color = palette[paletteIndex];
                             }
 
-                            // 透明体素不进入世界，但仍要消费掉它的字节
-                            if (color.A == 0) continue;
+                            // 颜色此时可能还是默认色板，透明度与 RGB 统一在整份文件读完后校正
                             voxels.Add(new VoxModelVoxel(x, y, z, color, paletteIndex));
                         }
                         models.Add(new VoxModel(size.X, size.Y, size.Z, voxels));
@@ -205,6 +228,8 @@ internal static class VoxDocumentReader
 
         Chunks(8, bytes.Length, 0);
         if (models.Count == 0) throw new InvalidDataException("VOX 文件没有模型数据。");
+        // RGBA 块可能写在 XYZI 之后，体素的颜色与透明度要等整份文件读完、色板确定后再校正
+        foreach (var model in models) model.ApplyPalette(palette);
         var hasSceneGraph = transitions.Count > 0 || shapes.Count > 0;
         var instances = hasSceneGraph
             ? BuildInstances(transitions, groups, shapes, layers, models.Count)

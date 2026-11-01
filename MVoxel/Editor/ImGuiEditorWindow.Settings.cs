@@ -548,6 +548,24 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndTabItem();
             }
 
+            if (BeginSettingsSubTab("自动保存", "editor.general.autosave"))
+            {
+                var changed = ImGui.Checkbox("启用自动保存", ref _editorSettings.AutoSave);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，定期写入恢复快照，不替代手动保存项目。");
+                ImGui.BeginDisabled(!_editorSettings.AutoSave);
+                SetSettingsSliderWidth("间隔（秒）");
+                changed |= ImGui.SliderInt("间隔（秒）", ref _editorSettings.AutoSaveSeconds, 10, 3600);
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("默认 600 秒（10 分钟）；修改设置后从当前时间重新计时。");
+                ImGui.EndDisabled();
+                if (changed)
+                {
+                    _editorSettings.Normalize();
+                    _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
+                }
+                ImGui.EndTabItem();
+            }
+
             if (BeginSettingsSubTab("撤回", "editor.general.undo"))
             {
                 var changed = false;
@@ -985,7 +1003,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectGeneralSettings()
     {
-        DrawSettingsPageHeader("项目", "项目身份、默认画面预设与自动保存");
+        DrawSettingsPageHeader("项目", "项目身份与默认画面预设");
         if (ImGui.BeginTabBar("##ProjectGeneralTabs"))
         {
             if (BeginSettingsSubTab("基本信息", "project.general.info"))
@@ -1017,15 +1035,6 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("列表来自 Assets/RenderPresets；选择后会立即应用到当前项目并保存");
-                ImGui.EndTabItem();
-            }
-
-            if (BeginSettingsSubTab("自动保存", "project.general.autosave"))
-            {
-                ImGui.Checkbox("启用自动保存", ref _projectSettings.AutoSave);
-                SetSettingsSliderWidth("间隔（秒）");
-                ImGui.SliderInt("间隔（秒）", ref _projectSettings.AutoSaveSeconds, 10, 3600);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按此间隔自动保存");
                 ImGui.EndTabItem();
             }
 

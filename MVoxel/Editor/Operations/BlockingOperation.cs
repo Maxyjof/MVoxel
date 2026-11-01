@@ -209,7 +209,11 @@ internal sealed class BlockingOperationRunner : IDisposable
         {
             cancellation.ThrowIfCancellationRequested();
             var value = work(cancellation, report);
-            cancellation.ThrowIfCancellationRequested();
+            if (cancellation.IsCancellationRequested)
+            {
+                (value as IDisposable)?.Dispose();
+                cancellation.ThrowIfCancellationRequested();
+            }
             return new OperationResult(value, null, Cancelled: false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)

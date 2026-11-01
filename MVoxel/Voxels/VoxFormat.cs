@@ -171,8 +171,10 @@ public static class VoxFormat
                 // MagicaVoxel 的 Z 是重力方向，映射到 MVoxel 的 Y 轴向上
                 var local = new VoxelCoord64(voxel.X, voxel.Z, voxel.Y);
                 var coordinate = origin + instance.Offset + instance.Rotation.Apply(local);
+                // 调色板索引同时是材质槽：导入后材质面板与着色器都按它取参数
                 world.Set(coordinate, new VoxelValue(voxel.Color,
-                    Flags: voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
+                    (ushort)Math.Clamp(voxel.PaletteIndex, 0, Project.MaterialAsset.TableSlots - 1),
+                    voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
             }
         }
 

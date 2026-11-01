@@ -189,120 +189,73 @@ internal sealed partial class ImGuiEditorWindow
 
     private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels Models);
 
-    internal sealed record PreloadedModels(IReadOnlyDictionary<ModelLoadKey, VoxelWorld> Worlds,
-        IReadOnlyDictionary<StableId, HashSet<VoxelCoord64>> LayerOwnership, int MergedLayers,
-        bool MergeCompleted, bool HasOverlappingVoxels = false,
-        IReadOnlyList<(StableId ObjectId, ModelLoadKey Key)>? ObjectModels = null,
-        bool ReferencedModelLoadFailed = false);
-
-    /// <summary>在项目操作线程预读场景实际引用的模型，避免完成回调在 UI 线程逐格解码。</summary>
-    internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
-        CancellationToken cancellation, Action<BlockingOperationProgress> report)
+    private sealed record PreparedOpenProject(ProjectHandle Project, PreloadedModels Models,
+        PreloadedModels? Recovery, RecoverySnapshot? Snapshot, IReadOnlyList<MaterialAsset>? Materials,
+        float[]? MaterialTable, PluginScriptRuntime Runtime) : IDisposable
     {
-        var scenePath = Path.Combine(project.AssetsPath, FindStartupSceneRelativePath(project).Replace('/', Path.DirectorySeparatorChar));
-        Scene.SceneDocument? scene = null;
-        if (File.Exists(scenePath))
+        public void Dispose() => Runtime.Dispose();
+    }
+
+    internal sealed record PreloadedModels(string ScenePath, Scene.SceneDocument? Scene,
+        Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed);
+
+    internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
+        CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null)
+    {
+        var relative = FindStartupSceneRelativePath(project);
+        var path = Path.Combine(project.AssetsPath, relative.Replace('/', Path.DirectorySeparatorChar));
+        Scene.SceneDocument? scene = overrideScene;
+        if (scene is null && File.Exists(path))
         {
-            try { scene = Scene.SceneSerializer.Load(scenePath); }
+            try { scene = Scene.SceneSerializer.Load(path); }
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException) { }
         }
-
-        var objectModels = GetObjectModelLoadKeys(project, scene);
-        var keys = objectModels.Select(item => item.Key).ToList();
-
-        if (keys.Count == 0)
+        var worlds = new Dictionary<StableId, VoxelWorld>();
+        var cache = new Dictionary<ModelLoadKey, VoxelWorld>();
+        var failed = false;
+        if (scene is not null)
         {
-            var worldsPath = Path.Combine(project.AssetsPath, "Worlds");
-            var firstLargeWorld = scene is null || !HasModelReference(scene)
-                ? Directory.Exists(worldsPath)
-                    ? Directory.EnumerateFiles(worldsPath, "*.mvworld")
-                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-                    : null
-                : null;
-            var fallback = firstLargeWorld ?? Path.Combine(worldsPath, "主世界.mvmodel");
-            if (File.Exists(fallback)) keys.Add(new ModelLoadKey(fallback, VoxelCoord64.Zero));
-        }
-
-        keys = keys.Distinct().ToList();
-        var loaded = new Dictionary<ModelLoadKey, VoxelWorld>();
-        var totalBytes = keys.Sum(key => new FileInfo(key.Path).Length);
-        long completedBytes = 0;
-        foreach (var key in keys)
-        {
-            cancellation.ThrowIfCancellationRequested();
-            var length = new FileInfo(key.Path).Length;
-            try
+            var keys = GetObjectModelLoadKeys(project, scene).ToDictionary(item => item.ObjectId, item => item.Key);
+            var objects = scene.Objects.Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel)).ToList();
+            for (var i = 0; i < objects.Count; i++)
             {
-                loaded.Add(key, LargeWorldFormat.Read(key.Path, key.Origin, cancellation,
-                    (completed, total) => report(new BlockingOperationProgress(
-                        $"正在读取 {Path.GetFileName(key.Path)}（{completed:N0}/{total:N0} 体素）…",
-                        (float)(.22D + .72D * (completedBytes + length * (double)completed / Math.Max(1, total)) /
-                        Math.Max(1, totalBytes)), CanCancel: true))));
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-            {
-                // 保留原有的主世界回退与分层跳过逻辑，由 UI 应用阶段处理失败资产。
-            }
-            completedBytes += length;
-        }
-
-        var referencedCount = scene?.Objects.SelectMany(item => item.Components)
-            .Where(SceneComponentTypes.IsVoxelModel)
-            .Count(component => !string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(component).Model)) ?? 0;
-        var referencedModelLoadFailed = referencedCount != objectModels.Count || loaded.Count != keys.Count;
-        var ownership = new Dictionary<StableId, HashSet<VoxelCoord64>>();
-        var firstModel = scene?.Objects.FirstOrDefault(item => item.Components.Any(SceneComponentTypes.IsVoxelModel));
-        var firstComponent = firstModel?.Components.First(SceneComponentTypes.IsVoxelModel);
-        if (firstComponent is not null && string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(firstComponent).Model))
-            return new PreloadedModels(loaded, ownership, 0, MergeCompleted: false, ObjectModels: objectModels, ReferencedModelLoadFailed: referencedModelLoadFailed);
-        var primaryPath = FindPrimaryModelPath(project, scene);
-        if (primaryPath is null && firstModel is null && keys.Count > 0) primaryPath = keys[0].Path;
-        var primaryObject = primaryPath is null ? null : FindReferencedModelObject(project, scene, primaryPath);
-        var primaryKey = primaryPath is null ? default : new ModelLoadKey(primaryPath, GetSceneModelOrigin(primaryObject));
-        if (scene is null || primaryPath is null || !loaded.TryGetValue(primaryKey, out var primaryWorld))
-            return new PreloadedModels(loaded, ownership, 0, MergeCompleted: false, ObjectModels: objectModels, ReferencedModelLoadFailed: referencedModelLoadFailed);
-
-        var merged = 0;
-        var hasOverlappingVoxels = false;
-        var mergeTotal = loaded.Where(entry => !string.Equals(entry.Key.Path, primaryPath,
-            StringComparison.OrdinalIgnoreCase)).Sum(entry => (long)entry.Value.OccupiedVoxelCount);
-        long mergedCells = 0;
-        var mergedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var sceneObject in scene.Objects)
-        foreach (var component in sceneObject.Components.Where(SceneComponentTypes.IsVoxelModel))
-        {
-            cancellation.ThrowIfCancellationRequested();
-            var model = SceneComponentTypes.ReadVoxelModel(component).Model;
-            if (string.IsNullOrWhiteSpace(model)) continue;
-            var absolute = Path.GetFullPath(Path.Combine(project.RootPath,
-                model.Replace('/', Path.DirectorySeparatorChar)));
-            if (string.Equals(absolute, primaryPath, StringComparison.OrdinalIgnoreCase) ||
-                !File.Exists(absolute) || !mergedPaths.Add(absolute)) continue;
-            if (!loaded.TryGetValue(new ModelLoadKey(absolute, GetSceneModelOrigin(sceneObject)), out var layerWorld))
-                continue;
-
-            var owned = new HashSet<VoxelCoord64>();
-            var copied = 0;
-            foreach (var item in layerWorld.EnumerateOccupied())
-            {
-                if (primaryWorld.TryGet(item.Coordinate, out _)) hasOverlappingVoxels = true;
-                primaryWorld.Set(item.Coordinate, item.Value);
-                owned.Add(item.Coordinate);
-                copied++;
-                mergedCells++;
-                if (copied % 65536 != 0) continue;
                 cancellation.ThrowIfCancellationRequested();
-                report(new BlockingOperationProgress($"正在合并分层对象：{sceneObject.Name}…",
-                    .94F + .02F * mergedCells / Math.Max(1, mergeTotal), CanCancel: true));
+                var item = objects[i];
+                report(new BlockingOperationProgress($"正在读取对象体素：{item.Name}（{i + 1}/{objects.Count}）…",
+                    .22F + .60F * i / Math.Max(1, objects.Count), true));
+                var component = item.Components.First(SceneComponentTypes.IsVoxelModel);
+                try
+                {
+                    var data = SceneComponentTypes.ReadVoxelModel(component);
+                    VoxelWorld world;
+                    if (string.IsNullOrWhiteSpace(data.Model))
+                        world = EmbeddedVoxelData.HasData(component) ? EmbeddedVoxelData.Read(component) : new VoxelWorld();
+                    else if (keys.TryGetValue(item.Id, out var key))
+                    {
+                        if (!cache.TryGetValue(key, out var source))
+                            cache[key] = world = LargeWorldFormat.Read(key.Path, key.Origin, cancellation,
+                                (done, total) => report(new BlockingOperationProgress(
+                                    $"正在读取对象体素：{item.Name}（{done:N0}/{total:N0}）…",
+                                    .22F + .60F * (i + (float)done / Math.Max(1, total)) / Math.Max(1, objects.Count), true)));
+                        else world = source.Clone();
+                    }
+                    else throw new InvalidDataException($"模型资产不存在：{data.Model}");
+                    worlds[item.Id] = world;
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+                {
+                    failed = true;
+                    MVoxelLog.Error("对象体素加载失败", exception);
+                }
             }
-            ownership[sceneObject.Id] = owned;
-            merged++;
-            report(new BlockingOperationProgress($"已合并 {merged} 个分层对象…", .95F, CanCancel: true));
         }
-
-        return new PreloadedModels(new Dictionary<ModelLoadKey, VoxelWorld> { [primaryKey] = primaryWorld },
-            ownership, merged, MergeCompleted: true, HasOverlappingVoxels: hasOverlappingVoxels, ObjectModels: objectModels,
-            ReferencedModelLoadFailed: referencedModelLoadFailed);
+        cancellation.ThrowIfCancellationRequested();
+        report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));
+        var store = new ObjectVoxelStore();
+        store.RestoreReferences(worlds);
+        var composed = scene is null ? null : store.Compose(scene, uint.MaxValue, false, cancellation);
+        cancellation.ThrowIfCancellationRequested();
+        return new PreloadedModels(relative, scene, worlds, composed, failed);
     }
 
     private void LoadWorldForProject(ProjectHandle project,
@@ -313,7 +266,12 @@ internal sealed partial class ImGuiEditorWindow
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
         _pinnedVoxelModelId = null;
-        _sceneDocument = LoadSceneDocument(project);
+        _sceneDocument = preload?.Scene ?? LoadSceneDocument(project);
+        if (preload?.Scene is not null)
+        {
+            _sceneValidationErrors = Scene.SceneValidation.Validate(_sceneDocument);
+            foreach (var error in _sceneValidationErrors) MVoxelLog.Warn($"主场景结构校验：{error}");
+        }
         _sceneDocumentDirty = false;
         _renderCameraId = null;
         _renderOrbitAnchor = null;
@@ -334,7 +292,14 @@ internal sealed partial class ImGuiEditorWindow
         _sampledBrushColor = null;
         _paletteIsProjectLevel = true;
         _worldLoadFailed = false;
-        LoadObjectVoxelWorlds(project);
+        if (preload?.Scene is not null && preload.Composed is not null)
+        {
+            _objectVoxels.RestoreReferences(preload.ObjectWorlds);
+            _world = preload.Composed;
+            _worldLoadFailed = preload.LoadFailed;
+            _pickVersion++;
+        }
+        else LoadObjectVoxelWorlds(project);
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _sceneGizmoMode = SceneGizmoMode.Select;
@@ -582,7 +547,6 @@ internal sealed partial class ImGuiEditorWindow
     private readonly Dictionary<StableId, HashSet<VoxelCoord64>> _layerOwnership = new();
 
     /// <summary>体素编辑事务日志，随恢复区目录存放，正式保存或快照后清空</summary>
-    private VoxelEditingJournal? _editingJournal;
 
     /// <summary>按图层遮罩组成的渲染世界缓存</summary>
     private VoxelWorld? _composedRenderWorld;
@@ -843,8 +807,6 @@ internal sealed partial class ImGuiEditorWindow
             UpdateSceneModelReference(primaryAssetPath);
             // 切换世界是新的工作上下文：清空分层所有权，并移除旧世界遗留的分层引用
             _layerOwnership.Clear();
-            _editingJournal = new VoxelEditingJournal(
-                Path.Combine(RecoveryStore.DirectoryFor(_project.RootPath), "journal.jsonl"));
             var removedLayers = _sceneDocument is null
                 ? 0
                 : ConsolidateSecondaryModelObjects(_sceneDocument, primaryAssetPath);
@@ -1464,7 +1426,6 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
         _voxelHistory.Execute(command);
-        _editingJournal?.Append(command.Name, command.Edits);
         SetStatus($"{name} · {target.Name} · {command.ChangedCellCount:N0} 格（可撤销）");
 
         _pipeline?.ResetAccumulation();

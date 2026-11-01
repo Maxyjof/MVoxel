@@ -2751,10 +2751,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     ivec3 probeCell;
                     ivec3 probeExtent;
                     vec3 probeOrigin = vec3(slabEntry.x, values[17] + float(hitCell.y) + float(hitExtent.y) * 0.5, slabEntry.z);
-                    if (TraceClosest(probeOrigin, vec3(0.0, -1.0, 0.0),
+                    // 只有介质在柱底继续向下延伸（下一格仍是半透明）时，才把柱底推到第一个不透明面。
+                    // 否则薄玻璃板会把板下的空气也当成介质，吸收和出射折射都算错，画面上出现横向暗带。
+                    float floorY = values[17] + float(hitCell.y);
+                    float nextDistance;
+                    vec3 nextNormal;
+                    vec4 nextColor;
+                    uint nextFlags;
+                    uint nextSlot;
+                    ivec3 nextCell;
+                    ivec3 nextExtent;
+                    bool columnContinues = TraceClosest(vec3(slabEntry.x, floorY - 0.001, slabEntry.z),
+                        vec3(0.0, -1.0, 0.0), nextDistance, nextNormal, nextColor, nextFlags, nextSlot,
+                        nextCell, nextExtent, false) && nextDistance < 1.5 && (nextFlags & 1u) != 0u;
+                    if (columnContinues && TraceClosest(probeOrigin, vec3(0.0, -1.0, 0.0),
                         probeDistance, probeNormal, probeColor, probeFlags, probeSlot, probeCell, probeExtent, true))
                         bottomPlane = probeOrigin.y - probeDistance;
-                    if (bottomPlane >= slabEntry.y) bottomPlane = values[17] + float(hitCell.y);
+                    if (bottomPlane >= slabEntry.y) bottomPlane = floorY;
                     // 视线方向第一段不透明面（湖底或岸壁）给出水段的另一侧边界
                     float forwardDistance;
                     vec3 forwardNormal;
@@ -2791,20 +2804,31 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     // 着色点锚回精确界面
                     vec3 exitPoint = slabEntry + mediumDirection * chord;
                     pendingInterface = exitPoint;
+                    // 折射计算使用朝向入射介质的法线，必须与介质内光线反向。
+                    // 岸壁优先用它自己的命中法线，否则按上下柱面取。
                     pendingInterfaceNormal = forwardHit && tForward <= tSlabExit
                         ? forwardNormal
-                        : (rayDirection.y < 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0));
+                        : (mediumDirection.y < 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0));
                     hasPendingInterface = true;
-                    // 出射界面再按同一折射率偏折回来；全内反射时沿用介质内方向
+                    // 出射界面按同一折射率折回空气；全内反射时沿介质内方向继续前进
                     if (mediumIor > 1.0)
                     {
-                        vec3 refractedOut = refract(mediumDirection, -pendingInterfaceNormal, mediumIor);
-                        if (dot(refractedOut, refractedOut) > 1e-6) rayDirection = normalize(refractedOut);
-                        else rayDirection = mediumDirection;
+                        vec3 refractedOut = refract(mediumDirection, pendingInterfaceNormal, mediumIor);
+                        if (dot(refractedOut, refractedOut) > 1e-6)
+                        {
+                            rayDirection = normalize(refractedOut);
+                        }
+                        else
+                        {
+                            // 全内反射：把介质内的方向当作新射线，让下一轮继续在体内推进
+                            rayDirection = mediumDirection;
+                        }
                     }
 
-                    rayOrigin = exitPoint + rayDirection * 0.0005;
-                    lastTranslucentCell = hitCell;
+                    rayOrigin = exitPoint + rayDirection * 0.001;
+                    // 已经离开介质：清掉同格守卫，否则浮点误差让下一轮仍落在原格时
+                    // 会被误判为“没有前进”，整块玻璃变成纯黑
+                    lastTranslucentCell = ivec3(-2);
                     continue;
                 }
 

@@ -66,6 +66,8 @@ public sealed class EditorSettingsDocument
     public int UndoRepeatDelayMs = 350;
     public int UndoRepeatIntervalMs = 70;
     public int ExportParallelism = 1;
+    public bool AutoSave = true;
+    public int AutoSaveSeconds = 600;
 
     public static EditorSettingsDocument CreateDefault()
     {
@@ -91,6 +93,7 @@ public sealed class EditorSettingsDocument
         }
 
         ExportParallelism = Math.Clamp(ExportParallelism, 1, 4);
+        AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
         ProjectRootPath = string.IsNullOrWhiteSpace(ProjectRootPath)
             ? DefaultProjectRootPath
             : ProjectRootPath.Trim().Trim('"');
@@ -182,8 +185,6 @@ public sealed class ProjectSettingsDocument
     /// </summary>
     public string ActivePalettePath = EditorPalettes.ProjectPaletteRelativePath;
     public string DefaultRenderPreset = "默认";
-    public bool AutoSave = true;
-    public int AutoSaveSeconds = 120;
     public float SceneMoveSpeed = 12F;
     public float SceneNearClip = 0.05F;
     public float SceneFarClip = 100000F;
@@ -259,7 +260,6 @@ public sealed class ProjectSettingsDocument
     public void Normalize()
     {
         TemplateId = string.IsNullOrWhiteSpace(TemplateId) ? "未指定" : TemplateId.Trim();
-        AutoSaveSeconds = Math.Clamp(AutoSaveSeconds, 10, 3600);
         VoxelUnit = string.IsNullOrWhiteSpace(VoxelUnit) ? "1 格 = 1 体素单位" : VoxelUnit.Trim();
         ActivePalettePath = EditorPalettes.NormalizeProjectPalettePath(ActivePalettePath);
         DefaultRenderPreset = string.IsNullOrWhiteSpace(DefaultRenderPreset) ? "默认" : DefaultRenderPreset.Trim();

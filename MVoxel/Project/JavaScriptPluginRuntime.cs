@@ -60,11 +60,12 @@ public sealed class PluginScriptRuntime : IDisposable
     /// <param name="project">目标项目</param>
     /// <param name="timeout">单个插件启动时间上限</param>
     /// <returns>成功激活的插件</returns>
-    public IReadOnlyList<EditorPluginPackage> Activate(ProjectHandle project, TimeSpan timeout)
+    public IReadOnlyList<EditorPluginPackage> Activate(ProjectHandle project, TimeSpan timeout, CancellationToken cancellation = default)
     {
         ArgumentNullException.ThrowIfNull(project);
         foreach (var pluginId in PluginManager.ListEnabled(project))
         {
+            cancellation.ThrowIfCancellationRequested();
             if (_active.Any(item => item.Id == pluginId)) continue;
             var package = PluginManager.ListInstalled().FirstOrDefault(item => item.Id == pluginId);
             if (package is null)

@@ -230,6 +230,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPresetSection(string title, List<RenderFramePreset> presets, bool isAspect,
         ref string selection)
     {
+        ImGui.PushID(isAspect ? "AspectPresets" : "ResolutionPresets");
         ImGui.TextUnformatted($"{title}预设");
         ImGui.SameLine();
         ImGui.TextDisabled(isAspect ? "自由比例是内置项，删不掉" : "跟随视图是内置项，删不掉");
@@ -271,11 +272,13 @@ internal sealed partial class ImGuiEditorWindow
 
             ImGui.SameLine();
             ImGui.BeginDisabled(index == 0);
-            if (ImGui.SmallButton("↑")) { moveFrom = index; moveDelta = -1; }
+            if (ImGui.ArrowButton("##moveUp", ImGuiDir.Up)) { moveFrom = index; moveDelta = -1; }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip("上移");
             ImGui.EndDisabled();
             ImGui.SameLine();
             ImGui.BeginDisabled(index == presets.Count - 1);
-            if (ImGui.SmallButton("↓")) { moveFrom = index; moveDelta = 1; }
+            if (ImGui.ArrowButton("##moveDown", ImGuiDir.Down)) { moveFrom = index; moveDelta = 1; }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip("下移");
             ImGui.EndDisabled();
             ImGui.SameLine();
             if (ImGui.SmallButton("删除")) removeIndex = index;
@@ -318,11 +321,14 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        if (removeIndex < 0) return;
-        var removedId = presets[removeIndex].Id;
-        presets.RemoveAt(removeIndex);
-        if (selection == removedId) selection = string.Empty;
-        ApplyRenderFrameChange();
+        if (removeIndex >= 0)
+        {
+            var removedId = presets[removeIndex].Id;
+            presets.RemoveAt(removeIndex);
+            if (selection == removedId) selection = string.Empty;
+            ApplyRenderFrameChange();
+        }
+        ImGui.PopID();
     }
 
     /// <summary>

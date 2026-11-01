@@ -10,17 +10,15 @@ namespace MVoxel.Project;
 /// </summary>
 /// <param name="SavedAt">快照写入时间</param>
 /// <param name="SceneJson">场景文档 JSON 文本</param>
-/// <param name="WorldModelPath">恢复用体素模型文件路径</param>
-public sealed record RecoverySnapshot(DateTimeOffset SavedAt, string SceneJson, string WorldModelPath);
+public sealed record RecoverySnapshot(DateTimeOffset SavedAt, string SceneJson);
 
 /// <summary>
-/// 自动保存恢复区：按项目根路径派生独立目录，存放场景文本与体素模型副本，
+/// 自动保存恢复区：按项目根路径派生独立目录，存放包含对象体素的场景快照，
 /// 正式保存成功即清空；恢复区永不覆盖用户的正式保存文件
 /// </summary>
 public static class RecoveryStore
 {
     private const string SceneFileName = "scene.mvox.json";
-    private const string WorldFileName = "world.mvmodel";
     private const string MetaFileName = "meta.json";
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
@@ -46,40 +44,22 @@ public static class RecoveryStore
     }
 
     /// <summary>
-    /// 恢复区内世界模型快照的目标路径，调用方可直接把当前体素世界写入该文件
-    /// </summary>
-    /// <param name="projectRootPath">项目根目录</param>
-    /// <returns>恢复用 mvmodel 路径</returns>
-    public static string WorldFilePath(string projectRootPath)
-    {
-        var directory = DirectoryFor(projectRootPath);
-        Directory.CreateDirectory(directory);
-        return Path.Combine(directory, WorldFileName);
-    }
-
-    /// <summary>
-    /// 写入一份恢复快照：场景 JSON 与体素模型文件，原子替换旧快照
+    /// 写入包含对象体素的场景恢复快照
     /// </summary>
     /// <param name="projectRootPath">项目根目录</param>
     /// <param name="sceneJson">场景文档 JSON 文本</param>
-    /// <param name="worldModelSource">当前体素模型文件路径，可为空表示无模型</param>
-    public static void Write(string projectRootPath, string sceneJson, string? worldModelSource)
+    public static void Write(string projectRootPath, string sceneJson)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sceneJson);
         var directory = DirectoryFor(projectRootPath);
         Directory.CreateDirectory(directory);
         AtomicFile.WriteText(Path.Combine(directory, SceneFileName), sceneJson, backupExtension: null);
-        if (!string.IsNullOrWhiteSpace(worldModelSource) && File.Exists(worldModelSource))
-        {
-            File.Copy(worldModelSource, Path.Combine(directory, WorldFileName), overwrite: true);
-        }
-
         AtomicFile.WriteText(Path.Combine(directory, MetaFileName),
             JsonSerializer.Serialize(new Meta(DateTimeOffset.Now), Options), backupExtension: null);
     }
 
     /// <summary>
-    /// 尝试读取项目的恢复快照，缺文件视为损坏并整体丢弃
+    /// 尝试读取项目的恢复快照，读取失败时保留原始恢复数据
     /// </summary>
     /// <param name="projectRootPath">项目根目录</param>
     /// <param name="snapshot">读到的快照</param>
@@ -94,14 +74,13 @@ public static class RecoveryStore
         try
         {
             var meta = JsonSerializer.Deserialize<Meta>(File.ReadAllText(metaPath), Options);
-            var worldPath = Path.Combine(directory, WorldFileName);
             snapshot = new RecoverySnapshot(meta?.SavedAt ?? DateTimeOffset.MinValue,
-                File.ReadAllText(scenePath), File.Exists(worldPath) ? worldPath : null!);
+                File.ReadAllText(scenePath));
             return true;
         }
         catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
         {
-            Clear(projectRootPath);
+            MVoxelLog.Warn($"恢复区快照读取失败，保留原始数据：{exception.Message}");
             return false;
         }
     }

@@ -313,13 +313,7 @@ internal sealed partial class ImGuiEditorWindow
                 editor.RestoreHistoryUi(forward ? after : before, sceneChanged, assetsChanged);
                 if (sceneChanged)
                     editor.MarkSceneDocumentDirty();
-                try
-                {
-                    foreach (var stroke in (forward ? commands : commands.Reverse()).OfType<VoxelStrokeCommand>())
-                        if (forward) editor._editingJournal?.Append(stroke.Name, stroke.Edits);
-                        else editor._editingJournal?.AppendInverse(stroke.Name, stroke.Edits);
-                }
-                catch (IOException exception) { MVoxelLog.Error("撤销/重做已完成，但恢复日志写入失败", exception); }
+
             }
             catch
             {

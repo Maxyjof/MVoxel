@@ -320,13 +320,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         if (_historyConfirmation is null) _projectOperation.Pump();
         EnsureWelcomeWindow();
-        if (_project is not null && _projectSettings.AutoSave && _sceneDocumentDirty)
+        if (_project is not null && _editorSettings.AutoSave && _sceneDocumentDirty)
         {
             _autoSaveCountdown -= (float)Math.Max(args.Time, 0.01F);
             if (_autoSaveCountdown <= 0F && !_autoSaveQueued)
             {
                 _autoSaveQueued = true;
-                _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+                _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
                 _pendingActions.Enqueue(TryAutoSaveProject);
             }
         }
@@ -437,8 +437,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 sceneValid = _sceneDocument is not null && _sceneValidationErrors.Count == 0,
                 sceneValidationErrorCount = _sceneValidationErrors.Count,
                 sceneDirty = _sceneDocumentDirty,
-                autoSaveEnabled = _project is not null && _projectSettings.AutoSave,
-                autoSaveSeconds = _project is null ? 0 : _projectSettings.AutoSaveSeconds,
+                autoSaveEnabled = _project is not null && _editorSettings.AutoSave,
+                autoSaveSeconds = _project is null ? 0 : _editorSettings.AutoSaveSeconds,
                 renderingDegraded = _gpuRenderingDisabled,
                 renderingStatus = _pipelineStatus,
                 renderSamples = _pipeline?.AccumulatedSamples ?? 0,
@@ -4423,11 +4423,53 @@ DockId=0x6A3C3007,0
                         var project = ProjectLayout.Open(absolutePath);
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取体素资产…", .22F, CanCancel: true));
-                        var preload = PreloadProjectModels(project, cancellation, report);
-                        report(new BlockingOperationProgress("正在准备编辑器工作区…", .96F, CanCancel: false));
-                        return new PreparedProjectLoad(project, preload);
+                        void ReportModels(BlockingOperationProgress progress) => report(progress with
+                        {
+                            Fraction = .18F + (progress.Fraction - .18F) * .65F,
+                        });
+                        var preload = PreloadProjectModels(project, cancellation, ReportModels);
+                        PreloadedModels? recovery = null;
+                        RecoverySnapshot? snapshot = null;
+                        report(new BlockingOperationProgress("正在检查恢复数据…", .64F, true));
+                        if (RecoveryStore.TryLoad(project.RootPath, out snapshot) && snapshot is not null)
+                        {
+                            try
+                            {
+                                var scene = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
+                                recovery = PreloadProjectModels(project, cancellation,
+                                    progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene);
+                            }
+                            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
+                            {
+                                MVoxelLog.Error("恢复区快照预读失败，将在应用时处理", exception);
+                            }
+                        }
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在读取材质表…", .82F, true));
+                        IReadOnlyList<MaterialAsset>? materials = null;
+                        float[]? materialTable = null;
+                        try
+                        {
+                            materials = MaterialAsset.LoadFromProject(project);
+                            materialTable = MaterialAsset.PackTable(materials);
+                        }
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+                        {
+                            MVoxelLog.Error("材质表预读失败，将在应用时重试", exception);
+                        }
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress("正在启动项目插件…", .88F, true));
+                        var runtime = new PluginScriptRuntime();
+                        try
+                        {
+                            runtime.Activate(project, TimeSpan.FromSeconds(2), cancellation);
+                            cancellation.ThrowIfCancellationRequested();
+                            report(new BlockingOperationProgress("正在应用编辑器工作区…", .96F, false));
+                            return new PreparedOpenProject(project, preload, recovery, snapshot, materials, materialTable, runtime);
+                        }
+                        catch { runtime.Dispose(); throw; }
                     },
-                    prepared => OpenProject(prepared.Project, prepared.Models),
+                    prepared => OpenProject(prepared.Project, prepared.Models, prepared),
                     exception => ShowProjectOperationError("打开项目失败", exception, fromWelcome, 2, path),
                     () => SetStatus("已取消加载项目")))
             {
@@ -4476,17 +4518,17 @@ DockId=0x6A3C3007,0
         var found = Directory.EnumerateFiles(project.AssetsPath, "*.mvox", new EnumerationOptions
         {
             RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true,
-        }).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+        }).Min(StringComparer.OrdinalIgnoreCase);
         return found is null ? main : Path.GetRelativePath(project.AssetsPath, found).Replace('\\', '/');
     }
 
-    private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null)
+    private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null, PreparedOpenProject? prepared = null)
     {
         _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
-        _pluginRuntime = new PluginScriptRuntime();
+        _pluginRuntime = prepared?.Runtime ?? new PluginScriptRuntime();
         _project = project;
-        _activeSceneRelativePath = FindStartupSceneRelativePath(project);
+        _activeSceneRelativePath = preloadedModels?.ScenePath ?? FindStartupSceneRelativePath(project);
         _assetBrowser.Reset();
         _voxelModelReferenceCacheRoot = null;
         _voxelModelReferenceCache = Array.Empty<string>();
@@ -4506,15 +4548,37 @@ DockId=0x6A3C3007,0
             RequestWelcomeWindow();
             return;
         }
-        _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+        _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
-        TryRestoreRecovery(project);
+        if (prepared?.Recovery is { Scene: not null, Composed: not null } recovery && prepared.Snapshot is { } snapshot)
+        {
+            _sceneDocument = recovery.Scene;
+            _objectVoxels.RestoreReferences(recovery.ObjectWorlds);
+            _world = recovery.Composed;
+            _worldLoadFailed |= recovery.LoadFailed;
+            _composedRenderWorld = null;
+            _composedSignature = 0;
+            _pickVersion++;
+            _voxelHistory.Clear();
+            MarkSceneDocumentDirty();
+            FrameCameraOnWorld();
+            SetStatus($"已从恢复区还原未保存工作（{snapshot.SavedAt.ToLocalTime():MM-dd HH:mm}），确认无误后请正式保存");
+            MVoxelLog.Info($"已套用恢复区快照：{project.Manifest.Name}，保存于 {snapshot.SavedAt:O}");
+        }
+        else if (prepared is null) TryRestoreRecovery(project);
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _inspectorLockedObjectId = null;
-        ReloadMaterialTable();
-        _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
+        if (prepared?.Materials is { } materials && prepared.MaterialTable is { } table)
+        {
+            _brushMaterials = materials;
+            if (!materials.Any(item => item.Slot == _brushMaterialSlot)) _brushMaterialSlot = 0;
+            _pipeline?.SetMaterialTable(table);
+            if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个材质槽定义");
+        }
+        else ReloadMaterialTable();
+        if (prepared is null) _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));
         _statusText = _sceneValidationErrors.Count == 0
             ? $"已打开项目：{project.Manifest.Name}"
             : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}）";
@@ -4562,7 +4626,6 @@ DockId=0x6A3C3007,0
         _world = new VoxelWorld();
         _layerOwnership.Clear();
         _objectVoxels.Clear();
-        _editingJournal = null;
         _voxelHistory.Clear();
         _selectedVoxel = null;
         _selectedSceneObjectId = null;
@@ -4683,7 +4746,7 @@ DockId=0x6A3C3007,0
             }
             RecoveryStore.Clear(_project.RootPath);
             _sceneDocumentDirty = false;
-            _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+            _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
             SetStatus(automatic
                 ? $"项目已自动保存：{_project.Manifest.Name}"
                 : $"项目已保存：{_project.Manifest.Name}（场景与体素世界，{_world.OccupiedVoxelCount} 体素）");
@@ -4700,25 +4763,13 @@ DockId=0x6A3C3007,0
     {
         using var historySuspended = FileEditHistory.Suspend();
         _autoSaveQueued = false;
-        if (_project is null || _worldLoadFailed || !_projectSettings.AutoSave || !_sceneDocumentDirty) return;
+        if (_project is null || _worldLoadFailed || !_editorSettings.AutoSave || !_sceneDocumentDirty) return;
 
         try
         {
-            // 自动保存只写恢复区快照，不触碰用户的正式保存文件
-            if (_world.OccupiedVoxelCount > 0)
-            {
-                Voxels.LargeWorldFormat.Write(RecoveryStore.WorldFilePath(_project.RootPath), _world);
-            }
-            else
-            {
-                Voxels.LargeWorldFormat.WriteEmpty(RecoveryStore.WorldFilePath(_project.RootPath));
-            }
-
-            RecoveryStore.Write(_project.RootPath,
-                CreateObjectRecoveryJson(),
-                worldModelSource: null);
-            _editingJournal?.Clear();
-            _autoSaveCountdown = _projectSettings.AutoSaveSeconds;
+            // 恢复快照包含各对象的独立体素，不再生成冗余的合成世界副本。
+            RecoveryStore.Write(_project.RootPath, CreateObjectRecoveryJson());
+            _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
             SetStatus("已保存快照到恢复区（正式保存后自动清理）");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -4737,28 +4788,6 @@ DockId=0x6A3C3007,0
         try
         {
             var restored = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
-            if (!restored.Objects.SelectMany(item => item.Components).Any(EmbeddedVoxelData.HasData) &&
-                File.Exists(snapshot.WorldModelPath))
-            {
-                _world = Voxels.LargeWorldFormat.Read(snapshot.WorldModelPath);
-                // 快照之后的事务重放：日志逐格还原未落盘的编辑，还原后清空日志
-                var journalPath = Path.Combine(RecoveryStore.DirectoryFor(project.RootPath), "journal.jsonl");
-                var replayed = VoxelEditingJournal.Replay(_world, VoxelEditingJournal.TryRead(journalPath));
-                VoxelEditingJournal.Clear(journalPath);
-                if (replayed > 0)
-                {
-                    MVoxelLog.Info($"事务重放完成：{replayed} 格，{project.Manifest.Name}");
-                }
-
-                // 恢复区载入也延后到渲染视图按需同步，避免打开项目回调阻塞 UI。
-                _composedRenderWorld = null;
-                _composedSignature = 0;
-                _composedMask = uint.MaxValue;
-                _renderViewNeedsInitialRender = true;
-                _pipeline?.ResetAccumulation();
-                FrameCameraOnWorld();
-            }
-
             _sceneDocument = restored;
             LoadObjectVoxelWorlds(project);
             _voxelHistory.Clear();
@@ -4770,7 +4799,6 @@ DockId=0x6A3C3007,0
         {
             MVoxelLog.Error("恢复区快照套用失败，已按正式保存内容打开", exception);
             SetStatus($"恢复区快照不可用，已打开正式保存内容：{exception.Message}");
-            RecoveryStore.Clear(project.RootPath);
         }
     }
 
