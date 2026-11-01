@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text.Json;
 using ImGuiNET;
 using MVoxel.Core;
@@ -40,6 +40,7 @@ internal partial class ImGuiEditorWindow
     private string _mcImportProgress = string.Empty;
     private string? _mcImportError;
     private PreparedMcImport? _mcImportPrepared;
+    private IEditorCommand? _mcImportFiles;
     private CancellationTokenSource? _mcImportCancellation;
 
     /// <summary>
@@ -320,8 +321,13 @@ internal partial class ImGuiEditorWindow
             ImGui.Text($"正在导入：{_mcImportProgress}");
         }
 
-        if (_mcImportDone)
+        if (_mcImportDone && _historyConfirmation is null)
         {
+            if (_mcImportFiles is { } importedFiles)
+            {
+                _voxelHistory.RecordExecuted(importedFiles);
+                _mcImportFiles = null;
+            }
             if (_mcImportError is { } error)
             {
                 ImGui.TextColored(new Vector4(1F, .4F, .35F, 1F), $"导入失败：{error}");
@@ -506,6 +512,9 @@ internal partial class ImGuiEditorWindow
         var cancellationToken = _mcImportCancellation.Token;
         Task.Run(() =>
         {
+            var history = new FileEditHistory(path => path.StartsWith(
+                Path.GetFullPath(worldsDirectory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+            using var fileScope = history.Activate();
             try
             {
                 var result = McWorldImporter.ConvertRange(info, minChunkX, minChunkZ, maxChunkX, maxChunkZ,
@@ -569,7 +578,18 @@ internal partial class ImGuiEditorWindow
             }
             finally
             {
-                _mcImportDone = true;
+                var files = history.Complete();
+                _pendingActions.Enqueue(() =>
+                {
+                    if (!ReferenceEquals(_project, project)) { (files as IDisposable)?.Dispose(); return; }
+                    _mcImportFiles = files;
+                    if (!_mcImportActive && files is not null)
+                    {
+                        _voxelHistory.RecordExecuted(files);
+                        _mcImportFiles = null;
+                    }
+                    _mcImportDone = true;
+                });
             }
         });
     }
@@ -616,7 +636,6 @@ internal partial class ImGuiEditorWindow
             _sceneDocument = document;
             // 地形对象已在后台完成树体素回填，直接就是完整工作世界，免去整世界复制
             LoadObjectVoxelWorlds(_project!);
-            _voxelHistory.Clear();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(_world, GetSceneGpuCellBudget());
             _pipeline?.ResetAccumulation();
@@ -676,6 +695,11 @@ internal partial class ImGuiEditorWindow
     /// </summary>
     private void CloseMcImport()
     {
+        if (_mcImportFiles is { } files)
+        {
+            _voxelHistory.RecordExecuted(files);
+            _mcImportFiles = null;
+        }
         _mcImportCancellation?.Cancel();
         _mcImportCancellation?.Dispose();
         _mcImportCancellation = null;

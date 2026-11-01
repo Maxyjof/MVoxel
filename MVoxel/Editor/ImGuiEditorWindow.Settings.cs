@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
@@ -183,8 +183,8 @@ internal sealed partial class ImGuiEditorWindow
             return;
 
         _configurationAutoSavePending = false;
-        if (_project is null) SaveEditorSettings();
-        else SaveProjectSettings();
+        SaveEditorSettings();
+        if (_project is not null) SaveProjectSettings();
     }
 
     private static string RenderPresetKey(ProjectHandle project, string path)
@@ -557,7 +557,7 @@ internal sealed partial class ImGuiEditorWindow
                 changed |= ImGui.SliderInt("持续撤回间隔（毫秒）", ref _editorSettings.UndoRepeatIntervalMs, 20, 500);
                 _editorSettings.Normalize();
                 ImGui.TextDisabled($"当前速度：{1000F / _editorSettings.UndoRepeatIntervalMs:0.0} 次/秒");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Ctrl+Z 首次按下立即撤回，达到延迟后按间隔持续撤回");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("撤销和重做首次按下立即响应，达到延迟后按间隔连续执行；高风险操作会暂停连发并要求确认。");
                 if (changed) SaveEditorSettings();
                 ImGui.EndTabItem();
             }
@@ -1372,7 +1372,7 @@ internal sealed partial class ImGuiEditorWindow
         var path = EditorPalettes.ProjectPaletteFilePath(_project, deletedPath);
         try
         {
-            File.Delete(path);
+            MVoxel.Core.FileEditHistory.Delete(path);
             AssetMetaStore.DeleteMeta(path);
             var next = paths.FirstOrDefault(item => !string.Equals(item, _selectedProjectPalettePath,
                 StringComparison.OrdinalIgnoreCase));

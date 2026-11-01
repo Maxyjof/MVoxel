@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 
 namespace MVoxel.Editor;
 
@@ -43,6 +43,7 @@ internal static class EditorPalette
         { _customThemes = new(); }
         return _customThemes;
     }
+    internal static void ReloadThemes() => _customThemes = null;
     internal static int[] CurrentColors() => [Window.ToArgb(), Panel.ToArgb(), PanelHeader.ToArgb(), Input.ToArgb(),
         Border.ToArgb(), Accent.ToArgb(), AccentSoft.ToArgb(), Text.ToArgb(), MutedText.ToArgb(), Icon.ToArgb(), Success.ToArgb(), Error.ToArgb()];
     internal static void SaveTheme(string name, int[] colors)

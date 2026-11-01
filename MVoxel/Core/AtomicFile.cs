@@ -210,6 +210,7 @@ public static class AtomicFile
     /// <param name="backupExtension">备份后缀或 null</param>
     private static void ReplaceTarget(string temporaryPath, string targetPath, string? backupExtension)
     {
+        FileEditHistory.BeforeWrite(targetPath);
         if (!File.Exists(targetPath))
         {
             File.Move(temporaryPath, targetPath);

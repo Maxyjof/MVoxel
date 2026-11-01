@@ -121,7 +121,7 @@ public static class AssetMetaStore
             return false;
         }
 
-        File.Move(oldMeta, newMeta);
+        MVoxel.Core.FileEditHistory.Move(oldMeta, newMeta);
         return true;
     }
 
@@ -157,7 +157,7 @@ public static class AssetMetaStore
         var metaPath = MetaPathFor(assetAbsolutePath);
         if (File.Exists(metaPath))
         {
-            File.Delete(metaPath);
+            MVoxel.Core.FileEditHistory.Delete(metaPath);
         }
     }
 

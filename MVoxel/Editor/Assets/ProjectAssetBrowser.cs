@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Diagnostics;
 using ImGuiNET;
 using MVoxel.Editor.Assets;
@@ -193,7 +193,7 @@ internal sealed class ProjectAssetBrowser
                                 reportStatus("文件夹已存在或路径无效");
                             else
                             {
-                                Directory.CreateDirectory(path);
+                                MVoxel.Core.FileEditHistory.CreateDirectory(path);
                                 reportStatus($"已创建文件夹：{relative}");
                                 ImGui.CloseCurrentPopup();
                             }
@@ -535,8 +535,8 @@ internal sealed class ProjectAssetBrowser
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
-            File.Move(oldPath, newPath);
+            MVoxel.Core.FileEditHistory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            MVoxel.Core.FileEditHistory.Move(oldPath, newPath);
             AssetMetaStore.MoveMeta(oldPath, newPath);
             reportStatus($"已移动：{oldRelativePath} → {newRelativePath}");
             assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
@@ -574,7 +574,7 @@ internal sealed class ProjectAssetBrowser
 
         try
         {
-            File.Move(oldPath, newPath);
+            MVoxel.Core.FileEditHistory.Move(oldPath, newPath);
             AssetMetaStore.MoveMeta(oldPath, newPath);
             reportStatus($"已重命名文件：{Path.GetFileName(oldRelativePath)} → {newName}");
             assetChanged(new ProjectAssetChange(oldRelativePath, newRelativePath));
@@ -599,7 +599,7 @@ internal sealed class ProjectAssetBrowser
 
         try
         {
-            File.Delete(path);
+            MVoxel.Core.FileEditHistory.Delete(path);
             AssetMetaStore.DeleteMeta(path);
             reportStatus($"已删除文件：{Path.GetFileName(relativePath)}");
             assetChanged(new ProjectAssetChange(relativePath, null));

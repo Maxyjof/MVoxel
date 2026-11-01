@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using ImGuiNET;
 using MVoxel.Core;
@@ -212,6 +212,7 @@ public static class ShortcutCommands
     {
         new("edit.undo", "撤销", "Ctrl+Z", "编辑"),
         new("edit.redo", "重做", "Ctrl+Y", "编辑"),
+        new("edit.redoAlternate", "重做（备用）", "Ctrl+Shift+Z", "编辑"),
         new("project.new", "新建项目", "Ctrl+N", "项目"),
         new("project.open", "打开项目", "Ctrl+O", "项目"),
         new("project.save", "保存项目", "Ctrl+S", "项目"),
@@ -264,6 +265,8 @@ public static class SettingsStore
         document.Normalize();
         AtomicFile.WriteText(EditorSettingsPath, JsonSerializer.Serialize(document, JsonOptions));
     }
+
+    internal static T Restore<T>(string json) => JsonSerializer.Deserialize<T>(json, JsonOptions)!;
 
     internal static string Snapshot<T>(T document) => JsonSerializer.Serialize(document, JsonOptions);
 
@@ -357,7 +360,7 @@ public static class ShortcutBindingRouter
     private static bool ModifiersMatch(bool ctrl, bool shift, bool alt)
     {
         var io = ImGui.GetIO();
-        return io.KeyCtrl == ctrl && io.KeyShift == shift && io.KeyAlt == alt;
+        return io.KeyCtrl == ctrl && io.KeyShift == shift && io.KeyAlt == alt && !io.KeySuper;
     }
 
     public static bool TryGetImGuiKey(string text, out ImGuiKey key)
@@ -371,6 +374,16 @@ public static class ShortcutBindingRouter
             "Q" => ImGuiKey.Q, "R" => ImGuiKey.R, "S" => ImGuiKey.S, "T" => ImGuiKey.T,
             "U" => ImGuiKey.U, "V" => ImGuiKey.V, "W" => ImGuiKey.W, "X" => ImGuiKey.X,
             "Y" => ImGuiKey.Y, "Z" => ImGuiKey.Z, "SPACE" => ImGuiKey.Space,
+            "0" => ImGuiKey._0, "1" => ImGuiKey._1, "2" => ImGuiKey._2, "3" => ImGuiKey._3,
+            "4" => ImGuiKey._4, "5" => ImGuiKey._5, "6" => ImGuiKey._6, "7" => ImGuiKey._7,
+            "8" => ImGuiKey._8, "9" => ImGuiKey._9,
+            "ENTER" or "RETURN" => ImGuiKey.Enter, "TAB" => ImGuiKey.Tab,
+            "ESC" or "ESCAPE" => ImGuiKey.Escape, "BACKSPACE" => ImGuiKey.Backspace,
+            "DELETE" or "DEL" => ImGuiKey.Delete, "INSERT" or "INS" => ImGuiKey.Insert,
+            "HOME" => ImGuiKey.Home, "END" => ImGuiKey.End,
+            "PAGEUP" or "PGUP" => ImGuiKey.PageUp, "PAGEDOWN" or "PGDN" => ImGuiKey.PageDown,
+            "LEFT" => ImGuiKey.LeftArrow, "RIGHT" => ImGuiKey.RightArrow,
+            "UP" => ImGuiKey.UpArrow, "DOWN" => ImGuiKey.DownArrow,
             "F1" => ImGuiKey.F1, "F2" => ImGuiKey.F2, "F3" => ImGuiKey.F3,
             "F4" => ImGuiKey.F4, "F5" => ImGuiKey.F5, "F6" => ImGuiKey.F6,
             "F7" => ImGuiKey.F7, "F8" => ImGuiKey.F8, "F9" => ImGuiKey.F9,

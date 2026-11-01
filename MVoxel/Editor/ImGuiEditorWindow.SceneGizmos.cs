@@ -315,6 +315,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool HandleSceneGizmoInput(Vector2 origin, Vector2 size, SceneCamera camera, bool orientationGizmoHovered)
     {
+        if (_historyConfirmation is not null) return false;
         if (_project is null || _sceneDocument is null) return false;
         var mouse = ImGui.GetIO().MousePos;
         if (_sceneGizmoDragging)

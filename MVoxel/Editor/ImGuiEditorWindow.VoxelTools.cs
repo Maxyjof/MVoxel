@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -749,11 +749,6 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (_sceneDocumentDirty)
-        {
-            SaveProject();
-            if (_sceneDocumentDirty) return;
-        }
         try
         {
             var workingRelativePath = relativePath.Replace('\\', '/');
@@ -789,15 +784,8 @@ internal sealed partial class ImGuiEditorWindow
             var removedLayers = _sceneDocument is null
                 ? 0
                 : ConsolidateSecondaryModelObjects(_sceneDocument, primaryAssetPath);
-            _sceneDocumentDirty = false;
-            if (_sceneDocument is not null)
-            {
-                Scene.SceneSerializer.Save(
-                    Path.Combine(_project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar)), _sceneDocument);
-            }
-
             LoadObjectVoxelWorlds(_project);
-            _voxelHistory.Clear();
+            MarkSceneDocumentDirty();
             _selectedVoxel = null;
             _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
             _pipeline?.ResetAccumulation();
@@ -1163,6 +1151,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void HandleVoxelToolInput(Vector2 origin, Vector2 size, SceneCamera camera)
     {
+        if (_historyConfirmation is not null) return;
         var io = ImGui.GetIO();
         if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning || !IsFocused)
         {
@@ -1641,6 +1630,7 @@ internal sealed partial class ImGuiEditorWindow
             try
             {
                 var pixels = Voxels.RadianceImage.Decode(path, out var envWidth, out var envHeight);
+                _historyEnvironment = new HistoryEnvironment(pixels, envWidth, envHeight);
                 _pipeline?.SetEnvironment(pixels, envWidth, envHeight);
                 SetStatus($"环境贴图已生效：{envWidth}×{envHeight}");
             }
@@ -1653,6 +1643,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         if (ImGui.Button("清除环境贴图", new Vector2(120F, 30F)))
         {
+            _historyEnvironment = new HistoryEnvironment([], 0, 0);
             _pipeline?.SetEnvironment([], 0, 0);
             SetStatus("已恢复程序化天空");
         }
@@ -1685,47 +1676,43 @@ internal sealed partial class ImGuiEditorWindow
     {
         var io = ImGui.GetIO();
         var scheme = _editorSettings.ActiveScheme();
-        var undoDown = ShortcutBindingRouter.IsDown(scheme, "edit.undo");
-        if (io.WantTextInput)
+        if (io.WantTextInput || !IsFocused || _historyConfirmation is not null)
         {
-            _undoHeldSeconds = 0F;
-            _undoRepeatAccumulator = 0F;
+            _historyRepeatDirection = 0;
+            _undoHeldSeconds = _undoRepeatAccumulator = 0F;
             return;
         }
-        else if (undoDown)
+        var undoDown = ShortcutBindingRouter.IsDown(scheme, "edit.undo");
+        var redoDown = ShortcutBindingRouter.IsDown(scheme, "edit.redo") ||
+            ShortcutBindingRouter.IsDown(scheme, "edit.redoAlternate");
+        if (_historyAwaitKeyRelease)
         {
-            if (ShortcutBindingRouter.IsPressed(scheme, "edit.undo"))
-            {
-                ApplyUndo();
-                _undoHeldSeconds = 0F;
-                _undoRepeatAccumulator = 0F;
-            }
+            if (!undoDown && !redoDown) _historyAwaitKeyRelease = false;
+            return;
+        }
+        var direction = undoDown ? -1 : redoDown ? 1 : 0;
+        var pressed = direction < 0 ? ShortcutBindingRouter.IsPressed(scheme, "edit.undo") :
+            ShortcutBindingRouter.IsPressed(scheme, "edit.redo") || ShortcutBindingRouter.IsPressed(scheme, "edit.redoAlternate");
+        if (direction == 0 || direction != _historyRepeatDirection)
+            _undoHeldSeconds = _undoRepeatAccumulator = 0F;
+        if (direction != 0)
+        {
+            if (pressed) { if (direction < 0) ApplyUndo(); else ApplyRedo(); }
             else
             {
+                var previous = _undoHeldSeconds;
                 _undoHeldSeconds += Math.Max(0F, io.DeltaTime);
                 var delay = _editorSettings.UndoRepeatDelayMs / 1000F;
-                if (_undoHeldSeconds >= delay)
+                _undoRepeatAccumulator += Math.Max(0F, _undoHeldSeconds - Math.Max(previous, delay));
+                var interval = _editorSettings.UndoRepeatIntervalMs / 1000F;
+                for (var count = 0; count < 8 && _undoRepeatAccumulator >= interval; count++)
                 {
-                    _undoRepeatAccumulator += Math.Max(0F, io.DeltaTime);
-                    var interval = _editorSettings.UndoRepeatIntervalMs / 1000F;
-                    while (_undoRepeatAccumulator >= interval)
-                    {
-                        _undoRepeatAccumulator -= interval;
-                        if (!ApplyUndo())
-                        {
-                            _undoRepeatAccumulator = 0F;
-                            break;
-                        }
-                    }
+                    _undoRepeatAccumulator -= interval;
+                    if (!(direction < 0 ? ApplyUndo() : ApplyRedo())) { _undoRepeatAccumulator = 0F; break; }
                 }
             }
         }
-        else
-        {
-            _undoHeldSeconds = 0F;
-            _undoRepeatAccumulator = 0F;
-            if (ShortcutBindingRouter.IsPressed(scheme, "edit.redo")) ApplyRedo();
-        }
+        _historyRepeatDirection = direction;
 
         if (ShortcutBindingRouter.IsPressed(scheme, "project.new")) ShowProjectPathDialog(create: true);
         if (ShortcutBindingRouter.IsPressed(scheme, "project.open")) ShowProjectPathDialog(create: false);
@@ -1759,35 +1746,47 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 执行一次撤销；工作集由视图每帧按预算同步，这里只使累积失效
     /// </summary>
-    private bool ApplyUndo()
-    {
-        if (_voxelHistory.PeekUndo() is VoxelStrokeCommand undoneStroke)
-        {
-            _editingJournal?.AppendInverse(undoneStroke.Name, undoneStroke.Edits);
-        }
+    private bool ApplyUndo() => ApplyHistory(false);
+    private bool ApplyRedo() => ApplyHistory(true);
 
-        if (!_voxelHistory.Undo()) return false;
-        SetStatus($"已撤销（剩余 {_voxelHistory.UndoCount} 步）");
-        _pipeline?.ResetAccumulation();
-        MarkSceneDocumentDirty();
-        return true;
+    private bool ApplyHistory(bool forward)
+    {
+        if (_historyReplaying || _historyConfirmation is not null || _projectOperation.Snapshot is not null || _screenColorSampling) return false;
+        if (_sceneGizmoDragging) EndSceneGizmoDrag();
+        _sceneFocusAnimation = null;
+        _renderFocusAnimation = null;
+        EndSceneMouseCapture();
+        EndEditorHistory(force: true);
+        var command = forward ? _voxelHistory.PeekRedo() : _voxelHistory.PeekUndo();
+        if (command is null) { SetStatus(forward ? "没有可重做的操作" : "没有可撤销的操作"); return false; }
+        if (command is IHistoryWarning warning && warning.GetWarning(forward) is { } message)
+        {
+            _historyConfirmation = (command, forward, message);
+            _openHistoryConfirmation = true;
+            _historyAwaitKeyRelease = true;
+            _historyRepeatDirection = 0;
+            _undoHeldSeconds = _undoRepeatAccumulator = 0F;
+            return false;
+        }
+        return ExecuteHistory(command, forward);
     }
 
-    /// <summary>
-    /// 执行一次重做；工作集由视图每帧按预算同步，这里只使累积失效
-    /// </summary>
-    private bool ApplyRedo()
+    private bool ExecuteHistory(IEditorCommand command, bool forward)
     {
-        if (_voxelHistory.PeekRedo() is VoxelStrokeCommand redoneStroke)
+        if (!ReferenceEquals(command, forward ? _voxelHistory.PeekRedo() : _voxelHistory.PeekUndo()))
+        { SetStatus("历史已变化，请重新选择操作"); return false; }
+        try
         {
-            _editingJournal?.Append(redoneStroke.Name, redoneStroke.Edits);
+            if (!(forward ? _voxelHistory.Redo() : _voxelHistory.Undo())) return false;
+            SetStatus($"已{(forward ? "重做" : "撤销")}：{command.Name}（剩余 {(forward ? _voxelHistory.RedoCount : _voxelHistory.UndoCount)} 步）");
+            return true;
         }
-
-        if (!_voxelHistory.Redo()) return false;
-        SetStatus($"已重做（剩余 {_voxelHistory.RedoCount} 步）");
-        _pipeline?.ResetAccumulation();
-        MarkSceneDocumentDirty();
-        return true;
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("撤销/重做失败，历史记录已保留", exception);
+            SetStatus($"操作未完成，历史记录已保留：{exception.Message}");
+            return false;
+        }
     }
 
     private void DrawVoxelBrushPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)

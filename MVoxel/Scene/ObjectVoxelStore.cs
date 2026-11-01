@@ -71,6 +71,14 @@ internal sealed class ObjectVoxelStore
 
     internal void Clear() => _objects.Clear();
 
+    internal Dictionary<StableId, VoxelWorld> CaptureReferences() => new(_objects);
+
+    internal void RestoreReferences(Dictionary<StableId, VoxelWorld> worlds)
+    {
+        _objects.Clear();
+        foreach (var (id, world) in worlds) _objects.Add(id, world);
+    }
+
     /// <summary>
     /// 对单个对象创建可撤销的体素编辑命令
     /// </summary>

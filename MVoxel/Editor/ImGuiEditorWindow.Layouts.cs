@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using MVoxel.Core;
 using Vector2 = System.Numerics.Vector2;
 
@@ -291,7 +291,7 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             var name = _activeLayoutName;
-            File.Delete(_activeLayoutFile);
+            MVoxel.Core.FileEditHistory.Delete(_activeLayoutFile);
             _activeLayoutFile = null;
             _activeLayoutName = string.Empty;
             SaveLayoutSelection(null);

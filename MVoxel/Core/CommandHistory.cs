@@ -21,12 +21,20 @@ public interface IEditorCommand
     void Undo();
 }
 
+/// <summary>按撤销/重做方向说明可能损失数据的影响，由编辑器在执行前阻塞确认。</summary>
+public interface IHistoryWarning
+{
+    string? GetWarning(bool forward);
+}
+
 /// <summary>
-    /// 小型确定性的撤销重做记录，供编辑器工具和插件共用
+/// 小型确定性的撤销重做记录，供编辑器工具和插件共用
 /// 只管理命令对象本身，不关心数据如何变更
 /// </summary>
 public sealed class CommandHistory
 {
+    public Func<IEditorCommand, bool>? RecordHandler { get; set; }
+    public event Action? Cleared;
     private readonly Stack<IEditorCommand> _undo = new();
     private readonly Stack<IEditorCommand> _redo = new();
 
@@ -60,8 +68,7 @@ public sealed class CommandHistory
     {
         ArgumentNullException.ThrowIfNull(command);
         command.Execute();
-        _undo.Push(command);
-        _redo.Clear();
+        RecordExecuted(command);
     }
 
     /// <summary>
@@ -71,8 +78,9 @@ public sealed class CommandHistory
     public void RecordExecuted(IEditorCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (RecordHandler?.Invoke(command) == true) return;
         _undo.Push(command);
-        _redo.Clear();
+        DisposeCommands(_redo);
     }
 
     /// <summary>
@@ -81,12 +89,13 @@ public sealed class CommandHistory
     /// <returns>栈为空时返回 false</returns>
     public bool Undo()
     {
-        if (!_undo.TryPop(out var command))
+        if (!_undo.TryPeek(out var command))
         {
             return false;
         }
 
         command.Undo();
+        _undo.Pop();
         _redo.Push(command);
         return true;
     }
@@ -97,22 +106,30 @@ public sealed class CommandHistory
     /// <returns>没有可重做命令时返回 false</returns>
     public bool Redo()
     {
-        if (!_redo.TryPop(out var command))
+        if (!_redo.TryPeek(out var command))
         {
             return false;
         }
 
         command.Execute();
+        _redo.Pop();
         _undo.Push(command);
         return true;
     }
 
     /// <summary>
-    /// 清空全部撤销记录，例如关闭项目时调用
+    /// 释放被丢弃命令持有的临时文件副本
     /// </summary>
+    private static void DisposeCommands(Stack<IEditorCommand> commands)
+    {
+        while (commands.TryPop(out var command)) (command as IDisposable)?.Dispose();
+    }
+
+    /// <summary>清空当前编辑会话的历史，并通知事务宿主重建基线。</summary>
     public void Clear()
     {
-        _undo.Clear();
-        _redo.Clear();
+        DisposeCommands(_undo);
+        DisposeCommands(_redo);
+        Cleared?.Invoke();
     }
 }

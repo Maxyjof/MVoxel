@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using MVoxel.Project;
 using MVoxel.Voxels;
 using Vector2 = System.Numerics.Vector2;
@@ -496,17 +496,15 @@ internal sealed partial class ImGuiEditorWindow
             var staged = GeneratorRunner.Run(asset, targetWorld, _generatorParameters, TimeSpan.FromSeconds(10));
             var command = new VoxelStrokeCommand(
                 $"运行生成器：{_generatorDefinition.Name}", targetWorld, staged, ObjectEditCallback(targetId.Value));
-            _voxelHistory.Execute(command);
             if (command.ChangedCellCount == 0)
             {
-                _voxelHistory.Undo();
-                _voxelHistory.Clear();
                 _generatorMessage = "生成器运行完成，但没有产生任何变化";
                 _generatorMessageError = false;
                 SetStatus(_generatorMessage);
                 return;
             }
 
+            _voxelHistory.Execute(command);
             MarkSceneDocumentDirty();
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;

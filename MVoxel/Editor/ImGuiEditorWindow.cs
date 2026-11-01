@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -126,7 +126,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private EditorTool _activeTool = EditorTool.Pick;
     private StableId? _voxelEditTargetId;
     private StableId? _inspectorLockedObjectId;
-    private sealed class ExtraInspector { internal int Id; internal string Kind = "检查器"; internal StableId? Locked; internal bool Open = true; internal uint DockId; }
+    private sealed class ExtraInspector { public int Id; public string Kind = "检查器"; public StableId? Locked; public bool Open = true; public uint DockId; }
     private readonly List<ExtraInspector> _extraInspectors = new();
     private int _nextInspectorId;
     private VoxelBrushShape _brushShape = VoxelBrushShape.Sphere;
@@ -303,15 +303,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             EndSceneMouseCapture();
         }
 
-        while (_pendingActions.TryDequeue(out var action))
+        while (_historyConfirmation is null && _pendingActions.TryDequeue(out var action))
         {
-            action();
+            BeginEditorHistory();
+            using (_historyFiles.Activate()) action();
+            EndEditorHistory(force: true);
         }
 
         if (UiDiagnostics.TakeBlockingOperationRequest()) BeginDiagnosticLoad();
         if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2, "editor.input.shortcuts");
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
-        _projectOperation.Pump();
+        if (_historyConfirmation is null) _projectOperation.Pump();
         EnsureWelcomeWindow();
         if (_project is not null && _projectSettings.AutoSave && _sceneDocumentDirty)
         {
@@ -371,6 +373,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnUnload()
     {
+        CloseMcImport();
+        _voxelHistory.Clear();
         EndSceneMouseCapture();
         if (!UiDiagnostics.Enabled && _imguiLayoutPath is not null)
         {
@@ -750,8 +754,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
         var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
         var operation = _projectOperation.Snapshot;
-        var inputBlocked = welcomeIsOpen || operation is not null;
+        var inputBlocked = welcomeIsOpen || operation is not null || _historyConfirmation is not null;
         if (!inputBlocked && !_screenColorSampling) HandleVoxelShortcuts();
+        inputBlocked |= _historyConfirmation is not null;
+        BeginEditorHistory();
+        using var fileHistoryScope = _historyFiles.Activate();
         if (inputBlocked) ImGui.BeginDisabled();
         DrawMenuBar();
         DrawDockspace();
@@ -773,10 +780,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawMinecraftImportWindow();
         DrawMeshImportWindow();
         if (inputBlocked) ImGui.EndDisabled();
+        DrawHistoryConfirmationDialog();
         DrawExitConfirmationDialog();
         if (!inputBlocked) DrawSettingsWindow();
         if (!inputBlocked) DrawGettingStarted();
-        TrackConfigurationChanges();
         if (!inputBlocked) DrawScreenColorSampler();
         if (welcomeIsOpen) _welcomeWindow!.Draw();
         else if (operation is { } snapshot)
@@ -784,6 +791,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             BlockingOperationDialog.Draw(snapshot, CancelProjectOperation);
         }
         _applyPreset = false;
+        EndEditorHistory();
     }
 
     private void DrawMenuBar()
@@ -837,6 +845,18 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         if (_openWindowMenuRequested) { ImGui.OpenPopup("窗口"); _openWindowMenuRequested = false; }
+        if (ImGui.BeginMenu("编辑"))
+        {
+            var undo = _voxelHistory.PeekUndo();
+            var redo = _voxelHistory.PeekRedo();
+            var bindings = _editorSettings.ActiveScheme().Bindings;
+            if (ImGui.MenuItem(undo is null ? "撤销" : $"撤销 {undo.Name}", bindings.GetValueOrDefault("edit.undo"), false, undo is not null || _historyCommands.Count > 0)) ApplyUndo();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("撤销上一步；按住快捷键可连续撤销，在快捷键方案中修改绑定。");
+            if (ImGui.MenuItem(redo is null ? "重做" : $"重做 {redo.Name}", bindings.GetValueOrDefault("edit.redo"), false, redo is not null)) ApplyRedo();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"重做上一步；备用快捷键 {bindings.GetValueOrDefault("edit.redoAlternate")}，支持按住连续重做。");
+            ImGui.EndMenu();
+        }
+
         if (ImGui.BeginMenu("窗口"))
         {
             if (ImGui.BeginMenu("常规"))
@@ -1642,7 +1662,7 @@ DockId=0x6A3C3007,0
     private bool HandleSceneNavigation(Vector2 origin, Vector2 size, Vector2 gizmoCenter, float gizmoRadius,
         bool allowMouseCapture, ViewportCaptureTarget captureTarget = ViewportCaptureTarget.Scene)
     {
-        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning || _screenColorSampling)
+        if (_welcomeWindow?.IsOpen == true || _projectOperation.IsRunning || _screenColorSampling || _historyConfirmation is not null)
         {
             EndSceneMouseCapture(captureTarget);
             return false;
@@ -2975,8 +2995,8 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        var inspectorBefore = SceneSerializer.CloneObject(selectedObject);
-        var inspectorUndoCount = _voxelHistory.UndoCount;
+
+
 
         var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
                                      selectedObject.Components.Any(SceneComponentTypes.IsCamera);
@@ -3272,20 +3292,6 @@ DockId=0x6A3C3007,0
                 }
                 ImGui.EndPopup();
             }
-
-        var inspectorAfter = SceneSerializer.CloneObject(selectedObject);
-        if (_voxelHistory.UndoCount == inspectorUndoCount && !SceneSerializer.ObjectsEqual(inspectorBefore, inspectorAfter))
-        {
-            _voxelHistory.RecordExecuted(new SceneObjectStateCommand(
-                selectedObject,
-                inspectorBefore,
-                inspectorAfter,
-                () =>
-                {
-                    _sceneDocumentDirty = true;
-                    _pipeline?.ResetAccumulation();
-                }));
-        }
 
         ImGui.EndChild();
     }
@@ -3674,6 +3680,7 @@ DockId=0x6A3C3007,0
     private void MarkSceneDocumentDirty()
     {
         _sceneDocumentDirty = true;
+        _historySceneRevision++;
     }
 
     /// <summary>
@@ -3793,17 +3800,7 @@ DockId=0x6A3C3007,0
             if (_sceneDocument is not null)
             {
                 updatedReferences += AssetReferences.UpdateReferences(_sceneDocument, oldPath, newPath);
-                if (updatedReferences > 0 && _activeSceneRelativePath is { } scenePath)
-                {
-                    try
-                    {
-                        SceneSerializer.Save(Path.Combine(_project.AssetsPath, scenePath.Replace('/', Path.DirectorySeparatorChar)), _sceneDocument);
-                    }
-                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                    {
-                        SetStatus($"引用更新已生效但场景保存失败：{exception.Message}");
-                    }
-                }
+                if (updatedReferences > 0) MarkSceneDocumentDirty();
             }
 
             updatedReferences += AssetReferences.UpdatePrefabReferences(
@@ -3812,33 +3809,15 @@ DockId=0x6A3C3007,0
                 ? $"已跟随更新 {updatedReferences} 处对 {oldPath} 的引用"
                 : $"移动完成；未发现对 {oldPath} 的引用，请检查外部引用是否断链");
         }
-        var activeScenePath = _activeSceneRelativePath;
-        var touchesScene = string.Equals(oldPath, activeScenePath, StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(newPath, activeScenePath, StringComparison.OrdinalIgnoreCase);
-        var touchesModel = oldPath.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
-                           oldPath.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase) ||
-                           newPath?.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) == true ||
-                           newPath?.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase) == true;
-        if (touchesScene)
+        if (updatedReferences > 0) MarkSceneDocumentDirty();
+        if (string.Equals(oldPath, _activeSceneRelativePath, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.Equals(oldPath, activeScenePath, StringComparison.OrdinalIgnoreCase) &&
-                newPath?.EndsWith(".mvox", StringComparison.OrdinalIgnoreCase) == true)
-            {
+            if (newPath?.EndsWith(".mvox", StringComparison.OrdinalIgnoreCase) == true)
                 _activeSceneRelativePath = newPath;
-            }
-            _sceneDocument = LoadSceneDocument(_project);
-            _sceneDocumentDirty = false;
-            _selectedSceneObjectId = null;
-            _renderCameraId = null;
-            _renderOrbitAnchor = null;
-            _renderCameraInitialFramePending = true;
+            MarkSceneDocumentDirty();
         }
-        if (touchesScene || touchesModel)
-        {
-            LoadWorldForProject(_project);
-            _pipeline?.ResetAccumulation();
-            _accumulationSignature = string.Empty;
-        }
+        // 已载入对象是独立编辑实例，资产重命名/删除不能重新载入并丢掉未保存体素和历史。
+        _pipeline?.ResetAccumulation();
 
         if (oldPath.EndsWith(".material", StringComparison.OrdinalIgnoreCase) ||
             newPath?.EndsWith(".material", StringComparison.OrdinalIgnoreCase) == true)
@@ -4340,6 +4319,7 @@ DockId=0x6A3C3007,0
 
     private void CloseProject()
     {
+        CloseMcImport();
         _pickWorld = null;
         _worldLoadFailed = false;
         _pluginRuntime?.Dispose();
@@ -4456,6 +4436,7 @@ DockId=0x6A3C3007,0
 
     private void SaveProject(bool automatic = false)
     {
+        using var historySuspended = FileEditHistory.Suspend();
         if (_project is null)
         {
             if (!automatic) SetStatus("没有可保存的项目");
@@ -4494,6 +4475,7 @@ DockId=0x6A3C3007,0
 
     private void TryAutoSaveProject()
     {
+        using var historySuspended = FileEditHistory.Suspend();
         _autoSaveQueued = false;
         if (_project is null || _worldLoadFailed || !_projectSettings.AutoSave || !_sceneDocumentDirty) return;
 
@@ -4684,14 +4666,25 @@ DockId=0x6A3C3007,0
             _afterApply();
         }
 
-        private static void Copy(SceneObject target, SceneObject source)
+        internal static void Copy(SceneObject target, SceneObject source)
         {
             target.Name = source.Name;
             target.ParentId = source.ParentId;
             target.Visible = source.Visible;
             target.Locked = source.Locked;
             target.LayerIndex = source.LayerIndex;
-            target.Transform = source.Transform;
+            target.Prefab = source.Prefab is null ? null : new PrefabInstanceData
+            {
+                AssetPath = source.Prefab.AssetPath,
+                SourceId = source.Prefab.SourceId,
+                Links = new Dictionary<string, string>(source.Prefab.Links, StringComparer.Ordinal),
+            };
+            target.Transform = new TransformComponent(source.Transform.Mode, source.Transform.Grid, source.Transform.Free)
+            {
+                ScaleX = source.Transform.ScaleX,
+                ScaleY = source.Transform.ScaleY,
+                ScaleZ = source.Transform.ScaleZ,
+            };
             target.Components = source.Components.Select(component => new ComponentRecord
             {
                 Enabled = component.Enabled,
