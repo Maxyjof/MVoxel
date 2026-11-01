@@ -653,8 +653,15 @@ internal sealed class ImGuiWelcomeContent
         var selected = ProjectTemplateCatalog.Get(_selectedTemplate);
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
+            string? category = null;
             foreach (var template in ProjectTemplateCatalog.All)
             {
+                var nextCategory = ProjectTemplateCatalog.CategoryFor(template.Id);
+                if (category != nextCategory)
+                {
+                    category = nextCategory;
+                    ImGui.SeparatorText(category);
+                }
                 var isSelected = template.Id == _selectedTemplate;
                 if (ImGui.Selectable(template.Name, isSelected))
                 {

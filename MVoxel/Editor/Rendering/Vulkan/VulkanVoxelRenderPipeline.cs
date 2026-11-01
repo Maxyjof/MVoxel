@@ -2805,7 +2805,25 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (mediumIor > 1.0 && !backfaceHit)
                     {
                         vec3 refracted = refract(rayDirection, hitNormal, 1.0 / mediumIor);
-                        if (dot(refracted, refracted) > 1e-6) mediumDirection = normalize(refracted);
+                        if (dot(refracted, refracted) > 1e-6)
+                        {
+                            mediumDirection = normalize(refracted);
+                            // 粗糙介质界面扩散透射方向；连续体内部不重复扰动，避免逐格出现噪斑。
+                            float interfaceRoughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.01, 1.0);
+                            float spread = interfaceRoughness * interfaceRoughness * 0.28;
+                            if (pathMode && spread > 0.002)
+                            {
+                                vec3 tangent = normalize(abs(mediumDirection.y) < 0.9
+                                    ? cross(mediumDirection, vec3(0.0, 1.0, 0.0))
+                                    : cross(mediumDirection, vec3(1.0, 0.0, 0.0)));
+                                vec3 bitangent = cross(mediumDirection, tangent);
+                                float angle = 6.28318530718 * Random(state);
+                                float radius = spread * sqrt(Random(state));
+                                vec3 candidate = normalize(mediumDirection + radius *
+                                    (cos(angle) * tangent + sin(angle) * bitangent));
+                                if (dot(candidate, hitNormal) < -0.0001) mediumDirection = candidate;
+                            }
+                        }
                     }
 
                     const float mediumEpsilon = 0.001;

@@ -63,13 +63,17 @@ internal static class TemplateLearningPreview
     internal static string[] Steps(ProjectTemplateId id) => id switch
     {
         ProjectTemplateId.Empty => ["在层级中创建模型对象", "绘制体素并添加光照和相机", "Ctrl+S 保存项目"],
+        ProjectTemplateId.CornellBox => ["观察红绿墙、顶灯和中性方块", "比较墙面附近的间接光与阴影", "提高采样并观察噪声收敛"],
+        ProjectTemplateId.SphereOptics => ["观察玻璃球后的棋盘变化", "比较金属球和玻璃球的反射", "调整材质参数并等待采样收敛"],
+        ProjectTemplateId.GlassStudy => ["观察透明、有色和毛玻璃后的棋盘", "选择材质资产调整粗糙度和折射率", "切到渲染视图等待采样并比较"],
+        ProjectTemplateId.CloudAndFog => ["选择薄雾或云朵并观察背景", "在材质中调整雾化密度和散射色", "切换渲染视图观察体积效果"],
+        ProjectTemplateId.WaterStudy => ["观察浅水和深水下的棋盘", "选择清水材质调整吸收和折射率", "切换渲染视图比较池底与水面"],
         ProjectTemplateId.DefaultRoom => ["在层级中选择桌椅、杯子或壁画", "展开纸杯对象并选择可乐", "切换渲染视图，Ctrl+S 保存项目"],
         ProjectTemplateId.XianxiaContinent => ["在层级中选择山体、宗门或浮空岛并聚焦", "锁定一个分件，取色并修改局部体素", "切换场景相机，保存项目并导出画面"],
         ProjectTemplateId.MaterialLab => ["选择玻璃、金属与发光样品并取色", "从笔刷材质进入共享材质，比较粗糙度与透明度", "切到渲染视图，保存并导出 PNG"],
         ProjectTemplateId.PaletteWorkshop => ["取样色卡并在空白处绘制", "在项目设置中创建与保存调色板副本", "比较新笔刷颜色与已有方块，再保存项目"],
         ProjectTemplateId.SparseWorld => ["在层级中选择远距离地标并聚焦", "锁定地标，观察远近移动与编辑归属", "打开信息统计，保存并导出选中地标"],
         ProjectTemplateId.LodPlayground => ["比较不同建筑的细节层级", "手动开关场景 LOD 并移动相机比较", "通过信息统计比较工作集，再保存配置"],
-        ProjectTemplateId.RayTracingStudio => ["在渲染视图比较玻璃与金属", "调整光源方向并观察阴影与间接光", "设置路径追踪采样，导出 PNG 或 HDR"],
         ProjectTemplateId.ProceduralTerrain => ["切面查看地形内部的材质层", "锁定地形模型，使用球形笔刷修改局部", "关闭切面，保存并导出地形模型"],
         ProjectTemplateId.MinecraftValley => ["在层级中隐藏一棵独立树木", "显示并锁定树木，添加树叶方块", "对比地形与树木归属，保存并导出树模型"],
         ProjectTemplateId.Architecture => ["选择立柱或拱廊，观察对象组织", "锁定部件，用直线或长方体工具补建", "切换渲染观察材质，保存并导出"],

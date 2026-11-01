@@ -23,7 +23,7 @@ internal sealed partial class ImGuiEditorWindow
         var height = arguments.TryGetProperty("height", out var heightValue) ? heightValue.GetInt32() : 0;
         if ((width != 0 || height != 0) && (width is < 16 or > 8192 || height is < 16 or > 8192))
             throw new ArgumentException("截图宽高必须同时指定，且在16–8192之间");
-        var samples = arguments.TryGetProperty("samples", out var sampleValue) ? sampleValue.GetInt32() : 64;
+        var samples = arguments.TryGetProperty("samples", out var sampleValue) ? sampleValue.GetInt32() : 128;
         if (samples is < 1 or > 16384) throw new ArgumentException("截图样本数必须在 1–16384 之间");
         var timeout = arguments.TryGetProperty("timeoutSeconds", out var timeoutValue) ? timeoutValue.GetInt32() : 300;
         if (timeout is < 1 or > 600) throw new ArgumentException("截图超时必须在 1–600 秒之间");

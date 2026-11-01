@@ -128,6 +128,136 @@ internal static class TemplateScenes
         return w;
     }
 
+    private static VoxelValue Optical(byte r, byte g, byte b, byte alpha, ushort slot) =>
+        new(new Rgba32(r, g, b, alpha), slot, VoxelFlags.Translucent);
+
+    /// <summary>开放正面的体素康奈尔盒，以顶灯、彩墙和不同材质观察间接光。</summary>
+    public static VoxelWorld BuildCornellBox()
+    {
+        var w = new VoxelWorld();
+        var white = Paint(new Rgba32(210, 208, 195));
+        var red = Paint(new Rgba32(180, 57, 48));
+        var green = Paint(new Rgba32(58, 145, 76));
+        TemplateKit.Box(w, -20, 0, -20, 20, 0, 20, white);
+        TemplateKit.Box(w, -20, 1, -20, 20, 40, -20, white);
+        TemplateKit.Box(w, -20, 1, -19, -20, 40, 20, red);
+        TemplateKit.Box(w, 20, 1, -19, 20, 40, 20, green);
+        TemplateKit.Box(w, -20, 41, -20, 20, 41, 20, white);
+        TemplateKit.Box(w, -6, 40, -6, 6, 40, 6, Glow(new Rgba32(255, 245, 223)));
+        TemplateKit.Box(w, -13, 1, -8, -3, 12, 3, white);
+        TemplateKit.Ellipsoid(w, 9, 7, 2, 6, 6, 6, Metal(new Rgba32(220, 222, 225)));
+        return w;
+    }
+
+    /// <summary>棋盘与玻璃、金属球的体素折射和反射实验。</summary>
+    public static VoxelWorld BuildSphereOptics()
+    {
+        var w = new VoxelWorld();
+        var light = Paint(new Rgba32(231, 230, 219));
+        var dark = Paint(new Rgba32(72, 83, 99));
+        for (var x = -24; x <= 24; x++) for (var z = -15; z <= 20; z++)
+            w.Set(new VoxelCoord64(x, 0, z), ((x + 24) / 4 + (z + 15) / 4) % 2 == 0 ? light : dark);
+        for (var x = -24; x <= 24; x++) for (var y = 1; y <= 20; y++)
+            w.Set(new VoxelCoord64(x, y, -15), ((x + 24) / 4 + (y - 1) / 4) % 2 == 0 ? light : dark);
+        TemplateKit.Ellipsoid(w, -9, 7, 1, 6, 6, 6, Optical(230, 244, 245, 90, 10));
+        TemplateKit.Ellipsoid(w, 9, 7, 1, 6, 6, 6, Metal(new Rgba32(220, 223, 225)));
+        return w;
+    }
+
+    /// <summary>同一棋盘背景前的三种玻璃，便于直接比较透射。</summary>
+    public static VoxelWorld BuildGlassStudy()
+    {
+        var w = new VoxelWorld();
+        var light = Paint(new Rgba32(233, 230, 221));
+        var dark = Paint(new Rgba32(67, 83, 105));
+        TemplateKit.Box(w, -25, 0, -12, 25, 0, 16, Paint(new Rgba32(160, 151, 137)));
+        for (var x = -24; x <= 24; x++) for (var y = 1; y <= 20; y++)
+            w.Set(new VoxelCoord64(x, y, -11), ((x + 24) / 3 + (y - 1) / 3) % 2 == 0 ? light : dark);
+        var panes = new[] { (X: -17, Color: Optical(240, 248, 250, 80, 10)),
+            (X: 0, Color: Optical(234, 240, 242, 140, 11)),
+            (X: 17, Color: Optical(231, 152, 67, 170, 12)) };
+        foreach (var pane in panes)
+        {
+            TemplateKit.Box(w, pane.X - 5, 1, -2, pane.X + 5, 1, 1, Paint(Slate));
+            TemplateKit.Box(w, pane.X - 4, 2, -1, pane.X + 4, 15, -1, pane.Color);
+            TemplateKit.Box(w, pane.X - 5, 2, -1, pane.X - 5, 15, -1, Paint(Timber));
+            TemplateKit.Box(w, pane.X + 5, 2, -1, pane.X + 5, 15, -1, Paint(Timber));
+        }
+        return w;
+    }
+
+    /// <summary>同一背景下的薄雾与云朵，保持完整体积供透射计算。</summary>
+    public static VoxelWorld BuildCloudAndFog()
+    {
+        var w = new VoxelWorld();
+        TemplateKit.Box(w, -24, 0, -18, 24, 0, 18, Paint(new Rgba32(108, 145, 102)));
+        for (var x = -23; x <= 23; x++)
+        {
+            var height = 4 + (int)(TemplateKit.Fbm(x, 2, 47, 3, .07F) * 13);
+            TemplateKit.Box(w, x, 1, -17, x, height, -15, Paint(new Rgba32(94, 123, 137)));
+        }
+        TemplateKit.Box(w, -20, 1, -5, -9, 7, 5, Optical(222, 233, 238, 90, 13));
+        TemplateKit.Box(w, -5, 1, -5, 5, 7, 5, Optical(222, 233, 238, 190, 16));
+        var cloud = Optical(245, 247, 250, 170, 14);
+        TemplateKit.Ellipsoid(w, 10, 17, 0, 9, 4, 5, cloud);
+        TemplateKit.Ellipsoid(w, 5, 19, 0, 5, 4, 4, cloud);
+        TemplateKit.Ellipsoid(w, 15, 19, 0, 5, 4, 4, cloud);
+        return w;
+    }
+
+    /// <summary>棋盘池底与不同水深构成的水面展示场景。</summary>
+    public static VoxelWorld BuildWaterStudy()
+    {
+        var w = new VoxelWorld();
+        var rim = Paint(new Rgba32(180, 182, 176));
+        TemplateKit.Box(w, -23, 0, -17, 23, 0, 17, rim);
+        for (var x = -20; x <= 20; x++) for (var z = -14; z <= 14; z++)
+        {
+            var color = ((x + 20) / 4 + (z + 14) / 4) % 2 == 0
+                ? new Rgba32(228, 229, 220) : new Rgba32(67, 111, 142);
+            w.Set(new VoxelCoord64(x, 1, z), Paint(color));
+        }
+        TemplateKit.Box(w, -22, 1, -16, -21, 5, 16, rim);
+        TemplateKit.Box(w, 21, 1, -16, 22, 5, 16, rim);
+        TemplateKit.Box(w, -20, 1, -16, 20, 5, -15, rim);
+        TemplateKit.Box(w, -20, 1, 15, 20, 5, 16, rim);
+        var water = Optical(180, 224, 232, 100, 15);
+        TemplateKit.Box(w, -20, 2, -14, 0, 3, 14, water);
+        TemplateKit.Box(w, 1, 2, -14, 20, 5, 14, water);
+        TemplateKit.Box(w, -13, 2, -5, -11, 5, -3, Paint(new Rgba32(216, 139, 78)));
+        TemplateKit.Box(w, 11, 2, -5, 13, 7, -3, Paint(new Rgba32(216, 139, 78)));
+        return w;
+    }
+
+    private static IReadOnlyList<(string Name, string Part, VoxelWorld World)> BuildOpticalParts(
+        ProjectTemplateId id, VoxelWorld source)
+    {
+        var names = id switch
+        {
+            ProjectTemplateId.CornellBox => new[] { "盒体与漫反射方块", "顶灯", "金属球" },
+            ProjectTemplateId.SphereOptics => new[] { "棋盘背景", "玻璃球", "金属球" },
+            ProjectTemplateId.GlassStudy => new[] { "环境与棋盘", "透明玻璃", "毛玻璃", "有色玻璃" },
+            ProjectTemplateId.CloudAndFog => new[] { "环境与山景", "薄雾", "云朵", "浓雾" },
+            _ => new[] { "池底与池边", "水体" },
+        };
+        var worlds = names.Select(_ => new VoxelWorld()).ToArray();
+        var writers = worlds.Select(world => world.CreateBulkWriter()).ToArray();
+        foreach (var (coordinate, value) in source.EnumerateOccupied())
+        {
+            var index = id switch
+            {
+                ProjectTemplateId.CornellBox => value.MaterialSlot switch { 4 => 1, 3 => 2, _ => 0 },
+                ProjectTemplateId.SphereOptics => value.MaterialSlot switch { 10 => 1, 3 => 2, _ => 0 },
+                ProjectTemplateId.GlassStudy => value.MaterialSlot switch { 10 => 1, 11 => 2, 12 => 3, _ => 0 },
+                ProjectTemplateId.CloudAndFog => value.MaterialSlot switch { 13 => 1, 14 => 2, 16 => 3, _ => 0 },
+                _ => value.MaterialSlot == 15 ? 1 : 0,
+            };
+            writers[index].Set(coordinate, value);
+        }
+        return names.Select((name, index) => (Name: name, Part: name, World: worlds[index]))
+            .Where(item => item.World.OccupiedVoxelCount > 0).ToArray();
+    }
+
     /// <summary>
     /// 小屋与花园：石基木墙、双坡红瓦、玻璃窗、门口提灯、
     /// 名木两棵、花圃、矮栅与井台
@@ -259,6 +389,9 @@ internal static class TemplateScenes
         ArgumentNullException.ThrowIfNull(source);
         return id switch
         {
+            ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or ProjectTemplateId.GlassStudy or
+                ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy =>
+                BuildOpticalParts(id, source),
             ProjectTemplateId.DefaultRoom => SplitByRegions(source,
                 ("地板与墙壁", "房间", c => c.Y <= 0 || c.X <= -36 || c.Z <= -30),
                 ("壁画", "壁画", c => c.X is >= -18 and <= -4 && c.Y is >= 19 and <= 29 && c.Z is >= -29 and <= -27),
@@ -291,10 +424,6 @@ internal static class TemplateScenes
                 ("简化体块", "LOD 2", c => c.Z is <= -33 and > -63),
                 ("低模轮廓", "LOD 3", c => c.Z is <= -63 and > -93),
                 ("最低细节", "LOD 4", _ => true)),
-            ProjectTemplateId.RayTracingStudio => SplitByRegions(source,
-                ("暗室结构", "暗室", c => c.X is <= -20 or >= 20 || c.Z is <= -14 or >= 14),
-                ("玻璃砖墙", "玻璃砖墙", c => c.X is >= 5 and <= 20 && c.Z is >= -15 and <= -10),
-                ("材质球与灯槽", "材质球与灯槽", _ => true)),
             ProjectTemplateId.ProceduralTerrain => SplitByRegions(source,
                 ("西北地形", "西北地形", c => c.X < 0 && c.Z < 0),
                 ("东北地形", "东北地形", c => c.X >= 0 && c.Z < 0),
@@ -354,6 +483,7 @@ internal static class TemplateScenes
     {
         if (regions.Length == 0) return [("模型", "模型", source)];
         var parts = regions.Select(region => (region.Name, region.Part, World: new VoxelWorld())).ToArray();
+        var writers = parts.Select(part => part.World.CreateBulkWriter()).ToArray();
         source.TryGetBounds(out var minimum, out var maximum);
         foreach (var (coordinate, value) in source.EnumerateOccupied())
         {
@@ -363,7 +493,7 @@ internal static class TemplateScenes
                         coordinate.X == maximum.X || coordinate.Y == maximum.Y || coordinate.Z == maximum.Z
                 ? 0
                 : Array.FindIndex(regions, region => region.Matches(coordinate));
-            parts[index < 0 ? regions.Length - 1 : index].World.Set(coordinate, value);
+            writers[index < 0 ? regions.Length - 1 : index].Set(coordinate, value);
         }
 
         return parts.Where(part => part.World.OccupiedVoxelCount > 0)
@@ -544,44 +674,6 @@ internal static class TemplateScenes
                     break;
                 }
             }
-        }
-
-        return world;
-    }
-
-    /// <summary>
-    /// 光追工作室：暗室、灯槽、玻璃砖墙、材质球与检字格地面
-    /// </summary>
-    public static VoxelWorld BuildRayTracingStudio()
-    {
-        var world = new VoxelWorld();
-        const int seed = 63;
-        var wall = Paint(new Rgba32(40, 44, 56));
-        TemplateKit.Box(world, -26, 0, -20, 26, 0, 20, wall, seed);
-        TemplateKit.Shell(world, -26, 1, -20, 26, 17, 20, wall, seed);
-        // 挖空内部
-        TemplateKit.Box(world, -25, 1, -19, 25, 16, 19, new VoxelValue(new Rgba32(0, 0, 0, 0)));
-        TemplateKit.Shell(world, -26, 1, -20, 26, 1, 20, wall, seed);
-        // 顶部灯槽
-        TemplateKit.Box(world, -20, 16, -3, 20, 16, 3, Glow(new Rgba32(255, 226, 168)));
-        // 侧窗光带
-        TemplateKit.Box(world, -26, 6, -8, -26, 12, 8, Glow(new Rgba32(198, 224, 255)));
-        // 玻璃砖墙
-        for (var column = 0; column < 4; column++)
-        {
-            TemplateKit.Box(world, 6 + column * 3, 1, -14, 8 + column * 3, 10, -12, Glass(140));
-        }
-
-        // 材质球三件套
-        TemplateKit.Ellipsoid(world, -14.5, 4, 6, 3.2, 3.2, 3.2, Metal(new Rgba32(214, 178, 120)));
-        TemplateKit.Ellipsoid(world, -6.5, 4, -4, 3.0, 3.0, 3.0, Glass(200));
-        TemplateKit.Ellipsoid(world, 2.5, 3.5, 8, 2.8, 2.8, 2.8, Paint(new Rgba32(196, 88, 76), seed));
-        // 棋盘地面
-        for (var z = -18; z <= 18; z++)
-        for (var x = -24; x <= 24; x++)
-        {
-            if (((x + z) % 6 + 6) % 6 is < 3 and not 0) continue;
-            TemplateKit.Box(world, x, 1, z, x, 1, z, Paint(new Rgba32(58, 62, 74)), seed);
         }
 
         return world;

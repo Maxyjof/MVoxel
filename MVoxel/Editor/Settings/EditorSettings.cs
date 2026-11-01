@@ -81,6 +81,7 @@ public sealed class EditorSettingsDocument
     {
         var document = new EditorSettingsDocument();
         RenderQualityPresets.Apply(document.RenderViewSettings, RenderQualityPreset.Ultra);
+        document.RenderViewSettings.PathMaxAccumulatedSamples = 128;
         document.ShortcutSchemes.Add(CreateDefaultScheme());
         return document;
     }
@@ -260,9 +261,8 @@ public sealed class ProjectSettingsDocument
     {
         var settings = new ProjectSettingsDocument();
         RenderQualityPresets.Apply(settings.RenderSettings, RenderQualityPreset.Ultra);
-        // 预览默认 64 采样：上千采样要跑几十秒才收敛，构图阶段没必要等；
-        // 出图质量由 ExportRenderSettings 负责，导出仍按高质量累积。
-        settings.RenderSettings.PathMaxAccumulatedSamples = 64;
+        // 预览默认 128 采样；导出仍使用独立的质量设置。
+        settings.RenderSettings.PathMaxAccumulatedSamples = 128;
         return settings;
     }
 

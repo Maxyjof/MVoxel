@@ -4236,8 +4236,15 @@ DockId=0x6A3C3007,0
         var selected = ProjectTemplateCatalog.Get(_selectedProjectTemplate);
         if (ImGui.BeginCombo("项目模板", selected.Name))
         {
+            string? category = null;
             foreach (var template in ProjectTemplateCatalog.All)
             {
+                var nextCategory = ProjectTemplateCatalog.CategoryFor(template.Id);
+                if (category != nextCategory)
+                {
+                    category = nextCategory;
+                    ImGui.SeparatorText(category);
+                }
                 var isSelected = template.Id == _selectedProjectTemplate;
                 if (ImGui.Selectable(template.Name, isSelected))
                 {

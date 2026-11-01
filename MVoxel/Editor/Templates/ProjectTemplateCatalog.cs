@@ -21,6 +21,17 @@ public enum ProjectTemplateId
     /// <summary>室内餐桌默认场景。</summary>
     DefaultRoom,
 
+    /// <summary>透明与毛玻璃对照。</summary>
+    GlassStudy,
+    /// <summary>康奈尔盒间接光实验。</summary>
+    CornellBox,
+    /// <summary>玻璃球、金属球与棋盘。</summary>
+    SphereOptics,
+    /// <summary>体积雾与云朵。</summary>
+    CloudAndFog,
+    /// <summary>水面与水下观察。</summary>
+    WaterStudy,
+
     /// <summary>
     /// 展示基础建模、树木、屋顶、玻璃和自发光
     /// </summary>
@@ -45,11 +56,6 @@ public enum ProjectTemplateId
     /// 展示不同尺寸和密度的重复建筑，便于观察 LOD
     /// </summary>
     LodPlayground,
-
-    /// <summary>
-    /// 展示发光体、玻璃、反射色块和路径追踪参数
-    /// </summary>
-    RayTracingStudio,
 
     /// <summary>
     /// 展示程序化起伏地形和分层材质
@@ -119,13 +125,17 @@ public static class ProjectTemplateCatalog
     [
         new(ProjectTemplateId.Empty, "空", "创建没有场景对象的空项目。", "从零开始", "起步", "自行创建场景对象"),
         new(ProjectTemplateId.DefaultRoom, "默认模板", "带桌椅、可乐纸杯、饼干、壁画和落地电风扇的室内场景。", "室内 · 材质 · 家具", "起步", "选择并编辑独立物件"),
+        new(ProjectTemplateId.CornellBox, "康奈尔盒光照", "红绿墙、顶灯、漫反射方块与镜面球构成经典间接光实验。", "间接光 · 颜色溢出 · 软阴影", "小型", "观察彩色墙面对中性物体的间接照明"),
+        new(ProjectTemplateId.SphereOptics, "玻璃球与棋盘", "玻璃球、金属球和棋盘背景展示透射、折射与反射。", "玻璃 · 金属 · 反射 · 折射", "小型", "比较玻璃球与金属球的光线响应"),
+        new(ProjectTemplateId.GlassStudy, "玻璃透射对照", "在棋盘背景前比较透明玻璃、有色玻璃和毛玻璃。", "透射 · 折射 · 毛玻璃", "小型", "观察不同玻璃对背景的影响"),
+        new(ProjectTemplateId.CloudAndFog, "云雾与散射", "在山景中观察漂浮云朵、薄雾和浓雾的体积效果。", "云朵 · 雾气 · 体积散射", "小型", "调整雾化密度、散射色和不透明度"),
+        new(ProjectTemplateId.WaterStudy, "水面与池底", "用浅水池、池底棋盘和水中物件观察水体透射与折射。", "水面 · 吸收 · 折射", "小型", "比较水深及吸收对池底的影响"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
         new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色板 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
         new(ProjectTemplateId.SparseWorld, "灯塔与远方", "一座灯塔岛连接悬索桥与远处信号塔，地标分散在负坐标和远距离位置。", "大世界 · 稀疏存储 · 负坐标", "大型", "理解稀疏世界和远距离编辑"),
         new(ProjectTemplateId.LodPlayground, "建筑细节展示场", "同一座建筑从完整细节到块状轮廓排列成渐变展廊，距离变化一眼可见。", "LOD · 场景性能 · 批量对象", "中型", "验证距离 LOD 的视觉与性能取舍"),
-        new(ProjectTemplateId.RayTracingStudio, "光追工作室", "暗室、侧窗、玻璃砖墙、金属球和暖色灯槽组成一个明确的光线实验场。", "路径追踪 · 直接光 · 透明", "中型", "观察光照、反射和透明材质"),
         new(ProjectTemplateId.ProceduralTerrain, "山地湖泊", "从沙滩、湖盆、雪线到针叶林逐层过渡的山地剖面，适合观察生成结果。", "程序化 · 地形 · 大量体素", "大型", "理解噪声地形和分层材质"),
         new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "湖盆、瀑布、灯笼小径和混交林组成可漫游的山谷，树木作为独立层保存。", "MC 风格 · 分层结构 · 水面 · 发光", "中型", "学习分层世界和对象所有权"),
         new(ProjectTemplateId.Architecture, "柱廊庭院", "围绕镜水池组织的柱廊、圆拱、台阶和铜皮穹顶，强调比例和轴线。", "建筑 · 对称 · 曲线", "中型", "练习模块化建筑和对称构图"),
@@ -138,14 +148,35 @@ public static class ProjectTemplateCatalog
     ];
 
     /// <summary>
-    /// 所有可选模板，按场景规模从小到大排列，顺序就是界面展示顺序
+    /// 所有可选模板按用途分组，组内按场景规模从小到大排列
     /// </summary>
     public static IReadOnlyList<ProjectTemplateDefinition> All { get; } = Definitions
         .Select((template, index) => (template, index))
-        .OrderBy(entry => ScaleRank(entry.template.Scale))
+        .OrderBy(entry => CategoryRank(CategoryFor(entry.template.Id)))
+        .ThenBy(entry => ScaleRank(entry.template.Scale))
         .ThenBy(entry => entry.index)
         .Select(entry => entry.template)
         .ToArray();
+
+    /// <summary>按实际使用目的组织模板；空项目始终位于首组第一项。</summary>
+    public static string CategoryFor(ProjectTemplateId id) => id switch
+    {
+        ProjectTemplateId.Empty or ProjectTemplateId.DefaultRoom => "入门",
+        ProjectTemplateId.MaterialLab or ProjectTemplateId.PaletteWorkshop or ProjectTemplateId.GlassStudy or
+            ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or
+            ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy => "材质与渲染",
+        ProjectTemplateId.Showcase or ProjectTemplateId.Architecture or ProjectTemplateId.MoonbaseOutpost or
+            ProjectTemplateId.ClockworkConservatory or ProjectTemplateId.DesertCaravanserai => "建模与场景",
+        ProjectTemplateId.ProceduralTerrain or ProjectTemplateId.MinecraftValley or ProjectTemplateId.SparseWorld or
+            ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery or ProjectTemplateId.XianxiaContinent => "地形与大世界",
+        _ => "相机与性能",
+    };
+
+    private static int CategoryRank(string category) => category switch
+    {
+        "入门" => 0, "建模与场景" => 1, "材质与渲染" => 2,
+        "地形与大世界" => 3, "相机与性能" => 4, _ => 5,
+    };
 
     /// <summary>
     /// 规模标签的排序权重：起步最小，超大型最大；跨尺度的展示场景排在大型之后
@@ -381,12 +412,16 @@ public static class ProjectTemplateCatalog
         return id switch
         {
             ProjectTemplateId.DefaultRoom => TemplateScenes.BuildDefaultRoom(),
+            ProjectTemplateId.GlassStudy => TemplateScenes.BuildGlassStudy(),
+            ProjectTemplateId.CornellBox => TemplateScenes.BuildCornellBox(),
+            ProjectTemplateId.SphereOptics => TemplateScenes.BuildSphereOptics(),
+            ProjectTemplateId.CloudAndFog => TemplateScenes.BuildCloudAndFog(),
+            ProjectTemplateId.WaterStudy => TemplateScenes.BuildWaterStudy(),
             ProjectTemplateId.Showcase => TemplateScenes.BuildCottageGarden(),
             ProjectTemplateId.MaterialLab => TemplateScenes.BuildMaterialLab(),
             ProjectTemplateId.PaletteWorkshop => TemplateScenes.BuildPaletteWorkshop(palette),
             ProjectTemplateId.SparseWorld => TemplateScenes.BuildSparseWorld(),
             ProjectTemplateId.LodPlayground => TemplateScenes.BuildLodPlayground(),
-            ProjectTemplateId.RayTracingStudio => TemplateScenes.BuildRayTracingStudio(),
             ProjectTemplateId.ProceduralTerrain => TemplateScenes.BuildProceduralTerrain(),
             ProjectTemplateId.MinecraftValley => TemplateScenes.BuildValleyTerrain(),
             ProjectTemplateId.Architecture => TemplateScenes.BuildColonnade(),
@@ -427,6 +462,40 @@ public static class ProjectTemplateCatalog
                 Roughness = .08F, Metallic = 0F, AbsorptionStep = 3F, Ior = 1.33F,
                 Opacity = .8F, VolumeScattering = .08F });
         }
+        if (id is ProjectTemplateId.GlassStudy or ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy)
+        {
+            materials.Clear();
+            var opticalMaterials = new[]
+            {
+                new MaterialAsset { Name = "透明玻璃", Slot = 10, Ior = 1.5F, Roughness = .02F,
+                    Opacity = .05F, AbsorptionStep = .2F, VolumeScattering = 0F },
+                new MaterialAsset { Name = "毛玻璃", Slot = 11, Ior = 1.5F, Roughness = .8F,
+                    Opacity = .22F, AbsorptionStep = .3F, VolumeScattering = .12F, HazeDensity = .06F },
+                new MaterialAsset { Name = "琥珀玻璃", Slot = 12, Ior = 1.5F, Roughness = .04F,
+                    Opacity = .5F, AbsorptionStep = 1.4F, VolumeScattering = .04F },
+                new MaterialAsset { Name = "薄雾", Slot = 13, Ior = 1F, Roughness = .9F,
+                    Opacity = .32F, AbsorptionStep = .05F, HazeDensity = .12F, VolumeScattering = .65F,
+                    ScatteringColor = new Rgba32(218, 228, 236) },
+                new MaterialAsset { Name = "云朵", Slot = 14, Ior = 1F, Roughness = 1F,
+                    Opacity = .65F, AbsorptionStep = .05F, HazeDensity = .32F, VolumeScattering = .9F,
+                    ScatteringColor = new Rgba32(244, 246, 250) },
+                new MaterialAsset { Name = "浓雾", Slot = 16, Ior = 1F, Roughness = 1F,
+                    Opacity = .75F, AbsorptionStep = .05F, HazeDensity = .45F, VolumeScattering = .85F,
+                    ScatteringColor = new Rgba32(211, 222, 232) },
+                new MaterialAsset { Name = "清水", Slot = 15, Ior = 1.33F, Roughness = .03F,
+                    Opacity = .18F, AbsorptionStep = .4F, VolumeScattering = .03F,
+                    AbsorptionColor = new Rgba32(155, 218, 229) },
+            };
+            materials.AddRange(opticalMaterials.Where(material => id switch
+            {
+                ProjectTemplateId.GlassStudy => material.Slot is >= 10 and <= 12,
+                ProjectTemplateId.CloudAndFog => material.Slot is 13 or 14 or 16,
+                _ => material.Slot == 15,
+            }));
+        }
+        if (id == ProjectTemplateId.SphereOptics)
+            materials.Add(new MaterialAsset { Name = "实验玻璃", Slot = 10, Ior = 1.5F, Roughness = .02F,
+                Opacity = .08F, AbsorptionStep = .3F, VolumeScattering = 0F });
         if (id == ProjectTemplateId.MaterialLab)
         {
             for (var step = 0; step < 5; step++)
@@ -479,6 +548,24 @@ public static class ProjectTemplateCatalog
         settings.TemplateId = id.ToString();
         switch (id)
         {
+            case ProjectTemplateId.CornellBox:
+                settings.DefaultRenderPreset = "康奈尔盒光照";
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.SunEnabled = false;
+                settings.RenderSettings.EmissiveVoxels = true;
+                settings.RenderSettings.EmissiveIntensity = 12F;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 256;
+                settings.RenderSettings.MaxBounces = 8;
+                break;
+            case ProjectTemplateId.SphereOptics:
+            case ProjectTemplateId.GlassStudy:
+            case ProjectTemplateId.CloudAndFog:
+            case ProjectTemplateId.WaterStudy:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.PathTracingEnabled = true;
+                settings.RenderSettings.TransmissiveAbsorption = 1F;
+                break;
             case ProjectTemplateId.SparseWorld:
                 settings.DefaultRenderPreset = "大世界稀疏预览";
                 settings.RenderSettings.SunElevationDegrees = 26F;
@@ -503,34 +590,6 @@ public static class ProjectTemplateCatalog
                 break;
             case ProjectTemplateId.LodPlayground:
                 settings.DefaultRenderPreset = "LOD 练习";
-                settings.RenderSettings.ResolutionScale = .85F;
-                break;
-            case ProjectTemplateId.RayTracingStudio:
-                settings.DefaultRenderPreset = "光追工作室";
-                settings.RenderSettings.PathTracingEnabled = true;
-                settings.RenderSettings.PathSamplesPerFrame = 2;
-                settings.RenderSettings.PathMaxAccumulatedSamples = 768;
-                settings.RenderSettings.ShadowSoftness = .16F;
-                settings.RenderSettings.ShadowSamples = 6;
-                settings.RenderSettings.AmbientOcclusionEnabled = true;
-                settings.RenderSettings.AoStrength = .92F;
-                settings.RenderSettings.AoPower = 1.35F;
-                settings.RenderSettings.SkyAmbient = .3F;
-                settings.RenderSettings.AmbientTint = .22F;
-                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
-                settings.RenderSettings.Exposure = .35F;
-                settings.RenderSettings.Vignette = .18F;
-                settings.RenderSettings.PathRoughness = .18F;
-                settings.RenderSettings.PathMetalness = .12F;
-                settings.RenderSettings.PathSpecularF0 = .055F;
-                settings.RenderSettings.RussianRouletteThreshold = .003F;
-                settings.RenderSettings.RadianceClamp = 24F;
-                settings.RenderSettings.MaxBounces = 8;
-                settings.RenderSettings.PathDenoising = true;
-                settings.RenderSettings.PathDenoiseStrength = .68F;
-                settings.RenderSettings.EmissiveIntensity = 18F;
-                settings.RenderSettings.TransmissiveAbsorption = .35F;
-                settings.RenderSettings.SunDirectLighting = true;
                 break;
             case ProjectTemplateId.Showcase:
                 settings.DefaultRenderPreset = "基础展示";
@@ -630,8 +689,7 @@ public static class ProjectTemplateCatalog
                 break;
             case ProjectTemplateId.LargeWorld:
                 settings.DefaultRenderPreset = "超大型场景性能验证";
-                settings.RenderSettings.ResolutionScale = .65F;
-                settings.RenderSettings.PathMaxAccumulatedSamples = 64;
+                settings.RenderSettings.PathMaxAccumulatedSamples = 128;
                 settings.RenderSettings.EmissiveIntensity = 12F;
                 break;
             case ProjectTemplateId.MoonbaseOutpost:
@@ -857,6 +915,8 @@ public static class ProjectTemplateCatalog
             new Double3(center.X - distance * 1.05D, center.Y + distance * .32D, center.Z + distance * .25D),
             new Double3(center.X + distance * .18D, center.Y + distance * .72D, center.Z - distance * 1.1D),
         };
+        if (template.Id == ProjectTemplateId.CornellBox)
+            positions[0] = new Double3(center.X, center.Y, center.Z + distance * 1.25D);
         var target = new Vector3((float)center.X, (float)center.Y, (float)center.Z);
         for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
         {
@@ -965,7 +1025,6 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.PaletteWorkshop => [("调色板展示台", "调色板展示台", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.SparseWorld => [("远距离地标群", "地标群", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LodPlayground => [("LOD 建筑组", "建筑组", new VoxelCoord64(0, 0, 0))],
-            ProjectTemplateId.RayTracingStudio => [("光追展示台", "展示台", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.ProceduralTerrain => [("山地湖泊", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.MinecraftValley => [("地形", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.Architecture => [("柱廊庭院", "建筑", new VoxelCoord64(0, 0, 0))],
