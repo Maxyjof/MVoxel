@@ -2734,7 +2734,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 // 本地光源没有可被 BSDF 采样命中的几何，直接光采样是唯一可见途径，
-                // 因此不受 MIS 开关影响；MIS 仍只控制太阳的下一事件估计，
+                // 因此不受太阳直接光开关影响；该开关只控制太阳直接采样，
                 // 本地光源目前只做硬阴影，太阳继续使用软阴影
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
                     -rayDirection, hitLinearColor, metalness, roughness);

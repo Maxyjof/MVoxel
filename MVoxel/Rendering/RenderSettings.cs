@@ -310,7 +310,7 @@ public sealed class RenderSettings
     public float PathSpecularF0 = 0.04F;
 
     /// <summary>
-    /// 直接光 MIS 开关（太阳、天空与自发光体素的下一帧估计）
+    /// 路径追踪中的太阳直接光采样开关；字段名保留以兼容已有设置。
     /// </summary>
     public bool DirectLightingMIS = true;
 
