@@ -235,6 +235,9 @@ public sealed class ProjectSettingsDocument
     {
         var settings = new ProjectSettingsDocument();
         RenderQualityPresets.Apply(settings.RenderSettings, RenderQualityPreset.Ultra);
+        // 预览默认 64 采样：上千采样要跑几十秒才收敛，构图阶段没必要等；
+        // 出图质量由 ExportRenderSettings 负责，导出仍按高质量累积。
+        settings.RenderSettings.PathMaxAccumulatedSamples = 64;
         return settings;
     }
 
