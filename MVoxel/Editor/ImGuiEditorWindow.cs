@@ -2643,7 +2643,12 @@ DockId=0x6A3C3007,0
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         var buttonWidth = Math.Max(80F, Math.Max(ImGui.CalcTextSize("导出…").X, ImGui.CalcTextSize("信息").X) + 20F);
         var buttonHeight = ImGui.GetFrameHeight();
-        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F));
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+
+        DrawRenderSampleProgress(origin, activeRenderSettings);
+
+        // 导出与信息按钮都贴右上角排列，左上角留给采样进度
+        ImGui.SetCursorScreenPos(origin + new Vector2(size.X - buttonWidth * 2F - spacing - 12F, 10F));
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
         if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight,
@@ -2656,11 +2661,35 @@ DockId=0x6A3C3007,0
             ImGui.EndPopup();
         }
         ImGui.EndDisabled();
-        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth + ImGui.GetStyle().ItemSpacing.X, size.X - buttonWidth - 12F), 10F));
+        ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth + spacing, size.X - buttonWidth - 12F), 10F));
         if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight,
                 $"帧率、体素工作集、派发量和 CPU 更新耗时\n视场角 {activeRenderSettings.CameraFovDegrees:0}° · 视口 {size.X:0}×{size.Y:0}\n统计来自当前视图，不运行性能台架"))
             _showRenderStatistics = !_showRenderStatistics;
         if (_showRenderStatistics) DrawSceneStatistics(drawList, origin + new Vector2(0F, buttonHeight + 14F), renderView: true);
+    }
+
+    /// <summary>
+    /// 左上角显示路径追踪的采样进度，像 Blender 的 Sample 计数一样从 0 逐步累加到目标值
+    /// </summary>
+    private void DrawRenderSampleProgress(Vector2 origin, RenderSettings settings)
+    {
+        if (!settings.PathTracingEnabled)
+        {
+            DrawProgressText(origin, "实时渲染");
+            return;
+        }
+
+        var target = Math.Max(1, settings.PathMaxAccumulatedSamples);
+        var samples = Math.Clamp(_pipeline?.AccumulatedSamples ?? 0, 0, target);
+        DrawProgressText(origin, samples >= target
+            ? $"采样完成 {target} / {target}"
+            : $"渲染中 {samples} / {target}");
+    }
+
+    private static void DrawProgressText(Vector2 origin, string text)
+    {
+        ImGui.SetCursorScreenPos(origin + new Vector2(12F, 10F + ImGui.GetStyle().FramePadding.Y));
+        ImGui.TextDisabled(text);
     }
 
     private void ExportRenderPng()
