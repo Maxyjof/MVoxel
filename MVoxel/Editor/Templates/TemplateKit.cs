@@ -21,6 +21,9 @@ internal static class TemplateKit
     /// <summary>发光材质槽</summary>
     public const ushort SlotGlow = 4;
 
+    /// <summary>默认场景的可乐材质槽</summary>
+    public const ushort SlotCola = 5;
+
     /// <summary>
     /// 整数哈希，用于确定性抖动与散布
     /// </summary>

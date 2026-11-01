@@ -21,7 +21,7 @@ public sealed class MaterialAsset
     /// 每个槽位的打包 float 数：粗糙度、金属度、发光强度倍率、吸收步长倍率、
     /// 吸收色 RGB、折射率、镜面强度，末位对齐占位
     /// </summary>
-    public const int FloatsPerSlot = 12;
+    public const int FloatsPerSlot = 16;
 
     /// <summary>
     /// 表示“跟随全局渲染设置”的哨兵值
@@ -84,6 +84,22 @@ public sealed class MaterialAsset
     public float? Specular { get; set; }
 
     /// <summary>
+    /// 半透明不透明度，null 使用体素颜色的 Alpha；0 清澈，1 吸收较强。
+    /// </summary>
+    public float? Opacity { get; set; }
+
+    /// <summary>
+    /// 介质内部散射强度，0 清澈，1 强烈雾化。
+    /// </summary>
+    public float? VolumeScattering { get; set; }
+
+    /// <summary>独立的雾化密度，0 为无额外雾化，null 表示 0。</summary>
+    public float? HazeDensity { get; set; }
+
+    /// <summary>介质散射颜色，null 跟随体素颜色。</summary>
+    public Rgba32? ScatteringColor { get; set; }
+
+    /// <summary>
     /// 资产来源路径，运行期填充，不参与序列化
     /// </summary>
     [JsonIgnore]
@@ -135,7 +151,7 @@ public sealed class MaterialAsset
     }
 
     /// <summary>
-    /// 把一组材质打包成 GPU 槽位表：每槽 8 个 float，未覆盖字段写入跟随哨兵
+    /// 把一组材质打包成 GPU 槽位表：每槽 16 个 float，未覆盖字段写入跟随哨兵
     /// </summary>
     /// <param name="materials">项目材质集合，槽位冲突时后写入者生效</param>
     /// <returns>长度 TableSlots × FloatsPerSlot 的打包表</returns>
@@ -152,6 +168,10 @@ public sealed class MaterialAsset
             table[base0 + 3] = FollowGlobal;
             table[base0 + 8] = FollowGlobal;
             table[base0 + 9] = FollowGlobal;
+            table[base0 + 10] = FollowGlobal;
+            table[base0 + 11] = FollowGlobal;
+            table[base0 + 12] = FollowGlobal;
+            table[base0 + 15] = FollowGlobal;
         }
 
         foreach (var material in materials)
@@ -167,10 +187,20 @@ public sealed class MaterialAsset
                 table[base0 + 4] = color.R / 255F;
                 table[base0 + 5] = color.G / 255F;
                 table[base0 + 6] = color.B / 255F;
+                table[base0 + 7] = 1F;
             }
 
             table[base0 + 8] = material.Ior ?? FollowGlobal;
             table[base0 + 9] = material.Specular ?? FollowGlobal;
+            table[base0 + 10] = material.Opacity ?? FollowGlobal;
+            table[base0 + 11] = material.VolumeScattering ?? FollowGlobal;
+            if (material.ScatteringColor is { } scatterColor)
+            {
+                table[base0 + 12] = scatterColor.R / 255F;
+                table[base0 + 13] = scatterColor.G / 255F;
+                table[base0 + 14] = scatterColor.B / 255F;
+            }
+            table[base0 + 15] = material.HazeDensity ?? FollowGlobal;
         }
 
         return table;
@@ -212,6 +242,11 @@ public sealed class MaterialAsset
         Metallic = ClampOrFollow(Metallic, 0F, 1F);
         EmissiveScale = ClampOrFollow(EmissiveScale, 0F, 32F);
         AbsorptionStep = ClampOrFollow(AbsorptionStep, 0F, 8F);
+        Ior = ClampOrFollow(Ior, 1F, 2.5F);
+        Specular = ClampOrFollow(Specular, 0F, 1F);
+        Opacity = ClampOrFollow(Opacity, 0F, 1F);
+        VolumeScattering = ClampOrFollow(VolumeScattering, 0F, 1F);
+        HazeDensity = ClampOrFollow(HazeDensity, 0F, 8F);
         if (string.IsNullOrWhiteSpace(Name)) Name = $"材质 {Slot}";
     }
 

@@ -118,7 +118,7 @@ public static class ProjectTemplateCatalog
     private static readonly ProjectTemplateDefinition[] Definitions =
     [
         new(ProjectTemplateId.Empty, "空", "创建没有场景对象的空项目。", "从零开始", "起步", "自行创建场景对象"),
-        new(ProjectTemplateId.DefaultRoom, "默认模板", "带桌椅、可乐玻璃杯、饼干、壁画和落地电风扇的室内场景。", "室内 · 透明材质 · 家具", "起步", "选择并编辑独立物件"),
+        new(ProjectTemplateId.DefaultRoom, "默认模板", "带桌椅、可乐纸杯、饼干、壁画和落地电风扇的室内场景。", "室内 · 材质 · 家具", "起步", "选择并编辑独立物件"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -417,6 +417,16 @@ public static class ProjectTemplateCatalog
             new() { Name = "抛光金属", Slot = TemplateKit.SlotMetal, Roughness = .12F, Metallic = 1F },
             new() { Name = "灯与炉", Slot = TemplateKit.SlotGlow, EmissiveScale = 6F },
         };
+        if (id == ProjectTemplateId.DefaultRoom)
+        {
+            materials[0].Ior = 1.5F;
+            materials[0].Opacity = .08F;
+            materials[0].AbsorptionStep = .25F;
+            materials[0].VolumeScattering = 0F;
+            materials.Add(new MaterialAsset { Name = "可乐", Slot = TemplateKit.SlotCola,
+                Roughness = .08F, Metallic = 0F, AbsorptionStep = 3F, Ior = 1.33F,
+                Opacity = .8F, VolumeScattering = .08F });
+        }
         if (id == ProjectTemplateId.MaterialLab)
         {
             for (var step = 0; step < 5; step++)
@@ -790,6 +800,22 @@ public static class ProjectTemplateCatalog
                 modelObject.Visible = !modelPart.Hidden;
                 modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
                     modelPart.ModelAssetPath, modelPart.VoxelCount, template.Id.ToString(), modelPart.Part));
+            }
+            if (template.Id == ProjectTemplateId.DefaultRoom)
+            {
+                // 父子关系仅整理对象与可见性，模型体素仍各自保存在独立资产中。
+                var byName = scene.Objects.ToDictionary(item => item.Name, StringComparer.Ordinal);
+                foreach (var (childName, parentName) in new[]
+                {
+                    ("纸杯", "桌子"), ("可乐", "纸杯"),
+                    ("碟子", "桌子"), ("饼干", "碟子"),
+                    ("壁画", "地板与墙壁"), ("墙壁插座", "地板与墙壁"),
+                    ("插排与电线", "墙壁插座"),
+                })
+                {
+                    if (byName.TryGetValue(childName, out var child) && byName.TryGetValue(parentName, out var parent))
+                        graph.SetParent(child.Id, parent.Id);
+                }
             }
         }
         else

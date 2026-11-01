@@ -136,6 +136,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string? _componentWarning;
     private VoxelDda.Hit? _selectedVoxel;
     private StableId? _selectedSceneObjectId;
+    private StableId? _revealHierarchySelection;
     private StableId? _pinnedVoxelModelId;
     private VoxelDda.Hit? _brushPreview;
     private float _elapsedSeconds;
@@ -1156,6 +1157,7 @@ DockId=0x6A3C3007,0
         else
         {
             var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
+            if (_revealHierarchySelection is not null) ImGui.SetNextItemOpen(true, ImGuiCond.Always);
             if (ImGui.TreeNodeEx($"{(_sceneDocumentDirty ? "*" : "")}{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}###ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 if (objects.Count == 0)
@@ -1212,15 +1214,33 @@ DockId=0x6A3C3007,0
             nodeFlags |= ImGuiTreeNodeFlags.Selected;
         }
 
+        if (_revealHierarchySelection is { } revealId && sceneObject.Id != revealId)
+        {
+            var current = objects.FirstOrDefault(item => item.Id == revealId);
+            var visited = new HashSet<StableId>();
+            while (current?.ParentId is { } parentId && visited.Add(parentId))
+            {
+                if (parentId == sceneObject.Id) { ImGui.SetNextItemOpen(true, ImGuiCond.Always); break; }
+                current = objects.FirstOrDefault(item => item.Id == parentId);
+            }
+        }
         var nodeId = $"{sceneObject.Name}##SceneObject_{sceneObject.Id}";
         var transparentHeader = Color.FromArgb(0, EditorPalette.PanelHeader);
         ImGui.PushStyleColor(ImGuiCol.Header, ToColor(transparentHeader));
         ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(transparentHeader));
         ImGui.PushStyleColor(ImGuiCol.HeaderActive, ToColor(transparentHeader));
+        var hidden = !IsSceneObjectVisible(sceneObject) || !_sceneDocument!.IsLayerVisible(sceneObject.LayerIndex);
+        if (hidden) ImGui.PushStyleColor(ImGuiCol.Text, ToColor(EditorPalette.MutedText));
         var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
+        if (hidden) ImGui.PopStyleColor();
         ImGui.PopStyleColor(3);
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
+        if (_revealHierarchySelection == sceneObject.Id)
+        {
+            ImGui.SetScrollHereY(0.5F);
+            _revealHierarchySelection = null;
+        }
         var rowClicked = ImGui.IsItemClicked();
         var treeCursor = ImGui.GetCursorScreenPos();
         const float iconWidth = HierarchyRowIconSize;
@@ -3864,6 +3884,7 @@ DockId=0x6A3C3007,0
     private string? _projectBrowserSelectedPath;
     private readonly Stack<string> _projectBrowserBack = new();
     private ProjectTemplateId _selectedProjectTemplate = ProjectTemplateId.DefaultRoom;
+    private string _projectTemplateAutoName = string.Empty;
 
     private void DrawProjectAssets()
     {
@@ -4057,6 +4078,13 @@ DockId=0x6A3C3007,0
         _projectPathText = create
             ? Path.Combine(DefaultProjectRootPath, "新项目")
             : string.Empty;
+        _projectTemplateAutoName = string.Empty;
+        if (create)
+        {
+            _projectPathText = ImGuiWelcomeContent.ApplyTemplateProjectName(_projectPathText,
+                _projectTemplateAutoName, ProjectTemplateCatalog.Get(_selectedProjectTemplate).Name, out var autoName);
+            _projectTemplateAutoName = autoName ?? string.Empty;
+        }
         if (!create)
         {
             var start = Directory.Exists(DefaultProjectRootPath)
@@ -4211,7 +4239,13 @@ DockId=0x6A3C3007,0
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedProjectTemplate;
-                if (ImGui.Selectable(template.Name, isSelected)) _selectedProjectTemplate = template.Id;
+                if (ImGui.Selectable(template.Name, isSelected))
+                {
+                    _selectedProjectTemplate = template.Id;
+                    _projectPathText = ImGuiWelcomeContent.ApplyTemplateProjectName(_projectPathText,
+                        _projectTemplateAutoName, template.Name, out var autoName);
+                    if (autoName is not null) _projectTemplateAutoName = autoName;
+                }
                 if (isSelected) ImGui.SetItemDefaultFocus();
             }
 

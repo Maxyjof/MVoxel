@@ -1016,6 +1016,7 @@ internal sealed partial class ImGuiEditorWindow
                 greedyMerge: false,
                 includeInterior: IsCameraInsideOccupiedVoxel(camera));
             if (!pipeline.IsAvailable) return false;
+            pipeline.SetSceneSelection(showGeometry ? GetSelectedSubtreeWorld() : null);
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
@@ -1249,6 +1250,8 @@ internal sealed partial class ImGuiEditorWindow
                 if (target is not null && !IsSceneSelectionLockedAgainst(target.Id))
                 {
                     _toolDragAnchor = null; _toolDragCurrent = null; _toolDragTargetId = null;
+                    _revealHierarchySelection = target.Id;
+                    _hierarchySearch = string.Empty;
                     FocusHierarchyObject(target);
                     return;
                 }
@@ -1358,7 +1361,13 @@ internal sealed partial class ImGuiEditorWindow
             return _voxelEditTargetId;
         if (hitCoordinate is { } hit && _sceneDocument is not null &&
             _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var owner, out _))
-        { if (IsSceneSelectionLockedAgainst(owner)) return null; _selectedSceneObjectId = owner; return owner; }
+        {
+            if (IsSceneSelectionLockedAgainst(owner)) return null;
+            _selectedSceneObjectId = owner;
+            _revealHierarchySelection = owner;
+            _hierarchySearch = string.Empty;
+            return owner;
+        }
         return null;
     }
 
@@ -1645,10 +1654,35 @@ internal sealed partial class ImGuiEditorWindow
         DrawFollowableSlider("粗糙度", "粗糙度##mat", 0.01F, 1F, material.Roughness, value => material.Roughness = value);
         DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);
         DrawFollowableSlider("发光倍率", "发光倍率##mat", 0F, 32F, material.EmissiveScale, value => material.EmissiveScale = value);
+        var useVoxelOpacity = material.Opacity is null;
+        if (ImGui.Checkbox("不透明度跟随体素 Alpha", ref useVoxelOpacity))
+            material.Opacity = useVoxelOpacity ? null : 0.25F;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅作用于半透明体素。跟随时使用体素颜色的 Alpha；0 更清澈，1 吸收更强。需要保存材质后生效。");
+        if (!useVoxelOpacity)
+        {
+            var opacity = material.Opacity ?? 0.25F;
+            SetSettingsSliderWidth("不透明度##mat");
+            if (ImGui.SliderFloat("不透明度##mat", ref opacity, 0F, 1F, "%.2f")) material.Opacity = opacity;
+        }
+        DrawFollowableSlider("体积散射", "体积散射##mat", 0F, 1F, material.VolumeScattering, value => material.VolumeScattering = value);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制介质内部的雾状亮度。清澈玻璃通常接近 0；更大的值适合浑浊液体。默认 0.15。");
+        DrawFollowableSlider("雾化密度", "雾化密度##mat", 0F, 8F, material.HazeDensity, value => material.HazeDensity = value);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("与颜色吸收独立的额外消光：0 无额外雾化，数值越大越浓；受不透明度和介质厚度影响。默认 0。");
+        var scatterBase = material.ScatteringColor ?? new Rgba32(255, 255, 255);
+        var scatterColor = new System.Numerics.Vector3(scatterBase.R / 255F, scatterBase.G / 255F, scatterBase.B / 255F);
+        var followScatter = material.ScatteringColor is null;
+        if (ImGui.Checkbox("散射色跟随体素基础色", ref followScatter))
+            material.ScatteringColor = followScatter ? null : scatterBase;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("设置雾体受光后的颜色；需增加体积散射和雾化密度才能看出明显效果。");
+        if (!followScatter && ImGui.ColorEdit3("散射色", ref scatterColor))
+            material.ScatteringColor = new Rgba32(
+                (byte)Math.Round(Math.Clamp(scatterColor.X, 0F, 1F) * 255F),
+                (byte)Math.Round(Math.Clamp(scatterColor.Y, 0F, 1F) * 255F),
+                (byte)Math.Round(Math.Clamp(scatterColor.Z, 0F, 1F) * 255F));
         DrawFollowableSlider("吸收步长", "吸收步长##mat", 0F, 8F, material.AbsorptionStep, value => material.AbsorptionStep = value);
         DrawFollowableSlider("折射率", "折射率##mat", 1F, 2.5F, material.Ior, value => material.Ior = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("1 表示不偏折；水约 1.33，玻璃约 1.5，钻石约 2.4。\n跟随全局时使用渲染设置里的折射率。");
+            ImGui.SetTooltip("1 表示不偏折；水约 1.33，玻璃约 1.5，钻石约 2.4。\n未设置时不偏折。");
         DrawFollowableSlider("镜面强度", "镜面强度##mat", 0F, 1F, material.Specular, value => material.Specular = value);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("菲涅尔 F0 倍率。0 完全无高光（哑光），1 为标准值，金属反射色不受影响。");
@@ -1871,12 +1905,6 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawVoxelBrushPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_selectedVoxel is { } selected)
-        {
-            DrawCellWireframe(drawList, origin, size, camera, selected.Coordinate, 0.56F,
-                ToPackedColor(Color.FromArgb(255, 255, 200, 60)), 2.2F);
-        }
-
         if (_toolDragAnchor is { } anchor)
         {
             var end = _toolDragCurrent ?? anchor;
@@ -1905,6 +1933,65 @@ internal sealed partial class ImGuiEditorWindow
         DrawCellWireframe(drawList, origin, size, camera, previewCell, 0.52F,
             ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
                 _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255)), 1.6F);
+    }
+
+    private VoxelWorld? _selectedSubtreeWorld;
+    private int _selectedSubtreeSignature;
+
+    /// <summary>准备选中对象及可见子对象，变化时才重新合并。</summary>
+    private VoxelWorld? GetSelectedSubtreeWorld()
+    {
+        if (_sceneDocument is null || _selectedSceneObjectId is not { } selectedId ||
+            GetSelectedSceneObject() is not { } selected || !IsSceneObjectVisible(selected) ||
+            !_sceneDocument.IsLayerVisible(selected.LayerIndex)) return null;
+        var ids = new HashSet<StableId> { selectedId };
+        var children = _sceneDocument.Objects.Where(item => item.ParentId is not null).ToLookup(item => item.ParentId!.Value);
+        var queue = new Queue<StableId>();
+        queue.Enqueue(selectedId);
+        while (queue.TryDequeue(out var parent))
+            foreach (var child in children[parent])
+                if (ids.Add(child.Id)) queue.Enqueue(child.Id);
+        var hash = new HashCode();
+        hash.Add(selectedId);
+        hash.Add(_sceneSliceEnabled);
+        if (_sceneSliceEnabled)
+        {
+            hash.Add(_sceneSliceAxis);
+            hash.Add(_sceneSliceCoordinate);
+            hash.Add(_sceneSliceKeepGreater);
+        }
+        foreach (var item in _sceneDocument.Objects)
+        {
+            if (!ids.Contains(item.Id)) continue;
+            hash.Add(item.Id);
+            var visible = IsSceneObjectVisible(item) && _sceneDocument.IsLayerVisible(item.LayerIndex) &&
+                item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled);
+            hash.Add(visible);
+            if (visible && _objectVoxels.TryGetWorld(item.Id, out var objectWorld))
+            {
+                hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(objectWorld));
+                hash.Add(objectWorld.ContentVersion);
+            }
+        }
+        var signature = hash.ToHashCode();
+        if (_selectedSubtreeWorld is null || _selectedSubtreeSignature != signature)
+        {
+            var combined = new VoxelWorld();
+            var writer = combined.CreateBulkWriter();
+            foreach (var item in _sceneDocument.Objects)
+            {
+                if (!ids.Contains(item.Id) || !IsSceneObjectVisible(item) ||
+                    !_sceneDocument.IsLayerVisible(item.LayerIndex) ||
+                    !item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled) ||
+                    !_objectVoxels.TryGetWorld(item.Id, out var part)) continue;
+                foreach (var (coordinate, value) in part.EnumerateOccupied()) writer.Set(coordinate, value);
+            }
+            _selectedSubtreeWorld = _sceneSliceEnabled
+                ? VoxelWorldSlice.CreateHalfSpace(combined, _sceneSliceAxis, _sceneSliceCoordinate, _sceneSliceKeepGreater)
+                : combined;
+            _selectedSubtreeSignature = signature;
+        }
+        return _selectedSubtreeWorld;
     }
 
     /// <summary>

@@ -364,6 +364,8 @@ internal sealed partial class ImGuiEditorWindow
             if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera,
                     out var screen, out _) || Vector2.Distance(mouse, screen) > 12F) continue;
             _selectedSceneObjectId = sceneObject.Id;
+            _revealHierarchySelection = sceneObject.Id;
+            _hierarchySearch = string.Empty;
             _activeTool = EditorTool.Pick;
             if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)) FocusHierarchyObject(sceneObject);
             return true;

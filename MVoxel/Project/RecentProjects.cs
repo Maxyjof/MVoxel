@@ -135,6 +135,19 @@ public static class RecentProjects
         AtomicFile.WriteText(path, json);
     }
 
+    /// <summary>从最近列表移除指定路径，不改动项目文件。</summary>
+    public static void Remove(string projectPath, string? storagePath = null)
+    {
+        var path = storagePath ?? DefaultStoragePath;
+        if (!File.Exists(path)) return;
+        var entries = JsonSerializer.Deserialize<List<RecentProjectEntry>>(File.ReadAllText(path), JsonOptions)
+            ?? new List<RecentProjectEntry>();
+        var normalized = NormalizePath(projectPath);
+        entries.RemoveAll(entry => entry is not null && !string.IsNullOrWhiteSpace(entry.Path) &&
+            string.Equals(NormalizePath(entry.Path), normalized, StringComparison.OrdinalIgnoreCase));
+        AtomicFile.WriteText(path, JsonSerializer.Serialize(entries, JsonOptions));
+    }
+
     /// <summary>
     /// 路径是否仍指向一个含清单的有效项目
     /// </summary>

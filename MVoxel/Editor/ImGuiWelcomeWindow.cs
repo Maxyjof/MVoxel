@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using Microsoft.VisualBasic.FileIO;
 ﻿using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Project;
@@ -53,6 +55,8 @@ internal sealed class ImGuiWelcomeContent
     private readonly Stack<string> _browserBack = new();
     private string _browserError = string.Empty;
     private string _errorText = string.Empty;
+    private RecentProjectEntry? _deleteRecentProject;
+    private bool _requestDeleteRecentPopup;
     private int _pathMode;
     private ProjectTemplateId _selectedTemplate = ProjectTemplateId.DefaultRoom;
     private string _templateAutoName = string.Empty;
@@ -216,7 +220,13 @@ internal sealed class ImGuiWelcomeContent
                 var rowWidth = ImGui.GetContentRegionAvail().X;
                 var rowHeight = recentRowHeight;
                 var rowMin = ImGui.GetCursorScreenPos();
-                var clicked = ImGui.InvisibleButton("##RecentProjectCard", new Vector2(rowWidth, rowHeight));
+                var buttonHeight = ImGui.GetFrameHeight();
+                var buttonPadding = ImGui.GetStyle().FramePadding.X * 2F;
+                var folderWidth = ImGui.CalcTextSize("打开文件夹").X + buttonPadding;
+                var deleteWidth = ImGui.CalcTextSize("删除").X + buttonPadding;
+                var actionWidth = folderWidth + deleteWidth + ImGui.GetStyle().ItemSpacing.X + 16F;
+                var cardWidth = Math.Max(1F, rowWidth - actionWidth);
+                var clicked = ImGui.InvisibleButton("##RecentProjectCard", new Vector2(cardWidth, rowHeight));
                 var rowMax = rowMin + new Vector2(rowWidth, rowHeight);
                 var draw = ImGui.GetWindowDrawList();
                 var background = ImGui.IsItemHovered() ? EditorPalette.PanelHeader : EditorPalette.Input;
@@ -229,14 +239,14 @@ internal sealed class ImGuiWelcomeContent
                     ImDrawFlags.RoundCornersLeft);
                 var date = entry.LastOpenedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                 var dateWidth = ImGui.CalcTextSize(date).X;
-                var titleMaxWidth = Math.Max(1F, rowWidth - dateWidth - 36F);
+                var titleMaxWidth = Math.Max(1F, cardWidth - dateWidth - 24F);
                 var title = FitText(entry.Name, titleMaxWidth);
-                var path = FitText(entry.Path, Math.Max(1F, rowWidth - 24F));
+                var path = FitText(entry.Path, Math.Max(1F, cardWidth - 20F));
                 var firstLineY = MathF.Max(6F, (recentRowHeight - recentLineHeight * 2F - 4F) * 0.5F);
                 var secondLineY = firstLineY + recentLineHeight + 4F;
                 draw.PushClipRect(rowMin, rowMax, true);
                 draw.AddText(rowMin + new Vector2(12F, firstLineY), textColor, title);
-                draw.AddText(rowMin + new Vector2(rowWidth - dateWidth - 12F, firstLineY), mutedColor, date);
+                draw.AddText(rowMin + new Vector2(Math.Max(12F, cardWidth - dateWidth - 8F), firstLineY), mutedColor, date);
                 draw.AddText(rowMin + new Vector2(12F, secondLineY), mutedColor, path);
                 draw.PopClipRect();
                 if (clicked)
@@ -244,6 +254,29 @@ internal sealed class ImGuiWelcomeContent
                     _errorText = string.Empty;
                     _editor.OpenRecentProject(entry.Path);
                 }
+                ImGui.SetCursorScreenPos(rowMin + new Vector2(cardWidth + 4F, (rowHeight - buttonHeight) * .5F));
+                if (ImGui.Button("打开文件夹", new Vector2(folderWidth, buttonHeight)))
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(entry.Path) { UseShellExecute = true });
+                        _errorText = string.Empty;
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                                          System.ComponentModel.Win32Exception or InvalidOperationException)
+                    {
+                        _errorText = $"打开文件夹失败：{exception.Message}";
+                    }
+                }
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("在文件资源管理器中打开项目文件夹");
+                ImGui.SameLine();
+                if (ImGui.Button("删除", new Vector2(deleteWidth, buttonHeight)))
+                {
+                    _deleteRecentProject = entry;
+                    _requestDeleteRecentPopup = true;
+                }
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("移出列表或将项目文件夹移入回收站");
+                ImGui.SetCursorScreenPos(rowMin + new Vector2(0F, rowHeight));
                 ImGui.Dummy(new Vector2(0F, recentRowGap));
                 ImGui.PopID();
             }
@@ -262,6 +295,7 @@ internal sealed class ImGuiWelcomeContent
         }
         ImGui.PopTextWrapPos();
 
+        DrawRecentProjectDeleteDialog();
         DrawPathDialog();
         ImGui.End();
         if (operation is not null)
@@ -269,6 +303,65 @@ internal sealed class ImGuiWelcomeContent
             ImGui.EndDisabled();
             BlockingOperationDialog.Draw(operation.Value, _editor.CancelProjectOperation);
         }
+    }
+
+    private void DrawRecentProjectDeleteDialog()
+    {
+        if (_requestDeleteRecentPopup)
+        {
+            _requestDeleteRecentPopup = false;
+            ImGui.OpenPopup("删除最近项目##RecentProjectDelete");
+        }
+        if (!CenteredModal.Begin("删除最近项目##RecentProjectDelete", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        if (_deleteRecentProject is { } entry)
+        {
+            ImGui.TextWrapped($"项目：{entry.Name}");
+            ImGui.TextWrapped(entry.Path);
+            ImGui.TextWrapped("移出列表会保留项目文件；删除项目会将整个项目文件夹移入回收站。");
+            if (ImGui.Button("仅移出列表"))
+            {
+                try
+                {
+                    RecentProjects.Remove(entry.Path);
+                    _errorText = string.Empty;
+                    _deleteRecentProject = null;
+                    ImGui.CloseCurrentPopup();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                                      System.Text.Json.JsonException or ArgumentException)
+                {
+                    _errorText = $"移出最近列表失败：{exception.Message}";
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("删除项目到回收站"))
+            {
+                try
+                {
+                    var fullPath = Path.GetFullPath(entry.Path);
+                    if (!File.Exists(Path.Combine(fullPath, ProjectLayout.ProjectFileName)) ||
+                        string.Equals(fullPath, Path.GetPathRoot(fullPath), StringComparison.OrdinalIgnoreCase))
+                        throw new IOException("项目文件夹无效或已不存在");
+                    FileSystem.DeleteDirectory(fullPath, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin,
+                        UICancelOption.ThrowException);
+                    RecentProjects.Remove(fullPath);
+                    _errorText = string.Empty;
+                    _deleteRecentProject = null;
+                    ImGui.CloseCurrentPopup();
+                }
+                catch (OperationCanceledException) { ImGui.CloseCurrentPopup(); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                                      System.Text.Json.JsonException or ArgumentException or NotSupportedException)
+                {
+                    _errorText = $"删除项目失败：{exception.Message}";
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("取消")) { _deleteRecentProject = null; ImGui.CloseCurrentPopup(); }
+        }
+        ImGui.EndPopup();
     }
 
     /// <summary>
@@ -364,6 +457,12 @@ internal sealed class ImGuiWelcomeContent
         if (mode == 1) _selectedTemplate = ProjectTemplateId.DefaultRoom;
         _templateAutoName = string.Empty;
         _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
+        if (mode == 1)
+        {
+            _pathText = ApplyTemplateProjectName(_pathText, _templateAutoName,
+                ProjectTemplateCatalog.Get(_selectedTemplate).Name, out var autoName);
+            _templateAutoName = autoName ?? string.Empty;
+        }
         if (mode == 2)
         {
             var start = Directory.Exists(_editor.DefaultProjectRootPath)
@@ -575,7 +674,7 @@ internal sealed class ImGuiWelcomeContent
 
     /// <summary>
     /// 选择模板后同步项目名：路径末段仍是默认名“新项目”或上一次模板自动名时，
-    /// 替换为所选模板名；用户手动改过的名字保持不变，空模板不参与自动命名
+    /// 替换为所选模板名；用户手动改过的名字保持不变
     /// </summary>
     /// <param name="pathText">当前项目路径文本</param>
     /// <param name="templateAutoName">上一次由模板自动填入的名字</param>
@@ -590,7 +689,6 @@ internal sealed class ImGuiWelcomeContent
         var separatorIndex = pathText.LastIndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar });
         var folder = separatorIndex < 0 ? pathText : pathText[(separatorIndex + 1)..];
         if (folder != "新项目" && folder != templateAutoName) return pathText;
-        if (templateName == "无 · 空项目") return pathText;
         var safeName = new string(templateName.Where(character =>
             !Path.GetInvalidFileNameChars().Contains(character)).ToArray()).Trim();
         if (safeName.Length == 0) return pathText;

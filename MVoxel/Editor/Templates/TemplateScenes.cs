@@ -59,7 +59,7 @@ internal static class TemplateScenes
         var plate = Paint(new Rgba32(237, 232, 217));
         var cookie = Paint(new Rgba32(192, 137, 71));
         var chip = Paint(new Rgba32(83, 48, 30));
-        var cola = new VoxelValue(new Rgba32(99, 48, 24, 175), TemplateKit.SlotGlass, VoxelFlags.Translucent);
+        var cola = new VoxelValue(new Rgba32(110, 52, 24, 200), TemplateKit.SlotCola, VoxelFlags.Translucent);
         TemplateKit.Box(w, -36, 0, -30, 36, 0, 30, floor);
         TemplateKit.Box(w, -36, 1, -30, 36, 36, -30, wall);
         TemplateKit.Box(w, -36, 1, -29, -36, 36, 30, wall);
@@ -80,15 +80,15 @@ internal static class TemplateScenes
             TemplateKit.Ellipsoid(w, x, 13.1, z, 1.6, .6, 1.6, cookie);
             TemplateKit.Box(w, x, 13, z, x, 13, z, chip);
         }
-        // 缩小杯子，保留一格厚的透明杯壁、杯底和可乐。
+        // 纸杯使用不透明纸色体素，杯口内保留可单独编辑的可乐。
         for (var y = 12; y <= 16; y++)
         for (var z = -1; z <= 3; z++)
         for (var x = 4; x <= 8; x++)
         {
             var d = (x - 6) * (x - 6) + (z - 1) * (z - 1);
-            if (d > 5) continue;
-            if (y == 12 || d >= 2) w.Set(new VoxelCoord64(x, y, z), Glass(100));
-            else if (y <= 14) w.Set(new VoxelCoord64(x, y, z), cola);
+            if (d > 8) continue;
+            if (y == 12 || d >= 4) w.Set(new VoxelCoord64(x, y, z), Paint(new Rgba32(235, 225, 202)));
+            else if (y <= 15) w.Set(new VoxelCoord64(x, y, z), cola);
         }
         // 后墙壁画。
         TemplateKit.Box(w, -18, 19, -29, -4, 29, -29, wood);
@@ -265,8 +265,10 @@ internal static class TemplateScenes
                 ("墙壁插座", "插座", c => c.X is >= 28 and <= 30 && c.Y is >= 3 and <= 5 && c.Z is >= -29 and <= -28),
                 ("插排与电线", "电源", c => c.X is >= 23 and <= 29 && c.Y <= 3 && c.Z is >= -29 and <= -10),
                 ("落地电风扇", "电风扇", c => c.X is >= 14 and <= 26 && c.Y is >= 1 and <= 22 && c.Z is >= -13 and <= -7),
-                ("玻璃杯与可乐", "玻璃杯", c => c.X is >= 4 and <= 8 && c.Y is >= 12 and <= 16 && c.Z is >= -1 and <= 3),
-                ("碟子与饼干", "餐点", c => c.X is >= -10 and <= 1 && c.Y is >= 12 and <= 14 && c.Z is >= -4 and <= 6),
+                ("可乐", "可乐", c => c.X is >= 5 and <= 7 && c.Y is >= 13 and <= 15 && c.Z is >= 0 and <= 2),
+                ("纸杯", "纸杯", c => c.X is >= 4 and <= 8 && c.Y is >= 12 and <= 16 && c.Z is >= -1 and <= 3),
+                ("饼干", "饼干", c => c.X is >= -10 and <= 1 && c.Y is >= 13 and <= 14 && c.Z is >= -4 and <= 6),
+                ("碟子", "碟子", c => c.X is >= -10 and <= 1 && c.Y == 12 && c.Z is >= -4 and <= 6),
                 ("椅子", "椅子", c => c.Z >= 13),
                 ("桌子", "桌子", _ => true)),
             ProjectTemplateId.Showcase => BuildCottageParts(source),

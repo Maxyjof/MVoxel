@@ -132,6 +132,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _clearAccumulationPending = true;
     private float[]? _lastParameters;
     private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
+    private IReadOnlyList<VoxelGpuCell> _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
+    private VoxelCoord64 _sceneOrderedOrigin;
+    private VoxelWorld? _sceneSelection;
+    private int _sceneSelectionVersion = -1;
+    private bool _sceneSelectionDirty = true;
+    private bool _sceneSelectionActive;
     private bool _disposed;
     private bool _usingHardwareRayTracing;
     private int _hardwareLightFallbackCount = -1;
@@ -953,6 +959,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     {
         try
         {
+            ValidateComputeImageFormats();
             _computeDescriptorLayout = CreateComputeDescriptorLayout();
             _computeDescriptorPool = CreateComputeDescriptorPool();
             AllocateComputeDescriptorSets();
@@ -1021,6 +1028,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
     }
 
+    /// <summary>检查当前 Vulkan 设备的存储图像格式能力，不按显卡厂商推断支持情况。</summary>
+    private void ValidateComputeImageFormats()
+    {
+        if (_context is null || _api is null) return;
+        foreach (var (format, required) in new[]
+        {
+            (Format.R8G8B8A8Unorm, FormatFeatureFlags.StorageImageBit | FormatFeatureFlags.SampledImageBit),
+            (Format.R16G16B16A16Sfloat, FormatFeatureFlags.StorageImageBit),
+            (Format.R32G32B32A32Sfloat, FormatFeatureFlags.StorageImageBit),
+        })
+        {
+            _api.GetPhysicalDeviceFormatProperties(_context.PhysicalDevice, format, out var properties);
+            if ((properties.OptimalTilingFeatures & required) != required)
+                throw new InvalidOperationException($"Vulkan 设备 {_context.DeviceName} 不支持所需图像格式 {format}（需要 {required}）");
+        }
+    }
+
     /// <summary>
     /// 执行一次体素 Compute 绘制并准备 ImGui 采样图像
     /// </summary>
@@ -1049,6 +1073,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
         parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
         parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
+        bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
+        parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         if (!pathMode && ParametersEqualForDisplay(parameters))
         {
             return true;
@@ -1079,10 +1105,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
-                if (pathMode || bloomActive)
+                if (pathMode || bloomActive || selectionActive)
                 {
                     TransitionAccumulationToGeneral(commandBuffer);
-                    if (pathMode) TransitionGuideToGeneral(commandBuffer);
+                    if (pathMode || selectionActive) TransitionGuideToGeneral(commandBuffer);
                 }
 
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
@@ -1101,7 +1127,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
         // 实时模式也可以使用 Bloom，但不执行路径专用降噪。
         bool denoiseActive = pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F;
-        if (bloomActive || denoiseActive)
+        if (bloomActive || denoiseActive || selectionActive)
         {
             void DispatchFinalPass(int modeSlot, float modeValue)
             {
@@ -1112,11 +1138,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
-                if (pathMode || bloomActive)
+                if (pathMode || bloomActive || selectionActive)
                 {
-                    // 最终降噪/Bloom 读取整张累积图，必须显式等待前面所有分块的写入。
+                    // 收尾通道读取整张中间图，等待所有分块写入。
                     TransitionAccumulationToGeneral(commandBuffer);
-                    if (pathMode) TransitionGuideToGeneral(commandBuffer);
+                    if (pathMode || selectionActive) TransitionGuideToGeneral(commandBuffer);
                 }
                 api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
                 var descriptorSet = _ringSets[slot];
@@ -1131,7 +1157,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 parameters[modeSlot] = 0F;
             }
 
-            if (bloomActive)
+            if (selectionActive)
+            {
+                DispatchFinalPass(VoxelRenderParameters.Reserved2, 2F);
+                parameters[VoxelRenderParameters.Reserved2] = 1F;
+            }
+            else if (bloomActive)
             {
                 DispatchFinalPass(VoxelRenderParameters.BloomPass, 1F);
             }
@@ -1816,8 +1847,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             vec4 scalars;
             vec4 absorption;
-            // x 折射率（1 = 不偏折），y 镜面强度倍率，zw 保留
+            // x 折射率，y 镜面强度，z 不透明度覆盖，w 体积散射强度
             vec4 optics;
+            // rgb 散射色（r < 0 表示跟随体素），w 额外雾化密度
+            vec4 haze;
         };
 
         layout(set = 0, binding = 5, std430) readonly buffer MaterialTable
@@ -1874,21 +1907,29 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 表面遮挡会出现翻转。边界上按射线方向决定当前盒是否是入射盒：
             // 离开当前面的盒拒绝，进入当前面的盒从 t=0 命中；只有严格在盒内
             // 才取出口面。
-            const float boundaryEpsilon = 0.0001;
-            bool onMinX = abs(rayOrigin.x - boxMin.x) <= boundaryEpsilon;
-            bool onMaxX = abs(rayOrigin.x - boxMax.x) <= boundaryEpsilon;
-            bool onMinY = abs(rayOrigin.y - boxMin.y) <= boundaryEpsilon;
-            bool onMaxY = abs(rayOrigin.y - boxMax.y) <= boundaryEpsilon;
-            bool onMinZ = abs(rayOrigin.z - boxMin.z) <= boundaryEpsilon;
-            bool onMaxZ = abs(rayOrigin.z - boxMax.z) <= boundaryEpsilon;
+            // 推进距离沿射线计算；各轴的边界容差也必须随方向分量缩放，
+            // 否则掠射时已经进入相邻盒的起点仍被误认作共面，形成假界面。
+            vec3 boundaryTolerance = max(abs(rayDirection) * 0.00001, vec3(0.0000001));
+            bool onMinX = abs(rayOrigin.x - boxMin.x) <= boundaryTolerance.x;
+            bool onMaxX = abs(rayOrigin.x - boxMax.x) <= boundaryTolerance.x;
+            bool onMinY = abs(rayOrigin.y - boxMin.y) <= boundaryTolerance.y;
+            bool onMaxY = abs(rayOrigin.y - boxMax.y) <= boundaryTolerance.y;
+            bool onMinZ = abs(rayOrigin.z - boxMin.z) <= boundaryTolerance.z;
+            bool onMaxZ = abs(rayOrigin.z - boxMax.z) <= boundaryTolerance.z;
             if ((onMinX && rayDirection.x < 0.0) || (onMaxX && rayDirection.x > 0.0) ||
                 (onMinY && rayDirection.y < 0.0) || (onMaxY && rayDirection.y > 0.0) ||
                 (onMinZ && rayDirection.z < 0.0) || (onMaxZ && rayDirection.z > 0.0))
                 return false;
 
-            bool strictlyInside = all(greaterThan(rayOrigin, boxMin + vec3(boundaryEpsilon))) &&
-                                   all(lessThan(rayOrigin, boxMax - vec3(boundaryEpsilon)));
-            bool fromInside = strictlyInside;
+            // 平行于盒面的方向允许起点恰在该面上；否则从介质内沿网格面行进时，
+            // 交点会被误判成零距离入射，导致出口法线错误和透明物体内部出现暗条。
+            bool insideX = abs(rayDirection.x) < 1e-8 ||
+                (rayOrigin.x > boxMin.x + boundaryTolerance.x && rayOrigin.x < boxMax.x - boundaryTolerance.x);
+            bool insideY = abs(rayDirection.y) < 1e-8 ||
+                (rayOrigin.y > boxMin.y + boundaryTolerance.y && rayOrigin.y < boxMax.y - boundaryTolerance.y);
+            bool insideZ = abs(rayDirection.z) < 1e-8 ||
+                (rayOrigin.z > boxMin.z + boundaryTolerance.z && rayOrigin.z < boxMax.z - boundaryTolerance.z);
+            bool fromInside = insideX && insideY && insideZ;
             distance = fromInside ? farDistance : max(nearDistance, 0.0);
             // 法线必须按参数距离选轴，绝不能用“命中点到六面的欧氏距离挑最小”：
             // 命中点由 distance 重建、自带 fp 误差，共面像素到入射面的距离并不严格为 0，
@@ -1989,7 +2030,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             closestDistance = distance;
                             hitNormal = normal;
                             hitColor = cell.color;
-                            hitFlags = cell.metadata.x >> 16;
+                            hitFlags = (cell.metadata.x >> 16) | (cell.metadata.y != 0u ? 256u : 0u);
                             hitSlot = cell.metadata.x & 0xFFFFu;
                             hitCell = cell.position.xyz;
                             hitExtent = packedExtent;
@@ -2452,8 +2493,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         /* EMISSIVE_SAMPLING */
 
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
-            out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal)
+            out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal,
+            out bool primarySelected)
         {
+            primarySelected = false;
             primarySurfaceHit = false;
             primarySurfaceDistance = 3.402823e+38;
             primaryNormal = vec3(0.0);
@@ -2553,6 +2596,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     primarySurfaceHit = true;
                     primarySurfaceDistance = hitDistance;
                     primaryNormal = hitNormal;
+                    primarySelected = (hitFlags & 256u) != 0u;
                 }
                 MaterialSlotData material = materialSlots[int(hitSlot) % 256];
                 vec3 hitLinearColor = groundHit
@@ -2615,29 +2659,69 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         hitColor, hitFlags, material, groundHit, hitLinearColor, state);
                     if ((hitFlags & 1u) != 0u)
                     {
-                        // 实时模式采用一层确定性透射：玻璃/水显示后方不透明体，
-                        // 不引入随机折射噪声；路径追踪仍使用下方完整介质模型。
-                        vec3 transmitted = Sky(rayDirection);
-                        float behindDistance;
-                        vec3 behindNormal;
-                        vec4 behindColor;
-                        uint behindFlags;
-                        uint behindSlot;
-                        ivec3 behindCell;
-                        ivec3 behindExtent;
-                        if (TraceClosest(hitPoint + rayDirection * 0.01, rayDirection,
-                            behindDistance, behindNormal, behindColor, behindFlags, behindSlot,
-                            behindCell, behindExtent, true))
+                        // 逐段合成透明物体，不能跳过杯壁后面的液体或其他透明层。
+                        vec3 accumulated = vec3(0.0);
+                        vec3 remaining = vec3(1.0);
+                        vec3 cursor = hitPoint + rayDirection * 0.001;
+                        ivec3 currentCell = hitCell;
+                        ivec3 currentExtent = hitExtent;
+                        vec4 currentColor = hitColor;
+                        uint currentSlot = hitSlot;
+                        for (int layer = 0; layer < 128; layer++)
                         {
-                            MaterialSlotData behindMaterial = materialSlots[int(behindSlot) % 256];
-                            transmitted = RealtimeShade(hitPoint + rayDirection * (0.01 + behindDistance),
-                                behindNormal, rayDirection, behindColor, behindFlags, behindMaterial,
-                                false, SrgbToLinear(clamp(behindColor.rgb, vec3(0.0), vec3(1.0))), state);
+                            vec3 boxMin = vec3(values[16], values[17], values[18]) + vec3(currentCell);
+                            vec3 boxMax = boxMin + vec3(currentExtent);
+                            float segment;
+                            vec3 segmentNormal;
+                            if (!IntersectBox(cursor, rayDirection, boxMin, boxMax, segment, segmentNormal)) break;
+                            float overrideOpacity = materialSlots[int(currentSlot) % 256].optics.z;
+                            float density = overrideOpacity >= 0.0 ? overrideOpacity : currentColor.a;
+                            MaterialSlotData layerMaterial = materialSlots[int(currentSlot) % 256];
+                            float hazeDensity = max(layerMaterial.haze.w, 0.0);
+                            float opacity = 1.0 - exp(-clamp(density, 0.0, 1.0) * max(segment, 0.001) * (0.5 + hazeDensity));
+                            vec3 tint = SrgbToLinear(clamp(currentColor.rgb, vec3(0.0), vec3(1.0)));
+                            vec3 scatterColor = layerMaterial.haze.x >= 0.0
+                                ? SrgbToLinear(clamp(layerMaterial.haze.rgb, vec3(0.0), vec3(1.0))) : tint;
+                            float scatter = layerMaterial.optics.w >= 0.0 ? layerMaterial.optics.w : 0.15;
+                            accumulated += remaining * scatterColor * opacity * scatter;
+                            remaining *= mix(vec3(1.0), tint, opacity) *
+                                exp(-clamp(density, 0.0, 1.0) * hazeDensity * max(segment, 0.001));
+                            cursor += rayDirection * (segment + 0.001);
+                            float nextDistance;
+                            vec3 nextNormal;
+                            vec4 nextColor;
+                            uint nextFlags;
+                            uint nextSlot;
+                            ivec3 nextCell;
+                            ivec3 nextExtent;
+                            if (!TraceClosest(cursor, rayDirection, nextDistance, nextNormal, nextColor,
+                                nextFlags, nextSlot, nextCell, nextExtent, false))
+                            {
+                                accumulated += remaining * Sky(rayDirection);
+                                break;
+                            }
+                            if ((nextFlags & 1u) == 0u)
+                            {
+                                if (dot(nextNormal, rayDirection) > 0.0) nextNormal = -nextNormal;
+                                MaterialSlotData nextMaterial = materialSlots[int(nextSlot) % 256];
+                                accumulated += remaining * RealtimeShade(cursor + rayDirection * nextDistance,
+                                    nextNormal, rayDirection, nextColor, nextFlags, nextMaterial, false,
+                                    SrgbToLinear(clamp(nextColor.rgb, vec3(0.0), vec3(1.0))), state);
+                                break;
+                            }
+                            vec3 nextMin = vec3(values[16], values[17], values[18]) + vec3(nextCell);
+                            vec3 nextMax = nextMin + vec3(nextExtent);
+                            bool startsInsideNext = all(greaterThanEqual(cursor, nextMin)) &&
+                                all(lessThanEqual(cursor, nextMax));
+                            if (!startsInsideNext) cursor += rayDirection * (nextDistance + 0.001);
+                            currentCell = nextCell;
+                            currentExtent = nextExtent;
+                            currentColor = nextColor;
+                            currentSlot = nextSlot;
                         }
-                        float alpha = clamp(hitColor.a, 0.08, 0.82);
                         float facing = max(dot(-rayDirection, hitNormal), 0.0);
-                        float glassWeight = clamp(alpha * 0.58 + (1.0 - facing) * 0.24, 0.12, 0.78);
-                        radiance += mix(transmitted, realtime, glassWeight);
+                        float reflectionWeight = clamp((1.0 - facing) * 0.18 + 0.04, 0.04, 0.22);
+                        radiance += mix(accumulated, realtime, reflectionWeight);
                     }
                     else
                     {
@@ -2680,7 +2764,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         float cosView = max(dot(reflected, hitNormal), 0.0);
                         // 界面 F0 由材质折射率决定：F0 = ((n-1)/(n+1))^2。
                         // 未设置折射率时用 1.5，与原先写死的 0.04 完全等价，旧场景画面不变。
-                        float interfaceIor = material.optics.x > 1.0 ? material.optics.x : 1.5;
+                        float interfaceIor = material.optics.x >= 1.0 ? material.optics.x : 1.5;
                         float interfaceF0 = pow((interfaceIor - 1.0) / (interfaceIor + 1.0), 2.0);
                         if (material.optics.y >= 0.0) interfaceF0 = clamp(interfaceF0 * material.optics.y, 0.0, 1.0);
                         float fresnel = clamp(interfaceF0 + (1.0 - interfaceF0) * pow(1.0 - cosView, 5.0), 0.0, 1.0);
@@ -2703,16 +2787,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         throughput *= 1.0 - fresnel * 0.85;
                     }
                     translucentPasses++;
-                    if (translucentPasses >= 8)
+                    if (translucentPasses >= 24)
                         break; // 防御上限：一条路径的水气界面进入至多几次
 
                     // 沿折射方向逐段穿过相邻的同种半透明盒体，直到真正的外表面。
                     // 不能把任意球体或薄玻璃近似成垂直水柱，否则会在内部虚构出口。
-                    vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
-                        ? material.absorption.rgb : hitLinearColor;
+                    vec3 absorbColor = material.absorption.w > 0.5
+                        ? SrgbToLinear(clamp(material.absorption.rgb, vec3(0.0), vec3(1.0))) : hitLinearColor;
                     float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
-                    vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
-                        (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
+                    float opacity = clamp(material.optics.z >= 0.0 ? material.optics.z : hitColor.a, 0.0, 1.0);
+                    float scattering = clamp(material.optics.w >= 0.0 ? material.optics.w : 0.15, 0.0, 1.0);
+                    float hazeDensity = max(material.haze.w, 0.0);
+                    vec3 sigma = opacity * (max(values[81], 0.0) * 0.25 * stepScale *
+                        (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)) + vec3(0.1)) + vec3(hazeDensity));
                     float mediumIor = material.optics.x > 1.001 ? material.optics.x : 1.0;
                     vec3 mediumDirection = rayDirection;
                     if (mediumIor > 1.0 && !backfaceHit)
@@ -2730,6 +2817,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     vec3 exitNormal = -hitNormal;
                     float chord = 0.0;
                     bool foundExit = false;
+                    float nextMediumIor = 1.0;
                     for (int mediumStep = 0; mediumStep < 512; mediumStep++)
                     {
                         vec3 boxMin = vec3(values[16], values[17], values[18]) + vec3(mediumCell);
@@ -2758,6 +2846,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         if (!insideNext || (nextFlags & 1u) == 0u || nextSlot != hitSlot ||
                             any(greaterThan(abs(nextColor - hitColor), vec4(0.001))))
                         {
+                            if (insideNext && (nextFlags & 1u) != 0u)
+                            {
+                                float nextIor = materialSlots[int(nextSlot) % 256].optics.x;
+                                nextMediumIor = nextIor > 1.001 ? nextIor : 1.0;
+                            }
                             foundExit = true;
                             break;
                         }
@@ -2766,9 +2859,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         cursor = nextOrigin;
                     }
                     vec3 layerTransmittance = exp(-sigma * chord);
-                    vec3 bodyAmbient = hitLinearColor * (Sky(vec3(0.0, 1.0, 0.0))
+                    vec3 scatterColor = material.haze.x >= 0.0
+                        ? SrgbToLinear(clamp(material.haze.rgb, vec3(0.0), vec3(1.0))) : hitLinearColor;
+                    vec3 bodyAmbient = scatterColor * (Sky(vec3(0.0, 1.0, 0.0))
                         + (values[33] > 0.5 ? vec3(values[27] * 0.35) : vec3(0.0)));
-                    radiance += throughput * (vec3(1.0) - layerTransmittance) * bodyAmbient;
+                    radiance += throughput * (vec3(1.0) - layerTransmittance) * bodyAmbient * scattering;
                     throughput *= layerTransmittance;
                     if (max(max(throughput.r, throughput.g), throughput.b) < 0.004) break;
                     if (!foundExit)
@@ -2783,9 +2878,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     pendingInterfaceNormal = -exitNormal;
                     hasPendingInterface = true;
                     rayDirection = mediumDirection;
-                    if (mediumIor > 1.0)
+                    if (abs(mediumIor - nextMediumIor) > 0.001)
                     {
-                        vec3 refractedOut = refract(mediumDirection, -exitNormal, mediumIor);
+                        vec3 refractedOut = refract(mediumDirection, -exitNormal, mediumIor / nextMediumIor);
                         if (dot(refractedOut, refractedOut) > 1e-6)
                             rayDirection = normalize(refractedOut);
                         else
@@ -2943,6 +3038,34 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return max(coverage.x, coverage.y);
         }
 
+        void StoreSceneOutput(ivec2 pixel, vec4 value)
+        {
+            if (values[63] > 0.5 && values[63] < 1.5)
+                imageStore(accumulationImage, pixel, value);
+            else
+                imageStore(outputImage, pixel, value);
+        }
+
+        // Background reachable along a screen axis is outside the selection silhouette.
+        // Closed holes are rejected rather than receiving internal outlines.
+        bool SelectionExterior(ivec2 point, ivec2 size)
+        {
+            const ivec2 directions[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+            for (int d = 0; d < 4; d++)
+            {
+                ivec2 cursor = point;
+                bool escaped = true;
+                for (int step = 0; step < max(size.x, size.y); step++)
+                {
+                    if (cursor.x < 0 || cursor.y < 0 || cursor.x >= size.x || cursor.y >= size.y) break;
+                    if (imageLoad(guideImage, cursor).x > 0.5) { escaped = false; break; }
+                    cursor += directions[d];
+                }
+                if (escaped) return true;
+            }
+            return false;
+        }
+
         void main()
         {
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
@@ -2951,6 +3074,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
 
+            if (values[63] > 1.5)
+            {
+                vec4 base = imageLoad(accumulationImage, pixel);
+                if (imageLoad(guideImage, pixel).x > 0.5)
+                {
+                    bool edge = false;
+                    const ivec2 offsets[8] = ivec2[8](ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2),
+                        ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
+                    for (int i = 0; i < 8; i++)
+                    {
+                        ivec2 neighbor = pixel + offsets[i];
+                        if (neighbor.x < 0 || neighbor.y < 0 || neighbor.x >= width || neighbor.y >= height)
+                        { edge = true; break; }
+                        if (imageLoad(guideImage, neighbor).x < 0.5 && SelectionExterior(neighbor, ivec2(width, height)))
+                        { edge = true; break; }
+                    }
+                    if (edge) base = vec4(1.0, 0.784, 0.235, 1.0);
+                }
+                imageStore(outputImage, pixel, base);
+                return;
+            }
             bool pathMode = values[86] > 0.5;
             bool useDenoise = pathMode && values[92] > 0.5;
             bool bloomRequested = values[109] > 0.5 && values[110] > 0.0 &&
@@ -2958,7 +3102,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (values[103] > 0.5 && useDenoise)
             {
                 vec3 color = DenoiseAt(pixel, width, height);
-                imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
+                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
                 return;
             }
 
@@ -2968,7 +3112,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 vec3 base = useDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
                 vec3 color = base + BloomGather(pixel, width, height) * clamp(values[110], 0.0, 2.0);
-                imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
+                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
                 return;
             }
 
@@ -2985,6 +3129,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             vec3 up = vec3(values[12], values[13], values[14]);
             vec3 sampleColor = vec3(0.0);
             bool primarySurfaceHit = false;
+            bool selectedPixel = false;
             float primarySurfaceDistance = 3.402823e+38;
             vec4 guide = vec4(0.0);
             for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
@@ -3020,14 +3165,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 bool sampleSurfaceHit = false;
                 float sampleSurfaceDistance = 3.402823e+38;
                 vec3 sampleNormal;
+                bool sampleSelected;
                 sampleColor += TracePath(sampleOrigin, direction, state, pathMode,
-                    sampleSurfaceHit, sampleSurfaceDistance, sampleNormal);
+                    sampleSurfaceHit, sampleSurfaceDistance, sampleNormal, sampleSelected);
+                if (sampleIndex == 0) selectedPixel = sampleSelected;
                 if (sampleIndex == 0 && sampleSurfaceHit)
                     guide = vec4(sampleNormal, max(sampleSurfaceDistance * dot(direction, forward), 0.0001));
                 primarySurfaceHit = primarySurfaceHit || sampleSurfaceHit;
                 primarySurfaceDistance = min(primarySurfaceDistance, sampleSurfaceDistance);
             }
             sampleColor /= float(samples);
+            if (values[63] > 0.5 && values[63] < 1.5)
+                imageStore(guideImage, pixel, vec4(selectedPixel ? 1.0 : 0.0, 0.0, 0.0, 1.0));
 
             vec3 color = sampleColor;
             if (pathMode)
@@ -3060,7 +3209,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (gridDistance >= primarySurfaceDistance - max(1e-4, gridDistance * 1e-5))
                     {
                         float outputAlpha = primarySurfaceHit ? 1.0 : 0.0;
-                        imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
+                        StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
                         return;
                     }
                     vec2 p = (origin + t * ray).xz;
@@ -3086,14 +3235,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         ? PostProcess(color, pixel, width, height)
                         : background;
                     vec3 composite = mix(baseColor, vec3(0.38, 0.47, 0.59), alpha);
-                    imageStore(outputImage, pixel, vec4(composite, 1.0));
+                    StoreSceneOutput(pixel, vec4(composite, 1.0));
                     return;
                 }
             }
             // 场景预览允许背景透明，让场景视图绘制自己的底色；渲染视图
             // 必须始终不透明，否则关闭 Bloom 后天空像素 alpha 为 0，会透出视口底色发黑
             float outputAlpha = pathMode || values[115] < 0.5 || primarySurfaceHit ? 1.0 : 0.0;
-            imageStore(outputImage, pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
+            StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
         }
 
         vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height)
@@ -3251,6 +3400,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         SyncBvhBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         phaseWatch.Restart();
         var bytes = PackCells(bvh.OrderedCells);
+        _sceneOrderedCells = bvh.OrderedCells;
+        _sceneOrderedOrigin = workset.Origin;
+        _sceneSelectionDirty = true;
         // 空场景也要绘制无限网格；描述符保持有效，计数为零时着色器不访问这些占位数据。
         if (bytes.Length == 0) bytes = new byte[PackedCellSize];
         var nodeBytes = bvh.NodeBytes.Length == 0 ? new byte[VoxelGpuBvh.PackedNodeSize] : bvh.NodeBytes;
@@ -3287,6 +3439,33 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _usingBrickPath = false;
         UpdateComputeDescriptors();
         SyncUploadMs = phaseWatch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>只在选中子树或工作集变化时更新 GPU 标记，不在相机导航期间遍历像素。</summary>
+    internal void SetSceneSelection(VoxelWorld? selection)
+    {
+        var version = selection?.ContentVersion ?? -1;
+        if (!_sceneSelectionDirty && ReferenceEquals(selection, _sceneSelection) && version == _sceneSelectionVersion) return;
+        _sceneSelection = selection;
+        _sceneSelectionVersion = version;
+        _sceneSelectionDirty = false;
+        _sceneSelectionActive = selection is { OccupiedVoxelCount: > 0 } && _sceneOrderedCells.Count > 0;
+        if (_context is null || _api is null || _voxelBuffer.Handle == 0) return;
+        var bytes = PackCells(_sceneOrderedCells);
+        for (var index = 0; index < _sceneOrderedCells.Count; index++)
+        {
+            var cell = _sceneOrderedCells[index];
+            var coordinate = new VoxelCoord64(_sceneOrderedOrigin.X + cell.X,
+                _sceneOrderedOrigin.Y + cell.Y, _sceneOrderedOrigin.Z + cell.Z);
+            uint selected = selection is not null && selection.TryGet(coordinate, out var value) && value == cell.Value ? 1u : 0u;
+            MemoryMarshal.Write(bytes.AsSpan(index * PackedCellSize + 36, 4), in selected);
+        }
+        if (bytes.Length > 0)
+        {
+            WaitForComputeIdle();
+            UploadBytes(bytes, _voxelBuffer, 0);
+        }
+        _lastParameters = null;
     }
 
     /// <summary>

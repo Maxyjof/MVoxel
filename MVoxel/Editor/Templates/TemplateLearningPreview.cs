@@ -63,7 +63,7 @@ internal static class TemplateLearningPreview
     internal static string[] Steps(ProjectTemplateId id) => id switch
     {
         ProjectTemplateId.Empty => ["在层级中创建模型对象", "绘制体素并添加光照和相机", "Ctrl+S 保存项目"],
-        ProjectTemplateId.DefaultRoom => ["在层级中选择桌椅、杯子或壁画", "编辑体素并观察玻璃材质", "切换渲染视图，Ctrl+S 保存项目"],
+        ProjectTemplateId.DefaultRoom => ["在层级中选择桌椅、杯子或壁画", "展开纸杯对象并选择可乐", "切换渲染视图，Ctrl+S 保存项目"],
         ProjectTemplateId.XianxiaContinent => ["在层级中选择山体、宗门或浮空岛并聚焦", "锁定一个分件，取色并修改局部体素", "切换场景相机，保存项目并导出画面"],
         ProjectTemplateId.MaterialLab => ["选择玻璃、金属与发光样品并取色", "从笔刷材质进入共享材质，比较粗糙度与透明度", "切到渲染视图，保存并导出 PNG"],
         ProjectTemplateId.PaletteWorkshop => ["取样色卡并在空白处绘制", "在项目设置中创建与保存调色板副本", "比较新笔刷颜色与已有方块，再保存项目"],

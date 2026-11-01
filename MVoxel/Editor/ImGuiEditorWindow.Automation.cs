@@ -82,6 +82,10 @@ internal sealed partial class ImGuiEditorWindow
             [Param("slot", "integer", true, "材质槽位"), Param("name", "string", false, "材质名称"),
              Param("roughness", "number", false, "粗糙度 0.01–1"), Param("metallic", "number", false, "金属度 0–1"),
              Param("emissive", "number", false, "发光强度倍率 0–32"),
+             Param("opacity", "number", false, "半透明不透明度 0–1"),
+             Param("volumeScattering", "number", false, "体积散射强度 0–1"),
+             Param("hazeDensity", "number", false, "雾化密度 0–8"),
+             Param("scatteringColor", "number[3]", false, "散射色 r/g/b，0–255"),
              Param("absorptionStep", "number", false, "半透明吸收步长倍率 0–8"),
              Param("absorptionColor", "number[3]", false, "吸收色 r/g/b，0–255"),
              Param("ior", "number", false, "折射率，1 表示不偏折，玻璃约 1.5"),
@@ -621,6 +625,10 @@ internal sealed partial class ImGuiEditorWindow
         roughness = material.Roughness,
         metallic = material.Metallic,
         emissive = material.EmissiveScale,
+        opacity = material.Opacity,
+        volumeScattering = material.VolumeScattering,
+        hazeDensity = material.HazeDensity,
+        scatteringColor = material.ScatteringColor is { } scatteringColor ? new[] { scatteringColor.R, scatteringColor.G, scatteringColor.B } : null,
         absorptionStep = material.AbsorptionStep,
         absorptionColor = material.AbsorptionColor is { } color ? new[] { color.R, color.G, color.B } : null,
         ior = material.Ior,
@@ -653,6 +661,14 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "roughness") is { } roughness) material.Roughness = (float)roughness;
         if (ReadNumber(arguments, "metallic") is { } metallic) material.Metallic = (float)metallic;
         if (ReadNumber(arguments, "emissive") is { } emissive) material.EmissiveScale = (float)emissive;
+        if (ReadNumber(arguments, "opacity") is { } opacity) material.Opacity = (float)opacity;
+        if (ReadNumber(arguments, "volumeScattering") is { } scattering) material.VolumeScattering = (float)scattering;
+        if (ReadNumber(arguments, "hazeDensity") is { } haze) material.HazeDensity = (float)haze;
+        if (ReadVector(arguments, "scatteringColor") is { } scatterRgb)
+            material.ScatteringColor = new Rgba32(
+                (byte)Math.Clamp((int)Math.Round(scatterRgb[0]), 0, 255),
+                (byte)Math.Clamp((int)Math.Round(scatterRgb[1]), 0, 255),
+                (byte)Math.Clamp((int)Math.Round(scatterRgb[2]), 0, 255));
         if (ReadNumber(arguments, "absorptionStep") is { } step) material.AbsorptionStep = (float)step;
         if (ReadNumber(arguments, "ior") is { } ior) material.Ior = (float)ior;
         if (ReadNumber(arguments, "specular") is { } specular) material.Specular = (float)specular;
