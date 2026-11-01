@@ -229,15 +229,14 @@ internal static class VoxDocumentReader
                 }
                 else if (shapes.TryGetValue(nodeId, out var shape))
                 {
-                    for (var index = 0; index < shape.ModelIds.Count; index++)
-                    {
-                        var modelId = shape.ModelIds[index];
-                        if (modelId < 0 || modelId >= modelCount) continue;
-                        var name = branchName;
-                        if (string.IsNullOrWhiteSpace(name)) name = $"模型 {modelId + 1}";
-                        if (shape.ModelIds.Count > 1) name = $"{name} {index + 1}";
-                        instances.Add(new VoxInstance(modelId, name, layerId, hidden, offset, rotation));
-                    }
+                    // nSHP 携带多个模型时是动画帧序列，各帧占据同一位置。
+                    // 只取第 0 帧；全部导入会得到一叠互相重叠的模型。
+                    if (shape.ModelIds.Count == 0) return;
+                    var modelId = shape.ModelIds[0];
+                    if (modelId < 0 || modelId >= modelCount) return;
+                    var name = branchName;
+                    if (string.IsNullOrWhiteSpace(name)) name = $"模型 {modelId + 1}";
+                    instances.Add(new VoxInstance(modelId, name, layerId, hidden, offset, rotation));
                 }
             }
             finally
