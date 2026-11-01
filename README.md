@@ -4,7 +4,7 @@ MVoxel 是一个面向创作者的体素建模与渲染编辑器。它使用纯�
 
 ## 快速开始
 
-1. 下载并解压绿色版，双击 `MVoxel.exe`。如有提示，先安装 .NET 10 x64 运行时。
+1. 下载并解压绿色版，双击 `MVoxel.exe`。绿色版自带 .NET 运行时，不需要另装 .NET。
 2. 在欢迎界面选择“新建项目”或“打开项目”。
 3. 进入场景后，在层级中选择对象；右侧检查器用于编辑对象名称、坐标和组件。
 4. 在场景中使用左键放置、右键环绕、中键平移；普通模式下使用 `Shift+左键` 破坏。开启大小写锁定后，左键放置、右键破坏、`Shift` 加速，鼠标移动视角，中键仍用于平移；编辑器设置中的 MC 模式会反转大小写锁定后的左右键功能。
@@ -12,7 +12,7 @@ MVoxel 是一个面向创作者的体素建模与渲染编辑器。它使用纯�
 
 第一次使用先看[快速入门](Docs/快速入门.md)，十分钟走完建项目到导出；需要完整流程读[入门教程](Docs/入门教程.md)；从 MagicaVoxel 过来直接看[迁移指南](Docs/迁移/MagicaVoxel迁移指南.md)。构建、插件运行时和渲染管线等开发内容统一放在[技术文档](Docs/技术文档/01-产品与架构.md)中。
 
-制作绿色版：先正常编译 Release，然后双击仓库根目录的 `打包绿色版.bat`。脚本制作不包含个人项目、配置和缓存的 ZIP；用户需完整解压，并自行安装 .NET 10 x64 运行时。
+制作绿色版：双击仓库根目录的 `打包绿色版.bat` 即可，脚本会自动执行 Windows x64 自包含发布再打包 ZIP，不需要先手动编译。包内自带 .NET 运行时，用户完整解压后直接双击 `MVoxel.exe` 就能用，不包含个人项目、配置和缓存。
 
 MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组件，再按需要添加模型、光照或相机组件；体素数据文件属于内部数据，由这些对象和组件使用，不需要单独理解文件格式才能开始创作。
 
@@ -118,9 +118,9 @@ MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组�
 
 ```powershell
 dotnet build .\MVoxel.sln --no-restore --configuration Release -m:1
-dotnet publish .\MVoxel\MVoxel.csproj --configuration Release --runtime win-x64 --self-contained false --output .\artifacts\publish\MVoxel
+dotnet publish .\MVoxel\MVoxel.csproj --configuration Release --runtime win-x64 --self-contained true --output .\artifacts\publish\MVoxel
 ```
 
-未显式指定配置时，项目和解决方案默认使用 `Release`；`Debug` 仅保留给具体项目的显式调试构建。编辑器采用常规 .NET JIT 发布，不启用裁剪或 NativeAOT，以保留插件、脚本和反射式检查器能力。
+未显式指定配置时，项目和解决方案默认使用 `Release`；`Debug` 仅保留给具体项目的显式调试构建。编辑器采用常规 .NET JIT 发布，不启用裁剪或 NativeAOT，以保留插件、脚本和反射式检查器能力。绿色版按 `win-x64` 自包含发布，发布目录里的运行时文件和原生依赖一起打包，用户不需要安装 .NET；日常开发构建仍是框架依赖，运行时安装一次即可。
 
 开发约定集中在[编码规范](Docs/技术文档/06-工程实践与质量.md)中。按项目所有者要求，已移除测试源码项目和解决方案引用，不再新增或运行自动化测试、烟测及性能台架；开发阶段执行构建和代码检查，实际功能与体验由用户验收。构建成功不代表功能验收通过。

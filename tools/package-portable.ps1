@@ -1,31 +1,40 @@
 ﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$source = Join-Path $repo 'MVoxel\bin\Release\net10.0-windows'
-$exe = Join-Path $source 'MVoxel.exe'
-if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    throw "Release executable not found: $exe. Build Release first."
-}
+$project = Join-Path $repo 'MVoxel\MVoxel.csproj'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('MVoxel-portable-' + [guid]::NewGuid().ToString('N'))
 $package = Join-Path $stage 'MVoxel'
 $archive = Join-Path $repo ('MVoxel绿色版-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip')
 if (Test-Path -LiteralPath $archive) { throw "Package already exists: $archive" }
 try {
-    New-Item -ItemType Directory -Path $package | Out-Null
-    Get-ChildItem -LiteralPath $source -File | Where-Object {
-        $_.Extension -in '.dll', '.exe', '.json'
-    } | Copy-Item -Destination $package
-    foreach ($dir in @('Editor', 'Plugins')) {
-        $path = Join-Path $source $dir
-        if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $package -Recurse }
+    # 自包含发布：包内自带 .NET 运行时，用户解压后不用另装 .NET
+    & dotnet publish $project --configuration Release --runtime win-x64 --self-contained true `
+        -p:DebugType=None -p:DebugSymbols=false --output $package
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+    $exe = Join-Path $package 'MVoxel.exe'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        throw "Self-contained publish output missing MVoxel.exe: $package"
     }
-    $native = Join-Path $source 'runtimes\win-x64'
-    if (-not (Test-Path -LiteralPath (Join-Path $native 'native\cimgui.dll'))) {
-        throw 'Missing Windows x64 native dependencies in Release output.'
+    foreach ($native in @('cimgui.dll', 'glfw3.dll', 'shaderc_shared.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $package $native) -PathType Leaf)) {
+            throw "Self-contained publish output missing native dependency: $native"
+        }
     }
-    New-Item -ItemType Directory -Path (Join-Path $package 'runtimes') | Out-Null
-    Copy-Item -LiteralPath $native -Destination (Join-Path $package 'runtimes') -Recurse
-    $readme = "MVoxel Windows x64 绿色版`r`n`r`n请先解压整个文件夹，再双击 MVoxel.exe。请保留文件夹内的全部文件。`r`n运行需要 .NET 10 x64 运行时及支持 Vulkan 的显卡和驱动。`r`n如果电脑没有安装运行时，请根据启动时的提示安装。`r`n首次运行会在程序目录中创建配置和缓存。`r`n"
-    [IO.File]::WriteAllText((Join-Path $package '使用说明.txt'), $readme, [Text.Encoding]::UTF8)
+    foreach ($content in @('Editor\Fonts', 'Editor\Guide\Docs')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $package $content))) {
+            throw "Self-contained publish output missing content directory: $content"
+        }
+    }
+    Get-ChildItem -LiteralPath $package -Recurse -File -Filter '*.pdb' | Remove-Item -Force
+    $readme = @"
+MVoxel Windows x64 绿色版
+
+请先解压整个文件夹，再双击 MVoxel.exe；请保留文件夹内的全部文件，不要只单独拖出 exe。
+程序已自带 .NET 运行时，不需要安装 .NET。
+运行需要支持 Vulkan 的显卡和驱动，驱动过旧时请先更新显卡驱动。
+首次运行会在程序目录中创建配置、缓存和 MVoxelData。
+"@
+    [IO.File]::WriteAllText((Join-Path $package '使用说明.txt'), ($readme -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($false))
     Compress-Archive -LiteralPath $package -DestinationPath $archive -CompressionLevel Optimal
     Write-Host "Package created: $archive"
 } catch {
