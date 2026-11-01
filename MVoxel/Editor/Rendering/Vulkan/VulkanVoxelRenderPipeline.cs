@@ -19,7 +19,7 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// Scene View 使用 Vulkan Compute 只进行体素求交和原色显示
 /// 路径追踪和渲染导出继续沿用同一资源边界逐步接入
 /// </remarks>
-internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
+internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 {
     internal const int PackedCellSize = 48;
 
@@ -282,10 +282,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
         if (brickEligible)
         {
+            RefreshEmissiveCatalog(world, true);
             SyncBrick(world, lodSignature, maximumCells);
+            UploadEmissiveFaces();
             return;
         }
 
+        RefreshEmissiveCatalog(world, maximumCells == 0 && lodSignature == 0);
         _brickResidency = null;
         _usingBrickPath = false;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -299,6 +302,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _workset = next;
+        UploadEmissiveFaces();
         _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
@@ -593,12 +597,13 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         if (_context?.IsDeviceLost == true) return false;
         // 硬件 RT 目前只输出体素基础颜色，不执行太阳、自发光和场景光源着色；
         // 存在场景光源时改用 Compute 路径，保证本地光照与阴影可见，避免切到硬件 RT 后变暗
-        if (settings.UseHardwareRayTracing && _sceneLightCount > 0)
+        bool emissiveLighting = settings.EmissiveVoxels && settings.EmissiveIntensity > 0F && _workset.EmissiveCount > 0;
+        if (settings.UseHardwareRayTracing && (_sceneLightCount > 0 || emissiveLighting))
         {
             if (_hardwareLightFallbackCount != _sceneLightCount)
             {
                 _hardwareLightFallbackCount = _sceneLightCount;
-                MVoxelLog.Info($"场景存在 {_sceneLightCount} 盏本地光源，硬件 RT 暂不执行光照，已使用 Compute 路径");
+                MVoxelLog.Info($"本地光源 {_sceneLightCount}，发光照明 {emissiveLighting}；使用支持光照的 Compute 路径");
             }
         }
         else
@@ -606,7 +611,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             _hardwareLightFallbackCount = -1;
         }
 
-        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && _context is not null && _imguiRenderer is not null &&
+        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && !emissiveLighting && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
         {
             _hardwareRayTracingPipeline ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
@@ -912,6 +917,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             DestroyBvhBuffer(api);
             DestroyVoxelBuffer(api);
             DestroyBrickTableBuffer(api);
+            DestroyEmissiveBuffer();
         }
     }
 
@@ -1419,7 +1425,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[10];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[11];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1430,10 +1436,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         bindings[7] = new(7, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[8] = new(8, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[9] = new(9, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[10] = new(10, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 10,
+            BindingCount = 11,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1449,7 +1456,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     {
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
-            new(DescriptorType.StorageBuffer, 7 * TileRingDepth),
+            new(DescriptorType.StorageBuffer, 8 * TileRingDepth),
             new(DescriptorType.StorageImage, 3 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
@@ -1549,13 +1556,14 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             _outputView.Handle == 0 || _accumulationView.Handle == 0 || _guideView.Handle == 0) return;
         // 砖表绑定在布局中恒存在（着色器静态引用），即使传统路径也要绑定最小缓冲
         EnsureBrickTableBuffer(1);
+        EnsureEmissiveBuffer(16);
         DescriptorBufferInfo voxelInfo = new(_voxelBuffer, 0, _voxelBufferCapacity);
         DescriptorBufferInfo bvhInfo = new(_bvhBuffer, 0, _bvhBufferCapacity);
         DescriptorImageInfo imageInfo = new(default, _outputView, ImageLayout.General);
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[10];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[11];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1651,7 +1659,11 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &sceneLightInfo
             };
-            _api!.UpdateDescriptorSets(_device, 10, writes, 0, null);
+            DescriptorBufferInfo emissiveInfo = new(_emissiveBuffer, 0, _emissiveCapacity);
+            writes[10] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
+                DstBinding = 10, DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &emissiveInfo };
+            _api!.UpdateDescriptorSets(_device, 11, writes, 0, null);
         }
     }
 
@@ -1734,7 +1746,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
     // #version 必须是第一条有效指令，因此参数槽位与光源容量的 #define 放在版本行之后注入，
     // GLSL 侧只读 P_ 开头的宏，不再硬编码新增槽位号
     private static readonly string SceneComputeShader =
-        "#version 450\n\n" + VoxelRenderParameters.Defines() + "\n" + SceneShaderBody;
+        "#version 450\n\n" + VoxelRenderParameters.Defines() + "\n" +
+        SceneShaderBody.Replace("/* EMISSIVE_SAMPLING */", EmissiveSamplingShader);
 
     private const string SceneShaderBody = """
         layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -2406,6 +2419,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             return response;
         }
 
+        /* EMISSIVE_SAMPLING */
+
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
             out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal)
         {
@@ -2414,6 +2429,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             primaryNormal = vec3(0.0);
             vec3 radiance = vec3(0.0);
             vec3 throughput = vec3(1.0);
+            float previousBsdfPdf = 0.0;
+            vec3 previousVertex = rayOrigin;
             int translucentPasses = 0;
             ivec3 lastTranslucentCell = ivec3(-2);
             vec3 pendingInterface = vec3(0.0);
@@ -2606,8 +2623,12 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                     // 否则高强度小发光体（提灯等）在漫弹射中偶发命中会产生白点火噪，
                     // 低采样累积阶段表现为亮斑周围的蓝白噪点
                     float emissiveCeil = max(values[77] * 0.1, 1.0);
+                    float lampPdf = previousBsdfPdf > 0.0
+                        ? EmissiveHitPdf(previousVertex, hitPoint, hitNormal) : 0.0;
+                    float hitWeight = previousBsdfPdf > 0.0
+                        ? previousBsdfPdf / (previousBsdfPdf + lampPdf) : 1.0;
                     radiance += throughput * min(hitLinearColor * values[80] * emissiveScale,
-                        vec3(emissiveCeil));
+                        vec3(emissiveCeil)) * hitWeight;
                 }
 
                 // 路径追踪的随机半球反弹已经通过实际几何自然积分间接遮挡；
@@ -2616,6 +2637,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
 
                 if ((hitFlags & 1u) != 0u)
                 {
+                    // 直接光阴影不穿过介质；经过介质的路径仅由 BSDF 命中承担。
+                    previousBsdfPdf = 0.0;
                     // 同格守卫：推进后仍命中刚离开的同一水体素说明数值退化，
                     // 立即终止该路径，绝不允许同一层的吸收与内散射被计两次
                     if (hitCell == lastTranslucentCell) break;
@@ -2742,11 +2765,16 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
                     -rayDirection, hitLinearColor, metalness, roughness);
 
+                vec3 samplingOrigin = hitPoint + hitNormal * 0.002;
+                radiance += throughput * EmissiveNextEvent(samplingOrigin, hitNormal, -rayDirection,
+                    hitLinearColor, metalness, roughness,
+                    surfaceBounces + 1 < bounceLimit && bounce + 1 < 32, state);
+
                 // GGX NDF 法线采样与余弦半球采样的混合；两分支使用完整混合 PDF。
                 float alpha = max(roughness * roughness, 0.002);
                 vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), hitLinearColor, metalness);
                 vec3 viewDir = -rayDirection;
-                float xi1 = max(Random(state), 1e-4);
+                float xi1 = min(Random(state), 0.99999994);
                 float xi2 = Random(state);
                 float cosThetaH = sqrt((1.0 - xi1) / (1.0 + (alpha * alpha - 1.0) * xi1));
                 float sinThetaH = sqrt(max(0.0, 1.0 - cosThetaH * cosThetaH));
@@ -2771,19 +2799,15 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 }
 
                 // 两个采样分支共用完整混合 PDF 与 BRDF；SunSurfaceResponse 返回 pi*f*cos。
-                vec3 sampledHalf = normalize(viewDir + rayDirection);
-                float sampledNH = max(dot(hitNormal, sampledHalf), 0.0);
-                float sampledVH = max(dot(viewDir, sampledHalf), 0.0);
-                float sampledNL = max(dot(hitNormal, rayDirection), 0.0);
-                float pdfDenominator = sampledNH * sampledNH * (alpha * alpha - 1.0) + 1.0;
-                float sampledD = alpha * alpha / max(3.14159265 * pdfDenominator * pdfDenominator, 1e-12);
-                float mixturePdf = fresnelStrength * sampledD * sampledNH / max(4.0 * sampledVH, 1e-12)
-                    + (1.0 - fresnelStrength) * sampledNL / 3.14159265;
+                float mixturePdf = SurfaceSamplingPdf(hitLinearColor, metalness, roughness,
+                    hitNormal, viewDir, rayDirection);
                 if (mixturePdf <= 0.0 || isnan(mixturePdf) || isinf(mixturePdf)) break;
                 throughput *= SunSurfaceResponse(hitLinearColor, metalness, roughness,
                     hitNormal, viewDir, rayDirection) / (3.14159265 * mixturePdf);
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
+                previousVertex = rayOrigin;
+                previousBsdfPdf = mixturePdf;
                 // 表面弹射后路径已离开半透明介质，同格守卫必须重置：
                 // 湖底漫反射折返重新进入原水体素是合法路径，不能被当作退化命中截死
                 lastTranslucentCell = ivec3(-2);

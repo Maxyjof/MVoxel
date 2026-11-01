@@ -151,6 +151,8 @@ internal sealed partial class ImGuiEditorWindow
         var capacity = pipeline.GpuBufferCapacity;
         ImGui.Text($"{name}：工作集 {pipeline.SyncTotalCells:N0}  派发 {pipeline.LastDispatchCount:N0}");
         ImGui.Text($"构建 {pipeline.SyncWorksetBuildMs:0.00}  BVH {pipeline.SyncBvhBuildMs:0.00}  打包 {pipeline.SyncPackMs:0.00}  上传 {pipeline.SyncUploadMs:0.00} ms");
+        ImGui.Text($"发光面 {pipeline.EmissiveFaceCount:N0}  索引同步 {pipeline.EmissiveSyncMilliseconds:0.00} ms");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("最近一次 CPU 发光面提取、排序、打包与上传的耗时，不是 GPU 采样耗时。当前采用均匀面采样，反向 PDF 使用二分查询。");
         ImGui.Text($"体素/BVH 缓冲容量 {ToMiB(capacity.VoxelBytes + (double)capacity.BvhBytes):0.0} MiB");
     }
 }

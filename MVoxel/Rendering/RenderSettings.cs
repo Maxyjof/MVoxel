@@ -319,6 +319,9 @@ public sealed class RenderSettings
     /// </summary>
     public bool EmissiveVoxels = true;
 
+    /// <summary>对暴露发光面直接采样，并与表面反弹命中进行 MIS 合并。</summary>
+    public bool EmissiveDirectSampling = true;
+
     /// <summary>
     /// 自发光强度
     /// </summary>

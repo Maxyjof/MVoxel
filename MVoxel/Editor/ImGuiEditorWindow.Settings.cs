@@ -740,6 +740,8 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("介电反射率 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
                 SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
+                ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");
                 SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
                 ImGui.Checkbox("太阳直接光采样", ref settings.SunDirectLighting);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
