@@ -997,6 +997,23 @@ internal sealed partial class ImGuiEditorWindow
     private readonly VoxelWorld _emptyScenePreviewWorld = new();
 
     /// <summary>
+    /// 按项目选定的画面比例算出渲染与显示的有效矩形：比例之外留黑边，自由比例时铺满整个视图。
+    /// </summary>
+    private (Vector2 Offset, Vector2 Size) ResolveRenderFrameRect(Vector2 size)
+    {
+        var aspect = _projectSettings?.FindAspectPreset()?.Aspect ?? 0F;
+        if (aspect <= 0F || size.X <= 0F || size.Y <= 0F) return (Vector2.Zero, size);
+        if (size.X / size.Y > aspect)
+        {
+            var width = size.Y * aspect;
+            return (new Vector2((size.X - width) * 0.5F, 0F), new Vector2(width, size.Y));
+        }
+
+        var height = size.X / aspect;
+        return (new Vector2(0F, (size.Y - height) * 0.5F), new Vector2(size.X, height));
+    }
+
+    /// <summary>
     /// 按输出图像的真实宽高比绘制渲染纹理。
     /// 视图尺寸与渲染尺寸不一致时（截图指定分辨率、复用上一帧纹理）等比居中，
     /// 不把任意比例的图像拉伸铺满视图，否则画面会横向变形。
@@ -1095,15 +1112,26 @@ internal sealed partial class ImGuiEditorWindow
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
-            var width = Math.Max(16, (int)(size.X * scale * renderScale));
-            var height = Math.Max(16, (int)(size.Y * scale * renderScale));
+            // 项目里选定的画面比例决定渲染与显示的有效矩形，比例之外留黑边
+            var frame = ResolveRenderFrameRect(size);
+            var frameOrigin = origin + frame.Offset;
+            var frameSize = frame.Size;
+            var width = Math.Max(16, (int)(frameSize.X * scale * renderScale));
+            var height = Math.Max(16, (int)(frameSize.Y * scale * renderScale));
+            // 选定分辨率时按它出图，预览也按最终像素数渲染，方便直接看最终效果
+            if (_projectSettings?.FindResolutionPreset() is { } resolution)
+            {
+                width = resolution.Width;
+                height = resolution.Height;
+            }
+
             if (_capturePath is not null && _captureWidth > 0)
             {
                 width = _captureWidth;
                 height = _captureHeight;
             }
             var nowMs = Environment.TickCount64;
-            var signature = TraceSignature(size, scale);
+            var signature = TraceSignature(frameSize, scale) + $"|{width}x{height}";
             if (signature != _accumulationSignature)
             {
                 _accumulationSignature = signature;
@@ -1116,7 +1144,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 // 环绕/平移相机时保持 AO、光照和后处理完整；仅编辑渲染控件时才启用轻量预览。
                 var realtimeSettings = settingsInteracting ? previewSettings.CreateInteractionPreview() : previewSettings;
-                var realtimeFrame = BuildFrameState(camera, size, scale, width, height,
+                var realtimeFrame = BuildFrameState(camera, frameSize, scale, width, height,
                     pathMode: false, outlines: false);
                 if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
                 {
@@ -1125,7 +1153,7 @@ internal sealed partial class ImGuiEditorWindow
 
                 _lastRenderGpuSubmitMs = nowMs;
                 _renderViewNeedsInitialRender = false;
-                DrawPipelineImage(drawList, pipeline, origin, size);
+                DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
             }
 
@@ -1133,7 +1161,7 @@ internal sealed partial class ImGuiEditorWindow
             if (!IsFocused && _capturePath is null && !_renderViewNeedsInitialRender &&
                 pipeline.DisplayTextureId != IntPtr.Zero)
             {
-                DrawPipelineImage(drawList, pipeline, origin, size);
+                DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
             }
 
@@ -1143,14 +1171,14 @@ internal sealed partial class ImGuiEditorWindow
             if (settingsInteracting && pipeline.DisplayTextureId != IntPtr.Zero &&
                 nowMs - _lastRenderGpuSubmitMs < 33)
             {
-                DrawPipelineImage(drawList, pipeline, origin, size);
+                DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
             }
             // 相机移动同样使用完整路径追踪配置；不能因导航临时关闭照明或减少反弹。
             var renderSettings = settingsInteracting
                 ? previewSettings.CreateInteractionPreview()
                 : previewSettings;
-            var frame = BuildFrameState(camera, size, scale, width, height, pathMode: true, outlines: false);
+            var state = BuildFrameState(camera, frameSize, scale, width, height, pathMode: true, outlines: false);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
                               pipeline.DisplayTextureId == IntPtr.Zero;
@@ -1160,13 +1188,13 @@ internal sealed partial class ImGuiEditorWindow
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                var submitted = pipeline.RenderPathView(renderSettings, frame, width, height);
+                var submitted = pipeline.RenderPathView(renderSettings, state, width, height);
                 if (!submitted)
                 {
                     return false;
                 }
             }
-            else if (!pipeline.Present(renderSettings, frame, width, height))
+            else if (!pipeline.Present(renderSettings, state, width, height))
             {
                 return false;
             }
@@ -1177,7 +1205,7 @@ internal sealed partial class ImGuiEditorWindow
                 _renderViewNeedsInitialRender = false;
             }
 
-            DrawPipelineImage(drawList, pipeline, origin, size);
+            DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
             return true;
         }
         catch (Exception exception)

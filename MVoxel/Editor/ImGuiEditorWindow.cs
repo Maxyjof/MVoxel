@@ -2496,6 +2496,7 @@ DockId=0x6A3C3007,0
     private void DrawRenderView()
     {
         DrawRenderCameraSelector();
+        DrawRenderFrameSelector();
         ImGui.Separator();
         if (!ImGui.BeginChild("##RenderViewport", Vector2.Zero, ImGuiChildFlags.Borders))
         {
@@ -2798,9 +2799,21 @@ DockId=0x6A3C3007,0
             }
             job.World = _exportSnapshot;
         }
-        job.Size = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
-            ? _lastRenderViewportSize : new Vector2(1280, 720);
-        job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+        var viewport = _lastRenderViewportSize.X > 0 && _lastRenderViewportSize.Y > 0
+            ? _lastRenderViewportSize
+            : new Vector2(1280, 720);
+        if (_projectSettings?.FindResolutionPreset() is { } resolution)
+        {
+            // 选定分辨率时直接按最终像素数出图，导出与预览一致
+            job.Size = new Vector2(resolution.Width, resolution.Height);
+            job.Scale = 1F;
+        }
+        else
+        {
+            // 只选了比例时，导出按该比例裁剪视图，与预览看到的构图一致
+            job.Size = ResolveRenderFrameRect(viewport).Size;
+            job.Scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
+        }
         job.Materials = _project is null ? null : MaterialAsset.PackTable(MaterialAsset.LoadFromProject(_project));
         job.CameraName ??= GetActiveRenderCameraObject()?.Name ?? "场景视角";
         _exportQueue.Enqueue(job);

@@ -149,6 +149,25 @@ public sealed class EditorSettingsDocument
 /// 项目级配置。LOD 只影响场景编辑视图；RenderSettings 供渲染页和导出使用，
 /// 统一写进项目设置后，项目可以保存一致的画面配置
 /// </summary>
+/// <summary>
+/// 渲染画面的比例或分辨率预设。比例用份数（16:9），分辨率用像素（1920×1080）。
+/// 每个项目各自保存一份，可以自由增删改排序。
+/// </summary>
+public sealed class RenderFramePreset
+{
+    /// <summary>稳定标识，当前选择按它记录，改名不影响选中状态</summary>
+    public string Id = string.Empty;
+    /// <summary>显示名，用户可以随意改</summary>
+    public string Name = string.Empty;
+    /// <summary>比例份数或像素宽</summary>
+    public int Width = 16;
+    /// <summary>比例份数或像素高</summary>
+    public int Height = 9;
+
+    /// <summary>读比例值：宽 ÷ 高</summary>
+    public float Aspect => Height > 0 ? (float)Width / Height : 0F;
+}
+
 public sealed class ProjectSettingsDocument
 {
     public const int CurrentFormatVersion = 2;
@@ -173,6 +192,45 @@ public sealed class ProjectSettingsDocument
     public RenderSettings RenderSettings = new();
     public RenderSettings ExportRenderSettings = new();
 
+    /// <summary>渲染视图可选的画面比例预设；空 Id 表示自由比例（不限制）</summary>
+    public List<RenderFramePreset> RenderAspectPresets = CreateDefaultAspectPresets();
+
+    /// <summary>渲染视图与导出可选的分辨率预设；空 Id 表示跟随视图尺寸</summary>
+    public List<RenderFramePreset> RenderResolutionPresets = CreateDefaultResolutionPresets();
+
+    /// <summary>当前选中的比例预设 Id，空表示自由比例</summary>
+    public string RenderAspectPresetId = string.Empty;
+
+    /// <summary>当前选中的分辨率预设 Id，空表示跟随视图</summary>
+    public string RenderResolutionPresetId = string.Empty;
+
+    /// <summary>新建项目时的常见画面比例</summary>
+    public static List<RenderFramePreset> CreateDefaultAspectPresets() =>
+    [
+        new() { Id = "1-1", Name = "1:1", Width = 1, Height = 1 },
+        new() { Id = "4-3", Name = "4:3", Width = 4, Height = 3 },
+        new() { Id = "3-2", Name = "3:2", Width = 3, Height = 2 },
+        new() { Id = "16-9", Name = "16:9", Width = 16, Height = 9 },
+        new() { Id = "21-9", Name = "21:9", Width = 21, Height = 9 },
+    ];
+
+    /// <summary>新建项目时的常见导出分辨率</summary>
+    public static List<RenderFramePreset> CreateDefaultResolutionPresets() =>
+    [
+        new() { Id = "1280x720", Name = "1280 × 720", Width = 1280, Height = 720 },
+        new() { Id = "1920x1080", Name = "1920 × 1080", Width = 1920, Height = 1080 },
+        new() { Id = "2560x1440", Name = "2560 × 1440", Width = 2560, Height = 1440 },
+        new() { Id = "3840x2160", Name = "3840 × 2160（4K）", Width = 3840, Height = 2160 },
+    ];
+
+    /// <summary>按 Id 找比例预设，找不到就是自由比例</summary>
+    public RenderFramePreset? FindAspectPreset() =>
+        RenderAspectPresets.FirstOrDefault(preset => preset.Id == RenderAspectPresetId);
+
+    /// <summary>按 Id 找分辨率预设，找不到就是跟随视图</summary>
+    public RenderFramePreset? FindResolutionPreset() =>
+        RenderResolutionPresets.FirstOrDefault(preset => preset.Id == RenderResolutionPresetId);
+
     public static ProjectSettingsDocument CreateDefault()
     {
         var settings = new ProjectSettingsDocument();
@@ -194,6 +252,22 @@ public sealed class ProjectSettingsDocument
         RenderSettings ??= new RenderSettings();
         SceneRenderSettings ??= new RenderSettings();
         ExportRenderSettings ??= new RenderSettings();
+        RenderAspectPresets ??= CreateDefaultAspectPresets();
+        RenderResolutionPresets ??= CreateDefaultResolutionPresets();
+        RenderAspectPresets.RemoveAll(preset => preset is null || preset.Width <= 0 || preset.Height <= 0);
+        RenderResolutionPresets.RemoveAll(preset => preset is null || preset.Width <= 0 || preset.Height <= 0);
+        foreach (var preset in RenderAspectPresets.Concat(RenderResolutionPresets))
+        {
+            if (string.IsNullOrWhiteSpace(preset.Id)) preset.Id = Guid.NewGuid().ToString("N")[..8];
+            if (string.IsNullOrWhiteSpace(preset.Name)) preset.Name = $"{preset.Width}:{preset.Height}";
+            preset.Name = preset.Name.Trim();
+            preset.Width = Math.Clamp(preset.Width, 1, 16384);
+            preset.Height = Math.Clamp(preset.Height, 1, 16384);
+        }
+
+        // 选中的预设被删掉时回落到自由比例 / 跟随视图
+        if (RenderAspectPresets.All(preset => preset.Id != RenderAspectPresetId)) RenderAspectPresetId = string.Empty;
+        if (RenderResolutionPresets.All(preset => preset.Id != RenderResolutionPresetId)) RenderResolutionPresetId = string.Empty;
         SceneRenderSettings.SanitizeNaN();
         SceneRenderSettings.ClampAll();
         RenderSettings.SanitizeNaN();
