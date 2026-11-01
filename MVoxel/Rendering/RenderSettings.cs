@@ -321,6 +321,8 @@ public sealed class RenderSettings
 
     /// <summary>对暴露发光面直接采样，并与表面反弹命中进行 MIS 合并。</summary>
     public bool EmissiveDirectSampling = true;
+    /// <summary>对较大的发光面集合按光源树的重要性分布采样。</summary>
+    public bool EmissiveLightTree = true;
 
     /// <summary>
     /// 自发光强度

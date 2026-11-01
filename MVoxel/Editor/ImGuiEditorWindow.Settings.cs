@@ -742,6 +742,8 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");
+                ImGui.Checkbox("光源树重要性采样", ref settings.EmissiveLightTree);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时，根据光源功率与接收点距离选择灯面；关闭后使用均匀采样，便于比较画质收敛与帧成本。不会删除暗灯或降低分辨率。");
                 SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
                 ImGui.Checkbox("太阳直接光采样", ref settings.SunDirectLighting);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");

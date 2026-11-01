@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json;
 using System.IO.Pipes;
 using System.Text;
@@ -711,7 +711,7 @@ internal static class Program
         new { name = "editor.showPanelMenu", description = "打开检查器停靠面板的窗口创建菜单", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.showWindowMenu", description = "在编辑器中打开窗口分类菜单", inputSchema = new { type = "object", properties = new { } } },
         new { name = "editor.captureWindow", description = "从 Vulkan 帧捕获编辑器画面（不含系统标题栏），不受窗口遮挡影响；使用 editor.captureStatus 查询", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
-        new { name = "editor.captureView", description = "切换到渲染视图并将当前画面保存为PNG，已有文件不会覆盖", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, cameraName = new { type = "string", description = "可选的场景相机名称，名称必须唯一" }, position = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 }, target = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 } }, required = new[] { "path" } } },
+        new { name = "editor.captureView", description = "按样本数累积后保存渲染PNG；采样选项仅作用于本次截图，captureStatus返回实际样本与采样元数据，已有文件不会覆盖", inputSchema = new { type = "object", properties = new { path = new { type = "string" }, cameraName = new { type = "string", description = "可选的场景相机名称，名称必须唯一" }, width = new { type = "integer", minimum = 16, maximum = 8192 }, height = new { type = "integer", minimum = 16, maximum = 8192 }, samples = new { type = "integer", minimum = 1, maximum = 16384, description = "累积样本数，默认64" }, timeoutSeconds = new { type = "integer", minimum = 1, maximum = 600 }, directSampling = new { type = "boolean" }, lightTree = new { type = "boolean" }, denoise = new { type = "boolean" }, position = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 }, target = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 } }, required = new[] { "path" } } },
         new { name = "editor.captureStatus", description = "查询截图任务状态", inputSchema = new { type = "object", properties = new { path = new { type = "string" } }, required = new[] { "path" } } },
         new { name = "editor.invokeAutomation", description = "调用当前项目插件注册的自动化入口", inputSchema = new { type = "object", properties = new { automationId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "automationId" } } },
         new { name = "editor.invokeCommand", description = "调用当前项目插件注册的编辑器命令", inputSchema = new { type = "object", properties = new { commandId = new { type = "string" }, payload = new { type = "object" } }, required = new[] { "commandId" } } },

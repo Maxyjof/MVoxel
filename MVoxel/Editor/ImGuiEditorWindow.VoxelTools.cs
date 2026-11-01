@@ -487,7 +487,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="cameraObject">相机对象，可为空</param>
     /// <returns>生效渲染配置</returns>
-    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject) => _renderSettings;
+    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject) => _captureRenderSettings ?? _renderSettings;
 
     /// <summary>
     /// 返回渲染窗口右侧面板应该编辑的项目配置。
@@ -892,7 +892,8 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.PathSamplesPerFrame).Append(',').Append(settings.PathMaxAccumulatedSamples)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
-            .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.EmissiveDirectSampling).Append(',').Append(settings.RussianRouletteThreshold)
+            .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.EmissiveDirectSampling)
+            .Append(',').Append(settings.EmissiveLightTree).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
             .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
             .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees)
@@ -1009,6 +1010,11 @@ internal sealed partial class ImGuiEditorWindow
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
             var width = Math.Max(16, (int)(size.X * scale * renderScale));
             var height = Math.Max(16, (int)(size.Y * scale * renderScale));
+            if (_capturePath is not null && _captureWidth > 0)
+            {
+                width = _captureWidth;
+                height = _captureHeight;
+            }
             var nowMs = Environment.TickCount64;
             var signature = TraceSignature(size, scale);
             if (signature != _accumulationSignature)
@@ -2205,6 +2211,8 @@ internal sealed partial class ImGuiEditorWindow
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("主动采样暴露发光面并与反弹命中做 MIS；关闭可比较采样收敛。仅用于路径追踪，不改变实时模式。");
+        ImGui.Checkbox("光源树重要性采样", ref settings.EmissiveLightTree);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时按光源功率与接收点距离采样；关闭可与均匀采样比较。少量发光面仍使用均匀采样。");
         Toggle("太阳直接光采样", ref _settingsToggleMis, value => settings.SunDirectLighting = value);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
     }

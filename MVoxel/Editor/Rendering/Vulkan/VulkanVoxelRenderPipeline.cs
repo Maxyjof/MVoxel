@@ -381,7 +381,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         var materialChanged = !_materialTable.AsSpan().SequenceEqual(table);
         _materialTable = (float[])table.Clone();
-        if (materialChanged) ResetAccumulation();
+        if (materialChanged)
+        {
+            if (EmissiveFaceCount > 0) UploadEmissiveFaces();
+            ResetAccumulation();
+        }
     }
 
     /// <summary>

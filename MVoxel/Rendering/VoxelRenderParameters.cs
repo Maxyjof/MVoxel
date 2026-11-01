@@ -97,7 +97,8 @@ public sealed class VoxelRenderParameters
     public const int SceneLightCount = 116;
     /// <summary>参数槽总数</summary>
     public const int EmissiveDirectSampling = 117;
-    public const int SlotCount = 118;
+    public const int EmissiveLightTree = 118;
+    public const int SlotCount = 119;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -305,6 +306,7 @@ public sealed class VoxelRenderParameters
         parameters[Accumulated] = frame.AccumulatedSamples;
         parameters[EmissiveIntensity] = settings.EmissiveVoxels ? settings.EmissiveIntensity : 0F;
         parameters[EmissiveDirectSampling] = settings.EmissiveDirectSampling ? 1F : 0F;
+        parameters[EmissiveLightTree] = settings.EmissiveLightTree ? 1F : 0F;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;

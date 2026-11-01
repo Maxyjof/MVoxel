@@ -8,12 +8,28 @@ internal sealed partial class ImGuiEditorWindow
     private readonly ConcurrentDictionary<string, string> _captureResults = new();
     private string? _capturePath;
     private int _captureFrames;
+    private MVoxel.Rendering.RenderSettings? _captureRenderSettings;
+    private int _captureSamples;
+    private int _captureWidth, _captureHeight;
+    private long _captureDeadline;
+    private readonly ConcurrentDictionary<string, object> _captureMetadata = new();
 
     private object QueueCaptureView(JsonElement request)
     {
         var arguments = request.GetProperty("arguments");
         var path = Path.GetFullPath(arguments.GetProperty("path").GetString() ?? throw new ArgumentException("截图路径不能为空"));
         var cameraName = arguments.TryGetProperty("cameraName", out var cameraValue) ? cameraValue.GetString() : null;
+        var width = arguments.TryGetProperty("width", out var widthValue) ? widthValue.GetInt32() : 0;
+        var height = arguments.TryGetProperty("height", out var heightValue) ? heightValue.GetInt32() : 0;
+        if ((width != 0 || height != 0) && (width is < 16 or > 8192 || height is < 16 or > 8192))
+            throw new ArgumentException("截图宽高必须同时指定，且在16–8192之间");
+        var samples = arguments.TryGetProperty("samples", out var sampleValue) ? sampleValue.GetInt32() : 64;
+        if (samples is < 1 or > 16384) throw new ArgumentException("截图样本数必须在 1–16384 之间");
+        var timeout = arguments.TryGetProperty("timeoutSeconds", out var timeoutValue) ? timeoutValue.GetInt32() : 300;
+        if (timeout is < 1 or > 600) throw new ArgumentException("截图超时必须在 1–600 秒之间");
+        bool? direct = arguments.TryGetProperty("directSampling", out var directValue) ? directValue.GetBoolean() : null;
+        bool? tree = arguments.TryGetProperty("lightTree", out var treeValue) ? treeValue.GetBoolean() : null;
+        bool? denoise = arguments.TryGetProperty("denoise", out var denoiseValue) ? denoiseValue.GetBoolean() : null;
         OpenTK.Mathematics.Vector3? position = null, target = null;
         if (arguments.TryGetProperty("position", out var positionValue) && arguments.TryGetProperty("target", out var targetValue))
         {
@@ -55,6 +71,18 @@ internal sealed partial class ImGuiEditorWindow
                 _accumulationSignature = string.Empty;
             }
             _capturePath = path;
+            _captureRenderSettings = _renderSettings.CloneForExport();
+            _captureRenderSettings.PathTracingEnabled = true;
+            _captureRenderSettings.PathSamplesPerFrame = 1;
+            _captureRenderSettings.PathMaxAccumulatedSamples = Math.Max(16, samples);
+            if (direct.HasValue) _captureRenderSettings.EmissiveDirectSampling = direct.Value;
+            if (tree.HasValue) _captureRenderSettings.EmissiveLightTree = tree.Value;
+            if (denoise.HasValue) _captureRenderSettings.PathDenoising = denoise.Value;
+            _captureSamples = samples;
+            _captureWidth = width; _captureHeight = height;
+            _captureDeadline = Environment.TickCount64 + timeout * 1000L;
+            _pipeline?.ResetAccumulation();
+            _accumulationSignature = string.Empty;
             _captureFrames = 0;
             _requestedCenterTab = 1;
         });
@@ -64,27 +92,48 @@ internal sealed partial class ImGuiEditorWindow
     private object CaptureStatus(JsonElement request)
     {
         var path = Path.GetFullPath(request.GetProperty("arguments").GetProperty("path").GetString() ?? "");
-        return new { path, status = _captureResults.GetValueOrDefault(path, "unknown") };
+        return new { path, status = _captureResults.GetValueOrDefault(path, "unknown"),
+            metadata = _captureMetadata.GetValueOrDefault(path) };
     }
 
     private void ProcessCaptureView()
     {
         if (_capturePath is not { } path) return;
-        if (++_captureFrames < 60) return;
-        if (_centerTab != 1 || _pipeline?.CanSaveDisplayPng != true)
+        if (++_captureFrames < 2) return;
+        if (Environment.TickCount64 >= _captureDeadline)
         {
-            if (_captureFrames < 600) return;
-            _captureResults[path] = "渲染视图不可用";
-            _capturePath = null;
+            _captureResults[path] = "截图等待超时";
+            FinishCapture();
             return;
         }
+        if (_centerTab != 1 || _pipeline?.CanSaveDisplayPng != true)
+        {
+            return;
+        }
+        if (_pipeline.AccumulatedSamples < _captureSamples) return;
         try
         {
             if (File.Exists(path)) throw new IOException("截图文件已存在");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            _captureResults[path] = _pipeline.SaveDisplayPng(path) ? "completed" : "截图保存失败";
+            var saved = _pipeline.SaveDisplayPng(path);
+            _captureMetadata[path] = new { samples = _pipeline.AccumulatedSamples,
+                width = _pipeline.OutputWidth, height = _pipeline.OutputHeight,
+                directSampling = _captureRenderSettings!.EmissiveDirectSampling,
+                lightTree = _captureRenderSettings.EmissiveLightTree,
+                denoise = _captureRenderSettings.PathDenoising,
+                emissiveFaces = _pipeline.EmissiveFaceCount,
+                lightTreeNodes = _pipeline.EmissiveTreeNodeCount,
+                indexSyncCpuMs = _pipeline.EmissiveSyncMilliseconds };
+            _captureResults[path] = saved ? "completed" : "截图保存失败";
         }
         catch (Exception exception) { _captureResults[path] = exception.Message; }
+        FinishCapture();
+    }
+
+    private void FinishCapture()
+    {
         _capturePath = null;
+        _captureRenderSettings = null;
+        _accumulationSignature = string.Empty;
     }
 }
