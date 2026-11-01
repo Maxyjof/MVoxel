@@ -20,6 +20,8 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_projectSettings is not { } settings) return;
 
+        // 接在渲染相机选择器后面，两者共处工具栏同一行
+        ImGui.SameLine(0F, 18F);
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted("画面比例");
         ImGui.SameLine();

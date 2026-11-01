@@ -465,6 +465,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.showWindowMenu" => RequestWindowMenu(),
             "editor.showPanelMenu" => RequestInspectorPanelMenu(),
             "editor.captureStatus" => CaptureStatus(request),
+            "editor.selectObject" => QueueSelectObject(request),
+            "editor.selection" => DescribeSelection(),
             "editor.invokeAutomation" => InvokeAutomation(request),
             "editor.invokeCommand" => InvokeCommand(request),
             "editor.reloadPlugins" => QueueReloadPlugins(),
@@ -472,6 +474,91 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.setPluginEnabled" => SetPluginEnabled(request),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{method}"),
         };
+    }
+
+    /// <summary>
+    /// 按 id 或名称选中场景对象：供自动化验证检查器与画布状态，不依赖鼠标操作
+    /// </summary>
+    /// <param name="request">命令 JSON，可带 id 或 name</param>
+    /// <returns>投递结果</returns>
+    private object QueueSelectObject(JsonElement request)
+    {
+        var arguments = request.ValueKind == JsonValueKind.Object && request.TryGetProperty("arguments", out var value)
+            ? value : request;
+        var id = arguments.ValueKind == JsonValueKind.Object && arguments.TryGetProperty("id", out var idValue)
+            ? idValue.GetString() : null;
+        var name = arguments.ValueKind == JsonValueKind.Object && arguments.TryGetProperty("name", out var nameValue)
+            ? nameValue.GetString() : null;
+        if (string.IsNullOrWhiteSpace(id) && string.IsNullOrWhiteSpace(name))
+            throw new InvalidOperationException("选中对象需要提供 id 或 name");
+
+        _pendingActions.Enqueue(() =>
+        {
+            var target = FindSceneObject(id, name);
+            if (target is null)
+            {
+                SetStatus($"找不到对象：{name ?? id}");
+                return;
+            }
+
+            UnlockSceneSelectionForHierarchy(target.Id);
+            _selectedSceneObjectId = target.Id;
+            _selectedVoxel = null;
+            _showInspector = true;
+            _requestedInspectorTab = 0;
+            FocusHierarchyObject(target);
+            SetStatus($"已选中对象：{target.Name}");
+        });
+        return new { queued = true, id, name };
+    }
+
+    /// <summary>
+    /// 读取当前选中对象的摘要，用于确认选中状态与缩放倍数
+    /// </summary>
+    /// <returns>选中信息，未选中时 selected 为 false</returns>
+    private object DescribeSelection()
+    {
+        var selected = GetSelectedSceneObject();
+        if (selected is null) return new { selected = false, inspectorVisible = _showInspector };
+
+        var model = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+        var data = model is null ? VoxelModelComponentData.Default : SceneComponentTypes.ReadVoxelModel(model);
+        var transform = selected.Transform;
+        return new
+        {
+            selected = true,
+            inspectorVisible = _showInspector,
+            id = selected.Id.ToString(),
+            name = selected.Name,
+            visible = selected.Visible,
+            layerIndex = selected.LayerIndex,
+            transformMode = transform.Mode.ToString(),
+            position = transform.Mode == TransformMode.Grid
+                ? new[] { transform.Grid.Position.X, transform.Grid.Position.Y, transform.Grid.Position.Z }
+                : new[] { (long)Math.Round(transform.Free.Position.X), (long)Math.Round(transform.Free.Position.Y), (long)Math.Round(transform.Free.Position.Z) },
+            hasModel = model is not null,
+            modelAsset = data.Model,
+            voxelCount = data.VoxelCount,
+            scaleX = data.ScaleX,
+            scaleY = data.ScaleY,
+            scaleZ = data.ScaleZ,
+        };
+    }
+
+    /// <summary>
+    /// 按 id 或名称查找场景对象
+    /// </summary>
+    /// <param name="id">对象标识文本，可为空</param>
+    /// <param name="name">对象名称，可为空</param>
+    /// <returns>找到的对象，找不到时为空</returns>
+    private SceneObject? FindSceneObject(string? id, string? name)
+    {
+        if (_sceneDocument is null) return null;
+        if (!string.IsNullOrWhiteSpace(id))
+            return StableId.TryParse(id, out var parsed)
+                ? _sceneDocument.Objects.FirstOrDefault(item => item.Id == parsed)
+                : _sceneDocument.Objects.FirstOrDefault(item => string.Equals(item.Id.ToString(), id, StringComparison.OrdinalIgnoreCase));
+        return _sceneDocument.Objects.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.Ordinal));
     }
 
     /// <summary>

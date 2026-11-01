@@ -258,9 +258,11 @@ internal sealed partial class ImGuiEditorWindow
         var color = ToPackedColor(EditorPalette.Accent);
         drawList.AddLine(pivotScreen, handle, color, 2F);
         drawList.AddRectFilled(handle - new Vector2(5F), handle + new Vector2(5F), color);
-        // 模型对象只有一个倍数，非模型对象仍按三轴显示
+        var data = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } model
+            ? SceneComponentTypes.ReadVoxelModel(model)
+            : default;
         var label = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel)
-            ? $"{GetModelScale(sceneObject):0.###}x"
+            ? $"{data.ScaleX:0.##} · {data.ScaleY:0.##} · {data.ScaleZ:0.##}"
             : $"{sceneObject.Transform.ScaleX} · {sceneObject.Transform.ScaleY} · {sceneObject.Transform.ScaleZ}";
         drawList.AddText(handle + new Vector2(10F, -6F), color, label);
     }
@@ -440,7 +442,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     var component = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                     _sceneGizmoDragStartMouse = mouse;
-                    _sceneGizmoDragStartValue = component is null ? 1F : SceneComponentTypes.ReadVoxelModel(component).Scale;
+                    _sceneGizmoDragStartValue = component is null ? 1F : SceneComponentTypes.ReadVoxelModel(component).ScaleX;
                     _sceneGizmoDragScale = true;
                     _sceneGizmoDragRange = false;
                     _sceneGizmoDragging = true;
@@ -505,7 +507,13 @@ internal sealed partial class ImGuiEditorWindow
                 ModelScaleRule.Minimum, ModelScaleRule.Maximum);
             // 预览值按正式规则吸附：放大只能取整数倍，缩小按 0.05 一档
             factor = factor > 1F ? MathF.Round(factor) : MathF.Round(factor * 20F) / 20F;
-            SceneComponentTypes.WriteVoxelModel(component, data with { Scale = factor });
+            var ratio = factor / MathF.Max(ModelScaleRule.Minimum, _sceneGizmoDragStartValue);
+            SceneComponentTypes.WriteVoxelModel(component, data with
+            {
+                ScaleX = data.ScaleX * ratio,
+                ScaleY = data.ScaleY * ratio,
+                ScaleZ = data.ScaleZ * ratio,
+            });
             return;
         }
 
@@ -594,9 +602,18 @@ internal sealed partial class ImGuiEditorWindow
             var start = MathF.Max(ModelScaleRule.Minimum, _sceneGizmoDragStartValue);
             // 拖动期间写进组件的是预览值，这里先还原，再按缩放规则正式应用一次
             var data = SceneComponentTypes.ReadVoxelModel(component);
-            SceneComponentTypes.WriteVoxelModel(component, data with { Scale = start });
+            var previewRatio = data.ScaleX / MathF.Max(ModelScaleRule.Minimum, start);
+            var restored = data with
+            {
+                ScaleX = data.ScaleX / previewRatio,
+                ScaleY = data.ScaleY / previewRatio,
+                ScaleZ = data.ScaleZ / previewRatio,
+            };
+            SceneComponentTypes.WriteVoxelModel(component, restored);
             var target = start * MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F);
-            if (MathF.Abs(target - start) > 0.01F) ApplyModelScale(selected, target);
+            if (MathF.Abs(target - start) <= 0.01F) return;
+            var ratio = target / start;
+            ApplyModelScale(selected, restored.ScaleX * ratio, restored.ScaleY * ratio, restored.ScaleZ * ratio);
             return;
         }
 

@@ -75,8 +75,9 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted("渲染相机");
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(Math.Max(220F, ImGui.GetContentRegionAvail().X - 12F));
         var currentName = selectedCamera?.Name ?? "场景视角（跟随场景）";
+        // 按当前相机名的文本宽度取自然宽度，让工具栏左对齐排布，不拉伸占满整行
+        ImGui.SetNextItemWidth(Math.Clamp(ImGui.CalcTextSize(currentName).X + 46F, 150F, 320F));
         if (!ImGui.BeginCombo("##RenderCameraSelector", currentName))
         {
             return;

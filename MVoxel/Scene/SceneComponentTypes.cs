@@ -75,10 +75,9 @@ public static class SceneComponentTypes
                 ? Math.Max(0, voxelCount)
                 : 0,
             ReadString(data, "template"),
-            data.TryGetProperty("scale", out var scale) && scale.TryGetSingle(out var scaleValue) &&
-            float.IsFinite(scaleValue)
-                ? Math.Clamp(scaleValue, 0.125F, 8F)
-                : 1F,
+            ReadModelScale(data, "scaleX"),
+            ReadModelScale(data, "scaleY"),
+            ReadModelScale(data, "scaleZ"),
             ReadString(data, "sortingLayer", "默认"),
             data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0);
     }
@@ -94,9 +93,13 @@ public static class SceneComponentTypes
             Model = data.Model.Trim(),
             Part = string.IsNullOrWhiteSpace(data.Part) ? "模型" : data.Part.Trim(),
             VoxelCount = Math.Max(0, data.VoxelCount),
-            Scale = Math.Clamp(float.IsFinite(data.Scale) ? data.Scale : 1F, 0.125F, 8F),
+            ScaleX = ClampModelScale(data.ScaleX),
+            ScaleY = ClampModelScale(data.ScaleY),
+            ScaleZ = ClampModelScale(data.ScaleZ),
             SortingLayer = string.IsNullOrWhiteSpace(data.SortingLayer) ? "默认" : data.SortingLayer.Trim(),
         }, JsonOptions)!.AsObject();
+        // 旧版本只认单个 scale，这里补一份，用旧版打开时至少能看到大致倍数
+        updated["scale"] = JsonValue.Create(ClampModelScale(data.ScaleX));
         var merged = component.Data.ValueKind == JsonValueKind.Object
             ? JsonNode.Parse(component.Data.GetRawText())!.AsObject() : new JsonObject();
         foreach (var property in updated)
@@ -104,6 +107,20 @@ public static class SceneComponentTypes
         if (!string.IsNullOrWhiteSpace(data.Model)) merged.Remove(EmbeddedVoxelData.PropertyName);
         component.Data = JsonSerializer.SerializeToElement(merged, JsonOptions);
     }
+
+    /// <summary>
+    /// 读取单轴缩放倍数；没有分轴字段的旧文件回退到单个 scale
+    /// </summary>
+    private static float ReadModelScale(JsonElement data, string key)
+    {
+        if (data.TryGetProperty(key, out var value) && value.TryGetSingle(out var scale)) return ClampModelScale(scale);
+        if (data.TryGetProperty("scale", out var legacy) && legacy.TryGetSingle(out var legacyScale)) return ClampModelScale(legacyScale);
+        return 1F;
+    }
+
+    /// <summary>倍数统一夹在缩放下限与上限之间</summary>
+    private static float ClampModelScale(float scale) =>
+        float.IsFinite(scale) ? Math.Clamp(scale, 0.125F, 8F) : 1F;
 
     public static ComponentRecord CreateLight(LightComponentData data) => new()
     {
@@ -268,7 +285,8 @@ public static class SceneComponentTypes
 /// 体素模型组件保存的资源引用信息
 /// </summary>
 public readonly record struct VoxelModelComponentData(
-    string Model, string Part, int VoxelCount, string Template, float Scale = 1F,
+    string Model, string Part, int VoxelCount, string Template,
+    float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
     string SortingLayer = "默认", int SortingOrder = 0)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);

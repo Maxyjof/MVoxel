@@ -29,13 +29,16 @@ internal sealed partial class ImGuiEditorWindow
     private string ScaleBaseMetaPath(SceneObject sceneObject) =>
         Path.Combine(ScaleBaseDirectory, sceneObject.Id.ToString() + ".json");
 
-    /// <summary>读取对象的缩放倍数，1 表示基准尺寸</summary>
+    /// <summary>对象是否处在基准尺寸（三轴都是 1）</summary>
     /// <param name="sceneObject">目标对象</param>
-    /// <returns>当前倍数，没有模型组件时为 1</returns>
-    private static float GetModelScale(SceneObject sceneObject)
+    /// <returns>三轴都等于 1 时为 true</returns>
+    private static bool IsAtBaseScale(SceneObject sceneObject)
     {
         var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        return component is null ? 1F : SceneComponentTypes.ReadVoxelModel(component).Scale;
+        if (component is null) return true;
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        return ModelScaleRule.IsIdentity(data.ScaleX) && ModelScaleRule.IsIdentity(data.ScaleY) &&
+               ModelScaleRule.IsIdentity(data.ScaleZ);
     }
 
     /// <summary>
@@ -111,11 +114,13 @@ internal sealed partial class ImGuiEditorWindow
 
     /// <summary>
     /// 应用模型缩放。基准永远是最近一次编辑后的模型，只改倍数不会掉精度；
-    /// 放大只接受整数倍，缩小接受小数倍，结果对齐回对象原来的最小角。
+    /// 每个轴放大只接受整数倍，缩小接受小数倍，结果对齐回对象原来的最小角。
     /// </summary>
     /// <param name="sceneObject">目标对象</param>
-    /// <param name="requested">目标倍数</param>
-    private void ApplyModelScale(SceneObject sceneObject, float requested)
+    /// <param name="scaleX">X 轴目标倍数</param>
+    /// <param name="scaleY">Y 轴目标倍数</param>
+    /// <param name="scaleZ">Z 轴目标倍数</param>
+    private void ApplyModelScale(SceneObject sceneObject, float scaleX, float scaleY, float scaleZ)
     {
         if (_project is null || _sceneDocument is null) return;
         if (sceneObject.Transform.Mode != TransformMode.Grid)
@@ -131,9 +136,12 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (!ModelScaleRule.TryNormalize(requested, out var factor, out var note))
+        var notes = new List<string>();
+        if (!TryNormalizeAxis(scaleX, out var factorX, notes, "X") ||
+            !TryNormalizeAxis(scaleY, out var factorY, notes, "Y") ||
+            !TryNormalizeAxis(scaleZ, out var factorZ, notes, "Z"))
         {
-            SetStatus(note);
+            SetStatus(notes.Count > 0 ? notes[0] : "缩放倍数无效");
             return;
         }
 
@@ -144,33 +152,57 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (ModelScaleRule.IsIdentity(factor))
+        if (ModelScaleRule.IsIdentity(factorX) && ModelScaleRule.IsIdentity(factorY) && ModelScaleRule.IsIdentity(factorZ))
         {
-            RestoreModelScale(sceneObject, component, note);
+            RestoreModelScale(sceneObject, component);
             return;
         }
 
         var source = ResolveScaleBase(sceneObject, world, origin);
         if (source is null) return;
 
-        if (!ModelScaleRule.TryResample(source, factor, origin, out var scaled, out var error, _scaleCancellation.Token))
+        if (!ModelScaleRule.TryResample(source, factorX, factorY, factorZ, origin, out var scaled, out var error,
+                _scaleCancellation.Token))
         {
             SetStatus($"缩放失败：{error}");
             return;
         }
 
-        if (!ReplaceObjectVoxels(sceneObject, scaled, origin, scale: factor))
+        if (!ReplaceObjectVoxels(sceneObject, scaled, origin,
+                scale: (factorX, factorY, factorZ)))
         {
             SetStatus("缩放结果无法应用到对象");
             return;
         }
 
-        ResetObjectScaleFields(sceneObject);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
-        SetStatus(note.Length > 0
-            ? $"{note}，共 {scaled.OccupiedVoxelCount:N0} 体素"
-            : $"已缩放为 {factor:0.###}x：{scaled.OccupiedVoxelCount:N0} 体素");
+        var factorText = ModelScaleRule.IsUniform(factorX, factorY, factorZ)
+            ? $"{factorX:0.###}x"
+            : $"{factorX:0.###}×{factorY:0.###}×{factorZ:0.###}";
+        var note = notes.Count > 0 ? string.Join("；", notes) + "，" : string.Empty;
+        SetStatus($"{note}已缩放为 {factorText}：{scaled.OccupiedVoxelCount:N0} 体素");
+    }
+
+    /// <summary>
+    /// 规范化单轴倍数：放大取整数倍，缩小保留小数；失败时把原因写进说明列表
+    /// </summary>
+    /// <param name="requested">用户填写的倍数</param>
+    /// <param name="factor">实际使用的倍数</param>
+    /// <param name="notes">倍数被调整或不可用的说明</param>
+    /// <param name="axis">轴名，用于说明文案</param>
+    /// <returns>该轴倍数可用时为 true</returns>
+    private static bool TryNormalizeAxis(float requested, out float factor, List<string> notes, string axis)
+    {
+        if (ModelScaleRule.TryNormalize(requested, out factor, out var note))
+        {
+            if (note.Length > 0) notes.Add($"{axis} 轴{note}");
+            return true;
+        }
+
+        notes.Add($"{axis} 轴：{note}");
+        factor = 1F;
+        return false;
     }
 
     /// <summary>
@@ -179,13 +211,13 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="sceneObject">目标对象</param>
     /// <param name="component">模型组件</param>
     /// <param name="note">附带说明，可为空</param>
-    private void RestoreModelScale(SceneObject sceneObject, ComponentRecord component, string note = "")
+    private void RestoreModelScale(SceneObject sceneObject, ComponentRecord component)
     {
         if (!TryReadScaleBaseLocal(sceneObject, out var local, out var recordedRotation))
         {
             // 还没缩放过的模型本来就在基准尺寸，不需要提示
-            if (ModelScaleRule.IsIdentity(GetModelScale(sceneObject))) return;
-            SetStatus("找不到缩放基准，无法恢复 1x");
+            if (IsAtBaseScale(sceneObject)) return;
+            SetStatus("找不到缩放基准，无法恢复到 1x");
             return;
         }
 
@@ -193,16 +225,15 @@ internal sealed partial class ImGuiEditorWindow
         var origin = world.TryGetBounds(out var minimum, out _) ? minimum : VoxelCoord64.Zero;
         var restored = ModelScaleRule.Align(
             OrientScaleBase(local, recordedRotation, sceneObject.Transform.Grid.Rotation), origin);
-        if (!ReplaceObjectVoxels(sceneObject, restored, origin, scale: 1F))
+        if (!ReplaceObjectVoxels(sceneObject, restored, origin, scale: (1F, 1F, 1F)))
         {
             SetStatus("恢复结果无法应用到对象");
             return;
         }
 
-        ResetObjectScaleFields(sceneObject);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
-        SetStatus(note.Length > 0 ? note : $"已恢复基准尺寸：{restored.OccupiedVoxelCount:N0} 体素");
+        SetStatus($"已恢复基准尺寸：{restored.OccupiedVoxelCount:N0} 体素");
     }
 
     /// <summary>
@@ -216,16 +247,18 @@ internal sealed partial class ImGuiEditorWindow
         var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
         if (component is null) return;
         var data = SceneComponentTypes.ReadVoxelModel(component);
-        if (ModelScaleRule.IsIdentity(data.Scale)) return;
+        if (IsAtBaseScale(sceneObject)) return;
         var current = CaptureObjectVoxels(sceneObject);
         if (current.OccupiedVoxelCount == 0) return;
         if (!TryWriteScaleBase(sceneObject, current)) return;
-        SceneComponentTypes.WriteVoxelModel(component, data with { Scale = 1F });
-        ResetObjectScaleFields(sceneObject);
+        SceneComponentTypes.WriteVoxelModel(component, data with { ScaleX = 1F, ScaleY = 1F, ScaleZ = 1F });
         _scaleBaseObjectId = sceneObject.Id;
         _scaleBaseRotation = sceneObject.Transform.Grid.Rotation;
         _scaleBaseWorld = ModelScaleRule.ToLocal(current);
-        SetStatus($"已在 {data.Scale:0.###}x 尺寸上继续编辑，当前形态成为新的基准");
+        var size = ModelScaleRule.IsUniform(data.ScaleX, data.ScaleY, data.ScaleZ)
+            ? $"{data.ScaleX:0.###}x"
+            : $"{data.ScaleX:0.###}×{data.ScaleY:0.###}×{data.ScaleZ:0.###}";
+        SetStatus($"已在 {size} 尺寸上继续编辑，当前形态成为新的基准");
     }
 
     /// <summary>
@@ -239,7 +272,7 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelWorld? ResolveScaleBase(SceneObject sceneObject, VoxelWorld current, VoxelCoord64 origin)
     {
         var rotation = sceneObject.Transform.Grid.Rotation;
-        if (ModelScaleRule.IsIdentity(GetModelScale(sceneObject)))
+        if (IsAtBaseScale(sceneObject))
         {
             // 基准尺寸下的模型数据就是基准，每次进入缩放都以最新编辑为准
             if (!TryWriteScaleBase(sceneObject, current)) return null;
@@ -261,8 +294,13 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         // 老项目没有基准快照：把当前尺寸反算回 1x 作为基准，之后的缩放都基于它
-        var scale = MathF.Max(ModelScaleRule.Minimum, GetModelScale(sceneObject));
-        var approximate = VoxelRescaler.Scale(current, 1F / scale, origin, out _, _scaleCancellation.Token);
+        var currentScale = SceneComponentTypes.ReadVoxelModel(
+            sceneObject.Components.First(SceneComponentTypes.IsVoxelModel));
+        var approximate = VoxelRescaler.Scale(current,
+            1F / MathF.Max(ModelScaleRule.Minimum, currentScale.ScaleX),
+            1F / MathF.Max(ModelScaleRule.Minimum, currentScale.ScaleY),
+            1F / MathF.Max(ModelScaleRule.Minimum, currentScale.ScaleZ),
+            origin, out _, _scaleCancellation.Token);
         if (approximate.OccupiedVoxelCount == 0)
         {
             SetStatus("无法还原缩放基准，缩放已取消");
@@ -292,29 +330,18 @@ internal sealed partial class ImGuiEditorWindow
         return ModelScaleRule.ToLocal(rotated);
     }
 
-    /// <summary>对象级缩放字段不再承载倍数，统一回到 1 避免和历史数据冲突</summary>
-    /// <param name="sceneObject">目标对象</param>
-    private static void ResetObjectScaleFields(SceneObject sceneObject)
-    {
-        var transform = sceneObject.Transform;
-        transform.ScaleX = 1;
-        transform.ScaleY = 1;
-        transform.ScaleZ = 1;
-        sceneObject.Transform = transform;
-    }
-
     /// <summary>
     /// 用缩放结果替换对象当前体素；主模型对象保留无归属体素语义，分层对象更新所有权集合
     /// </summary>
     private bool ReplaceObjectVoxels(SceneObject sceneObject, VoxelWorld replacement, VoxelCoord64 origin,
-        OrthogonalRotation? newRotation = null, float? scale = null)
+        OrthogonalRotation? newRotation = null, (float X, float Y, float Z)? scale = null)
     {
         if (_sceneDocument is null) return false;
         var world = _objectVoxels.GetOrCreate(sceneObject.Id);
         var before = sceneObject.Transform.Grid;
         var after = new GridTransform(origin, newRotation ?? before.Rotation);
         var component = sceneObject.Components.First(SceneComponentTypes.IsVoxelModel);
-        var previousScale = SceneComponentTypes.ReadVoxelModel(component).Scale;
+        var previousScale = SceneComponentTypes.ReadVoxelModel(component);
         var changes = world.EnumerateOccupied().ToDictionary(cell => cell.Coordinate, _ => default(VoxelValue));
         foreach (var cell in replacement.EnumerateOccupied()) changes[cell.Coordinate] = cell.Value;
         _voxelHistory.Execute(new VoxelStrokeCommand("缩放模型", world,
@@ -323,8 +350,12 @@ internal sealed partial class ImGuiEditorWindow
                 sceneObject.Transform.SetGrid(forward ? after : before);
                 UpdateTransformMarker(sceneObject);
                 if (scale is { } factor)
-                    SceneComponentTypes.WriteVoxelModel(component,
-                        SceneComponentTypes.ReadVoxelModel(component) with { Scale = forward ? factor : previousScale });
+                    SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with
+                    {
+                        ScaleX = forward ? factor.X : previousScale.ScaleX,
+                        ScaleY = forward ? factor.Y : previousScale.ScaleY,
+                        ScaleZ = forward ? factor.Z : previousScale.ScaleZ,
+                    });
             })));
         return true;
     }

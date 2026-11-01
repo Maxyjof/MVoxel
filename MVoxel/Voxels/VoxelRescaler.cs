@@ -3,8 +3,10 @@
 namespace MVoxel.Voxels;
 
 /// <summary>
-/// 体素模型的最近邻倍数重采样
-/// 放大时每个源体素扩成实心块，缩小时按输出格中心抽样，颜色、材质槽和标志位原样保留
+/// 体素模型的倍数重采样
+/// 放大时每个源体素扩成实心块；缩小时输出格覆盖多个源体素，按出现次数投票取多数色，
+/// 细线和小结构因此更容易保留下来，而不是被单点抽样整片丢掉。
+/// 颜色、材质槽和标志位始终作为整体搬移，不会混出新值。
 /// </summary>
 public static class VoxelRescaler
 {
@@ -103,6 +105,26 @@ public static class VoxelRescaler
         SparseVoxelChunk? cachedChunk = null;
         var hasCache = false;
 
+        //投票用的复用容器：按首次出现顺序记录候选人，平票时先出现的胜出，结果与遍历顺序一致
+        var tally = new Dictionary<VoxelValue, int>();
+        var candidates = new List<VoxelValue>(16);
+
+        bool TryRead(long x, long y, long z, out VoxelValue value)
+        {
+            var coordinate = new VoxelCoord64(x, y, z);
+            var (chunkCoordinate, localCoordinate) = VoxelWorld.Split(coordinate);
+            if (!hasCache || chunkCoordinate != cachedCoordinate)
+            {
+                cachedCoordinate = chunkCoordinate;
+                hasCache = true;
+                cachedChunk = source.TryGetChunk(chunkCoordinate, out var chunk) ? chunk : null;
+            }
+
+            if (cachedChunk is not null && cachedChunk.TryGet(localCoordinate, out value)) return true;
+            value = default;
+            return false;
+        }
+
         var processed = 0L;
         var written = 0L;
         var minimumX = 0L;
@@ -111,10 +133,10 @@ public static class VoxelRescaler
 
         for (var z = outputMinimum.Z; z <= outputMaximum.Z; z++)
         {
-            var sourceZ = MapAxis(z, pivot.Z, inverseZ, sourceMinimum.Z, sourceMaximum.Z);
+            var (zLow, zHigh) = SourceRange(z, pivot.Z, inverseZ, sourceMinimum.Z, sourceMaximum.Z);
             for (var y = outputMinimum.Y; y <= outputMaximum.Y; y++)
             {
-                var sourceY = MapAxis(y, pivot.Y, inverseY, sourceMinimum.Y, sourceMaximum.Y);
+                var (yLow, yHigh) = SourceRange(y, pivot.Y, inverseY, sourceMinimum.Y, sourceMaximum.Y);
                 for (var x = outputMinimum.X; x <= outputMaximum.X; x++)
                 {
                     processed++;
@@ -124,19 +146,40 @@ public static class VoxelRescaler
                         progress?.Invoke(written);
                     }
 
-                    var sourceX = MapAxis(x, pivot.X, inverseX, sourceMinimum.X, sourceMaximum.X);
-                    var sourceCoordinate = new VoxelCoord64(sourceX, sourceY, sourceZ);
-                    var (chunkCoordinate, localCoordinate) = VoxelWorld.Split(sourceCoordinate);
-                    if (!hasCache || chunkCoordinate != cachedCoordinate)
+                    var (xLow, xHigh) = SourceRange(x, pivot.X, inverseX, sourceMinimum.X, sourceMaximum.X);
+                    VoxelValue value;
+                    if (xLow == xHigh && yLow == yHigh && zLow == zHigh)
                     {
-                        cachedCoordinate = chunkCoordinate;
-                        hasCache = true;
-                        cachedChunk = source.TryGetChunk(chunkCoordinate, out var chunk) ? chunk : null;
+                        //放大或恰好一对一：输出格只覆盖一个源体素，直接取值
+                        if (!TryRead(xLow, yLow, zLow, out value)) continue;
                     }
-
-                    if (cachedChunk is null || !cachedChunk.TryGet(localCoordinate, out var value))
+                    else
                     {
-                        continue;
+                        tally.Clear();
+                        candidates.Clear();
+                        for (var sz = zLow; sz <= zHigh; sz++)
+                        for (var sy = yLow; sy <= yHigh; sy++)
+                        for (var sx = xLow; sx <= xHigh; sx++)
+                        {
+                            if (!TryRead(sx, sy, sz, out var candidate)) continue;
+                            if (tally.TryGetValue(candidate, out var count)) tally[candidate] = count + 1;
+                            else
+                            {
+                                tally[candidate] = 1;
+                                candidates.Add(candidate);
+                            }
+                        }
+
+                        if (candidates.Count == 0) continue;
+                        value = candidates[0];
+                        var bestCount = tally[value];
+                        for (var index = 1; index < candidates.Count; index++)
+                        {
+                            var count = tally[candidates[index]];
+                            if (count <= bestCount) continue;
+                            value = candidates[index];
+                            bestCount = count;
+                        }
                     }
 
                     writer.Set(new VoxelCoord64(x, y, z), value);
@@ -230,44 +273,28 @@ public static class VoxelRescaler
     }
 
     /// <summary>
-    /// 把输出格反算成源体素坐标：先求输出格在源空间覆盖的连续区间，
-    /// 与源包围盒求交后取区间中点并向下取整
-    /// 区间完整落在包围盒内时中点就是格中心，缩小到一格时中点就是包围盒中心
+    /// 把输出格换算成它在源空间覆盖的整数格区间：放大时只覆盖一格，
+    /// 缩小时覆盖多格，调用方据此做多数投票
     /// </summary>
     /// <param name="output">输出格坐标</param>
     /// <param name="pivot">缩放中心</param>
     /// <param name="inverse">缩放倍数的倒数</param>
     /// <param name="minimum">源包围盒最小坐标</param>
     /// <param name="maximum">源包围盒最大坐标</param>
-    /// <returns>源体素坐标</returns>
-    private static long MapAxis(long output, long pivot, double inverse, long minimum, long maximum)
+    /// <returns>包含式的源格区间，始终落在包围盒内</returns>
+    private static (long Low, long High) SourceRange(long output, long pivot, double inverse, long minimum, long maximum)
     {
-        //输出格对应的源连续区间，源模型放大时区间变窄，缩小时变宽
         var start = (double)pivot + ((double)output - (double)pivot) * inverse;
         var end = start + inverse;
-        var low = Math.Max(start, (double)minimum);
-        var high = Math.Min(end, (double)maximum + 1.0);
-        if (high <= low)
+        var low = Math.Max(Math.Floor(start), (double)minimum);
+        var high = Math.Min(Math.Ceiling(end) - 1.0, (double)maximum);
+        if (!double.IsFinite(low) || !double.IsFinite(high) || high < low)
         {
-            return start < minimum ? minimum : maximum;
+            //区间落在包围盒外时退到最近的一格，保证输出格总有取样位置
+            var fallback = start < minimum ? minimum : maximum;
+            return (fallback, fallback);
         }
 
-        var sample = Math.Floor((low + high) * 0.5);
-        if (!double.IsFinite(sample))
-        {
-            return minimum;
-        }
-
-        if (sample <= minimum)
-        {
-            return minimum;
-        }
-
-        if (sample >= maximum)
-        {
-            return maximum;
-        }
-
-        return (long)sample;
+        return ((long)low, (long)high);
     }
 }

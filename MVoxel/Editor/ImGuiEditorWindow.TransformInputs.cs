@@ -184,28 +184,25 @@ internal sealed partial class ImGuiEditorWindow
                 for (var step = 0; step < steps; step++) RotateModelObjectBy90(item, axis);
             }
         });
-        if (item.Components.Any(SceneComponentTypes.IsVoxelModel)) DrawModelScaleRow(item);
+        if (item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } modelComponent)
+            DrawModelScaleRow(item, modelComponent);
     }
 
     /// <summary>
-    /// 模型倍数缩放：放大只接受整数倍，缩小接受小数倍，基准是最近一次编辑后的模型
+    /// 模型倍数缩放：三轴各自填写，放大只接受整数倍，缩小接受小数倍，
+    /// 基准是最近一次编辑后的模型
     /// </summary>
     /// <param name="item">选中的模型对象</param>
-    private void DrawModelScaleRow(SceneObject item)
+    /// <param name="component">模型组件</param>
+    private void DrawModelScaleRow(SceneObject item, ComponentRecord component)
     {
-        var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return;
-        var scale = (double)SceneComponentTypes.ReadVoxelModel(component).Scale;
-        BeginInspectorField("倍数",
-            "放大只支持整数倍，体素按整格复制，不会出现半个体素；缩小支持小数倍，结果从模型最小角成组、对齐原始体素格。\n" +
-            "缩放始终以“最近一次编辑后的模型”为基准：只改倍数不会掉精度，来回缩放也不会累积误差；在非 1x 尺寸上继续雕刻时，当前形态会成为新的基准。");
-        var buttonWidth = ImGui.CalcTextSize("恢复 1x").X + 18F;
-        var width = Math.Max(48F, ImGui.GetContentRegionAvail().X - buttonWidth - 10F);
-        if (TransformAxisInput("缩放", "倍", scale, width, 0.1D, 10D, out var result))
-            ApplyModelScale(item, (float)result);
-        ImGui.SameLine(0, 6);
-        if (ImGui.Button("恢复 1x", new Vector2(buttonWidth, 0F))) ApplyModelScale(item, 1F);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("回到最近一次编辑后的尺寸，不做重采样");
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        var scaleValues = new[] { (double)data.ScaleX, data.ScaleY, data.ScaleZ };
+        DrawTransformRow("缩放", scaleValues, 0.1D, 12D, (axis, value) =>
+        {
+            scaleValues[axis] = value;
+            ApplyModelScale(item, (float)scaleValues[0], (float)scaleValues[1], (float)scaleValues[2]);
+        }, "放大只支持整数倍，体素按整格复制；缩小支持小数倍，结果从模型最小角成组、对齐原始体素格。\n缩放始终以“最近一次编辑后的模型”为基准，只改倍数不会掉精度；在非 1x 尺寸上继续雕刻时，当前形态会成为新的基准。");
     }
 
     /// <summary>

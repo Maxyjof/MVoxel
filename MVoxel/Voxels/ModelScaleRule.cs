@@ -20,6 +20,14 @@ public static class ModelScaleRule
     /// <summary>单次缩放的输出体素预算，防止误填大倍数耗尽内存</summary>
     private const long OutputBudget = 50_000_000;
 
+    /// <summary>三轴倍数是否一致，决定状态栏显示 2x 还是 2×1×3</summary>
+    /// <param name="x">X 轴倍数</param>
+    /// <param name="y">Y 轴倍数</param>
+    /// <param name="z">Z 轴倍数</param>
+    /// <returns>三轴在容差内相等时为 true</returns>
+    public static bool IsUniform(float x, float y, float z) =>
+        MathF.Abs(x - y) <= Tolerance && MathF.Abs(y - z) <= Tolerance;
+
     /// <summary>倍数是否就是基准尺寸</summary>
     /// <param name="factor">缩放倍数</param>
     /// <returns>落在 1x 容差内时为 true</returns>
@@ -72,20 +80,22 @@ public static class ModelScaleRule
     /// 反复缩放也不会累积半格偏移。
     /// </summary>
     /// <param name="source">基准模型，最小角与 <paramref name="anchor"/> 重合</param>
-    /// <param name="factor">目标倍数</param>
+    /// <param name="factorX">X 轴目标倍数</param>
+    /// <param name="factorY">Y 轴目标倍数</param>
+    /// <param name="factorZ">Z 轴目标倍数</param>
     /// <param name="anchor">缩放锚点，取对象当前包围盒最小角</param>
     /// <param name="result">重采样结果，已对齐到锚点</param>
     /// <param name="error">失败原因</param>
     /// <param name="cancellation">取消标记</param>
     /// <returns>成功时为 true</returns>
-    public static bool TryResample(VoxelWorld source, float factor, VoxelCoord64 anchor,
-        out VoxelWorld result, out string error, CancellationToken cancellation = default)
+    public static bool TryResample(VoxelWorld source, float factorX, float factorY, float factorZ,
+        VoxelCoord64 anchor, out VoxelWorld result, out string error, CancellationToken cancellation = default)
     {
         result = new VoxelWorld();
         error = string.Empty;
         try
         {
-            var scaled = VoxelRescaler.Scale(Align(source, anchor), factor, anchor,
+            var scaled = VoxelRescaler.Scale(Align(source, anchor), factorX, factorY, factorZ, anchor,
                 out _, cancellation, null, OutputBudget);
             if (scaled.OccupiedVoxelCount == 0)
             {
