@@ -247,6 +247,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         CenterOnCurrentMonitor();
         _vulkan = new VulkanWindowContext(this);
         _controller = new VulkanImGuiController(this);
+        //让 ImGui 决定窗口光标形状：可拖动字段显示左右调整光标，输入框显示文本光标
+        _controller.ManageCursor = true;
         _imguiContext = ImGui.GetCurrentContext();
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);

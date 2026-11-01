@@ -25,6 +25,8 @@ internal sealed class VulkanImGuiController : IDisposable
     private CursorState _cursorStateBeforeOverride;
     private MouseCursor? _cursorBeforeOverride;
     private bool _cursorOverridden;
+    private ImGuiMouseCursor _appliedCursor = ImGuiMouseCursor.Arrow;
+    private bool _cursorApplied;
 
     /// <summary>
     /// 为 NoAPI 窗口创建 ImGui 输入上下文
@@ -243,13 +245,20 @@ internal sealed class VulkanImGuiController : IDisposable
     }
 
     /// <summary>
-    /// 根据 ImGui 状态更新窗口光标
+    /// 根据 ImGui 请求更新窗口光标；悬停可拖动控件时显示对应的形状光标
     /// </summary>
     private void UpdateCursor(ImGuiIOPtr io)
     {
-        if (!ManageCursor || io.ConfigFlags.HasFlag(ImGuiConfigFlags.NoMouseCursorChange) || !io.WantCaptureMouse)
+        if (!ManageCursor || io.ConfigFlags.HasFlag(ImGuiConfigFlags.NoMouseCursorChange))
         {
             RestoreCursor();
+            return;
+        }
+
+        //场景拖拽把光标锁定在窗口中心，此时交给视口输入处理，避免互相覆盖
+        if (_window.CursorState == CursorState.Grabbed)
+        {
+            ReleaseCursorOverride();
             return;
         }
 
@@ -261,11 +270,41 @@ internal sealed class VulkanImGuiController : IDisposable
         }
 
         _window.CursorState = io.MouseDrawCursor ? CursorState.Hidden : CursorState.Normal;
-        if (!io.MouseDrawCursor)
+        if (io.MouseDrawCursor)
         {
-            _window.Cursor = MouseCursor.Default;
+            _cursorApplied = false;
+            return;
         }
+
+        //指针不在 ImGui 窗口上时回到箭头，离开控件后不残留缩放或文本光标
+        var requested = io.WantCaptureMouse ? ImGui.GetMouseCursor() : ImGuiMouseCursor.Arrow;
+        if (_cursorApplied && _appliedCursor == requested)
+        {
+            return;
+        }
+
+        _window.Cursor = ResolveCursor(requested);
+        _appliedCursor = requested;
+        _cursorApplied = true;
     }
+
+    /// <summary>
+    /// 把 ImGui 光标形状映射为 OpenTK 标准光标
+    /// </summary>
+    /// <param name="cursor">ImGui 请求的光标</param>
+    /// <returns>可直接设置到窗口的光标</returns>
+    private static MouseCursor ResolveCursor(ImGuiMouseCursor cursor) => cursor switch
+    {
+        ImGuiMouseCursor.TextInput => MouseCursor.IBeam,
+        ImGuiMouseCursor.ResizeAll => MouseCursor.ResizeAll,
+        ImGuiMouseCursor.ResizeNS => MouseCursor.ResizeNS,
+        ImGuiMouseCursor.ResizeEW => MouseCursor.ResizeEW,
+        ImGuiMouseCursor.ResizeNESW => MouseCursor.ResizeNESW,
+        ImGuiMouseCursor.ResizeNWSE => MouseCursor.ResizeNWSE,
+        ImGuiMouseCursor.Hand => MouseCursor.PointingHand,
+        ImGuiMouseCursor.NotAllowed => MouseCursor.NotAllowed,
+        _ => MouseCursor.Default,
+    };
 
     /// <summary>
     /// 恢复窗口原始光标状态
@@ -277,14 +316,30 @@ internal sealed class VulkanImGuiController : IDisposable
             return;
         }
 
-        _window.CursorState = _cursorStateBeforeOverride;
-        if (_cursorBeforeOverride is not null)
+        var state = _cursorStateBeforeOverride;
+        var cursor = _cursorBeforeOverride;
+        ReleaseCursorOverride();
+        _window.CursorState = state;
+        if (cursor is not null)
         {
-            _window.Cursor = _cursorBeforeOverride;
+            _window.Cursor = cursor;
+        }
+    }
+
+    /// <summary>
+    /// 放弃光标接管，不改变窗口当前的抓取状态
+    /// </summary>
+    private void ReleaseCursorOverride()
+    {
+        if (!_cursorOverridden)
+        {
+            return;
         }
 
-        _cursorBeforeOverride = null;
         _cursorOverridden = false;
+        _cursorBeforeOverride = null;
+        _cursorApplied = false;
+        _window.Cursor = MouseCursor.Default;
     }
 
     /// <summary>
