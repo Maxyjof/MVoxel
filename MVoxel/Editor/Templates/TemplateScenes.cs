@@ -48,6 +48,86 @@ internal static class TemplateScenes
         ? new VoxelValue(color)
         : new VoxelValue(color);
 
+    /// <summary>开放的室内餐桌场景，保留前方视线和物件细节。</summary>
+    public static VoxelWorld BuildDefaultRoom()
+    {
+        var w = new VoxelWorld();
+        var floor = Paint(new Rgba32(174, 135, 96));
+        var wall = Paint(new Rgba32(229, 218, 194));
+        var wood = Paint(new Rgba32(119, 72, 39));
+        var lightWood = Paint(new Rgba32(177, 119, 68));
+        var plate = Paint(new Rgba32(237, 232, 217));
+        var cookie = Paint(new Rgba32(192, 137, 71));
+        var chip = Paint(new Rgba32(83, 48, 30));
+        var cola = new VoxelValue(new Rgba32(99, 48, 24, 175), TemplateKit.SlotGlass, VoxelFlags.Translucent);
+        TemplateKit.Box(w, -36, 0, -30, 36, 0, 30, floor);
+        TemplateKit.Box(w, -36, 1, -30, 36, 36, -30, wall);
+        TemplateKit.Box(w, -36, 1, -29, -36, 36, 30, wall);
+        TemplateKit.Box(w, -12, 10, -5, 12, 11, 9, lightWood);
+        foreach (var x in new[] { -10, 9 }) foreach (var z in new[] { -3, 7 })
+            TemplateKit.Box(w, x, 1, z, x + 1, 9, z + 1, wood);
+        // 椅子朝向桌子。
+        TemplateKit.Box(w, -7, 6, 13, 3, 7, 19, lightWood);
+        foreach (var x in new[] { -7, 2 }) foreach (var z in new[] { 13, 18 })
+            TemplateKit.Box(w, x, 1, z, x + 1, 5, z + 1, wood);
+        TemplateKit.Box(w, -7, 8, 18, -6, 15, 19, wood);
+        TemplateKit.Box(w, 2, 8, 18, 3, 15, 19, wood);
+        TemplateKit.Box(w, -7, 14, 18, 3, 15, 19, lightWood);
+        // 碟子与三块带巧克力碎的饼干。
+        TemplateKit.Ellipsoid(w, -4, 12.2, 1, 5, 0.7, 4, plate);
+        foreach (var (x, z) in new[] { (-6, 0), (-3, 1), (-5, 3) })
+        {
+            TemplateKit.Ellipsoid(w, x, 13.1, z, 1.6, .6, 1.6, cookie);
+            TemplateKit.Box(w, x, 13, z, x, 13, z, chip);
+        }
+        // 缩小杯子，保留一格厚的透明杯壁、杯底和可乐。
+        for (var y = 12; y <= 16; y++)
+        for (var z = -1; z <= 3; z++)
+        for (var x = 4; x <= 8; x++)
+        {
+            var d = (x - 6) * (x - 6) + (z - 1) * (z - 1);
+            if (d > 5) continue;
+            if (y == 12 || d >= 2) w.Set(new VoxelCoord64(x, y, z), Glass(100));
+            else if (y <= 14) w.Set(new VoxelCoord64(x, y, z), cola);
+        }
+        // 后墙壁画。
+        TemplateKit.Box(w, -18, 19, -29, -4, 29, -29, wood);
+        TemplateKit.Box(w, -17, 20, -28, -5, 28, -28, Paint(new Rgba32(112, 173, 194)));
+        TemplateKit.Box(w, -17, 20, -27, -5, 22, -27, Paint(new Rgba32(82, 142, 91)));
+        TemplateKit.Ellipsoid(w, -8, 26, -27, 1.5, 1.5, .5, Paint(new Rgba32(244, 199, 99)));
+        // 落地风扇：底座、立杆、圆形护网、扇叶和中心电机。
+        var fanDark = Metal(new Rgba32(72, 83, 90));
+        var fanLight = Paint(new Rgba32(208, 218, 215));
+        var blade = Paint(new Rgba32(103, 155, 169));
+        TemplateKit.Ellipsoid(w, 20.5, 1.4, -9.5, 4, .8, 3, fanDark);
+        TemplateKit.Box(w, 20, 2, -10, 20, 12, -10, fanLight);
+        for (var y = 10; y <= 22; y++)
+        for (var x = 14; x <= 26; x++)
+        {
+            var dx = x - 20; var dy = y - 16; var radius = dx * dx + dy * dy;
+            if (radius >= 25 && radius <= 37)
+                w.Set(new VoxelCoord64(x, y, -10), fanDark);
+            else if (radius <= 20 && (Math.Abs(dx) <= 1 || Math.Abs(dy) <= 1))
+                w.Set(new VoxelCoord64(x, y, -10), blade);
+        }
+        TemplateKit.Box(w, 19, 15, -9, 21, 17, -9, fanLight);
+        // 电线从风扇底座连接地面插排，插排再连接后墙插座。
+        var cable = Paint(new Rgba32(45, 49, 53));
+        var socket = Paint(new Rgba32(236, 235, 225));
+        TemplateKit.Box(w, 21, 1, -10, 24, 1, -10, cable);
+        TemplateKit.Box(w, 24, 1, -21, 24, 1, -10, cable);
+        TemplateKit.Box(w, 23, 1, -24, 27, 1, -22, socket);
+        TemplateKit.Box(w, 24, 2, -23, 24, 2, -23, cable);
+        TemplateKit.Box(w, 26, 2, -23, 26, 2, -23, cable);
+        TemplateKit.Box(w, 27, 1, -26, 27, 1, -24, cable);
+        TemplateKit.Box(w, 27, 1, -27, 29, 1, -26, cable);
+        TemplateKit.Box(w, 29, 1, -29, 29, 3, -27, cable);
+        TemplateKit.Box(w, 28, 3, -29, 30, 5, -29, socket);
+        TemplateKit.Box(w, 28, 4, -28, 28, 4, -28, cable);
+        TemplateKit.Box(w, 30, 4, -28, 30, 4, -28, cable);
+        return w;
+    }
+
     /// <summary>
     /// 小屋与花园：石基木墙、双坡红瓦、玻璃窗、门口提灯、
     /// 名木两棵、花圃、矮栅与井台
@@ -179,6 +259,16 @@ internal static class TemplateScenes
         ArgumentNullException.ThrowIfNull(source);
         return id switch
         {
+            ProjectTemplateId.DefaultRoom => SplitByRegions(source,
+                ("地板与墙壁", "房间", c => c.Y <= 0 || c.X <= -36 || c.Z <= -30),
+                ("壁画", "壁画", c => c.X is >= -18 and <= -4 && c.Y is >= 19 and <= 29 && c.Z is >= -29 and <= -27),
+                ("墙壁插座", "插座", c => c.X is >= 28 and <= 30 && c.Y is >= 3 and <= 5 && c.Z is >= -29 and <= -28),
+                ("插排与电线", "电源", c => c.X is >= 23 and <= 29 && c.Y <= 3 && c.Z is >= -29 and <= -10),
+                ("落地电风扇", "电风扇", c => c.X is >= 14 and <= 26 && c.Y is >= 1 and <= 22 && c.Z is >= -13 and <= -7),
+                ("玻璃杯与可乐", "玻璃杯", c => c.X is >= 4 and <= 8 && c.Y is >= 12 and <= 16 && c.Z is >= -1 and <= 3),
+                ("碟子与饼干", "餐点", c => c.X is >= -10 and <= 1 && c.Y is >= 12 and <= 14 && c.Z is >= -4 and <= 6),
+                ("椅子", "椅子", c => c.Z >= 13),
+                ("桌子", "桌子", _ => true)),
             ProjectTemplateId.Showcase => BuildCottageParts(source),
             ProjectTemplateId.MaterialLab => SplitByRegions(source,
                 ("环境与地面", "环境", c => c.Y <= 1),

@@ -2706,128 +2706,96 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (translucentPasses >= 8)
                         break; // 防御上限：一条路径的水气界面进入至多几次
 
-                    // 解析水层：把入射点所在的连通半透明柱当作一整层均匀介质，
-                    // 吸收与内散射用闭式解一次算完，绝不“推进一格再命中一格”。
-                    // 逐格 hit-advance-rehit 循环对起点亚体素相位敏感：命中格数、
-                    // 出口面选择、背面锚定都随像素在格边界两侧翻转，连通水面因此
-                    // 长出与体素网格锁定、不随采样收敛的规则点阵阴影
+                    // 沿折射方向逐段穿过相邻的同种半透明盒体，直到真正的外表面。
+                    // 不能把任意球体或薄玻璃近似成垂直水柱，否则会在内部虚构出口。
                     vec3 absorbColor = any(greaterThan(material.absorption.rgb, vec3(0.0)))
-                        ? material.absorption.rgb
-                        : hitLinearColor;
+                        ? material.absorption.rgb : hitLinearColor;
                     float stepScale = material.scalars.w >= 0.0 ? material.scalars.w : 1.0;
                     vec3 sigma = max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)));
-                    float topPlane = values[17] + float(hitCell.y) + float(hitExtent.y);
-                    // 折射：只有材质显式设置了折射率才偏折；未设置时 mediumDirection 与 rayDirection 相同，
-                    // 纯吸收介质的画面与改动前逐像素一致
                     float mediumIor = material.optics.x > 1.001 ? material.optics.x : 1.0;
                     vec3 mediumDirection = rayDirection;
-                    if (mediumIor > 1.0)
+                    if (mediumIor > 1.0 && !backfaceHit)
                     {
                         vec3 refracted = refract(rayDirection, hitNormal, 1.0 / mediumIor);
-                        if (dot(refracted, refracted) < 1e-6)
-                        {
-                            // 全内反射：这条路径改为镜面反射，交给下一轮弹射
-                            rayOrigin = hitPoint + hitNormal * 0.0005;
-                            rayDirection = reflect(rayDirection, hitNormal);
-                            lastTranslucentCell = hitCell;
-                            continue;
-                        }
-
-                        mediumDirection = normalize(refracted);
+                        if (dot(refracted, refracted) > 1e-6) mediumDirection = normalize(refracted);
                     }
 
-                    vec3 slabEntry = backfaceHit ? rayOrigin : hitPoint;
-                    // 柱底：垂直向下探测第一段不透明面（跳过全部半透明）。起点必须落在
-                    // 水格中心而非水面平面上：起点恰在边界平面时 fromInside 判定随 fp
-                    // 逐像素翻转，柱深会在 0 与真值之间跳变，水面浮出锁定网格的点阵。
-                    // 命中距离换算回 slabEntry 坐标系
-                    float bottomPlane = values[17] + float(hitCell.y);
-                    float probeDistance;
-                    vec3 probeNormal;
-                    vec4 probeColor;
-                    uint probeFlags;
-                    uint probeSlot;
-                    ivec3 probeCell;
-                    ivec3 probeExtent;
-                    vec3 probeOrigin = vec3(slabEntry.x, values[17] + float(hitCell.y) + float(hitExtent.y) * 0.5, slabEntry.z);
-                    // 只有介质在柱底继续向下延伸（下一格仍是半透明）时，才把柱底推到第一个不透明面。
-                    // 否则薄玻璃板会把板下的空气也当成介质，吸收和出射折射都算错，画面上出现横向暗带。
-                    float floorY = values[17] + float(hitCell.y);
-                    float nextDistance;
-                    vec3 nextNormal;
-                    vec4 nextColor;
-                    uint nextFlags;
-                    uint nextSlot;
-                    ivec3 nextCell;
-                    ivec3 nextExtent;
-                    bool columnContinues = TraceClosest(vec3(slabEntry.x, floorY - 0.001, slabEntry.z),
-                        vec3(0.0, -1.0, 0.0), nextDistance, nextNormal, nextColor, nextFlags, nextSlot,
-                        nextCell, nextExtent, false) && nextDistance < 1.5 && (nextFlags & 1u) != 0u;
-                    if (columnContinues && TraceClosest(probeOrigin, vec3(0.0, -1.0, 0.0),
-                        probeDistance, probeNormal, probeColor, probeFlags, probeSlot, probeCell, probeExtent, true))
-                        bottomPlane = probeOrigin.y - probeDistance;
-                    if (bottomPlane >= slabEntry.y) bottomPlane = floorY;
-                    // 视线方向第一段不透明面（湖底或岸壁）给出水段的另一侧边界
-                    float forwardDistance;
-                    vec3 forwardNormal;
-                    vec4 forwardColor;
-                    uint forwardFlags;
-                    uint forwardSlot;
-                    ivec3 forwardCell;
-                    ivec3 forwardExtent;
-                    float tForward = 3.4e38;
-                    bool forwardHit = false;
-                    if (TraceClosest(slabEntry + mediumDirection * 0.001, mediumDirection,
-                        forwardDistance, forwardNormal, forwardColor, forwardFlags, forwardSlot, forwardCell, forwardExtent, true))
+                    const float mediumEpsilon = 0.001;
+                    vec3 segmentStart = backfaceHit ? rayOrigin : hitPoint;
+                    vec3 cursor = segmentStart + mediumDirection * mediumEpsilon;
+                    ivec3 mediumCell = hitCell;
+                    ivec3 mediumExtent = hitExtent;
+                    vec3 exitPoint = segmentStart;
+                    vec3 exitNormal = -hitNormal;
+                    float chord = 0.0;
+                    bool foundExit = false;
+                    for (int mediumStep = 0; mediumStep < 512; mediumStep++)
                     {
-                        tForward = forwardDistance + 0.001;
-                        forwardHit = true;
+                        vec3 boxMin = vec3(values[16], values[17], values[18]) + vec3(mediumCell);
+                        vec3 boxMax = boxMin + vec3(mediumExtent);
+                        float segmentDistance;
+                        vec3 segmentNormal;
+                        if (!IntersectBox(cursor, mediumDirection, boxMin, boxMax, segmentDistance, segmentNormal))
+                            break;
+                        exitPoint = cursor + mediumDirection * segmentDistance;
+                        exitNormal = segmentNormal;
+                        chord += segmentDistance + mediumEpsilon;
+                        vec3 nextOrigin = exitPoint + mediumDirection * mediumEpsilon;
+                        float nextDistance;
+                        vec3 nextNormal;
+                        vec4 nextColor;
+                        uint nextFlags;
+                        uint nextSlot;
+                        ivec3 nextCell;
+                        ivec3 nextExtent;
+                        bool nextHit = TraceClosest(nextOrigin, mediumDirection, nextDistance, nextNormal,
+                            nextColor, nextFlags, nextSlot, nextCell, nextExtent, false);
+                        vec3 nextMin = vec3(values[16], values[17], values[18]) + vec3(nextCell);
+                        vec3 nextMax = nextMin + vec3(nextExtent);
+                        bool insideNext = nextHit && all(greaterThanEqual(nextOrigin, nextMin)) &&
+                            all(lessThanEqual(nextOrigin, nextMax));
+                        if (!insideNext || (nextFlags & 1u) == 0u || nextSlot != hitSlot ||
+                            any(greaterThan(abs(nextColor - hitColor), vec4(0.001))))
+                        {
+                            foundExit = true;
+                            break;
+                        }
+                        mediumCell = nextCell;
+                        mediumExtent = nextExtent;
+                        cursor = nextOrigin;
                     }
-                    float tSlabExit;
-                    if (mediumDirection.y < -0.000001)
-                        tSlabExit = (bottomPlane - slabEntry.y) / mediumDirection.y;
-                    else if (mediumDirection.y > 0.000001)
-                        tSlabExit = (topPlane - slabEntry.y) / mediumDirection.y;
-                    else
-                        tSlabExit = tForward;
-                    float chord = clamp(min(tSlabExit, tForward), 0.0, 256.0);
-                    // 均匀层闭式解：透射 = exp(-σ·弦长)，内散射 = 体色·(1 - 透射)，
-                    // 与逐层几何级数极限同值，但完全不含网格相位项
                     vec3 layerTransmittance = exp(-sigma * chord);
                     vec3 bodyAmbient = hitLinearColor * (Sky(vec3(0.0, 1.0, 0.0))
                         + (values[33] > 0.5 ? vec3(values[27] * 0.35) : vec3(0.0)));
                     radiance += throughput * (vec3(1.0) - layerTransmittance) * bodyAmbient;
                     throughput *= layerTransmittance;
                     if (max(max(throughput.r, throughput.g), throughput.b) < 0.004) break;
-                    // 出口：柱底平面（或岸壁）处微越界落到下一介质表面，
-                    // 着色点锚回精确界面
-                    vec3 exitPoint = slabEntry + mediumDirection * chord;
+                    if (!foundExit)
+                    {
+                        // 超长介质分批继续，避免固定步数截断成黑块。
+                        rayOrigin = exitPoint + mediumDirection * mediumEpsilon;
+                        rayDirection = mediumDirection;
+                        lastTranslucentCell = ivec3(-2);
+                        continue;
+                    }
                     pendingInterface = exitPoint;
-                    // 折射计算使用朝向入射介质的法线，必须与介质内光线反向。
-                    // 岸壁优先用它自己的命中法线，否则按上下柱面取。
-                    pendingInterfaceNormal = forwardHit && tForward <= tSlabExit
-                        ? forwardNormal
-                        : (mediumDirection.y < 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0));
+                    pendingInterfaceNormal = -exitNormal;
                     hasPendingInterface = true;
-                    // 出射界面按同一折射率折回空气；全内反射时沿介质内方向继续前进
+                    rayDirection = mediumDirection;
                     if (mediumIor > 1.0)
                     {
-                        vec3 refractedOut = refract(mediumDirection, pendingInterfaceNormal, mediumIor);
+                        vec3 refractedOut = refract(mediumDirection, -exitNormal, mediumIor);
                         if (dot(refractedOut, refractedOut) > 1e-6)
-                        {
                             rayDirection = normalize(refractedOut);
-                        }
                         else
                         {
-                            // 全内反射：把介质内的方向当作新射线，让下一轮继续在体内推进
-                            rayDirection = mediumDirection;
+                            // 全内反射仍在介质内，下一轮从出口内侧继续追踪。
+                            rayDirection = reflect(mediumDirection, -exitNormal);
+                            hasPendingInterface = false;
                         }
                     }
-
-                    rayOrigin = exitPoint + rayDirection * 0.001;
-                    // 已经离开介质：清掉同格守卫，否则浮点误差让下一轮仍落在原格时
-                    // 会被误判为“没有前进”，整块玻璃变成纯黑
+                    rayOrigin = exitPoint + rayDirection * mediumEpsilon;
                     lastTranslucentCell = ivec3(-2);
                     continue;
                 }

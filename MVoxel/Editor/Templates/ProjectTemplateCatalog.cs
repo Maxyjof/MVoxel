@@ -18,6 +18,9 @@ public enum ProjectTemplateId
     /// </summary>
     Empty,
 
+    /// <summary>室内餐桌默认场景。</summary>
+    DefaultRoom,
+
     /// <summary>
     /// 展示基础建模、树木、屋顶、玻璃和自发光
     /// </summary>
@@ -114,23 +117,24 @@ public static class ProjectTemplateCatalog
     /// </summary>
     private static readonly ProjectTemplateDefinition[] Definitions =
     [
-        new(ProjectTemplateId.Empty, "无 · 空项目", "创建标准目录与可编辑的光照示例场景", "适合从零开始", "起步", "观察蓝色点光、墙体和地板"),
-        new(ProjectTemplateId.XianxiaContinent, "仙域九霄 · 修仙大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
-        new(ProjectTemplateId.Showcase, "基础展示 · 小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
+        new(ProjectTemplateId.Empty, "空", "创建没有场景对象的空项目。", "从零开始", "起步", "自行创建场景对象"),
+        new(ProjectTemplateId.DefaultRoom, "默认模板", "带桌椅、可乐玻璃杯、饼干、壁画和落地电风扇的室内场景。", "室内 · 透明材质 · 家具", "起步", "选择并编辑独立物件"),
+        new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
+        new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
         new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色板 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
-        new(ProjectTemplateId.SparseWorld, "稀疏世界 · 远距离地标", "一座灯塔岛连接悬索桥与远处信号塔，地标分散在负坐标和远距离位置。", "大世界 · 稀疏存储 · 负坐标", "大型", "理解稀疏世界和远距离编辑"),
-        new(ProjectTemplateId.LodPlayground, "LOD 练习场", "同一座建筑从完整细节到块状轮廓排列成渐变展廊，距离变化一眼可见。", "LOD · 场景性能 · 批量对象", "中型", "验证距离 LOD 的视觉与性能取舍"),
+        new(ProjectTemplateId.SparseWorld, "灯塔与远方", "一座灯塔岛连接悬索桥与远处信号塔，地标分散在负坐标和远距离位置。", "大世界 · 稀疏存储 · 负坐标", "大型", "理解稀疏世界和远距离编辑"),
+        new(ProjectTemplateId.LodPlayground, "建筑细节展示场", "同一座建筑从完整细节到块状轮廓排列成渐变展廊，距离变化一眼可见。", "LOD · 场景性能 · 批量对象", "中型", "验证距离 LOD 的视觉与性能取舍"),
         new(ProjectTemplateId.RayTracingStudio, "光追工作室", "暗室、侧窗、玻璃砖墙、金属球和暖色灯槽组成一个明确的光线实验场。", "路径追踪 · 直接光 · 透明", "中型", "观察光照、反射和透明材质"),
-        new(ProjectTemplateId.ProceduralTerrain, "程序化地形", "从沙滩、湖盆、雪线到针叶林逐层过渡的山地剖面，适合观察生成结果。", "程序化 · 地形 · 大量体素", "大型", "理解噪声地形和分层材质"),
+        new(ProjectTemplateId.ProceduralTerrain, "山地湖泊", "从沙滩、湖盆、雪线到针叶林逐层过渡的山地剖面，适合观察生成结果。", "程序化 · 地形 · 大量体素", "大型", "理解噪声地形和分层材质"),
         new(ProjectTemplateId.MinecraftValley, "Minecraft 山谷", "湖盆、瀑布、灯笼小径和混交林组成可漫游的山谷，树木作为独立层保存。", "MC 风格 · 分层结构 · 水面 · 发光", "中型", "学习分层世界和对象所有权"),
         new(ProjectTemplateId.Architecture, "柱廊庭院", "围绕镜水池组织的柱廊、圆拱、台阶和铜皮穹顶，强调比例和轴线。", "建筑 · 对称 · 曲线", "中型", "练习模块化建筑和对称构图"),
-        new(ProjectTemplateId.CameraGallery, "多相机构图室", "螺旋雕塑、参照柱和三条不同视线组成小型摄影棚，每台相机都有明确任务。", "相机 · 构图 · 景深", "中型", "学习相机、构图和景深"),
-        new(ProjectTemplateId.LargeWorld, "超大型建筑 · 1024×1024×1024", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区组成真正用于性能验证的远景建筑群。", "大世界 · LOD · 建筑 · 性能压力", "超大型", "验证大坐标、LOD 和 GPU 工作集"),
-        new(ProjectTemplateId.RenderingGallery, "渲染体验馆 · 全效果", "从近处玻璃凉亭、码头船队到远处灯塔和塔楼，形成有前景、中景、远景的海湾小镇。", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪", "小—大型", "用一个完整场景体验最终渲染链路"),
-        new(ProjectTemplateId.MoonbaseOutpost, "月背前哨 · 科幻基地", "玄武岩环形坑、气密穹舱、太阳能阵列、月面车与导航信标构成一座可拆解的月球科研站。", "科幻建模 · 玻璃 · 金属 · 发光 · 分层", "中型", "练习复杂硬表面结构与多材质场景组织"),
-        new(ProjectTemplateId.ClockworkConservatory, "齿轮温室 · 机械花园", "黄铜肋骨托起玻璃穹顶，中央古树、环形水渠、花床与机械钟芯形成冷暖交织的展示庭园。", "有机造型 · 玻璃 · 金属 · 自发光 · 剖切", "中型", "组合曲面、规则结构与可独立编辑的场景部件"),
-        new(ProjectTemplateId.DesertCaravanserai, "沙海驿站 · 绿洲商路", "风蚀岩台上的拱门驿站围绕水池展开，棕榈、织棚、驮队与暖色灯笼铺出一段商路故事。", "建筑 · 地形 · 水体 · 场景叙事 · 发光", "中型", "练习建筑构图、重复模块和地形材质过渡"),
+        new(ProjectTemplateId.CameraGallery, "摄影构图室", "螺旋雕塑、参照柱和三条不同视线组成小型摄影棚，每台相机都有明确任务。", "相机 · 构图 · 景深", "中型", "学习相机、构图和景深"),
+        new(ProjectTemplateId.LargeWorld, "巨塔与圣坛", "阶梯圣坛、空心巨塔、悬链拱桥与环带街区组成真正用于性能验证的远景建筑群。", "大世界 · LOD · 建筑 · 性能压力", "超大型", "验证大坐标、LOD 和 GPU 工作集"),
+        new(ProjectTemplateId.RenderingGallery, "海湾小镇", "从近处玻璃凉亭、码头船队到远处灯塔和塔楼，形成有前景、中景、远景的海湾小镇。", "小中大规模 · 光照 · AO · 透明 · 发光 · 路径追踪", "小—大型", "用一个完整场景体验最终渲染链路"),
+        new(ProjectTemplateId.MoonbaseOutpost, "月球科研站", "玄武岩环形坑、气密穹舱、太阳能阵列、月面车与导航信标构成一座可拆解的月球科研站。", "科幻建模 · 玻璃 · 金属 · 发光 · 分层", "中型", "练习复杂硬表面结构与多材质场景组织"),
+        new(ProjectTemplateId.ClockworkConservatory, "机械温室", "黄铜肋骨托起玻璃穹顶，中央古树、环形水渠、花床与机械钟芯形成冷暖交织的展示庭园。", "有机造型 · 玻璃 · 金属 · 自发光 · 剖切", "中型", "组合曲面、规则结构与可独立编辑的场景部件"),
+        new(ProjectTemplateId.DesertCaravanserai, "沙漠绿洲驿站", "风蚀岩台上的拱门驿站围绕水池展开，棕榈、织棚、驮队与暖色灯笼铺出一段商路故事。", "建筑 · 地形 · 水体 · 场景叙事 · 发光", "中型", "练习建筑构图、重复模块和地形材质过渡"),
     ];
 
     /// <summary>
@@ -177,7 +181,8 @@ public static class ProjectTemplateCatalog
         report?.Invoke("正在生成示例体素模型…", .74F, true);
         var settings = CreateSettings(id);
         settings.TemplateId = id.ToString();
-        if (id == ProjectTemplateId.Empty) ExampleSceneTemplate.Populate(project);
+        if (id == ProjectTemplateId.Empty)
+            SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), new SceneDocument { Name = "主场景" });
         else
         {
             WriteMaterials(project, id);
@@ -375,6 +380,7 @@ public static class ProjectTemplateCatalog
         ArgumentNullException.ThrowIfNull(palette);
         return id switch
         {
+            ProjectTemplateId.DefaultRoom => TemplateScenes.BuildDefaultRoom(),
             ProjectTemplateId.Showcase => TemplateScenes.BuildCottageGarden(),
             ProjectTemplateId.MaterialLab => TemplateScenes.BuildMaterialLab(),
             ProjectTemplateId.PaletteWorkshop => TemplateScenes.BuildPaletteWorkshop(palette),
@@ -568,7 +574,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Tone = ToneCurve.Linear;
                 break;
             case ProjectTemplateId.ProceduralTerrain:
-                settings.DefaultRenderPreset = "程序化地形";
+                settings.DefaultRenderPreset = "山地湖泊";
                 settings.RenderSettings.SunElevationDegrees = 30F;
                 settings.RenderSettings.SunAzimuthDegrees = 118F;
                 settings.RenderSettings.PathTracingEnabled = true;
@@ -934,7 +940,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.SparseWorld => [("远距离地标群", "地标群", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LodPlayground => [("LOD 建筑组", "建筑组", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.RayTracingStudio => [("光追展示台", "展示台", new VoxelCoord64(0, 0, 0))],
-            ProjectTemplateId.ProceduralTerrain => [("程序化地形", "地形", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.ProceduralTerrain => [("山地湖泊", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.MinecraftValley => [("地形", "地形", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.Architecture => [("柱廊庭院", "建筑", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.CameraGallery => [("多相机构图场景", "场景", new VoxelCoord64(0, 0, 0))],

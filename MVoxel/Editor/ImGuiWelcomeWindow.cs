@@ -54,7 +54,7 @@ internal sealed class ImGuiWelcomeContent
     private string _browserError = string.Empty;
     private string _errorText = string.Empty;
     private int _pathMode;
-    private ProjectTemplateId _selectedTemplate = ProjectTemplateId.Empty;
+    private ProjectTemplateId _selectedTemplate = ProjectTemplateId.DefaultRoom;
     private string _templateAutoName = string.Empty;
     private int _closeRequested;
     private int _closeAllowed;
@@ -361,7 +361,7 @@ internal sealed class ImGuiWelcomeContent
     private void BeginPathDialog(int mode)
     {
         _pathMode = mode;
-        if (mode == 1) _selectedTemplate = ProjectTemplateId.Empty;
+        if (mode == 1) _selectedTemplate = ProjectTemplateId.DefaultRoom;
         _templateAutoName = string.Empty;
         _pathText = mode == 1 ? Path.Combine(_editor.DefaultProjectRootPath, "新项目") : string.Empty;
         if (mode == 2)
@@ -557,7 +557,7 @@ internal sealed class ImGuiWelcomeContent
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedTemplate;
-                if (ImGui.Selectable($"{template.Name}  ·  {template.Scale}", isSelected))
+                if (ImGui.Selectable(template.Name, isSelected))
                 {
                     _selectedTemplate = template.Id;
                     _pathText = ApplyTemplateProjectName(_pathText, _templateAutoName, template.Name, out var autoName);

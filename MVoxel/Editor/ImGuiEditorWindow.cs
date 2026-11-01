@@ -3863,7 +3863,7 @@ DockId=0x6A3C3007,0
     private string _projectBrowserPath = string.Empty;
     private string? _projectBrowserSelectedPath;
     private readonly Stack<string> _projectBrowserBack = new();
-    private ProjectTemplateId _selectedProjectTemplate = ProjectTemplateId.Empty;
+    private ProjectTemplateId _selectedProjectTemplate = ProjectTemplateId.DefaultRoom;
 
     private void DrawProjectAssets()
     {
@@ -4053,7 +4053,7 @@ DockId=0x6A3C3007,0
     private void ShowProjectPathDialog(bool create)
     {
         _projectPathDialogMode = create ? 1 : 2;
-        if (create) _selectedProjectTemplate = ProjectTemplateId.Empty;
+        if (create) _selectedProjectTemplate = ProjectTemplateId.DefaultRoom;
         _projectPathText = create
             ? Path.Combine(DefaultProjectRootPath, "新项目")
             : string.Empty;
@@ -4211,7 +4211,7 @@ DockId=0x6A3C3007,0
             foreach (var template in ProjectTemplateCatalog.All)
             {
                 var isSelected = template.Id == _selectedProjectTemplate;
-                if (ImGui.Selectable($"{template.Name}  ·  {template.Scale}", isSelected)) _selectedProjectTemplate = template.Id;
+                if (ImGui.Selectable(template.Name, isSelected)) _selectedProjectTemplate = template.Id;
                 if (isSelected) ImGui.SetItemDefaultFocus();
             }
 
