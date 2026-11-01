@@ -110,9 +110,9 @@ public sealed record ProjectTemplateDefinition(
 public static class ProjectTemplateCatalog
 {
     /// <summary>
-    /// 所有可选模板，顺序就是界面展示顺序
+    /// 模板的原始登记顺序，只在规模分组相同时决定先后
     /// </summary>
-    public static IReadOnlyList<ProjectTemplateDefinition> All { get; } =
+    private static readonly ProjectTemplateDefinition[] Definitions =
     [
         new(ProjectTemplateId.Empty, "无 · 空项目", "创建标准目录与可编辑的光照示例场景", "适合从零开始", "起步", "观察蓝色点光、墙体和地板"),
         new(ProjectTemplateId.XianxiaContinent, "仙域九霄 · 修仙大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
@@ -132,6 +132,30 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.ClockworkConservatory, "齿轮温室 · 机械花园", "黄铜肋骨托起玻璃穹顶，中央古树、环形水渠、花床与机械钟芯形成冷暖交织的展示庭园。", "有机造型 · 玻璃 · 金属 · 自发光 · 剖切", "中型", "组合曲面、规则结构与可独立编辑的场景部件"),
         new(ProjectTemplateId.DesertCaravanserai, "沙海驿站 · 绿洲商路", "风蚀岩台上的拱门驿站围绕水池展开，棕榈、织棚、驮队与暖色灯笼铺出一段商路故事。", "建筑 · 地形 · 水体 · 场景叙事 · 发光", "中型", "练习建筑构图、重复模块和地形材质过渡"),
     ];
+
+    /// <summary>
+    /// 所有可选模板，按场景规模从小到大排列，顺序就是界面展示顺序
+    /// </summary>
+    public static IReadOnlyList<ProjectTemplateDefinition> All { get; } = Definitions
+        .Select((template, index) => (template, index))
+        .OrderBy(entry => ScaleRank(entry.template.Scale))
+        .ThenBy(entry => entry.index)
+        .Select(entry => entry.template)
+        .ToArray();
+
+    /// <summary>
+    /// 规模标签的排序权重：起步最小，超大型最大；跨尺度的展示场景排在大型之后
+    /// </summary>
+    private static int ScaleRank(string scale) => scale switch
+    {
+        "起步" or "无" => 0,
+        "小型" => 1,
+        "中型" => 2,
+        "大型" => 3,
+        "小—大型" => 4,
+        "超大型" => 5,
+        _ => 9,
+    };
 
     /// <summary>
     /// 返回指定模板的定义
