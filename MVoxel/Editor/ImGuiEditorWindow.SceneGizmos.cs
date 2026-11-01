@@ -258,8 +258,11 @@ internal sealed partial class ImGuiEditorWindow
         var color = ToPackedColor(EditorPalette.Accent);
         drawList.AddLine(pivotScreen, handle, color, 2F);
         drawList.AddRectFilled(handle - new Vector2(5F), handle + new Vector2(5F), color);
-        drawList.AddText(handle + new Vector2(10F, -6F), color,
-            $"{sceneObject.Transform.ScaleX} · {sceneObject.Transform.ScaleY} · {sceneObject.Transform.ScaleZ}");
+        // 模型对象只有一个倍数，非模型对象仍按三轴显示
+        var label = sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel)
+            ? $"{GetModelScale(sceneObject):0.###}x"
+            : $"{sceneObject.Transform.ScaleX} · {sceneObject.Transform.ScaleY} · {sceneObject.Transform.ScaleZ}";
+        drawList.AddText(handle + new Vector2(10F, -6F), color, label);
     }
 
     private static Vector3 AxisVector(int axisIndex) =>
@@ -498,7 +501,10 @@ internal sealed partial class ImGuiEditorWindow
             if (component is null) return;
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var factor = Math.Clamp(_sceneGizmoDragStartValue *
-                MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F), 0.125F, 8F);
+                MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F),
+                ModelScaleRule.Minimum, ModelScaleRule.Maximum);
+            // 预览值按正式规则吸附：放大只能取整数倍，缩小按 0.05 一档
+            factor = factor > 1F ? MathF.Round(factor) : MathF.Round(factor * 20F) / 20F;
             SceneComponentTypes.WriteVoxelModel(component, data with { Scale = factor });
             return;
         }
@@ -585,16 +591,12 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 return;
             }
-            var factor = SceneComponentTypes.ReadVoxelModel(component).Scale;
-            SceneComponentTypes.WriteVoxelModel(component,
-                SceneComponentTypes.ReadVoxelModel(component) with { Scale = _sceneGizmoDragStartValue });
-            if (MathF.Abs(factor - _sceneGizmoDragStartValue) > 0.01F)
-            {
-                var multiplier = factor / Math.Max(0.125F, _sceneGizmoDragStartValue);
-                ApplyAxisScale(selected, Math.Max(1, (int)MathF.Round(selected.Transform.ScaleX * multiplier)),
-                    Math.Max(1, (int)MathF.Round(selected.Transform.ScaleY * multiplier)),
-                    Math.Max(1, (int)MathF.Round(selected.Transform.ScaleZ * multiplier)));
-            }
+            var start = MathF.Max(ModelScaleRule.Minimum, _sceneGizmoDragStartValue);
+            // 拖动期间写进组件的是预览值，这里先还原，再按缩放规则正式应用一次
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            SceneComponentTypes.WriteVoxelModel(component, data with { Scale = start });
+            var target = start * MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F);
+            if (MathF.Abs(target - start) > 0.01F) ApplyModelScale(selected, target);
             return;
         }
 

@@ -47,7 +47,7 @@ internal sealed partial class ImGuiEditorWindow
                         { Model = reference, VoxelCount = loaded.OccupiedVoxelCount });
                         EmbeddedVoxelData.Remove(active);
                     }
-                    //新模型按 1x 载入，重置缩放标记，避免下次缩放拿旧原件替换掉刚载入的模型
+                    //新模型按 1x 载入，重置缩放标记并丢弃旧基准，避免下次缩放拿旧基准替换掉刚载入的模型
                     var target = sceneObject.Transform;
                     target.ScaleX = forward ? 1 : beforeScale.ScaleX;
                     target.ScaleY = forward ? 1 : beforeScale.ScaleY;

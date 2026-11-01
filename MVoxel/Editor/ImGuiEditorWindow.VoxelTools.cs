@@ -1454,7 +1454,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
         // 缩放状态下继续雕刻时，先把当前尺寸定为新的 1x 基准，
-        // 否则下次改缩放会从旧原件重采样，把这次新增的方块丢掉
+        // 否则下次改缩放会从旧基准重采样，把这次新增的方块丢掉
         BakeScaleForEditing(target);
         var command = new VoxelStrokeCommand(name, _objectVoxels.GetOrCreate(target.Id), cells, value,
             ObjectEditCallback(target.Id));

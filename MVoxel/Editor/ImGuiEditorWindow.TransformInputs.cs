@@ -147,7 +147,6 @@ internal sealed partial class ImGuiEditorWindow
         var rotation = free ? transform.GetEulerDegrees() : GridEuler(transform.Grid.Rotation);
         var positionValues = new[] { position.X, position.Y, position.Z };
         var rotationValues = new[] { rotation.X, rotation.Y, rotation.Z };
-        var scaleValues = new[] { (double)transform.ScaleX, transform.ScaleY, transform.ScaleZ };
         DrawTransformRow("位置", positionValues, 1D, 12D, (axis, value) =>
         {
             if (free)
@@ -185,13 +184,28 @@ internal sealed partial class ImGuiEditorWindow
                 for (var step = 0; step < steps; step++) RotateModelObjectBy90(item, axis);
             }
         });
-        if (item.Components.Any(SceneComponentTypes.IsVoxelModel))
-            DrawTransformRow("缩放", scaleValues, 1D, 12D, (axis, value) =>
-            {
-                if (value < 1 || value > int.MaxValue) { SetStatus("缩放必须为正整数"); return; }
-                scaleValues[axis] = Math.Truncate(value);
-                ApplyAxisScale(item, (int)scaleValues[0], (int)scaleValues[1], (int)scaleValues[2]);
-            }, "缩放始终以原模型（1x）为基准重采样，逐字输入和拖动都会即时生效，反复缩放不会累积精度损失。在非 1x 尺寸上绘制的方块只存在于当前尺寸，再次缩放会按原模型重算替换。");
+        if (item.Components.Any(SceneComponentTypes.IsVoxelModel)) DrawModelScaleRow(item);
+    }
+
+    /// <summary>
+    /// 模型倍数缩放：放大只接受整数倍，缩小接受小数倍，基准是最近一次编辑后的模型
+    /// </summary>
+    /// <param name="item">选中的模型对象</param>
+    private void DrawModelScaleRow(SceneObject item)
+    {
+        var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+        if (component is null) return;
+        var scale = (double)SceneComponentTypes.ReadVoxelModel(component).Scale;
+        BeginInspectorField("倍数",
+            "放大只支持整数倍，体素按整格复制，不会出现半个体素；缩小支持小数倍，结果从模型最小角成组、对齐原始体素格。\n" +
+            "缩放始终以“最近一次编辑后的模型”为基准：只改倍数不会掉精度，来回缩放也不会累积误差；在非 1x 尺寸上继续雕刻时，当前形态会成为新的基准。");
+        var buttonWidth = ImGui.CalcTextSize("恢复 1x").X + 18F;
+        var width = Math.Max(48F, ImGui.GetContentRegionAvail().X - buttonWidth - 10F);
+        if (TransformAxisInput("缩放", "倍", scale, width, 0.1D, 10D, out var result))
+            ApplyModelScale(item, (float)result);
+        ImGui.SameLine(0, 6);
+        if (ImGui.Button("恢复 1x", new Vector2(buttonWidth, 0F))) ApplyModelScale(item, 1F);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("回到最近一次编辑后的尺寸，不做重采样");
     }
 
     /// <summary>
