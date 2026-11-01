@@ -12,14 +12,16 @@ namespace MVoxel.Project;
 public sealed class MaterialAsset
 {
     /// <summary>
-    /// 材质槽表容量，体素 MaterialSlot 只在表内寻址
+    /// 材质槽表容量，体素 MaterialSlot 只在表内寻址。
+    /// 取 256 与 MagicaVoxel 的调色板索引一一对应，导入 .vox 的 MATL 时不会撞上限。
     /// </summary>
-    public const int TableSlots = 64;
+    public const int TableSlots = 256;
 
     /// <summary>
-    /// 每个槽位的打包 float 数：粗糙度、金属度、发光强度倍率、吸收步长倍率、吸收色 RGB
+    /// 每个槽位的打包 float 数：粗糙度、金属度、发光强度倍率、吸收步长倍率、
+    /// 吸收色 RGB、折射率、镜面强度，末位对齐占位
     /// </summary>
-    public const int FloatsPerSlot = 8;
+    public const int FloatsPerSlot = 12;
 
     /// <summary>
     /// 表示“跟随全局渲染设置”的哨兵值
@@ -70,6 +72,16 @@ public sealed class MaterialAsset
     /// 半透明吸收色覆盖，null 表示使用体素基础色
     /// </summary>
     public Rgba32? AbsorptionColor { get; set; }
+
+    /// <summary>
+    /// 折射率覆盖，null 表示跟随全局；1 表示不偏折，玻璃约 1.5，水约 1.33
+    /// </summary>
+    public float? Ior { get; set; }
+
+    /// <summary>
+    /// 镜面反射强度覆盖（菲涅尔 F0 倍率），null 表示跟随全局
+    /// </summary>
+    public float? Specular { get; set; }
 
     /// <summary>
     /// 资产来源路径，运行期填充，不参与序列化
@@ -138,6 +150,8 @@ public sealed class MaterialAsset
             table[base0 + 1] = FollowGlobal;
             table[base0 + 2] = FollowGlobal;
             table[base0 + 3] = FollowGlobal;
+            table[base0 + 8] = FollowGlobal;
+            table[base0 + 9] = FollowGlobal;
         }
 
         foreach (var material in materials)
@@ -154,6 +168,9 @@ public sealed class MaterialAsset
                 table[base0 + 5] = color.G / 255F;
                 table[base0 + 6] = color.B / 255F;
             }
+
+            table[base0 + 8] = material.Ior ?? FollowGlobal;
+            table[base0 + 9] = material.Specular ?? FollowGlobal;
         }
 
         return table;

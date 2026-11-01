@@ -1816,6 +1816,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             vec4 scalars;
             vec4 absorption;
+            // x 折射率（1 = 不偏折），y 镜面强度倍率，zw 保留
+            vec4 optics;
         };
 
         layout(set = 0, binding = 5, std430) readonly buffer MaterialTable
@@ -2368,7 +2370,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
-            vec3 f0 = mix(vec3(values[75]), baseColor, metallic);
+            // 材质镜面强度只缩放电介质部分的 F0：金属的反射色由基色决定，不参与缩放
+            float specularScale = material.optics.y >= 0.0 ? material.optics.y : 1.0;
+            vec3 f0 = mix(vec3(clamp(values[75] * specularScale, 0.0, 1.0)), baseColor, metallic);
             vec3 viewDirection = normalize(-rayDirection);
             vec3 halfDirection = normalize(lightDirection + viewDirection);
             float specular = pow(max(dot(hitNormal, halfDirection), 0.0),
@@ -2550,7 +2554,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     primarySurfaceDistance = hitDistance;
                     primaryNormal = hitNormal;
                 }
-                MaterialSlotData material = materialSlots[int(hitSlot) % 64];
+                MaterialSlotData material = materialSlots[int(hitSlot) % 256];
                 vec3 hitLinearColor = groundHit
                     ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
                     : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
@@ -2625,7 +2629,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             behindDistance, behindNormal, behindColor, behindFlags, behindSlot,
                             behindCell, behindExtent, true))
                         {
-                            MaterialSlotData behindMaterial = materialSlots[int(behindSlot) % 64];
+                            MaterialSlotData behindMaterial = materialSlots[int(behindSlot) % 256];
                             transmitted = RealtimeShade(hitPoint + rayDirection * (0.01 + behindDistance),
                                 behindNormal, rayDirection, behindColor, behindFlags, behindMaterial,
                                 false, SrgbToLinear(clamp(behindColor.rgb, vec3(0.0), vec3(1.0))), state);
@@ -2798,7 +2802,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
                 // GGX NDF 法线采样与余弦半球采样的混合；两分支使用完整混合 PDF。
                 float alpha = max(roughness * roughness, 0.002);
-                vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), hitLinearColor, metalness);
+                float hitSpecularScale = material.optics.y >= 0.0 ? material.optics.y : 1.0;
+                vec3 f0 = mix(vec3(clamp(values[75] * hitSpecularScale, 0.0, 1.0)), hitLinearColor, metalness);
                 vec3 viewDir = -rayDirection;
                 float xi1 = min(Random(state), 0.99999994);
                 float xi2 = Random(state);

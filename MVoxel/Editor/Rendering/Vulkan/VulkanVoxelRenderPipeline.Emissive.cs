@@ -187,7 +187,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             // 不忽略透明介质：直连估计不承担折射与吸收，避免与介质路径重复或漏光。
             if (TraceClosestWithin(origin, direction, hitDistance, hitNormal, hitColor, hitFlags,
                 hitSlot, hitCell, hitExtent, false, max(distance - 0.0001, 0.0), true)) return vec3(0.0);
-            float scale = materialSlots[int(face.colorSlot.w) % 64].scalars.z;
+            float scale = materialSlots[int(face.colorSlot.w) % 256].scalars.z;
             scale = scale >= 0.0 ? scale : 1.0;
             vec3 emission = min(SrgbToLinear(face.colorSlot.rgb) * values[80] * scale,
                 vec3(max(values[77] * 0.1, 1.0)));
@@ -267,7 +267,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             var face = faces[i];
             positions[i] = new Vector3(checked((int)(face.Voxel.X - _workset.Origin.X)),
                 checked((int)(face.Voxel.Y - _workset.Origin.Y)), checked((int)(face.Voxel.Z - _workset.Origin.Z)));
-            var slot = face.Value.MaterialSlot % 64 * 8 + 2;
+            var slot = face.Value.MaterialSlot % MVoxel.Project.MaterialAsset.TableSlots *
+                MVoxel.Project.MaterialAsset.FloatsPerSlot + 2;
             var scale = slot < _materialTable.Length && _materialTable[slot] >= 0F ? _materialTable[slot] : 1F;
             powers[i] = (0.2126F * Linear(face.Value.Color.R) + 0.7152F * Linear(face.Value.Color.G)
                 + 0.0722F * Linear(face.Value.Color.B)) * (float.IsFinite(scale) ? scale : 1F);

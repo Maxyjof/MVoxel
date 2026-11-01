@@ -1661,6 +1661,12 @@ internal sealed partial class ImGuiEditorWindow
         DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);
         DrawFollowableSlider("发光倍率", "发光倍率##mat", 0F, 32F, material.EmissiveScale, value => material.EmissiveScale = value);
         DrawFollowableSlider("吸收步长", "吸收步长##mat", 0F, 8F, material.AbsorptionStep, value => material.AbsorptionStep = value);
+        DrawFollowableSlider("折射率", "折射率##mat", 1F, 2.5F, material.Ior, value => material.Ior = value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("1 表示不偏折；水约 1.33，玻璃约 1.5，钻石约 2.4。\n跟随全局时使用渲染设置里的折射率。");
+        DrawFollowableSlider("镜面强度", "镜面强度##mat", 0F, 1F, material.Specular, value => material.Specular = value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("菲涅尔 F0 倍率。0 完全无高光（哑光），1 为标准值，金属反射色不受影响。");
 
         var absorption = material.AbsorptionColor ?? new Rgba32(0, 0, 0);
         var absorptionColor = new System.Numerics.Vector3(absorption.R / 255F, absorption.G / 255F, absorption.B / 255F);
