@@ -137,17 +137,34 @@ internal sealed class ProjectAssetBrowser
         var filterWidth = Math.Max(156F, ImGui.CalcTextSize(filterLabel).X + ImGui.GetFrameHeight() + 20F);
         var scopeWidth = Math.Max(52F, ImGui.CalcTextSize(_searchAll ? "全局" : "当前").X + 20F);
         var searchWidth = Math.Max(176F, ImGui.CalcTextSize("搜索资产…").X + 72F);
+        var sliderWidth = Math.Max(ImGui.GetFontSize() * 7F, ImGui.CalcTextSize("112").X + ImGui.GetFrameHeight() * 2F);
         var left = ImGui.GetCursorPosX();
         var right = left + ImGui.GetContentRegionAvail().X;
-        var toolbarWidth = filterWidth + scopeWidth + searchWidth + ImGui.GetStyle().ItemSpacing.X * 2F;
-        ImGui.SameLine();
-        ImGui.SetCursorPosX(Math.Max(left + 8F, right - toolbarWidth));
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var toolbarWidth = filterWidth + scopeWidth + searchWidth + sliderWidth + spacing * 3F;
+        var previousRight = ImGui.GetItemRectMax().X - ImGui.GetWindowPos().X;
+        if (right - previousRight >= toolbarWidth + spacing)
+        {
+            ImGui.SameLine();
+            ImGui.SetCursorPosX(right - toolbarWidth);
+        }
+        else if (right - left >= toolbarWidth)
+        {
+            ImGui.SetCursorPosX(right - toolbarWidth);
+        }
+
+        void SameLineWhenFits(float width)
+        {
+            var itemRight = ImGui.GetItemRectMax().X - ImGui.GetWindowPos().X;
+            if (itemRight + spacing + width <= right) ImGui.SameLine();
+        }
+
         if (ImGui.Button(_searchAll ? "全局" : "当前", new Vector2(scopeWidth, 0F)))
         {
             _searchAll = !_searchAll;
         }
 
-        ImGui.SameLine();
+        SameLineWhenFits(filterWidth);
         ImGui.SetNextItemWidth(filterWidth);
         if (ImGui.BeginCombo("##资源类型筛选", filterLabel))
         {
@@ -160,9 +177,14 @@ internal sealed class ProjectAssetBrowser
             ImGui.EndCombo();
         }
 
-        ImGui.SameLine();
+        SameLineWhenFits(searchWidth);
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##资源搜索", "搜索资产…", ref _searchText, 256);
+
+        SameLineWhenFits(sliderWidth);
+        ImGui.SetNextItemWidth(sliderWidth);
+        ImGui.SliderFloat("##资源图标大小", ref _tileSize, 48F, 112F, "%.0f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("调整资产图标大小");
     }
 
     private void DrawGrid(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
@@ -663,14 +685,7 @@ internal sealed class ProjectAssetBrowser
             : _selectedAsset.Length == 0
                 ? $"当前文件夹：{ProjectAssetCatalog.DisplayPath(_selectedFolder)}"
                 : $"已选择：{ProjectAssetCatalog.DisplayPath(_selectedAsset)}";
-        var right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
         ImGui.TextDisabled(description);
-        ImGui.SameLine();
-        ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), right - 176F));
-        ImGui.TextDisabled("图标大小");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(110F);
-        ImGui.SliderFloat("##资源图标大小", ref _tileSize, 48F, 112F, "%.0f");
     }
 
     /// <summary>返回上一级资产文件夹；已在根目录时返回空字符串</summary>
