@@ -2378,7 +2378,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             float alpha = max(roughness * roughness, 0.002);
             float alphaSquared = alpha * alpha;
             float denominator = nDotH * nDotH * (alphaSquared - 1.0) + 1.0;
-            float distribution = alphaSquared / max(3.14159265 * denominator * denominator, 1e-7);
+            float distribution = alphaSquared / max(3.14159265 * denominator * denominator, 1e-12);
             float gView = 2.0 * nDotV / max(nDotV + sqrt(alphaSquared + (1.0 - alphaSquared) * nDotV * nDotV), 1e-6);
             float gLight = 2.0 * nDotL / max(nDotL + sqrt(alphaSquared + (1.0 - alphaSquared) * nDotL * nDotL), 1e-6);
             vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), baseColor, metalness);
@@ -2742,8 +2742,7 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
                     -rayDirection, hitLinearColor, metalness, roughness);
 
-                // GGX 微表面弹射：Heitz 重要采样微表面法线，Schlick 菲涅尔平衡分配
-                // 镜面与漫射分支；粗糙度控制高光波瓣宽度，金属度把基础色变为反射色
+                // GGX NDF 法线采样与余弦半球采样的混合；两分支使用完整混合 PDF。
                 float alpha = max(roughness * roughness, 0.002);
                 vec3 f0 = mix(vec3(clamp(values[75], 0.0, 1.0)), hitLinearColor, metalness);
                 vec3 viewDir = -rayDirection;
@@ -2757,24 +2756,32 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
                 vec3 tangentBasisY = cross(hitNormal, tangentBasisX);
                 vec3 microfacetNormal = normalize(tangentBasisX * sinThetaH * cos(azimuth)
                     + tangentBasisY * sinThetaH * sin(azimuth) + hitNormal * cosThetaH);
-                float vDotH = max(dot(viewDir, microfacetNormal), 0.0);
-                vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - vDotH, 5.0);
-                float fresnelStrength = clamp(max(max(fresnel.r, fresnel.g), fresnel.b), 0.02, 0.98);
+                // 分支概率只依赖当前材质，不能依赖尚未选用的随机微表面法线。
+                float fresnelStrength = clamp(max(max(f0.r, f0.g), f0.b), 0.05, 0.95);
                 vec3 specularCandidate = normalize(reflect(rayDirection, microfacetNormal));
                 if (Random(state) < fresnelStrength)
                 {
                     //镜面采样落到表面下方时该样本贡献为零，不能改走漫反射分支
                     if (dot(specularCandidate, hitNormal) <= 0.0) break;
                     rayDirection = specularCandidate;
-                    // 按实际 Fresnel 分支概率补偿；不能额外乘 2 放大路径能量。
-                    throughput *= fresnel / fresnelStrength;
                 }
                 else
                 {
                     rayDirection = CosineHemisphere(hitNormal, state);
-                    float diffuseProbability = max(1.0 - fresnelStrength, 0.02);
-                    throughput *= hitLinearColor * (1.0 - metalness) * (vec3(1.0) - fresnel) / diffuseProbability;
                 }
+
+                // 两个采样分支共用完整混合 PDF 与 BRDF；SunSurfaceResponse 返回 pi*f*cos。
+                vec3 sampledHalf = normalize(viewDir + rayDirection);
+                float sampledNH = max(dot(hitNormal, sampledHalf), 0.0);
+                float sampledVH = max(dot(viewDir, sampledHalf), 0.0);
+                float sampledNL = max(dot(hitNormal, rayDirection), 0.0);
+                float pdfDenominator = sampledNH * sampledNH * (alpha * alpha - 1.0) + 1.0;
+                float sampledD = alpha * alpha / max(3.14159265 * pdfDenominator * pdfDenominator, 1e-12);
+                float mixturePdf = fresnelStrength * sampledD * sampledNH / max(4.0 * sampledVH, 1e-12)
+                    + (1.0 - fresnelStrength) * sampledNL / 3.14159265;
+                if (mixturePdf <= 0.0 || isnan(mixturePdf) || isinf(mixturePdf)) break;
+                throughput *= SunSurfaceResponse(hitLinearColor, metalness, roughness,
+                    hitNormal, viewDir, rayDirection) / (3.14159265 * mixturePdf);
 
                 rayOrigin = hitPoint + hitNormal * 0.002;
                 // 表面弹射后路径已离开半透明介质，同格守卫必须重置：
