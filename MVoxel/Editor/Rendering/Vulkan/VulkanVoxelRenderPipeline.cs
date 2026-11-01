@@ -355,7 +355,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             throw new ArgumentException($"材质槽表长度应为 {expected}，实际 {table.Length}", nameof(table));
         if (_context is null || _api is not { } api || _materialTableBuffer.Handle == 0)
         {
-            _materialTable = table;
+            _materialTable = (float[])table.Clone();
+            ResetAccumulation();
             return;
         }
 
@@ -374,7 +375,9 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
             api.UnmapMemory(_device, _materialTableMemory);
         }
 
-        _materialTable = table;
+        var materialChanged = !_materialTable.AsSpan().SequenceEqual(table);
+        _materialTable = (float[])table.Clone();
+        if (materialChanged) ResetAccumulation();
     }
 
     /// <summary>
@@ -3264,7 +3267,8 @@ internal sealed unsafe class VulkanVoxelRenderPipeline : IDisposable
         var hasDirty = world.TryTakeDirty(out var dirty);
         BrickResidency.UploadPlan? plan = null;
         var incremental = false;
-        if (_brickResidency is { IsEmpty: false } && hasDirty && dirty.Count <= MaxIncrementalChunks)
+        if (ReferenceEquals(_lastSyncSource, world) &&
+            _brickResidency is { IsEmpty: false } && hasDirty && dirty.Count <= MaxIncrementalChunks)
         {
             incremental = _brickResidency.TryUpdate(world, dirty, out plan);
         }
