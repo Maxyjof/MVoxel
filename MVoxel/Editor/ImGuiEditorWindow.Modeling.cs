@@ -102,7 +102,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool DeferProjectReplacement(Action continuation)
     {
-        if (_allowProjectReplacement || _project is null || !_sceneDocumentDirty) return false;
+        if (_allowProjectReplacement || _project is null || (!_sceneDocumentDirty && !_generatorDirty)) return false;
         _afterProjectClose = continuation;
         _projectPathDialogMode = 0;
         _closeProjectDialogRequested = true;
@@ -144,7 +144,8 @@ internal sealed partial class ImGuiEditorWindow
             if (File.Exists(destination) || Directory.Exists(destination))
                 throw new IOException("目标文件夹已存在，请选择一个新位置，避免覆盖文件。");
             SaveProject();
-            if (_sceneDocumentDirty) return;
+            if (_generatorDirty) SaveGeneratorSource();
+            if (_sceneDocumentDirty || _generatorDirty) return;
             if (!_projectOperation.TryStart("正在另存项目", "正在复制项目资产…",
                 (cancellation, report) =>
                 {

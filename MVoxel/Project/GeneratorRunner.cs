@@ -77,7 +77,7 @@ public static class GeneratorRunner
         if (maxCells <= 0) throw new ArgumentOutOfRangeException(nameof(maxCells));
         var definition = Describe(asset, timeout);
         var resolved = ResolveParameters(definition, parameters);
-        var sink = new GeneratorSink(definition.BoundsMin, definition.BoundsMax, readOnlyWorld, maxCells);
+        var sink = new GeneratorSink(definition.BoundsMin, definition.BoundsMax, readOnlyWorld, maxCells, timeout);
         if (asset.Language == GeneratorAsset.LuaLanguage)
         {
             RunLua(asset, sink, resolved, timeout);
@@ -87,6 +87,7 @@ public static class GeneratorRunner
             RunJavaScript(asset, sink, resolved, timeout);
         }
 
+        sink.CheckDeadline();
         return sink.StagedCells();
     }
 
@@ -156,10 +157,11 @@ public static class GeneratorRunner
     /// <returns>参数列表</returns>
     private static IReadOnlyList<GeneratorParameter> ReadParameters(IDictionary<string, object?> definition)
     {
-        if (!definition.TryGetValue("parameters", out var rawParameters) || rawParameters is not IList list)
-        {
-            return [];
-        }
+        if (!definition.TryGetValue("parameters", out var rawParameters) || rawParameters is null) return [];
+        // Lua 的空表既可表示数组也可表示对象，转换后为空字典。
+        if (rawParameters is IDictionary<string, object?> { Count: 0 }) return [];
+        if (rawParameters is not IList list)
+            throw new InvalidDataException("生成器 parameters 必须是参数数组，Lua 请使用连续下标的表");
 
         if (list.Count > MaxParameters)
         {
@@ -198,11 +200,17 @@ public static class GeneratorRunner
             {
                 throw new InvalidDataException($"参数 {id} 的 min 不能大于 max");
             }
+            if (type == GeneratorParameterType.Int &&
+                (minimum is < int.MinValue or > int.MaxValue || maximum is < int.MinValue or > int.MaxValue ||
+                 (minimum is { } intMin && maximum is { } intMax && Math.Ceiling(intMin) > Math.Floor(intMax))))
+            {
+                throw new InvalidDataException($"整数参数 {id} 的范围必须包含可编辑的 32 位整数");
+            }
 
             var label = parameter.TryGetValue("label", out var labelValue) ? labelValue?.ToString() : null;
-            var normalizedDefault = parameter.TryGetValue("default", out var defaultValue)
-                ? NormalizeParameterValue(id, type, defaultValue, minimum, maximum)
-                : DefaultFor(type);
+            var defaultValue = parameter.TryGetValue("default", out var declaredDefault)
+                ? declaredDefault : DefaultFor(type);
+            var normalizedDefault = NormalizeParameterValue(id, type, defaultValue, minimum, maximum);
             parameters.Add(new GeneratorParameter
             {
                 Id = id,
@@ -233,9 +241,11 @@ public static class GeneratorRunner
             case GeneratorParameterType.Int:
             {
                 var number = ToFiniteDouble(id, value);
-                if (minimum is { } minValue) number = Math.Max(number, minValue);
-                if (maximum is { } maxValue) number = Math.Min(number, maxValue);
-                return (long)Math.Round(number, MidpointRounding.AwayFromZero);
+                number = Math.Round(number, MidpointRounding.AwayFromZero);
+                number = Math.Clamp(number, int.MinValue, int.MaxValue);
+                if (minimum is { } minValue) number = Math.Max(number, Math.Ceiling(minValue));
+                if (maximum is { } maxValue) number = Math.Min(number, Math.Floor(maxValue));
+                return (long)number;
             }
 
             case GeneratorParameterType.Float:
@@ -259,6 +269,9 @@ public static class GeneratorRunner
                 throw new InvalidDataException($"参数 {id} 的类型不受支持：{type}");
         }
     }
+
+    internal static object? NormalizeParameterValue(GeneratorParameter parameter, object? value) =>
+        NormalizeParameterValue(parameter.Id, parameter.Type, value, parameter.Min, parameter.Max);
 
     /// <summary>
     /// 未声明默认值时按类型给空默认值
@@ -456,6 +469,8 @@ public static class GeneratorRunner
         for (var i = 0; i < 3; i++)
         {
             var number = ToFiniteDouble($"{key}[{i}]", list[i]);
+            if (Math.Abs(number) > MaxCoordinateMagnitude)
+                throw new InvalidDataException($"bounds.{key}[{i}] 坐标超出允许范围");
             result[i] = (long)Math.Round(number, MidpointRounding.AwayFromZero);
         }
 
@@ -573,11 +588,23 @@ var generator = {
 
     private const string JsContextPreamble = """
 var __mvoxParams = JSON.parse(__mvoxParamsJson);
+function __mvoxNumbers(values) {
+    for (var i = 0; i < values.length; i++)
+        if (typeof values[i] !== "number" || !Number.isFinite(values[i]))
+            throw new Error("坐标和体素数据必须是有限数字");
+}
+function __mvoxOptional(value) {
+    if (value === undefined || value === null) return 0;
+    __mvoxNumbers([value]);
+    return value;
+}
 function __mvoxColor(c) {
     if (c === null || c === undefined) return -1;
-    if (typeof c === "number") return Math.trunc(c);
+    if (typeof c === "number") { __mvoxNumbers([c]); return Math.trunc(c); }
     if (typeof c === "string") return __mvoxSink.ParseColor(c);
     if (Array.isArray(c)) {
+        if (c.length !== 3 && c.length !== 4) throw new Error("颜色数组必须包含 3 或 4 个通道");
+        __mvoxNumbers(c);
         var r = Math.trunc(c[0]) & 255;
         var g = Math.trunc(c[1]) & 255;
         var b = Math.trunc(c[2]) & 255;
@@ -587,23 +614,39 @@ function __mvoxColor(c) {
     throw new Error("颜色必须是数字、数组或十六进制字符串");
 }
 var ctx = {
+    getVoxel: function (x, y, z) {
+        __mvoxNumbers([x, y, z]);
+        return JSON.parse(__mvoxSink.GetVoxelJson(x, y, z));
+    },
+    setVoxelData: function (x, y, z, voxel) {
+        __mvoxNumbers([x, y, z]);
+        if (voxel === null || voxel === undefined) { __mvoxSink.EraseVoxel(x, y, z); return; }
+        __mvoxNumbers([voxel.color, voxel.slot, voxel.flags]);
+        __mvoxSink.SetVoxelData(x, y, z, voxel.color, voxel.slot, voxel.flags);
+    },
     setVoxel: function (x, y, z, c, slot, flags) {
-        __mvoxSink.SetVoxel(x, y, z, __mvoxColor(c), slot || 0, flags || 0);
+        __mvoxNumbers([x, y, z]);
+        __mvoxSink.SetVoxel(x, y, z, __mvoxColor(c), __mvoxOptional(slot), __mvoxOptional(flags));
     },
     fillBox: function (x0, y0, z0, x1, y1, z1, c, slot, flags) {
-        __mvoxSink.FillBox(x0, y0, z0, x1, y1, z1, __mvoxColor(c), slot || 0, flags || 0);
+        __mvoxNumbers([x0, y0, z0, x1, y1, z1]);
+        __mvoxSink.FillBox(x0, y0, z0, x1, y1, z1, __mvoxColor(c), __mvoxOptional(slot), __mvoxOptional(flags));
     },
     fillSphere: function (cx, cy, cz, radius, c, slot, flags) {
-        __mvoxSink.FillSphere(cx, cy, cz, radius, __mvoxColor(c), slot || 0, flags || 0);
+        __mvoxNumbers([cx, cy, cz, radius]);
+        __mvoxSink.FillSphere(cx, cy, cz, radius, __mvoxColor(c), __mvoxOptional(slot), __mvoxOptional(flags));
     },
     eraseVoxel: function (x, y, z) {
+        __mvoxNumbers([x, y, z]);
         __mvoxSink.EraseVoxel(x, y, z);
     },
     clearBox: function (x0, y0, z0, x1, y1, z1) {
+        __mvoxNumbers([x0, y0, z0, x1, y1, z1]);
         __mvoxSink.ClearBox(x0, y0, z0, x1, y1, z1);
     },
     replaceColor: function (x0, y0, z0, x1, y1, z1, oldColor, newColor, slot, flags) {
-        __mvoxSink.ReplaceColor(x0, y0, z0, x1, y1, z1, __mvoxColor(oldColor), __mvoxColor(newColor), slot || 0, flags || 0);
+        __mvoxNumbers([x0, y0, z0, x1, y1, z1]);
+        __mvoxSink.ReplaceColor(x0, y0, z0, x1, y1, z1, __mvoxColor(oldColor), __mvoxColor(newColor), __mvoxOptional(slot), __mvoxOptional(flags));
     }
 };
 """;
@@ -680,14 +723,34 @@ var ctx = {
     private static Table CreateLuaSinkTable(Script script, GeneratorSink sink)
     {
         var table = new Table(script);
+        table.Set("GetVoxel", DynValue.NewCallback((_, args) =>
+        {
+            RequireLuaNumbers(args, 3);
+            var value = sink.GetVoxel(args[0].Number, args[1].Number, args[2].Number);
+            if (value.IsEmpty) return DynValue.Nil;
+            var result = new Table(script);
+            result.Set("color", DynValue.NewNumber(PackVoxelColor(value)));
+            result.Set("slot", DynValue.NewNumber(value.MaterialSlot));
+            result.Set("flags", DynValue.NewNumber(value.Flags));
+            return DynValue.NewTable(result);
+        }));
+        table.Set("SetVoxelData", DynValue.NewCallback((_, args) =>
+        {
+            RequireLuaNumbers(args, 6);
+            sink.SetVoxelData(args[0].Number, args[1].Number, args[2].Number,
+                args[3].Number, args[4].Number, args[5].Number);
+            return DynValue.Nil;
+        }));
         table.Set("SetVoxel", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 6);
             sink.SetVoxel(args[0].Number, args[1].Number, args[2].Number,
                 args[3].Number, args[4].Number, args[5].Number);
             return DynValue.Nil;
         }));
         table.Set("FillBox", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 9);
             sink.FillBox(args[0].Number, args[1].Number, args[2].Number,
                 args[3].Number, args[4].Number, args[5].Number,
                 args[6].Number, args[7].Number, args[8].Number);
@@ -695,23 +758,27 @@ var ctx = {
         }));
         table.Set("FillSphere", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 7);
             sink.FillSphere(args[0].Number, args[1].Number, args[2].Number, args[3].Number,
                 args[4].Number, args[5].Number, args[6].Number);
             return DynValue.Nil;
         }));
         table.Set("EraseVoxel", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 3);
             sink.EraseVoxel(args[0].Number, args[1].Number, args[2].Number);
             return DynValue.Nil;
         }));
         table.Set("ClearBox", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 6);
             sink.ClearBox(args[0].Number, args[1].Number, args[2].Number,
                 args[3].Number, args[4].Number, args[5].Number);
             return DynValue.Nil;
         }));
         table.Set("ReplaceColor", DynValue.NewCallback((_, args) =>
         {
+            RequireLuaNumbers(args, 10);
             sink.ReplaceColor(args[0].Number, args[1].Number, args[2].Number,
                 args[3].Number, args[4].Number, args[5].Number,
                 args[6].Number, args[7].Number, args[8].Number, args[9].Number);
@@ -720,6 +787,13 @@ var ctx = {
         table.Set("ParseColor", DynValue.NewCallback((_, args) =>
             DynValue.NewNumber(sink.ParseColor(args[0].String ?? string.Empty))));
         return table;
+    }
+
+    private static void RequireLuaNumbers(CallbackArguments args, int count)
+    {
+        for (var i = 0; i < count; i++)
+            if (i >= args.Count || args[i].Type != DataType.Number)
+                throw new InvalidDataException($"生成器参数 {i + 1} 必须是数字");
     }
 
     private const string LuaDefinePreamble = """
@@ -733,29 +807,51 @@ generator = {
 """;
 
     private const string LuaContextPreamble = """
+local function __mvoxnumber(value)
+    if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+        error("颜色通道必须是有限数字")
+    end
+    return value < 0 and math.ceil(value) or math.floor(value)
+end
+local function __mvoxoptional(value)
+    if value == nil then return 0 end
+    return value
+end
 local function __mvoxcolor(c)
     if c == nil then return -1 end
     local t = type(c)
-    if t == "number" then return math.floor(c) end
+    if t == "number" then return __mvoxnumber(c) end
     if t == "string" then return __mvoxSink.ParseColor(c) end
     if t == "table" then
-        local r = math.floor(c[1]) % 256
-        local g = math.floor(c[2]) % 256
-        local b = math.floor(c[3]) % 256
-        local a = c[4] ~= nil and math.floor(c[4]) % 256 or 255
+        for key in pairs(c) do
+            if type(key) ~= "number" or key ~= math.floor(key) or key < 1 or key > 4 then
+                error("颜色数组必须包含 3 或 4 个通道")
+            end
+        end
+        local r = __mvoxnumber(c[1]) % 256
+        local g = __mvoxnumber(c[2]) % 256
+        local b = __mvoxnumber(c[3]) % 256
+        local a = c[4] ~= nil and __mvoxnumber(c[4]) % 256 or 255
         return a * 16777216 + r * 65536 + g * 256 + b
     end
     error("颜色必须是数字、数组或十六进制字符串")
 end
 ctx = {
+    getVoxel = function(x, y, z)
+        return __mvoxSink.GetVoxel(x, y, z)
+    end,
+    setVoxelData = function(x, y, z, voxel)
+        if voxel == nil then __mvoxSink.EraseVoxel(x, y, z); return end
+        __mvoxSink.SetVoxelData(x, y, z, voxel.color, voxel.slot, voxel.flags)
+    end,
     setVoxel = function(x, y, z, c, slot, flags)
-        __mvoxSink.SetVoxel(x, y, z, __mvoxcolor(c), slot or 0, flags or 0)
+        __mvoxSink.SetVoxel(x, y, z, __mvoxcolor(c), __mvoxoptional(slot), __mvoxoptional(flags))
     end,
     fillBox = function(x0, y0, z0, x1, y1, z1, c, slot, flags)
-        __mvoxSink.FillBox(x0, y0, z0, x1, y1, z1, __mvoxcolor(c), slot or 0, flags or 0)
+        __mvoxSink.FillBox(x0, y0, z0, x1, y1, z1, __mvoxcolor(c), __mvoxoptional(slot), __mvoxoptional(flags))
     end,
     fillSphere = function(cx, cy, cz, radius, c, slot, flags)
-        __mvoxSink.FillSphere(cx, cy, cz, radius, __mvoxcolor(c), slot or 0, flags or 0)
+        __mvoxSink.FillSphere(cx, cy, cz, radius, __mvoxcolor(c), __mvoxoptional(slot), __mvoxoptional(flags))
     end,
     eraseVoxel = function(x, y, z)
         __mvoxSink.EraseVoxel(x, y, z)
@@ -764,7 +860,7 @@ ctx = {
         __mvoxSink.ClearBox(x0, y0, z0, x1, y1, z1)
     end,
     replaceColor = function(x0, y0, z0, x1, y1, z1, oldColor, newColor, slot, flags)
-        __mvoxSink.ReplaceColor(x0, y0, z0, x1, y1, z1, __mvoxcolor(oldColor), __mvoxcolor(newColor), slot or 0, flags or 0)
+        __mvoxSink.ReplaceColor(x0, y0, z0, x1, y1, z1, __mvoxcolor(oldColor), __mvoxcolor(newColor), __mvoxoptional(slot), __mvoxoptional(flags))
     end
 }
 """;
@@ -809,8 +905,9 @@ ctx = {
     /// </summary>
     /// <param name="table">Lua 表</param>
     /// <returns>字典、列表或简单值</returns>
-    private static object? LuaTableToObject(Table table)
+    private static object? LuaTableToObject(Table table, int depth = 0)
     {
+        if (depth > 32) throw new InvalidDataException("Lua 生成器声明嵌套过深或包含循环引用");
         var pairs = table.Pairs.ToList();
         var isArray = pairs.Count > 0 && pairs.All(pair =>
             pair.Key.Type == DataType.Number &&
@@ -821,7 +918,7 @@ ctx = {
             var ordered = pairs.OrderBy(pair => pair.Key.Number).ToList();
             if (ordered.Select((pair, index) => (long)pair.Key.Number == index + 1).All(item => item))
             {
-                return ordered.Select(pair => LuaValueToObject(pair.Value)).ToList();
+                return ordered.Select(pair => LuaValueToObject(pair.Value, depth + 1)).ToList();
             }
         }
 
@@ -831,7 +928,7 @@ ctx = {
             var key = pair.Key.Type == DataType.String
                 ? pair.Key.String
                 : pair.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            result[key!] = LuaValueToObject(pair.Value);
+            result[key!] = LuaValueToObject(pair.Value, depth + 1);
         }
 
         return result;
@@ -842,13 +939,13 @@ ctx = {
     /// </summary>
     /// <param name="value">Lua 值</param>
     /// <returns>简单值</returns>
-    private static object? LuaValueToObject(DynValue value) => value.Type switch
+    private static object? LuaValueToObject(DynValue value, int depth) => value.Type switch
     {
         DataType.Nil or DataType.Void => null,
         DataType.Boolean => value.Boolean,
         DataType.Number => value.Number,
         DataType.String => value.String,
-        DataType.Table => LuaTableToObject(value.Table),
+        DataType.Table => LuaTableToObject(value.Table, depth),
         _ => null,
     };
 
@@ -946,12 +1043,18 @@ ctx = {
     /// <summary>
     /// 脚本批量 API 的暂存接收器：校验坐标与预算，按坐标去重收集目标体素值
     /// </summary>
+    private static long PackVoxelColor(VoxelValue value) =>
+        ((long)value.Color.A << 24) | ((long)value.Color.R << 16) | ((long)value.Color.G << 8) | value.Color.B;
+
     internal sealed class GeneratorSink
     {
         private readonly VoxelCoord64 _minimum;
         private readonly VoxelCoord64 _maximum;
         private readonly VoxelWorld? _world;
         private readonly int _budget;
+        private readonly long _started = Stopwatch.GetTimestamp();
+        private readonly TimeSpan _timeout;
+        private int _workCounter;
         private readonly Dictionary<VoxelCoord64, VoxelValue> _staged = new();
 
         /// <summary>
@@ -961,12 +1064,24 @@ ctx = {
         /// <param name="maximum">包围盒最大角</param>
         /// <param name="world">只读目标世界，replaceColor 使用</param>
         /// <param name="budget">暂存格子数上限</param>
-        public GeneratorSink(VoxelCoord64 minimum, VoxelCoord64 maximum, VoxelWorld? world, int budget)
+        public GeneratorSink(VoxelCoord64 minimum, VoxelCoord64 maximum, VoxelWorld? world, int budget, TimeSpan timeout)
         {
             _minimum = minimum;
             _maximum = maximum;
             _world = world;
             _budget = budget;
+            _timeout = timeout;
+        }
+
+        public void CheckDeadline()
+        {
+            if (Stopwatch.GetElapsedTime(_started) >= _timeout)
+                throw new TimeoutException("生成器执行超时，已取消本次结果");
+        }
+
+        private void CheckWorkDeadline()
+        {
+            if ((++_workCounter & 4095) == 0) CheckDeadline();
         }
 
         /// <summary>
@@ -977,6 +1092,34 @@ ctx = {
             _staged.OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y).ThenBy(item => item.Key.X)
                   .Select(item => (item.Key, item.Value))
                   .ToArray();
+
+        public VoxelValue GetVoxel(double x, double y, double z)
+        {
+            CheckWorkDeadline();
+            var coordinate = ToCoordinate(x, y, z);
+            if (_staged.TryGetValue(coordinate, out var staged)) return staged;
+            return _world is not null && _world.TryGet(coordinate, out var existing) ? existing : default;
+        }
+
+        public string GetVoxelJson(double x, double y, double z)
+        {
+            var value = GetVoxel(x, y, z);
+            return value.IsEmpty ? "null" : JsonSerializer.Serialize(new
+            {
+                color = PackVoxelColor(value), slot = value.MaterialSlot, flags = value.Flags,
+            });
+        }
+
+        /// <summary>按读取接口的完整 RGBA、材质槽和标志写入体素。</summary>
+        public void SetVoxelData(double x, double y, double z, double packedColor, double materialSlot, double flags)
+        {
+            var packed = ToInteger(packedColor, "体素颜色");
+            if (packed < 0 || packed > uint.MaxValue)
+                throw new InvalidOperationException("体素颜色必须是 0 到 0xFFFFFFFF 的整数");
+            var value = new VoxelValue(new Rgba32((byte)(packed >> 16), (byte)(packed >> 8),
+                (byte)packed, (byte)(packed >> 24)), ToSlot(materialSlot), ToFlags(flags));
+            Stage(ToCoordinate(x, y, z), value);
+        }
 
         /// <summary>
         /// 暂存单格写入
@@ -1011,12 +1154,15 @@ ctx = {
             var center = ToCoordinate(centerX, centerY, centerZ);
             var r = ToInteger(radius, "球体半径");
             if (r < 0) throw new InvalidOperationException("球体半径不能为负");
+            if (r > MaxBoundsSpan || (2 * r + 1) * (2 * r + 1) * (2 * r + 1) > (long)_budget * 8)
+                throw new InvalidOperationException("球体遍历范围过大，请缩小半径");
             var value = ToValue(packedColor, materialSlot, flags);
             var reach = r;
             for (var dz = -reach; dz <= reach; dz++)
             for (var dy = -reach; dy <= reach; dy++)
             for (var dx = -reach; dx <= reach; dx++)
             {
+                CheckWorkDeadline();
                 if (dx * dx + dy * dy + dz * dz > r * r - r * 0.5D) continue;
                 Stage(new VoxelCoord64(center.X + dx, center.Y + dy, center.Z + dz), value);
             }
@@ -1046,15 +1192,17 @@ ctx = {
                 throw new InvalidOperationException("replaceColor 需要目标世界，但本次运行没有提供");
             }
 
-            if (oldPackedColor < 0)
+            var oldColor = ToInteger(oldPackedColor, "待替换颜色");
+            if (oldColor < 0 || oldColor > uint.MaxValue)
             {
-                throw new InvalidOperationException("replaceColor 的待替换颜色不能是空值");
+                throw new InvalidOperationException("replaceColor 的待替换颜色必须在 0 到 0xFFFFFFFF 之间");
             }
 
-            var oldRgb = (int)((long)oldPackedColor & 0xFFFFFF);
+            var oldRgb = (int)(oldColor & 0xFFFFFF);
             EnumerateBox(x0, y0, z0, x1, y1, z1, coordinate =>
             {
-                if (!_world.TryGet(coordinate, out var existing) || existing.IsEmpty) return;
+                var hasValue = _staged.TryGetValue(coordinate, out var existing) || _world.TryGet(coordinate, out existing);
+                if (!hasValue || existing.IsEmpty) return;
                 var existingRgb = (existing.Color.R << 16) | (existing.Color.G << 8) | existing.Color.B;
                 if (existingRgb != oldRgb) return;
                 var slot = materialSlot > 0 ? ToSlot(materialSlot) : existing.MaterialSlot;
@@ -1077,6 +1225,8 @@ ctx = {
         /// <param name="value">目标值</param>
         private void Stage(VoxelCoord64 coordinate, VoxelValue value)
         {
+            CheckWorkDeadline();
+            EnsureInside(coordinate.X, coordinate.Y, coordinate.Z);
             _staged[coordinate] = value;
             if (_staged.Count > _budget)
             {
@@ -1086,7 +1236,7 @@ ctx = {
         }
 
         /// <summary>
-        /// 规范化长方体两角并逐格执行回调，体积超出剩余预算时提前拒绝
+        /// 规范化长方体两角并逐格执行回调，遍历体积超出预算时提前拒绝
         /// </summary>
         private void EnumerateBox(double x0, double y0, double z0, double x1, double y1, double z1,
             Action<VoxelCoord64> action)
@@ -1103,7 +1253,7 @@ ctx = {
             var height = maxY - minY + 1;
             var depth = maxZ - minZ + 1;
             var volume = width * height * depth;
-            if (volume > _budget - _staged.Count)
+            if (volume > _budget)
             {
                 throw new InvalidOperationException(
                     $"填充范围约 {volume} 格，超过 {_budget} 格预算，请缩小包围范围");
@@ -1113,6 +1263,7 @@ ctx = {
             for (var y = minY; y <= maxY; y++)
             for (var x = minX; x <= maxX; x++)
             {
+                CheckWorkDeadline();
                 action(new VoxelCoord64(x, y, z));
             }
         }
@@ -1151,8 +1302,10 @@ ctx = {
         {
             var slot = ToSlot(materialSlot);
             var voxelFlags = ToFlags(flags);
-            if (packedColor < 0) return default;
-            var packed = (long)packedColor;
+            var packed = ToInteger(packedColor, "体素颜色");
+            if (packed < 0) return default;
+            if (packed > uint.MaxValue)
+                throw new InvalidOperationException("体素颜色不能超过 0xFFFFFFFF");
             var alpha = (byte)((packed >> 24) & 255);
             if (alpha == 0) alpha = 255;
             var color = new Rgba32(
@@ -1178,14 +1331,14 @@ ctx = {
         }
 
         /// <summary>
-        /// 校验标志位为 0 到 3 的整数
+        /// 校验并保留原生格式中的完整标志字节
         /// </summary>
         private static byte ToFlags(double flags)
         {
             var value = ToInteger(flags, "体素标志");
-            if (value < 0 || value > byte.MaxValue || (value & ~3) != 0)
+            if (value < 0 || value > byte.MaxValue)
             {
-                throw new InvalidOperationException("体素标志只支持 0（普通）、1（半透明）、2（自发光）");
+                throw new InvalidOperationException("体素标志必须在 0 到 255 之间");
             }
 
             return (byte)value;
@@ -1200,6 +1353,9 @@ ctx = {
             {
                 throw new InvalidOperationException($"{field}必须是有限数字");
             }
+
+            if (value < long.MinValue || value >= 9223372036854775808D)
+                throw new InvalidOperationException($"{field}超出整数范围");
 
             var integer = (long)Math.Truncate(value);
             if (integer != value)

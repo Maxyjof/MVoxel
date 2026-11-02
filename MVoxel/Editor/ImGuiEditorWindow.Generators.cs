@@ -21,6 +21,7 @@ internal sealed partial class ImGuiEditorWindow
     private GeneratorAsset? _generatorAsset;
     private string _generatorSource = string.Empty;
     private GeneratorDefinition? _generatorDefinition;
+    private string? _generatorDescribedSource;
     private readonly Dictionary<string, object?> _generatorParameters = new();
     private bool _generatorDirty;
     private string _generatorMessage = string.Empty;
@@ -35,6 +36,7 @@ internal sealed partial class ImGuiEditorWindow
         _generatorAsset = null;
         _generatorSource = string.Empty;
         _generatorDefinition = null;
+        _generatorDescribedSource = null;
         _generatorParameters.Clear();
         _generatorDirty = false;
         _generatorMessage = string.Empty;
@@ -45,11 +47,20 @@ internal sealed partial class ImGuiEditorWindow
     /// 在生成器面板中打开项目内的 .mvgenerator 资产
     /// </summary>
     /// <param name="relativePath">相对 Assets 的路径</param>
-    private void OpenGeneratorAsset(string relativePath)
+    private void OpenGeneratorAsset(string relativePath) => OpenGeneratorAsset(relativePath, false);
+
+    private void OpenGeneratorAsset(string relativePath, bool discardCurrentDraft)
     {
         if (_project is null)
         {
             SetStatus("请先打开项目再编辑生成器");
+            return;
+        }
+
+        if (_generatorDirty && !discardCurrentDraft)
+        {
+            _showGeneratorPanel = true;
+            SetStatus("生成器源码尚未保存，请先保存或恢复已保存版本");
             return;
         }
 
@@ -63,13 +74,19 @@ internal sealed partial class ImGuiEditorWindow
         try
         {
             var asset = GeneratorAsset.Load(absolutePath);
+            if (!string.Equals(_generatorRelativePath, relativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            {
+                _generatorParameters.Clear();
+                _generatorDefinition = null;
+                _generatorDescribedSource = null;
+            }
             _generatorAsset = asset;
             _generatorRelativePath = relativePath.Replace('\\', '/');
             _generatorSource = asset.Source;
             _generatorDirty = false;
             DescribeGeneratorForUi(asset);
             _showGeneratorPanel = true;
-            SetStatus($"已打开发成器：{Path.GetFileName(absolutePath)}");
+            SetStatus($"已打开生成器：{Path.GetFileName(absolutePath)}");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
         {
@@ -85,11 +102,18 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="language">javascript 或 lua</param>
     /// <returns>新建资产的相对路径，失败返回 null</returns>
-    internal string? CreateGeneratorAsset(string language)
+    internal string? CreateGeneratorAsset(string language, string? templateName = null, string? templateSource = null)
     {
         if (_project is null)
         {
             SetStatus("请先打开项目再创建生成器");
+            return null;
+        }
+
+        if (_generatorDirty)
+        {
+            _showGeneratorPanel = true;
+            SetStatus("生成器源码尚未保存，请先保存或恢复已保存版本");
             return null;
         }
 
@@ -100,8 +124,9 @@ internal sealed partial class ImGuiEditorWindow
         var index = 1;
         do
         {
-            relativePath = $"Generators/生成器{index}.mvgenerator";
-            absolutePath = Path.Combine(directory, $"生成器{index}.mvgenerator");
+            var name = templateName ?? "生成器";
+            relativePath = $"Generators/{name}{index}.mvgenerator";
+            absolutePath = Path.Combine(directory, $"{name}{index}.mvgenerator");
             index++;
         }
         while (File.Exists(absolutePath));
@@ -111,9 +136,9 @@ internal sealed partial class ImGuiEditorWindow
             var asset = new GeneratorAsset
             {
                 Language = language,
-                Source = language == GeneratorAsset.LuaLanguage
+                Source = templateSource ?? (language == GeneratorAsset.LuaLanguage
                     ? GeneratorAsset.LuaTemplate
-                    : GeneratorAsset.JavaScriptTemplate,
+                    : GeneratorAsset.JavaScriptTemplate),
             };
             asset.Save(absolutePath);
             HandleAssetChanged(new ProjectAssetChange(relativePath, relativePath));
@@ -155,13 +180,19 @@ internal sealed partial class ImGuiEditorWindow
     {
         try
         {
+            var previousDefinition = _generatorDefinition;
             _generatorDefinition = GeneratorRunner.Describe(asset, TimeSpan.FromSeconds(2));
+            _generatorDescribedSource = asset.Source;
             var refreshed = new Dictionary<string, object?>(StringComparer.Ordinal);
             foreach (var parameter in _generatorDefinition.Parameters)
             {
-                refreshed[parameter.Id] = _generatorParameters.TryGetValue(parameter.Id, out var existing)
-                    ? existing
-                    : parameter.Default;
+                var previous = previousDefinition?.Parameters.FirstOrDefault(item => item.Id == parameter.Id);
+                if (previous?.Type == parameter.Type && _generatorParameters.TryGetValue(parameter.Id, out var existing))
+                {
+                    try { refreshed[parameter.Id] = GeneratorRunner.NormalizeParameterValue(parameter, existing); }
+                    catch (InvalidDataException) { refreshed[parameter.Id] = parameter.Default; }
+                }
+                else refreshed[parameter.Id] = parameter.Default;
             }
 
             _generatorParameters.Clear();
@@ -172,6 +203,7 @@ internal sealed partial class ImGuiEditorWindow
         catch (Exception exception)
         {
             _generatorDefinition = null;
+            _generatorDescribedSource = null;
             _generatorParameters.Clear();
             _generatorMessage = $"生成器声明解析失败：{exception.Message}";
             _generatorMessageError = true;
@@ -245,6 +277,14 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         if (ImGui.Button("新建 Lua")) CreateGeneratorAsset(GeneratorAsset.LuaLanguage);
         ImGui.SameLine();
+        if (ImGui.Button("内置脚本")) ImGui.OpenPopup("内置生成器模板");
+        if (ImGui.BeginPopup("内置生成器模板"))
+        {
+            foreach (var template in BuiltInGenerators.All)
+                if (ImGui.MenuItem(template.Name))
+                    CreateGeneratorAsset(GeneratorAsset.JavaScriptLanguage, template.Name, template.Source);
+            ImGui.EndPopup();
+        }
         if (ImGui.Button("保存源码")) SaveGeneratorSource();
         ImGui.SameLine();
         if (ImGui.Button("重新读取声明"))
@@ -260,6 +300,10 @@ internal sealed partial class ImGuiEditorWindow
         {
             ImGui.SameLine();
             ImGui.TextColored(new Vector4(1F, 0.72F, 0.3F, 1F), "未保存");
+            ImGui.SameLine();
+            if (ImGui.Button("恢复已保存版本") && _generatorRelativePath is not null)
+                OpenGeneratorAsset(_generatorRelativePath, discardCurrentDraft: true);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("重新读取文件，放弃当前未保存的源码修改。");
         }
     }
 
@@ -313,7 +357,15 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.EndChild();
+        var declarationCurrent = string.Equals(_generatorSource, _generatorDescribedSource, StringComparison.Ordinal);
+        if (!declarationCurrent) ImGui.BeginDisabled();
         if (ImGui.Button("运行并应用到当前世界", new Vector2(-1F, 0F))) RunGenerator();
+        if (!declarationCurrent)
+        {
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("源码已更改，请先重新读取声明或保存源码，再检查参数后运行。");
+        }
     }
 
     /// <summary>
@@ -475,7 +527,8 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void RunGenerator()
     {
-        if (_generatorAsset is null || _generatorDefinition is null)
+        if (_generatorAsset is null || _generatorDefinition is null ||
+            !string.Equals(_generatorSource, _generatorDescribedSource, StringComparison.Ordinal))
         {
             _generatorMessage = "请先打开并修正生成器声明再运行";
             _generatorMessageError = true;
