@@ -3712,7 +3712,17 @@ DockId=0x6A3C3007,0
             var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
                 (EmbeddedVoxelData.HasData(component) || _objectVoxels.GetOrCreate(selectedObject.Id).OccupiedVoxelCount > 0);
             var changed = DrawVoxelModelReference(data.Model, hasEmbeddedData, out var model, out var extractRequested);
-            if (extractRequested) ExtractEmbeddedVoxelData(selectedObject, component);
+            if (hasEmbeddedData && string.IsNullOrWhiteSpace(data.Model) && ImGui.BeginPopupContextItem("##VoxelAnimationKeyMenu"))
+            {
+                if (ImGui.MenuItem("插入动画关键帧"))
+                {
+                    var animationComponent = selectedObject.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
+                    if (animationComponent is not null)
+                        InsertAnimationKey(selectedObject, SceneComponentTypes.ReadAnimation(animationComponent), 0, "VoxelModel", "VoxelData");
+                }
+                ImGui.EndPopup();
+            }
+
             BeginInspectorField("排序图层", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
             var sortingLayer = data.SortingLayer;
             if (_sceneDocument is { } sortingDocument && ImGui.BeginCombo("##VoxelSortingLayer", sortingLayer))
