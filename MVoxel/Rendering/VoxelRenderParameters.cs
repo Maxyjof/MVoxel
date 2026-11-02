@@ -315,10 +315,10 @@ public sealed class VoxelRenderParameters
         parameters[EmissiveLightTree] = settings.EmissiveLightTree ? 1F : 0F;
         parameters[VoxelIndirectStrength] = settings.VoxelIndirectLightStrength;
         parameters[ProbeGiStrength] = settings.ProbeVolumeGiStrength;
-        parameters[VolumeWeight] = 0F;
-        parameters[VolumeFogDensity] = 0F;
-        parameters[VolumeBloomIntensity] = 0F;
-        parameters[VolumeExposure] = 0F;
+        parameters[VolumeWeight] = settings.FogDensity > 0F || settings.BloomIntensity > 0F || MathF.Abs(settings.Exposure) > 0.0001F ? 1F : 0F;
+        parameters[VolumeFogDensity] = settings.FogDensity;
+        parameters[VolumeBloomIntensity] = settings.BloomIntensity;
+        parameters[VolumeExposure] = settings.Exposure;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;
