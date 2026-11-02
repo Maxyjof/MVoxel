@@ -3,6 +3,7 @@ using System.Text.Json;
 using MVoxel.Animation;
 using MVoxel.Scene;
 using MVoxel.Core;
+using MVoxel.Voxels;
 
 namespace MVoxel.Editor;
 
@@ -20,7 +21,9 @@ internal sealed partial class ImGuiEditorWindow
         clip.Normalize();
         var frame = Math.Clamp(animation.CurrentFrame, 0, clip.LengthFrames);
         var keys = clip.Keyframes.Where(key => key.ObjectId == root.Id.ToString() && key.ComponentType == "Transform" && key.Parameter == "Position").OrderBy(key => key.Frame).ToArray();
-        if (keys.Length == 0) return;
+        var voxelKey = clip.Keyframes.Where(key => key.ObjectId == root.Id.ToString() && key.ComponentType == "VoxelModel" && key.Parameter == "VoxelData" && key.Frame <= frame).OrderBy(key => key.Frame).LastOrDefault();
+        if (voxelKey is not null && !string.IsNullOrWhiteSpace(voxelKey.SnapshotAsset))
+            ApplyVoxelAnimationSnapshot(root, voxelKey.SnapshotAsset);
         var previous = keys.LastOrDefault(key => key.Frame <= frame);
         var next = keys.FirstOrDefault(key => key.Frame >= frame);
         if (previous is null) previous = next;
@@ -36,5 +39,28 @@ internal sealed partial class ImGuiEditorWindow
         value = new Vector3(MathF.Round(value.X), MathF.Round(value.Y), MathF.Round(value.Z));
         if (root.Transform.Mode == TransformMode.Free)
             root.Transform.SetFree(new FreeTransform(new Double3(value.X, value.Y, value.Z), root.Transform.Free.Rotation));
+    }
+
+    private void ApplyVoxelAnimationSnapshot(SceneObject root, string snapshotAsset)
+    {
+        if (_project is null) return;
+        var path = Path.Combine(_project.RootPath, snapshotAsset.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(path)) return;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var world = _objectVoxels.GetOrCreate(root.Id);
+            foreach (var item in world.EnumerateOccupied().Select(item => item.Coordinate).ToArray()) world.Set(item, default);
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                var coordinate = new VoxelCoord64(item.GetProperty("x").GetInt64(), item.GetProperty("y").GetInt64(), item.GetProperty("z").GetInt64());
+                var color = item.GetProperty("color");
+                var rgba = new Rgba32(color.GetProperty("r").GetByte(), color.GetProperty("g").GetByte(), color.GetProperty("b").GetByte(), color.GetProperty("a").GetByte());
+                world.Set(coordinate, new VoxelValue(rgba, item.GetProperty("material").GetUInt16(), item.GetProperty("flags").GetByte()));
+            }
+            _composedRenderWorld = null;
+            _pipeline?.ResetAccumulation();
+        }
+        catch (JsonException) { }
     }
 }
