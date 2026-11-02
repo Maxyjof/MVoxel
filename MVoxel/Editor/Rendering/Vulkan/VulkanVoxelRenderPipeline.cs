@@ -3627,16 +3627,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
               }
               vec2 windDirection = vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])));
               float windStrength = max(values[P_WEATHER_WIND_STRENGTH], 0.0);
-              float windPhase = dot(weatherUv, windDirection) * 48.0 - weatherTime * windStrength * 8.0;
+              float stormStrength = clamp(values[P_WEATHER_STORM], 0.0, 1.0);
+              float gust = 1.0 + stormStrength * (0.3 + 0.7 * (0.5 + 0.5 * sin(weatherTime * 1.7)));
+              float windPhase = dot(weatherUv, windDirection) * 48.0 - weatherTime * windStrength * gust * 8.0;
               float rainLayerA = smoothstep(0.76, 0.995, fract(weatherUv.y * 43.0 + windPhase));
               float rainLayerB = smoothstep(0.82, 0.995, fract(weatherUv.y * 71.0 - windPhase * 1.35 + 0.37));
               float rainLayerC = smoothstep(0.88, 0.998, fract(weatherUv.y * 113.0 + windPhase * 1.9 + 0.71));
-              float rainWeight = clamp(values[P_WEATHER_RAIN] * (rainLayerA * 0.58 + rainLayerB * 0.3 + rainLayerC * 0.16), 0.0, 1.0);
+              float rainWeight = clamp(values[P_WEATHER_RAIN] * gust * (rainLayerA * 0.58 + rainLayerB * 0.3 + rainLayerC * 0.16), 0.0, 1.0);
               float snowLayerA = smoothstep(0.82, 0.998, fract(weatherUv.y * 29.0 - windPhase * 0.42));
               float snowLayerB = smoothstep(0.9, 1.0, fract(weatherUv.y * 47.0 + windPhase * 0.27 + 0.29));
-              float snowWeight = clamp(values[P_WEATHER_SNOW] * (snowLayerA * 0.72 + snowLayerB * 0.38), 0.0, 1.0);
+              float snowWeight = clamp(values[P_WEATHER_SNOW] * gust * (snowLayerA * 0.72 + snowLayerB * 0.38), 0.0, 1.0);
               color = mix(color, vec3(0.82, 0.9, 1.0), snowWeight * 0.24);
-             color *= 1.0 - values[P_WEATHER_STORM] * 0.32;
+             color *= 1.0 - stormStrength * (0.24 + 0.16 * (0.5 + 0.5 * sin(weatherTime * 1.7)));
               float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
               float lightningCycle = weatherTime * max(lightningRate * 0.42, 0.0001);
               float lightningIndex = floor(lightningCycle);
