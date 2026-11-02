@@ -1105,6 +1105,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
+        if (!pathMode && _realtimeHistoryInvalid)
+        {
+            ClearRealtimeHistory();
+        }
         if (!pathMode && ParametersEqualForDisplay(parameters))
         {
             return true;
@@ -1113,10 +1117,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (pathMode && _clearAccumulationPending)
         {
             ClearAccumulation();
-        }
-        else if (!pathMode && _realtimeHistoryInvalid)
-        {
-            ClearRealtimeHistory();
         }
 
         // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
