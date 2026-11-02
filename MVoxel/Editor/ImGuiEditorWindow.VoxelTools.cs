@@ -524,7 +524,22 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="cameraObject">相机对象，可为空</param>
     /// <returns>生效渲染配置</returns>
-    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject) => _captureRenderSettings ?? _renderSettings;
+    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject)
+    {
+        var settings = _captureRenderSettings ?? _renderSettings;
+        if (cameraObject is null) return settings;
+        var camera = cameraObject.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
+        if (camera is null) return settings;
+        var data = SceneComponentTypes.ReadCamera(camera);
+        settings.CameraFovDegrees = data.PhysicalCamera
+            ? 2F * MathF.Atan(data.SensorWidthMillimeters / (2F * data.FocalLengthMillimeters)) * (180F / MathF.PI)
+            : data.FieldOfViewDegrees;
+        settings.DepthOfField = data.PhysicalCamera && data.PostProcess?.Find(CameraPostProcessEffectType.DepthOfField)?.Enabled == true;
+        settings.ApertureRadius = data.PhysicalCamera ? Math.Clamp(1F / data.ApertureFStop, 0F, 1F) : settings.ApertureRadius;
+        settings.FocusDistance = data.PhysicalCamera ? data.FocusDistance : settings.FocusDistance;
+        settings.Exposure = data.PhysicalCamera ? MathF.Log2(Math.Max(data.Iso / 100F, .01F) * Math.Max(data.ShutterSpeed * 60F, .01F) / Math.Max(data.ApertureFStop, .7F)) : settings.Exposure;
+        return settings;
+    }
 
     /// <summary>
     /// 返回渲染窗口右侧面板应该编辑的项目配置。

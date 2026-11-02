@@ -3329,6 +3329,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 vec2 uv = (vec2(pixel) + 0.5) / vec2(width, height) * 2.0 - 1.0;
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
+            if (values[84] > 0.5)
+            {
+                vec2 dofUv = (vec2(pixel) + 0.5) / vec2(width, height);
+                float focus = clamp(values[83] / max(values[97], 1.0), 0.0, 1.0);
+                float blur = clamp(values[82] * (1.0 - focus) * 2.0, 0.0, 1.0);
+                color = mix(color, color * (0.96 + 0.04 * blur), blur * 0.25);
+            }
             color = max(color, vec3(0.0));
             if (values[64] > 0.5)
             {
