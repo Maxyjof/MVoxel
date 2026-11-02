@@ -550,6 +550,26 @@ internal sealed partial class ImGuiEditorWindow
                 settings.BloomIntensity = MathF.Max(settings.BloomIntensity, volumeData.BloomIntensity * weight);
             }
         }
+        var probe = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsProbeVolume);
+        if (probe is not null)
+        {
+            var probeData = SceneComponentTypes.ReadProbeVolume(probe);
+            if (!string.IsNullOrWhiteSpace(probeData.BakedAsset) && _project is not null)
+            {
+                var probePath = Path.Combine(_project.RootPath, probeData.BakedAsset.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(probePath))
+                {
+                    try
+                    {
+                        var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath));
+                        var sample = bake?.Samples.FirstOrDefault();
+                        if (sample is not null)
+                            settings.SkyAmbient = Math.Clamp(settings.SkyAmbient + sample.Occlusion * settings.ProbeVolumeGiStrength * .1F, 0F, 2F);
+                    }
+                    catch (JsonException) { }
+                }
+            }
+        }
         return settings;
     }
 
