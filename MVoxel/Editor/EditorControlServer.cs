@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -15,8 +16,11 @@ internal sealed class EditorControlServer : IDisposable
     private static readonly JsonDocumentOptions RequestJsonOptions = new() { MaxDepth = 32 };
     private readonly string _pipeName = $"MVoxel.Editor.{Environment.ProcessId}";
     private readonly Func<JsonElement, object?> _handler;
+    private sealed record PendingRequest(JsonElement Request, TaskCompletionSource<object?> Completion);
     private readonly CancellationTokenSource _cancellation = new();
     private Task? _worker;
+    private readonly ConcurrentQueue<PendingRequest> _pendingRequests = new();
+
 
     /// <summary>
     /// 创建编辑器命令服务
@@ -38,8 +42,15 @@ internal sealed class EditorControlServer : IDisposable
         MVoxelLog.Info($"编辑器 CLI 通道已启动：{_pipeName}");
     }
 
-    /// <summary>
-    /// 循环接收并处理本机编辑器命令
+    internal void PumpOnMainThread()
+    {
+        while (_pendingRequests.TryDequeue(out var pending))
+        {
+            try { pending.Completion.TrySetResult(_handler(pending.Request)); }
+            catch (Exception exception) { pending.Completion.TrySetException(exception); }
+        }
+    }
+
     /// </summary>
     private async Task RunAsync()
     {
@@ -58,8 +69,12 @@ internal sealed class EditorControlServer : IDisposable
                     if (line is null || line.Length > MaximumRequestChars) throw new InvalidDataException("编辑器命令请求过大");
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     using var document = JsonDocument.Parse(line, RequestJsonOptions);
-                    var result = _handler(document.RootElement);
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = true, result }));
+                    var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _pendingRequests.Enqueue(new PendingRequest(document.RootElement.Clone(), completion));
+                    var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(30), _cancellation.Token);
+                    var response = JsonSerializer.Serialize(new { ok = true, result });
+                    if (response.Length > MaximumResponseChars) throw new InvalidDataException("编辑器命令响应过大");
+                    await writer.WriteLineAsync(response);
                 }
                 catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
                 {

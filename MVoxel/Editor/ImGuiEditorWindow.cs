@@ -315,6 +315,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             EndSceneMouseCapture();
         }
 
+        _controlServer?.PumpOnMainThread();
+
         if (_project is not null && _sceneDocument is not null)
         {
             foreach (var sceneObject in _sceneDocument.Objects)
