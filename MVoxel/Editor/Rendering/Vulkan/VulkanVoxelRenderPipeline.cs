@@ -1117,6 +1117,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             ClearRealtimeHistory();
         }
+        if (!pathMode && ParametersEqualForDisplay(parameters))
+        {
+            return true;
+        }
         if (!pathMode)
         {
             // 只有上一帧所有分块完成后才交换历史角色，避免槽位仍在使用旧描述符
@@ -1126,10 +1130,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 _realtimeHistoryReadIsA = !_realtimeHistoryReadIsA;
             }
             UpdateComputeDescriptors();
-        }
-        if (!pathMode && ParametersEqualForDisplay(parameters))
-        {
-            return true;
         }
 
         if (pathMode && _clearAccumulationPending)
@@ -3625,10 +3625,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                   vec3 refractedColor = imageLoad(outputImage, refractedPixel).rgb;
                   color = mix(color, refractedColor, heatStrength * 0.24);
               }
-             float windPhase = dot(weatherUv, vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])))) * 48.0 - weatherTime * values[P_WEATHER_WIND_STRENGTH] * 8.0;
-             float streaks = smoothstep(0.72, 0.98, fract(weatherUv.y * 42.0 + windPhase));
-             float precipitation = values[P_WEATHER_RAIN] * streaks + values[P_WEATHER_SNOW] * smoothstep(0.78, 1.0, fract(weatherUv.y * 28.0 - windPhase * 0.4));
-             color = mix(color, vec3(0.55, 0.68, 0.82), clamp(precipitation * 0.18, 0.0, 0.32));
+              vec2 windDirection = vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])));
+              float windStrength = max(values[P_WEATHER_WIND_STRENGTH], 0.0);
+              float windPhase = dot(weatherUv, windDirection) * 48.0 - weatherTime * windStrength * 8.0;
+              float rainLayerA = smoothstep(0.76, 0.995, fract(weatherUv.y * 43.0 + windPhase));
+              float rainLayerB = smoothstep(0.82, 0.995, fract(weatherUv.y * 71.0 - windPhase * 1.35 + 0.37));
+              float rainLayerC = smoothstep(0.88, 0.998, fract(weatherUv.y * 113.0 + windPhase * 1.9 + 0.71));
+              float rainWeight = clamp(values[P_WEATHER_RAIN] * (rainLayerA * 0.58 + rainLayerB * 0.3 + rainLayerC * 0.16), 0.0, 1.0);
+              float snowLayerA = smoothstep(0.82, 0.998, fract(weatherUv.y * 29.0 - windPhase * 0.42));
+              float snowLayerB = smoothstep(0.9, 1.0, fract(weatherUv.y * 47.0 + windPhase * 0.27 + 0.29));
+              float snowWeight = clamp(values[P_WEATHER_SNOW] * (snowLayerA * 0.72 + snowLayerB * 0.38), 0.0, 1.0);
+              color = mix(color, vec3(0.82, 0.9, 1.0), snowWeight * 0.24);
              color *= 1.0 - values[P_WEATHER_STORM] * 0.32;
               float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
               float lightningCycle = weatherTime * max(lightningRate * 0.42, 0.0001);
