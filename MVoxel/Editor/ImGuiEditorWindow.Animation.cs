@@ -16,6 +16,17 @@ internal sealed partial class ImGuiEditorWindow
         AtomicFile.WriteText(path, JsonSerializer.Serialize(clip, AnimationJsonOptions));
     }
 
+    private static string AnimationClipFileName(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (name.EndsWith(".mvanim.json", StringComparison.OrdinalIgnoreCase))
+            return name[..^".mvanim.json".Length];
+        return Path.GetFileNameWithoutExtension(name);
+    }
+
+    private static string EnsureAnimationClipExtension(string path) =>
+        path.EndsWith(".mvanim.json", StringComparison.OrdinalIgnoreCase) ? path : path + ".mvanim.json";
+
     private void DrawAnimationWindow()
     {
         var open = _showAnimationWindow;
@@ -148,7 +159,7 @@ internal sealed partial class ImGuiEditorWindow
         var selected = NativeDialogs.SaveFile("保存动画片段", "动画片段\0*.mvanim.json\0全部文件\0*.*\0\0", ".mvanim.json", clip.Name);
         if (string.IsNullOrWhiteSpace(selected)) return;
         var animationsDirectory = Path.Combine(_project.AssetsPath, "Animations");
-        var fullPath = Path.GetFullPath(selected);
+        var fullPath = EnsureAnimationClipExtension(Path.GetFullPath(selected));
         var root = Path.GetFullPath(animationsDirectory) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
         {
