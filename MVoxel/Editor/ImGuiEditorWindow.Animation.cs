@@ -62,6 +62,8 @@ internal sealed partial class ImGuiEditorWindow
                     foreach (var key in animationClip.Keyframes.Where(item => item.Frame == animation.CurrentFrame).ToArray())
                     {
                         ImGui.Text($"{key.ComponentType}.{key.Parameter} · 第{key.Frame}帧");
+                        var side = (int)key.TransitionSide;
+                        if (ImGui.Combo("过渡方向", ref side, "左侧\\0右侧\\0左右\\0")) { key.TransitionSide = (AnimationTransitionSide)side; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
                         var mode = (int)key.RightCurve.Mode;
                         if (ImGui.Combo("右侧过渡", ref mode, "阶梯\\0线性\\0平滑\\0贝塞尔\\0")) { key.RightCurve.Mode = (AnimationInterpolation)mode; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
                         var leftTangent = key.LeftCurve.RightTangent;

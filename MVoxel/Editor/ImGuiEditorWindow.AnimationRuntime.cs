@@ -27,10 +27,13 @@ internal sealed partial class ImGuiEditorWindow
         if (next is null) next = previous;
         if (previous is null || next is null) return;
         var t = previous.Frame == next.Frame ? 0F : (frame - previous.Frame) / (float)(next.Frame - previous.Frame);
+        if (previous.TransitionSide == AnimationTransitionSide.Left && frame > previous.Frame) t = 0F;
+        if (previous.TransitionSide == AnimationTransitionSide.Right && frame < next.Frame) t = 0F;
         if (previous.RightCurve.Mode == AnimationInterpolation.Step) t = 0F;
         var a = AnimationValueCodec.ToVector(previous.Values);
         var b = AnimationValueCodec.ToVector(next.Values);
         var value = Vector3.Lerp(a, b, t);
+        value = new Vector3(MathF.Round(value.X), MathF.Round(value.Y), MathF.Round(value.Z));
         if (root.Transform.Mode == TransformMode.Free)
             root.Transform.SetFree(new FreeTransform(new Double3(value.X, value.Y, value.Z), root.Transform.Free.Rotation));
     }
