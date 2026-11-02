@@ -187,7 +187,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             // 不忽略透明介质：直连估计不承担折射与吸收，避免与介质路径重复或漏光。
             if (TraceClosestWithin(origin, direction, hitDistance, hitNormal, hitColor, hitFlags,
                 hitSlot, hitCell, hitExtent, false, max(distance - 0.0001, 0.0), true)) return vec3(0.0);
-            float scale = ReadMaterial(uint(face.colorSlot.w)).scalars.z;
+            float scale = materialSlots[int(face.colorSlot.w)].scalars.z;
             scale = scale >= 0.0 ? scale : 1.0;
             vec3 emission = min(SrgbToLinear(face.colorSlot.rgb) * values[80] * scale,
                 vec3(max(values[77] * 0.1, 1.0)));

@@ -9,6 +9,9 @@ namespace MVoxel.Voxels;
 public sealed class MaterialExchangeMetadata
 {
     public Dictionary<ushort, string> Bindings { get; init; } = [];
+
+    /// <summary>多对象导出时按稳定对象ID保存各对象的本地槽位映射</summary>
+    public Dictionary<string, Dictionary<ushort, string>> ObjectBindings { get; init; } = new(StringComparer.Ordinal);
     public Dictionary<string, MaterialAsset> Definitions { get; init; } = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -16,17 +19,28 @@ public sealed class MaterialExchangeMetadata
     /// </summary>
     public void Validate()
     {
-        if (Bindings is null || Definitions is null)
+        if (Bindings is null || ObjectBindings is null || Definitions is null)
             throw new InvalidDataException("材质元数据缺少映射或定义");
-        foreach (var (slot, id) in Bindings)
+        ValidateBindings(Bindings);
+        foreach (var (objectId, bindings) in ObjectBindings)
         {
-            if (slot == 0 || string.IsNullOrWhiteSpace(id) || !Definitions.ContainsKey(id))
-                throw new InvalidDataException($"材质槽{slot}引用无效，槽0不能绑定资产");
+            if (string.IsNullOrWhiteSpace(objectId) || bindings is null)
+                throw new InvalidDataException("对象材质映射标识或内容为空");
+            ValidateBindings(bindings);
         }
         foreach (var (id, material) in Definitions)
         {
             if (string.IsNullOrWhiteSpace(id) || material is null)
                 throw new InvalidDataException("材质定义标识或内容为空");
+        }
+    }
+
+    private void ValidateBindings(IReadOnlyDictionary<ushort, string> bindings)
+    {
+        foreach (var (slot, id) in bindings)
+        {
+            if (slot == 0 || string.IsNullOrWhiteSpace(id) || !Definitions.ContainsKey(id))
+                throw new InvalidDataException($"材质槽{slot}引用无效，槽0不能绑定资产");
         }
     }
 }

@@ -13,6 +13,10 @@ internal sealed partial class ImGuiEditorWindow
     private Dictionary<StableId, Dictionary<int, int>> _runtimeMaterialSlotsByObject = [];
     private IReadOnlyDictionary<int, MaterialAsset> _runtimeMaterials = new Dictionary<int, MaterialAsset>();
     private string _runtimeMaterialSignature = string.Empty;
+    private VoxExportPlan? _pendingVoxExportPlan;
+    private string _pendingVoxExportPath = string.Empty;
+    private string _pendingVoxExportScope = string.Empty;
+    private bool _openVoxExportConfirmation;
     private static readonly MaterialAsset MissingMaterialDiagnostic = new()
     {
         Name = "材质缺失诊断",
@@ -67,7 +71,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var signature = string.Join("|", runtimeMaterials.OrderBy(item => item.Key)
             .Select(item => $"{item.Key}:{item.Value.SourcePath}:{File.GetLastWriteTimeUtc(item.Value.SourcePath).Ticks}")) +
-            ";" + string.Join("|", objectSlots.OrderBy(item => item.Key)
+            ";" + string.Join("|", objectSlots.OrderBy(item => item.Key.Value)
                 .SelectMany(item => item.Value.OrderBy(slot => slot.Key)
                     .Select(slot => $"{item.Key}:{slot.Key}>{slot.Value}")));
         _runtimeMaterialSlotsByObject = objectSlots;
@@ -236,21 +240,28 @@ internal sealed partial class ImGuiEditorWindow
 
     private MaterialExchangeMetadata? BuildNativeMaterialMetadata(SceneObject? target, bool selectedOnly)
     {
-        if (!selectedOnly || target is null || _project is null) return null;
-        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return null;
-        var bindings = SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [];
+        if (_project is null) return null;
         var metadata = new MaterialExchangeMetadata();
-        foreach (var binding in bindings)
+        var objects = selectedOnly
+            ? target is null ? [] : new[] { target }
+            : (_sceneDocument?.Objects ?? []).Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel));
+        foreach (var modelObject in objects)
         {
-            var relative = binding.MaterialAsset.Replace('\\', '/');
-            var material = FindMaterialAsset(relative);
-            if (material is null) continue;
-            metadata.Bindings[(ushort)binding.Slot] = relative;
-            metadata.Definitions[relative] = material;
+            var component = modelObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is null) continue;
+            var bindings = SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [];
+            var targetBindings = selectedOnly ? metadata.Bindings :
+                metadata.ObjectBindings[modelObject.Id.ToString()] = new Dictionary<ushort, string>();
+            foreach (var binding in bindings)
+            {
+                var relative = binding.MaterialAsset.Replace('\\', '/');
+                if (FindMaterialAsset(relative) is not { } material || binding.Slot <= 0) continue;
+                targetBindings[(ushort)binding.Slot] = relative;
+                metadata.Definitions[relative] = material;
+            }
         }
         metadata.Validate();
-        return metadata;
+        return metadata.Definitions.Count == 0 ? null : metadata;
     }
 
     private IReadOnlyDictionary<(int Part, ushort Slot), MaterialAsset> BuildVoxMaterialMap(SceneObject? target, bool selectedOnly)
@@ -267,6 +278,39 @@ internal sealed partial class ImGuiEditorWindow
         return result;
     }
 
+    private void DrawVoxExportConfirmation()
+    {
+        if (!_openVoxExportConfirmation || _pendingVoxExportPlan is null) return;
+        if (!CenteredModal.Begin("VOX导出损失确认##VoxExport", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        var summary = _pendingVoxExportPlan.LossSummary;
+        ImGui.TextWrapped("当前VOX导出无法完整表达原生材质或体素属性");
+        ImGui.Text($"材质组合：{summary.SourceCombinations}，调色板颜色：{summary.PaletteEntries}");
+        ImGui.Text($"近似体素：{summary.ApproximatedVoxelCount:N0}，不可表达标志：{summary.FlagsNotRepresentableVoxelCount:N0}");
+        if (summary.MissingMaterialDefinitions > 0) ImGui.TextColored(new Vector4(1F, .4F, .2F, 1F), $"缺失材质定义：{summary.MissingMaterialDefinitions}");
+        foreach (var warning in summary.MaterialWarnings.Take(8)) ImGui.TextWrapped("· " + warning);
+        ImGui.Separator();
+        var confirm = ImGui.Button("确认有损导出");
+        ImGui.SameLine();
+        var cancel = ImGui.Button("取消") || ImGui.IsKeyPressed(ImGuiKey.Escape, false);
+        if (confirm)
+        {
+            var plan = _pendingVoxExportPlan;
+            var path = _pendingVoxExportPath;
+            _pendingVoxExportPlan = null;
+            _openVoxExportConfirmation = false;
+            plan.Write(path, true);
+            SetStatus($"已确认VOX有损导出：{path}");
+            ImGui.CloseCurrentPopup();
+        }
+        else if (cancel)
+        {
+            _pendingVoxExportPlan = null;
+            _openVoxExportConfirmation = false;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
+    }
+
     private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false, bool obj = false)
     {
         if (_project is null) return;
@@ -276,14 +320,25 @@ internal sealed partial class ImGuiEditorWindow
             var target = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
             if (selectedOnly && target is null) { SetStatus("请先选择一个体素模型"); return; }
+            MaterialExchangeMetadata? nativeMetadata = null;
             if (native && !selectedOnly)
             {
-                SetStatus("全场景导出暂不支持组件本地材质映射，请选择单个模型导出");
-                return;
+                nativeMetadata = BuildNativeMaterialMetadata(null, false);
+                if (nativeMetadata is null)
+                {
+                    SetStatus("全场景没有可交换的材质映射");
+                    return;
+                }
             }
-            source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
             var name = selectedOnly ? target!.Name : _project.Manifest.Name;
-            var nativeMetadata = BuildNativeMaterialMetadata(target, selectedOnly);
+            source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
+            var directory = Path.Combine(_project.AssetsPath, "Exports");
+            Directory.CreateDirectory(directory);
+            var safeName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            var extension = obj ? ".obj" : native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
+            var path = Path.Combine(directory, UniqueAssetFileName(directory, safeName, extension));
+            var scope = selectedOnly ? $"选中模型：{name}" : "场景可见体素（重叠按排序合成）";
+            nativeMetadata ??= BuildNativeMaterialMetadata(target, selectedOnly);
             var voxParts = new[] { new VoxFormat.VoxScenePart(name, source, VoxelCoord64.Zero) };
             VoxExportPlan? voxPlan = null;
             if (!native && !obj && !qubicle)
@@ -292,18 +347,17 @@ internal sealed partial class ImGuiEditorWindow
                 voxPlan = VoxMaterialExchange.PrepareExport(voxParts, contextual);
                 if (voxPlan.LossSummary.HasLoss || voxPlan.LossSummary.RequiresMaterialDecision)
                 {
-                    SetStatus("VOX导出存在材质或颜色损失，请在确认导出流程中查看摘要");
+                    SetStatus("VOX导出存在材质或颜色损失，请在确认窗口中查看摘要");
+                    _pendingVoxExportPlan = voxPlan;
+                    _pendingVoxExportPath = path;
+                    _pendingVoxExportScope = scope;
+                    _openVoxExportConfirmation = true;
+                    ImGui.OpenPopup("VOX导出损失确认##VoxExport");
                     return;
                 }
             }
             var objects = _sceneDocument?.Objects ?? [];
             var primary = GetVoxelWorldObject()?.Id;
-            var directory = Path.Combine(_project.AssetsPath, "Exports");
-            Directory.CreateDirectory(directory);
-            var safeName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-            var extension = obj ? ".obj" : native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
-            var path = Path.Combine(directory, UniqueAssetFileName(directory, safeName, extension));
-            var scope = selectedOnly ? $"选中模型：{name}" : "场景可见体素（重叠按排序合成）";
             _projectOperation.TryStart($"导出 {extension} · {scope}", path,
                 (cancellation, report) =>
                 {

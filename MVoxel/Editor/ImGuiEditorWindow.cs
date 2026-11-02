@@ -874,6 +874,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawCenter();
         DrawModelingTools();
         DrawFloodConfirmModal();
+        DrawVoxExportConfirmation();
         DrawInspector();
         DrawExtraInspectors();
         DrawRenderConfig();

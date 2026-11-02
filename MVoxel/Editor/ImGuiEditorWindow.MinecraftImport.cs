@@ -845,6 +845,11 @@ internal partial class ImGuiEditorWindow
     /// 读取资产浏览器中的体素文件。外部交换格式与项目原生格式走各自解析器，
     /// 避免把 .vox 误当成 .mvmodel 读取。
     /// </summary>
+    private static NativeVoxelDocument ReadNativeVoxelDocument(string path, VoxelCoord64 origin = default)
+    {
+        return LargeWorldFormat.ReadDocument(path, origin);
+    }
+
     private static VoxelWorld ReadVoxelAsset(string path)
     {
         return Path.GetExtension(path).ToLowerInvariant() switch
@@ -852,7 +857,7 @@ internal partial class ImGuiEditorWindow
             ".vox" => VoxFormat.Read(path),
             ".qb" => QubicleFormat.Read(path),
             ".schem" => SchematicFormat.Read(path),
-            ".mvmodel" or ".mvworld" => LargeWorldFormat.Read(path),
+            ".mvmodel" or ".mvworld" => ReadNativeVoxelDocument(path).World,
             _ => throw new InvalidDataException($"不支持读取的体素文件：{Path.GetExtension(path)}"),
         };
     }

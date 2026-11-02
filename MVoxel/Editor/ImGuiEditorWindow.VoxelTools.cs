@@ -768,8 +768,31 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocument = document;
     }
 
-    /// <summary>
-    /// 打开资产浏览器中指定的世界文件作为当前工作世界，导入与双击均走此入口
+    private Dictionary<int, MaterialSlotBinding> ImportNativeMaterials(ProjectHandle project, MaterialExchangeMetadata metadata)
+    {
+        var result = new Dictionary<int, MaterialSlotBinding>();
+        var bindings = metadata.Bindings.Count > 0
+            ? metadata.Bindings
+            : metadata.ObjectBindings.Values.SelectMany(item => item).GroupBy(item => item.Key)
+                .ToDictionary(group => group.Key, group => group.First().Value);
+        if (bindings.Count == 0) return result;
+        var directory = Path.Combine(project.AssetsPath, "Materials");
+        Directory.CreateDirectory(directory);
+        foreach (var binding in bindings.OrderBy(item => item.Key))
+        {
+            if (!metadata.Definitions.TryGetValue(binding.Value, out var source)) continue;
+            var baseName = string.IsNullOrWhiteSpace(source.Name) ? $"导入材质{binding.Key}" : source.Name;
+            var fileName = UniqueAssetFileName(directory, baseName, ".material");
+            var absolute = Path.Combine(directory, fileName);
+            var material = MaterialAsset.Parse(JsonSerializer.Serialize(source));
+            material.Name = source.Name;
+            material.Save(absolute);
+            AssetMetaStore.EnsureMeta(absolute);
+            result[binding.Key] = new MaterialSlotBinding(binding.Key, "Materials/" + fileName);
+        }
+        return result;
+    }
+
     /// </summary>
     private void OpenWorldAsset(string relativePath)
     {
@@ -789,7 +812,14 @@ internal sealed partial class ImGuiEditorWindow
         {
             var workingRelativePath = relativePath.Replace('\\', '/');
             var extension = Path.GetExtension(absolute).ToLowerInvariant();
-            if (extension is ".vox" or ".qb" or ".schem")
+            MaterialExchangeMetadata? importedMaterials = null;
+            if (extension is ".mvmodel" or ".mvworld")
+            {
+                var document = ReadNativeVoxelDocument(absolute);
+                _world = document.World;
+                importedMaterials = document.Materials;
+            }
+            else if (extension is ".vox" or ".qb" or ".schem")
             {
                 // 外部交换格式不能直接成为可编辑工作资产；双击时先导入为原生 .mvmodel。
                 _world = ReadVoxelAsset(absolute);
@@ -809,6 +839,18 @@ internal sealed partial class ImGuiEditorWindow
             else
             {
                 _world = LargeWorldFormat.Read(absolute);
+            }
+
+            if (importedMaterials is not null)
+            {
+                var bindings = ImportNativeMaterials(_project, importedMaterials);
+                var model = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Any(SceneComponentTypes.IsVoxelModel));
+                if (model is not null)
+                {
+                    var component = model.Components.First(SceneComponentTypes.IsVoxelModel);
+                    var data = SceneComponentTypes.ReadVoxelModel(component);
+                    SceneComponentTypes.WriteVoxelModel(component, data with { MaterialSlots = bindings.Values.ToArray() });
+                }
             }
 
             var primaryAssetPath = "Assets/" + workingRelativePath;
