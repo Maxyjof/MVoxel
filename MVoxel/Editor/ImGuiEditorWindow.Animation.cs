@@ -81,13 +81,11 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawAnimationHierarchy(SceneObject root)
     {
-        ImGui.TreeNodeEx($"根节点：{root.Name}", ImGuiTreeNodeFlags.DefaultOpen);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("动画根节点");
+        var opened = ImGui.TreeNodeEx($"节点：{root.Name}", ImGuiTreeNodeFlags.DefaultOpen);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("动画对象层级，锁定动画对象后可继续编辑子节点");
+        if (!opened) return;
         foreach (var child in _sceneDocument?.Objects.Where(item => item.ParentId == root.Id) ?? [])
-        {
-            ImGui.TreeNodeEx($"子节点：{child.Name}", ImGuiTreeNodeFlags.DefaultOpen | ImGuiTreeNodeFlags.Leaf);
             DrawAnimationHierarchy(child);
-        }
         ImGui.TreePop();
     }
 
@@ -110,11 +108,29 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    private static System.Numerics.Vector3 QuaternionToEuler(System.Numerics.Quaternion q)
+    {
+        var sinPitch = 2F * (q.W * q.X + q.Y * q.Z);
+        var cosPitch = 1F - 2F * (q.X * q.X + q.Y * q.Y);
+        var pitch = MathF.Atan2(sinPitch, cosPitch);
+        var sinYaw = Math.Clamp(2F * (q.W * q.Y - q.Z * q.X), -1F, 1F);
+        var yaw = MathF.Asin(sinYaw);
+        var sinRoll = 2F * (q.W * q.Z + q.X * q.Y);
+        var cosRoll = 1F - 2F * (q.Y * q.Y + q.Z * q.Z);
+        return new System.Numerics.Vector3(pitch, yaw, MathF.Atan2(sinRoll, cosRoll));
+    }
+
     private void InsertAnimationKey(SceneObject target, AnimationComponentData animation, int frame, string component, string parameter)
     {
         if (_project is null) return;
         var clip = new AnimationClip { Name = string.IsNullOrWhiteSpace(animation.ClipAsset) ? "动画片段" : Path.GetFileNameWithoutExtension(animation.ClipAsset) };
-        clip.Keyframes.Add(new AnimationKeyframe { Frame = frame, ObjectId = target.Id.ToString(), ComponentType = component, Parameter = parameter, Values = [0F, 0F, 0F] });
+        var values = parameter switch
+        {
+            "Position" when target.Transform.Mode == MVoxel.Core.TransformMode.Free => AnimationValueCodec.FromVector(new System.Numerics.Vector3((float)target.Transform.Free.Position.X, (float)target.Transform.Free.Position.Y, (float)target.Transform.Free.Position.Z)),
+            "Rotation" when target.Transform.Mode == MVoxel.Core.TransformMode.Free => AnimationValueCodec.FromVector(QuaternionToEuler(target.Transform.Free.Rotation)),
+            _ => [0F, 0F, 0F]
+        };
+        clip.Keyframes.Add(new AnimationKeyframe { Frame = frame, ObjectId = target.Id.ToString(), ComponentType = component, Parameter = parameter, Values = values });
         var path = Path.Combine(_project.AssetsPath, "Animations", clip.Name + ".mvanim.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
