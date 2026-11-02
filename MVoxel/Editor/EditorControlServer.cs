@@ -46,6 +46,8 @@ internal sealed class EditorControlServer : IDisposable
     {
         while (_pendingRequests.TryDequeue(out var pending))
         {
+            if (pending.Completion.Task.IsCanceled)
+                continue;
             try { pending.Completion.TrySetResult(_handler(pending.Request)); }
             catch (Exception exception) { pending.Completion.TrySetException(exception); }
         }
@@ -59,7 +61,7 @@ internal sealed class EditorControlServer : IDisposable
             try
             {
                 await using var pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await pipe.WaitForConnectionAsync(_cancellation.Token);
                 using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };

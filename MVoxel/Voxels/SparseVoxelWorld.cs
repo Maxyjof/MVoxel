@@ -356,7 +356,15 @@ public sealed class VoxelWorld
         {
             var contentVersion = ContentVersion;
             var structureStamp = StructureStamp;
-            var voxels = EnumerateOccupied().ToArray();
+            IReadOnlyList<(VoxelCoord64 Coordinate, VoxelValue Value)> voxels;
+            try
+            {
+                voxels = EnumerateOccupied().ToArray();
+            }
+            catch (InvalidOperationException) when (attempt < maxRetries)
+            {
+                continue;
+            }
             if (contentVersion == ContentVersion && structureStamp == StructureStamp)
                 return new VoxelWorldSnapshot(contentVersion, structureStamp, voxels);
             if (attempt >= maxRetries)
