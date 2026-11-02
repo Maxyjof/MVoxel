@@ -63,6 +63,7 @@ public sealed record AnimationComponentData
     public float Speed { get; set; } = 1F;
     public int CurrentFrame { get; set; }
     public bool Recording { get; set; }
+    public double PlaybackTimeSeconds { get; set; }
 
     public AnimationComponentData Normalize()
     {

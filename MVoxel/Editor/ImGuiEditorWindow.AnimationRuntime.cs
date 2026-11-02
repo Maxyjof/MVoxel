@@ -9,6 +9,15 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    private AnimationClip? LoadAnimationClip(string asset)
+    {
+        if (_project is null || string.IsNullOrWhiteSpace(asset)) return null;
+        var path = Path.Combine(_project.RootPath, asset.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(path)) return null;
+        try { return JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(path)); }
+        catch (JsonException) { return null; }
+    }
+
     private void EvaluateAnimation(SceneObject root, AnimationComponentData animation)
     {
         if (!animation.Playing || _project is null || string.IsNullOrWhiteSpace(animation.ClipAsset)) return;

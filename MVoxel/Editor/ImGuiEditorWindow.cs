@@ -324,7 +324,14 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 var animation = SceneComponentTypes.ReadAnimation(animationComponent);
                 if (!animation.Playing) continue;
                 EvaluateAnimation(sceneObject, animation);
-                animation.CurrentFrame++;
+                animation.PlaybackTimeSeconds += Math.Max(args.Time, 0.0) * animation.Speed;
+                var clip = LoadAnimationClip(animation.ClipAsset);
+                var frameRate = clip?.FrameRate ?? 30;
+                var length = clip?.LengthFrames ?? int.MaxValue;
+                var nextFrame = (int)Math.Floor(animation.PlaybackTimeSeconds * frameRate);
+                if (animation.Loop && length > 0) nextFrame %= length + 1;
+                else if (nextFrame >= length) { nextFrame = length; animation.Playing = false; }
+                animation.CurrentFrame = Math.Max(0, nextFrame);
                 SceneComponentTypes.WriteAnimation(animationComponent, animation);
             }
         }
