@@ -2,7 +2,7 @@
 
 ## 目标
 
-为非光追实时GI提供安全的帧间历史混合，保持AMD与NVIDIA Vulkan Compute兼容。当前阶段只定义契约，TemporalWeight保持为0，未完成双缓冲实现前不得启用混合。
+为非光追实时GI提供安全的帧间历史混合，保持AMD与NVIDIA Vulkan Compute兼容。A/B双缓冲、binding 11/12读写分离、双图失效清理和实时Shader混合已接入；TemporalWeight仍默认保持为0，运行时可由参数显式启用。
 
 ## 资源布局
 
