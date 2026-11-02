@@ -538,6 +538,18 @@ internal sealed partial class ImGuiEditorWindow
         settings.ApertureRadius = data.PhysicalCamera ? Math.Clamp(1F / data.ApertureFStop, 0F, 1F) : settings.ApertureRadius;
         settings.FocusDistance = data.PhysicalCamera ? data.FocusDistance : settings.FocusDistance;
         settings.Exposure = data.PhysicalCamera ? MathF.Log2(Math.Max(data.Iso / 100F, .01F) * Math.Max(data.ShutterSpeed * 60F, .01F) / Math.Max(data.ApertureFStop, .7F)) : settings.Exposure;
+        var volume = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsVolume);
+        if (volume is not null)
+        {
+            var volumeData = SceneComponentTypes.ReadVolume(volume);
+            if (volumeData.Enabled)
+            {
+                var weight = volumeData.IsGlobal ? volumeData.Weight : 0F;
+                settings.Exposure += volumeData.Exposure * weight;
+                settings.FogDensity = MathF.Max(settings.FogDensity, volumeData.FogDensity * weight);
+                settings.BloomIntensity = MathF.Max(settings.BloomIntensity, volumeData.BloomIntensity * weight);
+            }
+        }
         return settings;
     }
 

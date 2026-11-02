@@ -99,7 +99,8 @@ public sealed class VoxelRenderParameters
     public const int EmissiveDirectSampling = 117;
     public const int EmissiveLightTree = 118;
     public const int VoxelIndirectStrength = 119, ProbeGiStrength = 120;
-    public const int SlotCount = 121;
+    public const int VolumeWeight = 121, VolumeFogDensity = 122, VolumeBloomIntensity = 123, VolumeExposure = 124;
+    public const int SlotCount = 125;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -149,6 +150,8 @@ public sealed class VoxelRenderParameters
             ("P_SCENE_LIGHT_COUNT", SceneLightCount),
             ("P_VOXEL_INDIRECT_STRENGTH", VoxelIndirectStrength),
             ("P_PROBE_GI_STRENGTH", ProbeGiStrength),
+            ("P_VOLUME_WEIGHT", VolumeWeight), ("P_VOLUME_FOG_DENSITY", VolumeFogDensity),
+            ("P_VOLUME_BLOOM_INTENSITY", VolumeBloomIntensity), ("P_VOLUME_EXPOSURE", VolumeExposure),
         };
 
         var builder = new StringBuilder();
@@ -312,6 +315,10 @@ public sealed class VoxelRenderParameters
         parameters[EmissiveLightTree] = settings.EmissiveLightTree ? 1F : 0F;
         parameters[VoxelIndirectStrength] = settings.VoxelIndirectLightStrength;
         parameters[ProbeGiStrength] = settings.ProbeVolumeGiStrength;
+        parameters[VolumeWeight] = 0F;
+        parameters[VolumeFogDensity] = 0F;
+        parameters[VolumeBloomIntensity] = 0F;
+        parameters[VolumeExposure] = 0F;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;
