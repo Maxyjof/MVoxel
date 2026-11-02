@@ -124,10 +124,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Image _guideImage;
     private DeviceMemory _guideMemory;
     private ImageView _guideView;
+    private bool _guideInitialized;
     private Image _realtimeHistoryImage;
     private DeviceMemory _realtimeHistoryMemory;
     private ImageView _realtimeHistoryView;
-    private bool _guideInitialized;
+    private bool _realtimeHistoryInitialized;
     private nint _displayTextureId;
     private uint _outputWidth;
     private uint _outputHeight;
@@ -136,7 +137,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _clearAccumulationPending = true;
     private float[]? _lastParameters;
     private long _realtimeHistorySignature;
-    private bool _realtimeHistoryInvalid = true;    private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
+    private bool _realtimeHistoryInvalid = true;
+    private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private IReadOnlyList<VoxelGpuCell> _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
     private VoxelCoord64 _sceneOrderedOrigin;
     private VoxelWorld? _sceneSelection;
@@ -1353,16 +1355,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             Check(api.BindImageMemory(_device, _guideImage, _guideMemory, 0), "绑定降噪辅助图像");
             _guideView = CreateImageView(_guideImage, Format.R32G32B32A32Sfloat);
             var historyCreateInfo = createInfo;
-            historyCreateInfo.Format = Format.R16G16B16A16Sfloat;
+            historyCreateInfo.Format = Format.R8G8B8A8Unorm;
             historyCreateInfo.Usage = ImageUsageFlags.StorageBit;
             Check(api.CreateImage(_device, &historyCreateInfo, null, out _realtimeHistoryImage), "创建实时GI历史图像");
             MemoryRequirements historyRequirements = default;
             api.GetImageMemoryRequirements(_device, _realtimeHistoryImage, &historyRequirements);
             _realtimeHistoryMemory = AllocateMemory(historyRequirements, MemoryPropertyFlags.DeviceLocalBit);
             Check(api.BindImageMemory(_device, _realtimeHistoryImage, _realtimeHistoryMemory, 0), "绑定实时GI历史图像");
-            _realtimeHistoryView = CreateImageView(_realtimeHistoryImage, Format.R16G16B16A16Sfloat);
+            _realtimeHistoryView = CreateImageView(_realtimeHistoryImage, Format.R8G8B8A8Unorm);
             _guideInitialized = false;
-            _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
+            _realtimeHistoryInitialized = false;            _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
             _outputHeight = height;
             _outputIsShaderReadOnly = false;
@@ -1453,13 +1455,32 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _accumulationInitialized = true;
     }
 
+    private void TransitionRealtimeHistoryToGeneral(CommandBuffer commandBuffer)
+    {
+        ImageMemoryBarrier barrier = new()
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = _realtimeHistoryInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _realtimeHistoryImage,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+            SrcAccessMask = _realtimeHistoryInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
+        };
+        _api!.CmdPipelineBarrier(commandBuffer,
+            _realtimeHistoryInitialized ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit : PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in barrier);
+        _realtimeHistoryInitialized = true;
+    }
+
     private void TransitionGuideToGeneral(CommandBuffer commandBuffer)
     {
         ImageMemoryBarrier barrier = new()
         {
             SType = StructureType.ImageMemoryBarrier,
             OldLayout = _guideInitialized ? ImageLayout.General : ImageLayout.Undefined,
-            NewLayout = ImageLayout.General,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = _guideImage,
@@ -1840,7 +1861,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _guideImage = default;
         _guideMemory = default;
         _guideInitialized = false;
-        if (_accumulationView.Handle != 0) api.DestroyImageView(_device, _accumulationView, null);
+        _realtimeHistoryInitialized = false; api.DestroyImageView(_device, _accumulationView, null);
         if (_accumulationImage.Handle != 0) api.DestroyImage(_device, _accumulationImage, null);
         if (_accumulationMemory.Handle != 0) api.FreeMemory(_device, _accumulationMemory, null);
         if (_outputView.Handle != 0) api.DestroyImageView(_device, _outputView, null);
