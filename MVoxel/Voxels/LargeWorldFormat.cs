@@ -46,6 +46,8 @@ public static class LargeWorldFormat
     {
         var metadata = materials is null ? null : MaterialExchangeCodec.Encode(materials);
         ArgumentNullException.ThrowIfNull(world);
+        var startContentVersion = world.ContentVersion;
+        var startStructureStamp = world.StructureStamp;
         if (!world.TryGetBounds(out var minimum, out var maximum))
         {
             throw new InvalidOperationException("不能保存空的大世界模型");
@@ -57,6 +59,8 @@ public static class LargeWorldFormat
         ValidateDimensions(width, height, depth);
         var count = world.OccupiedVoxelCount;
         var chunks = world.SnapshotChunks();
+        if (startContentVersion != world.ContentVersion || startStructureStamp != world.StructureStamp)
+            throw new InvalidOperationException("写模型期间世界被编辑，请稍后重试保存");
         var offsets = new long[chunks.Count + 1];
         for (var index = 0; index < chunks.Count; index++)
         {
@@ -88,6 +92,8 @@ public static class LargeWorldFormat
                 BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(tail), metadata.Length);
                 metadata.CopyTo(bytes, tail + 4);
             }
+            if (startContentVersion != world.ContentVersion || startStructureStamp != world.StructureStamp)
+                throw new InvalidOperationException("写模型期间世界被编辑，已取消写入");
             AtomicFile.WriteBytes(path, bytes);
             return;
         }
