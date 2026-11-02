@@ -46,6 +46,33 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         ImGui.Text("参数默认隐藏，可在节点参数列表中点击显示");
         DrawAnimationParameterList(linked, animation);
+        ImGui.SeparatorText("关键帧曲线");
+        var clipPath = animation.ClipAsset;
+        if (_project is not null && !string.IsNullOrWhiteSpace(clipPath))
+        {
+            var path = Path.Combine(_project.RootPath, clipPath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(path))
+            {
+                try
+                {
+                    var animationClip = JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(path)) ?? new AnimationClip();
+                    animationClip.Normalize();
+                    var length = animationClip.LengthFrames;
+                    if (ImGui.DragInt("片段长度", ref length, 1F, 1, 100000)) { animationClip.LengthFrames = length; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
+                    foreach (var key in animationClip.Keyframes.Where(item => item.Frame == animation.CurrentFrame).ToArray())
+                    {
+                        ImGui.Text($"{key.ComponentType}.{key.Parameter} · 第{key.Frame}帧");
+                        var mode = (int)key.RightCurve.Mode;
+                        if (ImGui.Combo("右侧过渡", ref mode, "阶梯\\0线性\\0平滑\\0贝塞尔\\0")) { key.RightCurve.Mode = (AnimationInterpolation)mode; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
+                        var leftTangent = key.LeftCurve.RightTangent;
+                        if (ImGui.SliderFloat("左切线", ref leftTangent, -4F, 4F)) key.LeftCurve.RightTangent = leftTangent;
+                        var rightTangent = key.RightCurve.LeftTangent;
+                        if (ImGui.SliderFloat("右切线", ref rightTangent, -4F, 4F)) key.RightCurve.LeftTangent = rightTangent;
+                    }
+                }
+                catch (JsonException) { ImGui.TextDisabled("动画片段数据无效"); }
+            }
+        }
         SceneComponentTypes.WriteAnimation(animationComponent, animation);
         ImGui.End();
     }
