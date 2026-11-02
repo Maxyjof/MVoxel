@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using ImGuiNET;
 using Vector2 = System.Numerics.Vector2;
 using Vector4 = System.Numerics.Vector4;
@@ -171,12 +171,12 @@ internal sealed class BlockingOperationRunner : IDisposable
     public void Dispose()
     {
         CancellationTokenSource? cancellation;
+        Task<OperationResult>? task;
         lock (_gate)
         {
             ++_generation;
             cancellation = _cancellation;
-            _task = null;
-            _cancellation = null;
+            task = _task;
             _snapshot = null;
             _onSucceeded = null;
             _onFailed = null;
@@ -184,7 +184,24 @@ internal sealed class BlockingOperationRunner : IDisposable
         }
 
         cancellation?.Cancel();
-        cancellation?.Dispose();
+        if (task is not null)
+        {
+            try { task.Wait(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { }
+        }
+
+        lock (_gate)
+        {
+            if (ReferenceEquals(_task, task))
+            {
+                _task = null;
+                _cancellation = null;
+            }
+        }
+        if (task is null || task.IsCompleted) cancellation?.Dispose();
+        else if (cancellation is not null)
+            _ = task.ContinueWith(_ => cancellation.Dispose(), CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     private void Report(int generation, string title, BlockingOperationProgress progress)
