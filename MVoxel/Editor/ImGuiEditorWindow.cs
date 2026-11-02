@@ -140,6 +140,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private int _paletteIndex = 40;
     private bool _brushEmissive;
     private string? _componentWarning;
+    private string _componentSearch = string.Empty;
     private VoxelDda.Hit? _selectedVoxel;
     private StableId? _selectedSceneObjectId;
     private StableId? _revealHierarchySelection;
@@ -169,6 +170,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _cpuPreviewIncludesInterior;
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
+    private readonly Dictionary<string, string> _pluginCommandResults = new(StringComparer.Ordinal);
     private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
 
     public ImGuiEditorWindow(string[] args)
@@ -224,7 +226,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             SetStatus("请等待当前操作完成，或先在进度窗口取消操作，再退出");
             return;
         }
-        if (_project is not null && _sceneDocumentDirty)
+        if (_project is not null && (_sceneDocumentDirty || _generatorDirty))
         {
             _exitConfirmationRequested = true;
             return;
@@ -243,7 +245,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             SetStatus("请等待当前操作完成，或先取消操作，再退出");
             return;
         }
-        if (e.Cancel || _allowWindowClose || _project is null || !_sceneDocumentDirty) return;
+        if (e.Cancel || _allowWindowClose || _project is null || (!_sceneDocumentDirty && !_generatorDirty)) return;
 
         e.Cancel = true;
         _exitConfirmationRequested = true;
@@ -486,6 +488,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 commands = _pluginRuntime?.Commands ?? [],
                 panels = _pluginRuntime?.Panels ?? [],
                 pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
+                pluginActivationStatus = _pluginRuntime?.ActivationStatus,
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
             "editor.saveProject" => QueueSaveProject(),
@@ -683,8 +686,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
         var discard = arguments.ValueKind == JsonValueKind.Object &&
                       arguments.TryGetProperty("discard", out var discardValue) && discardValue.GetBoolean();
-        if (sceneDirty && !discard)
-            return new { queued = false, alreadyClosed = false, sceneDirty = true, requiresSave = true };
+        if ((sceneDirty || _generatorDirty) && !discard)
+            return new { queued = false, alreadyClosed = false, sceneDirty, generatorDirty = _generatorDirty, requiresSave = true };
         _pendingActions.Enqueue(CloseProject);
         return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false };
     }
@@ -728,10 +731,64 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void ReloadPlugins()
     {
         if (_project is null) return;
+        _pluginCommandResults.Clear();
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
         _pluginRuntime.Activate(_project, TimeSpan.FromSeconds(2));
         _statusText = "插件已重新加载";
+    }
+
+    private void InstallPluginPackageFromMenu()
+    {
+        var path = NativeDialogs.PickFile("选择插件分发包", "MVoxel 插件包\0*.mvplugin\0全部文件\0*.*\0");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            var package = PluginManager.InstallFromPackage(path);
+            if (_project is not null) ReloadPlugins();
+            SetStatus($"已安装插件：{package.Name}（{package.Version}）");
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("安装插件包失败", exception);
+            SetStatus($"安装插件包失败：{exception.Message}");
+        }
+    }
+
+    private void PackPluginFromMenu()
+    {
+        var source = NativeDialogs.PickFolder("选择包含 package.json 的插件目录");
+        if (string.IsNullOrWhiteSpace(source)) return;
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(source));
+        var target = NativeDialogs.SaveFile("保存插件分发包", "MVoxel 插件包\0*.mvplugin\0", "mvplugin", name + ".mvplugin");
+        if (string.IsNullOrWhiteSpace(target)) return;
+        try
+        {
+            PluginManager.PackPlugin(source, target);
+            SetStatus($"已创建插件包：{target}");
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Error("打包插件失败", exception);
+            SetStatus($"打包插件失败：{exception.Message}");
+        }
+    }
+
+    private void SetProjectPluginFromMenu(ProjectHandle project, string pluginId, bool enabled)
+    {
+        if (!ReferenceEquals(_project, project)) return;
+        try
+        {
+            if (enabled) PluginManager.Enable(project, pluginId);
+            else PluginManager.Disable(project, pluginId);
+            ReloadPlugins();
+            SetStatus($"插件已{(enabled ? "启用" : "禁用")}：{pluginId}");
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Warn($"修改插件状态失败：{pluginId}，原因：{exception.Message}");
+            SetStatus($"修改插件状态失败：{exception.Message}");
+        }
     }
 
     /// <summary>
@@ -741,15 +798,19 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void ExecutePluginCommand(string commandId)
     {
         if (_pluginRuntime is null) return;
+        var owner = _pluginRuntime.Commands.FirstOrDefault(command => command.Id == commandId)?.PluginId;
         try
         {
             using var payload = JsonDocument.Parse("{}");
-            _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10));
+            var result = _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10)).GetRawText();
+            if (owner is not null)
+                _pluginCommandResults[owner] = $"{commandId}\n{(result.Length > 4096 ? result[..4096] + "…" : result)}";
             _statusText = $"已执行插件命令：{commandId}";
         }
         catch (Exception exception)
         {
             MVoxelLog.Error($"插件命令执行失败：{commandId}", exception);
+            if (owner is not null) _pluginCommandResults[owner] = $"{commandId}\n执行失败：{exception.Message}";
             _statusText = $"插件命令执行失败：{commandId}";
         }
     }
@@ -887,6 +948,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
             _resetDockLayoutRequested = false;
+            _applyPreset = true;
+            _focusModelingTools = _layoutPreset == LayoutPreset.Modeling;
+            _requestedCenterTab = _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
+            _requestedInspectorTab = _layoutPreset == LayoutPreset.Modeling ? null : _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
         }
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
         var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
@@ -1028,7 +1093,44 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
         if (ImGui.BeginMenu("插件"))
         {
+            if (ImGui.MenuItem("安装插件包…")) _pendingActions.Enqueue(InstallPluginPackageFromMenu);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("选择 .mvplugin 文件安装到编辑器；项目启用状态保持不变。");
+            if (ImGui.MenuItem("打包插件目录…")) _pendingActions.Enqueue(PackPluginFromMenu);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("将包含 package.json 的目录打包为 .mvplugin 文件。");
             var diagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project);
+            if (_project is { } pluginProject && ImGui.BeginMenu("管理项目插件"))
+            {
+                var enabled = PluginManager.ListEnabled(pluginProject).ToHashSet(StringComparer.Ordinal);
+                var installed = PluginManager.ListInstalled();
+                foreach (var package in installed)
+                {
+                    var isEnabled = enabled.Contains(package.Id);
+                    if (ImGui.MenuItem($"{package.Name}##plugin:{package.Id}", null, isEnabled))
+                        _pendingActions.Enqueue(() => SetProjectPluginFromMenu(pluginProject, package.Id, !isEnabled));
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.BeginTooltip();
+                        ImGui.TextUnformatted($"{package.Id} · {package.Version}");
+                        ImGui.EndTooltip();
+                    }
+                }
+                foreach (var missing in diagnostics.Where(item => !item.Installed))
+                {
+                    if (ImGui.MenuItem($"禁用缺失插件：{missing.PluginId}"))
+                        _pendingActions.Enqueue(() => SetProjectPluginFromMenu(pluginProject, missing.PluginId, false));
+                }
+                ImGui.EndMenu();
+            }
+            if (_pluginRuntime is not null && ImGui.BeginMenu("启动状态"))
+            {
+                if (_pluginRuntime.ActivationStatus.Count == 0) ImGui.TextDisabled("没有已启用的插件");
+                foreach (var (id, status) in _pluginRuntime.ActivationStatus.OrderBy(item => item.Key, StringComparer.Ordinal))
+                {
+                    ImGui.TextUnformatted(id);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip(status);
+                }
+                ImGui.EndMenu();
+            }
             var missingCount = diagnostics.Count(item => !item.Installed);
             if (missingCount > 0)
             {
@@ -2753,7 +2855,7 @@ DockId=0x6A3C3007,0
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(viewCamera, size, scale, width, height,
-                pathMode: settings.PathTracingEnabled, outlines: false, sourcePipeline: pipeline);
+                pathMode: settings.PathTracingEnabled, outlines: false, sourcePipeline: pipeline, frameSettings: settings);
             var submitted = settings.PathTracingEnabled
                 ? pipeline.RenderPathView(settings, frame, width, height)
                 : pipeline.RenderSceneView(settings, frame, width, height);
@@ -2850,8 +2952,8 @@ DockId=0x6A3C3007,0
             ?? AppPaths.DataDirectory;
         var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}-{++_exportSequence:000}.png";
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
-        var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
-            .CloneForExport();
+        var exportSettings = ResolveRenderSettings(GetActiveRenderCameraObject(),
+            _project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings);
         EnqueueExport(new ExportJob(path, exportSettings) { Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask() });
         SetStatus($"已加入导出队列：{fileName}");
     }
@@ -2870,8 +2972,8 @@ DockId=0x6A3C3007,0
         var projectPath = _project?.RootPath ?? AppPaths.DataDirectory;
         var fileName = $"渲染-{DateTime.Now:yyyyMMdd-HHmmss}-{++_exportSequence:000}.hdr";
         var path = Path.Combine(projectPath, "Assets", "Exports", fileName);
-        var exportSettings = (_project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings)
-            .CloneForExport();
+        var exportSettings = ResolveRenderSettings(GetActiveRenderCameraObject(),
+            _project is null ? _editorSettings.ExportRenderSettings : _projectSettings.ExportRenderSettings);
         exportSettings.PathTracingEnabled = true; // HDR 必须有线性累积缓冲。
         EnqueueExport(new ExportJob(path, exportSettings, ExportImageFormat.Hdr) { Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask() });
         SetStatus($"已加入导出队列：{fileName}");
@@ -2907,8 +3009,7 @@ DockId=0x6A3C3007,0
         {
             var component = cameraObject.Components.First(SceneComponentTypes.IsCamera);
             var cameraData = SceneComponentTypes.ReadCamera(component);
-            var settings = baseSettings.CloneForExport();
-            settings.CameraFovDegrees = cameraData.FieldOfViewDegrees;
+            var settings = ResolveRenderSettings(cameraObject, baseSettings);
             var fileName = $"渲染-{SanitizeFileName(cameraObject.Name)}-{stamp}-{++_exportSequence:000}.png";
             EnqueueExport(new ExportJob(Path.Combine(project.AssetsPath, "Exports", fileName), settings)
             {
@@ -3034,7 +3135,7 @@ DockId=0x6A3C3007,0
             case "调色盘": DrawPaletteContents(); break;
             case "项目资产":
                 _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset,
-                    ExportVoxAsset, OpenGeneratorAsset, ExportQubicleAsset,
+                    ExportVoxAsset, path => OpenGeneratorAsset(path), ExportQubicleAsset,
                     path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count,
                     path => _sceneDocument is null ? Array.Empty<string>() : AssetReferences.FindReferencingObjects(_sceneDocument, path).Select(item => item.Name).ToArray());
                 break;
@@ -3408,41 +3509,44 @@ DockId=0x6A3C3007,0
         ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ToColor(EditorPalette.AccentSoft));
         var addHeight = Math.Max(ImGui.GetFrameHeight() + 8F, ImGui.GetTextLineHeight() + 12F);
-        if (ImGui.Button("添加组件", new Vector2(addWidth, addHeight))) ImGui.OpenPopup("##InspectorAddComponentPopup");
+        if (ImGui.Button("添加组件", new Vector2(addWidth, addHeight)))
+        {
+            _componentSearch = string.Empty;
+            ImGui.OpenPopup("##InspectorAddComponentPopup");
+        }
         ImGui.PopStyleColor(2);
         if (ImGui.BeginPopup("##InspectorAddComponentPopup"))
             {
-                ImGui.TextDisabled("选择要添加的组件");
+                ImGui.SetNextItemWidth(Math.Max(ImGui.GetFontSize() * 12F, ImGui.GetContentRegionAvail().X));
+                ImGui.InputTextWithHint("##ComponentSearch", "搜索组件或分类", ref _componentSearch, 128);
                 ImGui.Separator();
+                var query = _componentSearch.Trim();
+                var resultCount = 0;
+                string? previousCategory = null;
                 foreach (var definition in SceneComponentTypes.BuiltInDefinitions)
                 {
                     if (definition.TypeId == SceneComponentTypes.Transform) continue;
+                    if (query.Length > 0 && !definition.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                        !definition.Category.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                        !definition.TypeId.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                    resultCount++;
+                    if (definition.Category != previousCategory)
+                    {
+                        if (previousCategory is not null) ImGui.Separator();
+                        ImGui.TextDisabled(definition.Category);
+                        previousCategory = definition.Category;
+                    }
                     var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
-                    if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
-                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume || definition.TypeId == SceneComponentTypes.Volume || definition.TypeId == SceneComponentTypes.Animation))
-                    {
-                        _componentWarning = $"{definition.DisplayName}组件不可重复添加";
-                        SetStatus(_componentWarning);
-                        continue;
-                    }
-                    if (alreadyPresent && definition.TypeId == SceneComponentTypes.VoxelModel)
-                    {
-                        _componentWarning = "同一对象的多个模型组件尚不支持，请暂时使用不同对象";
-                        SetStatus(_componentWarning);
-                        continue;
-                    }
-                    if (definition.TypeId == SceneComponentTypes.VoxelModel &&
-                        selectedObject.Components.Any(SceneComponentTypes.IsCamera))
-                    {
-                        _componentWarning = "模型组件与相机组件不能同时挂载";
-                        continue;
-                    }
-                    if (definition.TypeId == SceneComponentTypes.Camera &&
-                        selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel))
-                    {
-                        _componentWarning = "相机组件与模型组件不能同时挂载";
-                        continue;
-                    }
+                    var reason = alreadyPresent ? "同一对象不能重复添加此组件" :
+                        definition.TypeId == SceneComponentTypes.VoxelModel && selectedObject.Components.Any(SceneComponentTypes.IsCamera)
+                            ? "模型组件与相机组件不能同时挂载" :
+                        definition.TypeId == SceneComponentTypes.Camera && selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel)
+                            ? "相机组件与模型组件不能同时挂载" : null;
+                    ImGui.BeginDisabled(reason is not null);
+                    var addSelected = ImGui.Selectable(definition.DisplayName);
+                    ImGui.EndDisabled();
+                    if (reason is not null && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip(reason);
+                    if (!addSelected) continue;
                     _componentWarning = null;
                     if (definition.TypeId == SceneComponentTypes.VoxelModel)
                     {
@@ -3463,10 +3567,25 @@ DockId=0x6A3C3007,0
                     MarkSceneDocumentDirty();
                 }
 
+                var pluginHeader = false;
                 foreach (var definition in _pluginRuntime?.Components ?? [])
                 {
-                    if (selectedObject.Components.Any(item => item.TypeId == definition.Id)) continue;
-                    if (!ImGui.Selectable($"{definition.Name} · {definition.Category}")) continue;
+                    if (query.Length > 0 && !definition.Name.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                        !definition.Category.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                        !definition.Id.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                    resultCount++;
+                    if (!pluginHeader)
+                    {
+                        if (previousCategory is not null) ImGui.Separator();
+                        ImGui.TextDisabled("插件组件");
+                        pluginHeader = true;
+                    }
+                    var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.Id);
+                    ImGui.BeginDisabled(alreadyPresent);
+                    var addSelected = ImGui.Selectable($"{definition.Name} · {definition.Category}##{definition.Id}");
+                    ImGui.EndDisabled();
+                    if (alreadyPresent && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip("同一对象不能重复添加此组件");
+                    if (!addSelected) continue;
                     var defaultData = definition.DefaultData.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
                         ? JsonSerializer.SerializeToElement(new { })
                         : definition.DefaultData.Clone();
@@ -3479,6 +3598,7 @@ DockId=0x6A3C3007,0
                     });
                     MarkSceneDocumentDirty();
                 }
+                if (resultCount == 0) ImGui.TextDisabled("没有匹配的组件");
                 ImGui.EndPopup();
             }
 
@@ -3560,6 +3680,14 @@ DockId=0x6A3C3007,0
         else if (SceneComponentTypes.IsVolume(component))
         {
             SceneComponentTypes.WriteVolume(component, new VolumeComponentData());
+        }
+        else if (SceneComponentTypes.IsProbeVolume(component))
+        {
+            SceneComponentTypes.WriteProbeVolume(component, ProbeVolumeComponentData.Default);
+        }
+        else if (SceneComponentTypes.IsAnimation(component))
+        {
+            SceneComponentTypes.WriteAnimation(component, new AnimationComponentData());
         }
         else if (SceneComponentTypes.IsVoxelModel(component))
         {
@@ -3778,9 +3906,11 @@ DockId=0x6A3C3007,0
                 MarkSceneDocumentDirty();
                 SetStatus(editing ? "已退出探针编辑" : "已进入探针编辑，可在场景视图调整体积");
             }
-            BeginInspectorField("自动烘焙", "开启后场景变化会标记探针需要更新；关闭后使用渲染窗口中的手动烘焙按钮。");
+            BeginInspectorField("自动烘焙", "尚未实现；请在探针体积窗口手动生成数据。已有设置会保留。");
             var autoBake = data.AutoBake;
-            if (ImGui.Checkbox("##ProbeAutoBake", ref autoBake)) data = data with { AutoBake = autoBake };
+            ImGui.BeginDisabled();
+            ImGui.Checkbox("##ProbeAutoBake", ref autoBake);
+            ImGui.EndDisabled();
             BeginInspectorField("偏移 X", "探针体积相对对象原点的偏移。视图Gizmo与此值同步。");
             var offsetX = data.OffsetX; if (ImGui.DragFloat("##ProbeOffsetX", ref offsetX, 0.05F)) data = data with { OffsetX = offsetX };
             BeginInspectorField("偏移 Y", null);
@@ -3833,20 +3963,27 @@ DockId=0x6A3C3007,0
             var volume = SceneComponentTypes.ReadVolume(component);
             var changed = ImGui.Checkbox("启用Volume", ref volume.Enabled);
             changed |= ImGui.Checkbox("全局Volume", ref volume.IsGlobal);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只有全局 Volume 参与渲染；局部范围尚未实现。");
             BeginInspectorField("权重", "Volume覆盖强度。");
             changed |= ImGui.DragFloat("##VolumeWeight", ref volume.Weight, .01F, 0F, 1F);
-            BeginInspectorField("环境颜色", "全局环境光颜色。");
+            ImGui.BeginDisabled();
+            BeginInspectorField("环境颜色", "尚未接入渲染。已有数据会保留。");
             var environment = volume.EnvironmentColor;
             changed |= ImGui.ColorEdit3("##VolumeEnvironment", ref environment);
             volume.EnvironmentColor = environment;
+            ImGui.EndDisabled();
             BeginInspectorField("雾密度", "体积雾密度。");
             changed |= ImGui.DragFloat("##VolumeFogDensity", ref volume.FogDensity, .001F, 0F, 1F);
-            BeginInspectorField("雾高度", "体积雾高度范围。");
+            ImGui.BeginDisabled();
+            BeginInspectorField("雾高度", "尚未接入渲染。已有数据会保留。");
             changed |= ImGui.DragFloat("##VolumeFogHeight", ref volume.FogHeight, .1F, .01F, 100000F);
-            BeginInspectorField("雾各向异性", "体积散射方向性。");
+            BeginInspectorField("雾各向异性", "尚未接入渲染。已有数据会保留。");
             changed |= ImGui.DragFloat("##VolumeFogAnisotropy", ref volume.FogAnisotropy, .01F, -.9F, .9F);
+            ImGui.EndDisabled();
             BeginInspectorField("Bloom强度", "体积后处理Bloom强度。");
             changed |= ImGui.DragFloat("##VolumeBloom", ref volume.BloomIntensity, .01F, 0F, 8F);
+            BeginInspectorField("Bloom阈值", "控制产生辉光所需的亮度，按权重叠加到渲染设置。");
+            changed |= ImGui.DragFloat("##VolumeBloomThreshold", ref volume.BloomThreshold, .01F, 0F, 8F);
             BeginInspectorField("曝光", "全局曝光偏移。");
             changed |= ImGui.DragFloat("##VolumeExposure", ref volume.Exposure, .01F, -16F, 16F);
             if (changed)
@@ -3859,6 +3996,7 @@ DockId=0x6A3C3007,0
         }
 
 
+        if (SceneComponentTypes.IsCamera(component))
         {
             var data = SceneComponentTypes.ReadCamera(component);
             var fieldOfView = data.FieldOfViewDegrees;
@@ -3885,24 +4023,175 @@ DockId=0x6A3C3007,0
             changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
             BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
+            var aaMode = data.RealtimeAntiAliasingPattern == 2 ? 3 : data.RealtimeAntiAliasingSamples == 1 ? 0 : data.RealtimeAntiAliasingPattern + 1;
+            BeginInspectorField("实时抗锯齿", "超采样对每个像素追踪多条完整光照射线。路径追踪使用独立累积采样；更高采样数会显著增加开销。");
+            if (ImGui.Combo("##CameraAAMode", ref aaMode, "关闭\0规则网格超采样\0旋转网格超采样\0FXAA\0", 4))
+            {
+                data = data with { RealtimeAntiAliasingSamples = aaMode is 0 or 3 ? 1 : data.RealtimeAntiAliasingSamples == 1 ? 4 : data.RealtimeAntiAliasingSamples, RealtimeAntiAliasingPattern = aaMode == 3 ? 2 : Math.Max(0, aaMode - 1) };
+                changed = true;
+            }
+            if (aaMode is 1 or 2)
+            {
+                var aaSamples = data.RealtimeAntiAliasingSamples switch { 2 => 0, 8 => 2, 16 => 3, _ => 1 };
+                BeginInspectorField("采样数", "每像素追踪的射线数，采样数越高开销越大。");
+                if (ImGui.Combo("##CameraAASamples", ref aaSamples, "2×\04×\08×\016×\0", 4))
+                {
+                    data = data with { RealtimeAntiAliasingSamples = aaSamples switch { 0 => 2, 1 => 4, 2 => 8, _ => 16 } };
+                    changed = true;
+                }
+                var aaSpread = data.RealtimeAntiAliasingSpread;
+                BeginInspectorField("采样范围", "控制样本在像素内的分布范围；较小范围保留更多锐度，平滑效果减弱。");
+                if (ImGui.DragFloat("##CameraAASpread", ref aaSpread, .01F, .25F, 1F, "%.2f"))
+                {
+                    data = data with { RealtimeAntiAliasingSpread = aaSpread };
+                    changed = true;
+                }
+            }
+            if (aaMode == 3)
+            {
+                var threshold = data.FxaaThreshold;
+                BeginInspectorField("边缘阈值", "较低的阈值会平滑更多低对比度边缘。");
+                if (ImGui.DragFloat("##FxaaThreshold", ref threshold, .002F, .0312F, .333F, "%.3f")) { data = data with { FxaaThreshold = threshold }; changed = true; }
+                var strength = data.FxaaStrength;
+                BeginInspectorField("平滑强度", "控制边缘平滑的混合比例。");
+                if (ImGui.DragFloat("##FxaaStrength", ref strength, .01F, 0F, 1F)) { data = data with { FxaaStrength = strength }; changed = true; }
+            }
             var postProcess = data.PostProcess?.Clone() ?? CameraPostProcessStack.Default;
             if (ImGui.CollapsingHeader("相机后处理", ImGuiTreeNodeFlags.DefaultOpen))
             {
-                postProcess.OverrideProjectDefaults = ImGui.Checkbox("覆盖项目默认后处理", ref postProcess.OverrideProjectDefaults) ? postProcess.OverrideProjectDefaults : postProcess.OverrideProjectDefaults;
+                changed |= ImGui.Checkbox("覆盖项目默认后处理", ref postProcess.OverrideProjectDefaults);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("开启后应用相机效果；新添加的色调映射、辉光、色彩调整和输出抖动未配置时继承项目设置。");
                 foreach (var effect in postProcess.Effects.ToArray())
                 {
                     ImGui.PushID(effect.Type.ToString());
                     var enabled = effect.Enabled;
                     if (ImGui.Checkbox("启用", ref enabled)) { effect.Enabled = enabled; changed = true; }
-                    ImGui.SameLine(); ImGui.Text(effect.Type.ToString());
-                    var intensity = effect.Intensity;
-                    if (ImGui.DragFloat("强度", ref intensity, .01F, 0F, 8F)) { effect.Intensity = intensity; changed = true; }
+                    ImGui.SameLine(); ImGui.Text(effect.Type switch
+                    {
+                        CameraPostProcessEffectType.AmbientOcclusion => "环境遮蔽",
+                        CameraPostProcessEffectType.VoxelIndirectLight => "体素间接光",
+                        CameraPostProcessEffectType.ProbeVolumeGi => "探针 GI",
+                        CameraPostProcessEffectType.Vignette => "暗角",
+                        CameraPostProcessEffectType.DepthOfField => "景深（路径追踪）",
+                        CameraPostProcessEffectType.ToneMapping => "色调映射",
+                        CameraPostProcessEffectType.Dither => "输出抖动",
+                        CameraPostProcessEffectType.Bloom => "辉光",
+                        CameraPostProcessEffectType.ColorGrading => "色彩调整",
+                        CameraPostProcessEffectType.FilmGrain => "胶片颗粒",
+                        CameraPostProcessEffectType.Posterize => "色阶分离",
+                        CameraPostProcessEffectType.SplitToning => "分离色调",
+                        _ => effect.Type.ToString(),
+                    });
+                    if (effect.Type == CameraPostProcessEffectType.DepthOfField && ImGui.IsItemHovered())
+                        ImGui.SetTooltip("仅路径追踪生效；物理相机使用镜头参数，其他相机使用项目景深参数。启用覆盖后使用此开关。");
+                    if (effect.Type is CameraPostProcessEffectType.AmbientOcclusion or CameraPostProcessEffectType.VoxelIndirectLight or CameraPostProcessEffectType.ProbeVolumeGi or CameraPostProcessEffectType.Vignette)
+                    {
+                        var intensity = effect.Intensity;
+                        if (ImGui.DragFloat("强度", ref intensity, .01F, 0F, effect.Type is CameraPostProcessEffectType.AmbientOcclusion or CameraPostProcessEffectType.Vignette ? 1F : 4F)) { effect.Intensity = intensity; changed = true; }
+                    }
+                    else if (!Enum.IsDefined(effect.Type))
+                        ImGui.TextDisabled("该效果尚未接入渲染");
+                    if (effect.Type == CameraPostProcessEffectType.ToneMapping)
+                    {
+                        var curve = (int)effect.ToneCurve;
+                        BeginInspectorField("色调曲线", "线性截断、Reinhard、ACES 或 Filmic。");
+                        if (ImGui.Combo("##ToneCurve", ref curve, "线性\0Reinhard\0ACES\0Filmic\0", 4)) { effect.ToneCurve = (ToneCurve)curve; changed = true; }
+                        BeginInspectorField("曝光偏移（EV）", "叠加到物理相机或项目曝光；Volume 曝光随后叠加。");
+                        changed |= ImGui.DragFloat("##ToneExposure", ref effect.ExposureOffset, .02F, -16F, 16F);
+                        BeginInspectorField("Gamma", "输出显示 Gamma。");
+                        changed |= ImGui.DragFloat("##ToneGamma", ref effect.Gamma, .01F, 1F, 3.5F);
+                        BeginInspectorField("白平衡（K）", "6500 K 为中性。");
+                        changed |= ImGui.DragFloat("##ToneWhiteBalance", ref effect.WhiteBalance, 10F, 1500F, 12000F, "%.0f");
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.Bloom)
+                    {
+                        BeginInspectorField("强度", "高光辉光强度。");
+                        changed |= ImGui.DragFloat("##BloomIntensity", ref effect.Intensity, .01F, 0F, 2F);
+                        BeginInspectorField("亮度阈值", "高于阈值的亮部产生辉光；全局 Volume 可以叠加阈值偏移。");
+                        changed |= ImGui.DragFloat("##BloomThreshold", ref effect.Threshold, .01F, 0F, 8F);
+                        BeginInspectorField("半径（像素）", "辉光扩散范围。");
+                        changed |= ImGui.DragFloat("##BloomRadius", ref effect.Radius, .1F, 1F, 64F);
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.ColorGrading)
+                    {
+                        BeginInspectorField("饱和度", "1 为原始饱和度。");
+                        changed |= ImGui.DragFloat("##GradeSaturation", ref effect.Saturation, .01F, 0F, 2.5F);
+                        BeginInspectorField("色相偏移", "色相旋转角度；相机覆盖启用时不使用项目色相循环。");
+                        changed |= ImGui.DragFloat("##GradeHue", ref effect.HueShift, .5F, -180F, 180F, "%.1f°");
+                        BeginInspectorField("对比度", "1 为原始对比度。");
+                        changed |= ImGui.DragFloat("##GradeContrast", ref effect.Contrast, .01F, .2F, 2.5F);
+                        BeginInspectorField("亮度", "1 为原始亮度。");
+                        changed |= ImGui.DragFloat("##GradeBrightness", ref effect.Brightness, .01F, .1F, 3F);
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.SplitToning)
+                    {
+                        var shadows = new System.Numerics.Vector3(effect.ShadowR, effect.ShadowG, effect.ShadowB);
+                        BeginInspectorField("暗部颜色", "暗部的颜色乘数；白色不改变颜色。");
+                        if (ImGui.ColorEdit3("##SplitShadows", ref shadows)) { effect.ShadowR = shadows.X; effect.ShadowG = shadows.Y; effect.ShadowB = shadows.Z; changed = true; }
+                        var highlights = new System.Numerics.Vector3(effect.HighlightR, effect.HighlightG, effect.HighlightB);
+                        BeginInspectorField("亮部颜色", "亮部的颜色乘数；白色不改变颜色。");
+                        if (ImGui.ColorEdit3("##SplitHighlights", ref highlights)) { effect.HighlightR = highlights.X; effect.HighlightG = highlights.Y; effect.HighlightB = highlights.Z; changed = true; }
+                        BeginInspectorField("明暗分界", "分界越低，越多中间调使用亮部颜色。");
+                        changed |= ImGui.DragFloat("##SplitBalance", ref effect.ToningBalance, .01F, .05F, .95F);
+                        BeginInspectorField("混合强度", "0 为原图，1 为完整染色。");
+                        changed |= ImGui.DragFloat("##SplitMix", ref effect.Intensity, .01F, 0F, 1F);
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.FilmGrain)
+                    {
+                        BeginInspectorField("强度", "固定屏幕空间颗粒的强度；不同帧保持稳定。");
+                        changed |= ImGui.DragFloat("##GrainIntensity", ref effect.Intensity, .01F, 0F, 1F);
+                        BeginInspectorField("颗粒尺寸（像素）", "较大数值形成更粗的颗粒。");
+                        changed |= ImGui.DragFloat("##GrainSize", ref effect.Radius, .1F, 1F, 8F);
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.Posterize)
+                    {
+                        BeginInspectorField("色阶数", "每个颜色通道保留的离散亮度级数。");
+                        changed |= ImGui.DragInt("##PosterizeLevels", ref effect.Samples, 1F, 2, 64);
+                        BeginInspectorField("混合强度", "0 为原图，1 为完全色阶分离。");
+                        changed |= ImGui.DragFloat("##PosterizeMix", ref effect.Intensity, .01F, 0F, 1F);
+                    }
+                    if (effect.Type == CameraPostProcessEffectType.AmbientOcclusion)
+                    {
+                        var samples = effect.Samples;
+                        BeginInspectorField("采样数", "环境遮蔽采样数；更高的值增加渲染开销。");
+                        if (ImGui.DragInt("##CameraAoSamples", ref samples, 1F, 4, 64)) { effect.Samples = samples; changed = true; }
+                        BeginInspectorField("遮蔽曲线", "控制环境遮蔽的明暗分布。");
+                        changed |= ImGui.DragFloat("##CameraAoPower", ref effect.AoPower, .02F, .2F, 4F);
+                    }
                     if (ImGui.SmallButton("删除")) { postProcess.Effects.Remove(effect); changed = true; }
                     ImGui.PopID();
                 }
-                if (ImGui.Button("添加AO")) { postProcess.Effects.Add(new CameraPostProcessEffect { Type = CameraPostProcessEffectType.AmbientOcclusion }); changed = true; }
-                ImGui.SameLine();
-                if (ImGui.Button("添加景深")) { postProcess.Effects.Add(new CameraPostProcessEffect { Type = CameraPostProcessEffectType.DepthOfField }); changed = true; }
+                if (ImGui.BeginMenu("添加效果"))
+                {
+                    foreach (var (type, label) in new[]
+                    {
+                        (CameraPostProcessEffectType.AmbientOcclusion, "环境遮蔽"),
+                        (CameraPostProcessEffectType.VoxelIndirectLight, "体素间接光"),
+                        (CameraPostProcessEffectType.ProbeVolumeGi, "探针 GI"),
+                        (CameraPostProcessEffectType.Vignette, "暗角"),
+                        (CameraPostProcessEffectType.DepthOfField, "景深"),
+                        (CameraPostProcessEffectType.ToneMapping, "色调映射"),
+                        (CameraPostProcessEffectType.Dither, "输出抖动"),
+                        (CameraPostProcessEffectType.Bloom, "辉光"),
+                        (CameraPostProcessEffectType.ColorGrading, "色彩调整"),
+                        (CameraPostProcessEffectType.FilmGrain, "胶片颗粒"),
+                        (CameraPostProcessEffectType.Posterize, "色阶分离"),
+                        (CameraPostProcessEffectType.SplitToning, "分离色调"),
+                    })
+                    {
+                        if (postProcess.Find(type) is null && ImGui.MenuItem(label))
+                        {
+                            postProcess.Effects.Add(type switch
+                            {
+                                CameraPostProcessEffectType.Bloom => new CameraPostProcessEffect { Type = type, Intensity = .35F, Radius = 12F },
+                                CameraPostProcessEffectType.FilmGrain => new CameraPostProcessEffect { Type = type, Intensity = .15F, Radius = 1F },
+                                _ => new CameraPostProcessEffect { Type = type },
+                            });
+                            changed = true;
+                        }
+                    }
+                    ImGui.EndMenu();
+                }
             }
             postProcess.Normalize();
             data = data with { FieldOfViewDegrees = fieldOfView, NearClip = nearClip, FarClip = farClip, PostProcess = postProcess };
@@ -3921,8 +4210,6 @@ DockId=0x6A3C3007,0
                 BeginInspectorField("对焦距离", null);
                 var focus = data.FocusDistance; changed |= ImGui.DragFloat("##CameraFocus", ref focus, .1F, .01F, 1000000F); data = data with { FocusDistance = focus };
             }
-            else
-            {
             var mask = data.CullingMask;
             var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
             var visibleCount = 0;
@@ -3972,13 +4259,11 @@ DockId=0x6A3C3007,0
 
             if (changed)
             {
-                SceneComponentTypes.WriteCamera(component, physicalCamera
-                    ? data
-                    : data with { CullingMask = mask, PhysicalCamera = false });
+                SceneComponentTypes.WriteCamera(component, data with { CullingMask = mask, PhysicalCamera = physicalCamera });
                 MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
             }
             return;
-        }
         }
 
         if (SceneComponentTypes.IsLight(component))
@@ -4068,10 +4353,9 @@ DockId=0x6A3C3007,0
     private void DrawConfigurationPanel()
     {
         DrawSettingsPageHeader("视口渲染", "当前项目值 · 实时生效");
-        var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
             OpenSettings(1, 1, "project.visual.render");
-        DrawLodSection(activeRenderSettings);
+        DrawLodSection(_renderSettings);
 
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
@@ -4193,8 +4477,35 @@ DockId=0x6A3C3007,0
             }
             ImGui.TextUnformatted($"插件：{panel.PluginId}");
             ImGui.Separator();
-            ImGui.TextWrapped("这是由 JavaScript 插件注册的编辑器面板");
-            ImGui.TextWrapped("面板内容只能通过宿主白名单接口访问项目数据和编辑器命令");
+            ImGui.PushTextWrapPos();
+            ImGui.TextUnformatted(string.IsNullOrWhiteSpace(panel.Content) ? "插件未提供面板说明。" : panel.Content);
+            ImGui.PopTextWrapPos();
+            var commands = _pluginRuntime?.Commands.Where(command => command.PluginId == panel.PluginId).ToArray() ?? [];
+            if (commands.Length > 0)
+            {
+                ImGui.Separator();
+                foreach (var command in commands)
+                {
+                    ImGui.PushID(command.Id);
+                    if (ImGui.Button(command.Name))
+                        _pendingActions.Enqueue(() => ExecutePluginCommand(command.Id));
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.BeginTooltip();
+                        ImGui.TextUnformatted(command.Id);
+                        ImGui.EndTooltip();
+                    }
+                    ImGui.PopID();
+                }
+            }
+            if (_pluginCommandResults.TryGetValue(panel.PluginId, out var result))
+            {
+                ImGui.Separator();
+                ImGui.TextUnformatted("最近一次命令结果");
+                ImGui.PushTextWrapPos();
+                ImGui.TextUnformatted(result);
+                ImGui.PopTextWrapPos();
+            }
             ImGui.End();
             if (!open) _visiblePluginPanels.Remove(panel.Id);
         }
@@ -4245,6 +4556,9 @@ DockId=0x6A3C3007,0
         {
             LayoutPreset.Modeling => new LayoutMetrics(310F, 360F, 250F),
             LayoutPreset.Rendering => new LayoutMetrics(250F, 400F, 300F),
+            LayoutPreset.Assets => new LayoutMetrics(270F, 320F, 380F),
+            LayoutPreset.Generator => new LayoutMetrics(250F, 440F, 260F),
+            LayoutPreset.Analysis => new LayoutMetrics(260F, 400F, 310F),
             _ => new LayoutMetrics(300F, 360F, 280F),
         };
         var availableWidth = Math.Max(1F, display.X - metrics.LeftWidth - metrics.RightWidth);
@@ -4267,14 +4581,22 @@ DockId=0x6A3C3007,0
         SaveLayoutSelection($"@builtin:{preset}");
         _applyPreset = true;
         _resetDockLayoutRequested = true;
+        ApplyPresetPanels(preset);
+        _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
+        _focusModelingTools = preset == LayoutPreset.Modeling;
+        _requestedInspectorTab = preset == LayoutPreset.Modeling ? null : preset == LayoutPreset.Rendering ? 1 : 0;
+    }
+
+    private void ApplyPresetPanels(LayoutPreset preset)
+    {
         _showModelingTools = true;
         _showInspector = true;
-        _showRenderConfig = false;
+        _showRenderConfig = preset == LayoutPreset.Rendering;
         _showHierarchy = true;
         _showProjectAssets = true;
-        _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
-        _focusModelingTools = false;
-        _requestedInspectorTab = 0;
+        _showGeneratorPanel = preset == LayoutPreset.Generator;
+        _showVoxelMeasurements = preset == LayoutPreset.Analysis;
+        _showPerformanceAnalyzer = preset == LayoutPreset.Analysis;
     }
 
     private void ShowProjectPathDialog(bool create)
@@ -4676,7 +4998,8 @@ DockId=0x6A3C3007,0
                         {
                             Fraction = .18F + (progress.Fraction - .18F) * .65F,
                         });
-                        var preload = PreloadProjectModels(project, cancellation, ReportModels);
+                        var modelCache = new Dictionary<ModelLoadKey, VoxelWorld>();
+                        var preload = PreloadProjectModels(project, cancellation, ReportModels, modelCache: modelCache);
                         PreloadedModels? recovery = null;
                         RecoverySnapshot? snapshot = null;
                         report(new BlockingOperationProgress("正在检查恢复数据…", .64F, true));
@@ -4686,7 +5009,7 @@ DockId=0x6A3C3007,0
                             {
                                 var scene = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
                                 recovery = PreloadProjectModels(project, cancellation,
-                                    progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene);
+                                    progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene, modelCache);
                             }
                             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
                             {
@@ -4696,11 +5019,9 @@ DockId=0x6A3C3007,0
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取材质表…", .82F, true));
                         IReadOnlyList<MaterialAsset>? materials = null;
-                        float[]? materialTable = null;
                         try
                         {
                             materials = MaterialAsset.LoadFromProject(project);
-                            materialTable = MaterialAsset.PackTable(new Dictionary<int, MaterialAsset>());
                         }
                         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
                         {
@@ -4714,7 +5035,7 @@ DockId=0x6A3C3007,0
                             runtime.Activate(project, TimeSpan.FromSeconds(2), cancellation);
                             cancellation.ThrowIfCancellationRequested();
                             report(new BlockingOperationProgress("正在应用编辑器工作区…", .96F, false));
-                            return new PreparedOpenProject(project, preload, recovery, snapshot, materials, materialTable, runtime);
+                            return new PreparedOpenProject(project, preload, recovery, snapshot, materials, runtime);
                         }
                         catch { runtime.Dispose(); throw; }
                     },
@@ -4774,7 +5095,9 @@ DockId=0x6A3C3007,0
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null, PreparedOpenProject? prepared = null)
     {
         _worldLoadFailed = false;
+        ResetGeneratorPanel();
         _pluginRuntime?.Dispose();
+        _pluginCommandResults.Clear();
         _pluginRuntime = prepared?.Runtime ?? new PluginScriptRuntime();
         _project = project;
         _activeSceneRelativePath = preloadedModels?.ScenePath ?? FindStartupSceneRelativePath(project);
@@ -4805,6 +5128,7 @@ DockId=0x6A3C3007,0
             _sceneDocument = recovery.Scene;
             _objectVoxels.RestoreReferences(recovery.ObjectWorlds);
             _world = recovery.Composed;
+            ApplyPreloadedBounds(recovery);
             _worldLoadFailed |= recovery.LoadFailed;
             _composedRenderWorld = null;
             _composedSignature = 0;
@@ -4819,7 +5143,7 @@ DockId=0x6A3C3007,0
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _inspectorLockedObjectId = null;
-        if (prepared?.Materials is { } materials && prepared.MaterialTable is { } table)
+        if (prepared?.Materials is { } materials)
         {
             _brushMaterials = materials;
             _brushMaterialSlot = 0;
@@ -4872,6 +5196,7 @@ DockId=0x6A3C3007,0
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
         _lastAssetSelectionPath = string.Empty;
+        _pluginCommandResults.Clear();
         ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();
@@ -4902,12 +5227,13 @@ DockId=0x6A3C3007,0
         }
 
         if (!CenteredModal.Begin("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
-        ImGui.TextWrapped("当前项目有未保存的修改。退出前要保存吗？");
+        ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。退出前要保存吗？");
         ImGui.Spacing();
         if (ImGui.Button("保存并退出", new Vector2(120F, 30F)))
         {
             SaveProject();
-            if (!_sceneDocumentDirty)
+            if (_generatorDirty) SaveGeneratorSource();
+            if (!_sceneDocumentDirty && !_generatorDirty)
             {
                 ImGui.CloseCurrentPopup();
                 _allowWindowClose = true;
@@ -4930,7 +5256,7 @@ DockId=0x6A3C3007,0
     {
         _afterProjectClose = null;
         if (_project is null) return;
-        if (_sceneDocumentDirty)
+        if (_sceneDocumentDirty || _generatorDirty)
         {
             _closeProjectDialogRequested = true;
             return;
@@ -4948,12 +5274,13 @@ DockId=0x6A3C3007,0
         }
 
         if (!CenteredModal.Begin("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
-        ImGui.TextWrapped("当前场景有未保存修改。请选择如何处理这些修改。");
+        ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。请选择如何处理这些修改。");
         ImGui.Spacing();
         if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
         {
             SaveProject();
-            if (!_sceneDocumentDirty)
+            if (_generatorDirty) SaveGeneratorSource();
+            if (!_sceneDocumentDirty && !_generatorDirty)
             {
                 ImGui.CloseCurrentPopup();
                 CompleteProjectClose();
@@ -5213,6 +5540,9 @@ DockId=0x6A3C3007,0
         Default,
         Modeling,
         Rendering,
+        Assets,
+        Generator,
+        Analysis,
         Custom,
     }
 }
