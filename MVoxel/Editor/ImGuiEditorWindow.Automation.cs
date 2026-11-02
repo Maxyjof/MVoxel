@@ -801,6 +801,15 @@ internal sealed partial class ImGuiEditorWindow
             ambientOcclusion = settings.AmbientOcclusionEnabled,
             aoStrength = settings.AoStrength,
             fogDensity = settings.FogDensity,
+             fogStart = settings.FogStart,
+             fogSkyBlend = settings.FogSkyBlend,
+             fogMaxOpacity = settings.FogMaxOpacity,
+             showWater = settings.ShowWater,
+             waterHeight = settings.WaterHeight,
+             waterColor = settings.WaterColor,
+             waterWaveSize = settings.WaterWaveSize,
+             waterWaveLength = settings.WaterWaveLength,
+             waterRoughness = settings.WaterRoughness,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             denoise = settings.PathDenoising,
@@ -827,8 +836,16 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "skyAmbient") is { } ambient) settings.SkyAmbient = (float)ambient;
         if (ReadBoolean(arguments, "ambientOcclusion") is { } ao) settings.AmbientOcclusionEnabled = ao;
         if (ReadNumber(arguments, "aoStrength") is { } aoStrength) settings.AoStrength = (float)aoStrength;
-        if (ReadNumber(arguments, "fogDensity") is { } fog) settings.FogDensity = (float)fog;
-        if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
+         if (ReadNumber(arguments, "fogDensity") is { } fog) settings.FogDensity = (float)fog;
+         if (ReadNumber(arguments, "fogStart") is { } fogStart) settings.FogStart = (float)fogStart;
+         if (ReadNumber(arguments, "fogSkyBlend") is { } fogSkyBlend) settings.FogSkyBlend = (float)fogSkyBlend;
+         if (ReadNumber(arguments, "fogMaxOpacity") is { } fogMaxOpacity) settings.FogMaxOpacity = (float)fogMaxOpacity;
+         if (ReadBoolean(arguments, "showWater") is { } showWater) settings.ShowWater = showWater;
+         if (ReadNumber(arguments, "waterHeight") is { } waterHeight) settings.WaterHeight = (float)waterHeight;
+         if (ReadNumber(arguments, "waterWaveSize") is { } waterWaveSize) settings.WaterWaveSize = (float)waterWaveSize;
+         if (ReadNumber(arguments, "waterWaveLength") is { } waterWaveLength) settings.WaterWaveLength = (float)waterWaveLength;
+         if (ReadNumber(arguments, "waterRoughness") is { } waterRoughness) settings.WaterRoughness = (float)waterRoughness;
+         if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;
         if (ReadBoolean(arguments, "denoise") is { } denoise) settings.PathDenoising = denoise;
