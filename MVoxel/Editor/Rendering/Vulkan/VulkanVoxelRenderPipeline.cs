@@ -131,7 +131,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Image _realtimeHistoryImageB;
     private DeviceMemory _realtimeHistoryMemoryB;
     private ImageView _realtimeHistoryViewB;
-    private bool _realtimeHistoryInitialized;
+    private bool _realtimeHistoryAInitialized;
+    private bool _realtimeHistoryBInitialized;
+    private bool _realtimeHistoryReadIsA = true;
     private nint _displayTextureId;
     private uint _outputWidth;
     private uint _outputHeight;
@@ -1110,9 +1112,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
+        bool historyWasInvalid = !pathMode && _realtimeHistoryInvalid;
         if (!pathMode && _realtimeHistoryInvalid)
         {
             ClearRealtimeHistory();
+        }
+        if (!pathMode)
+        {
+            // 只有上一帧所有分块完成后才交换历史角色，避免槽位仍在使用旧描述符
+            WaitForComputeIdle();
+            if (!historyWasInvalid)
+            {
+                _realtimeHistoryReadIsA = !_realtimeHistoryReadIsA;
+            }
+            UpdateComputeDescriptors();
         }
         if (!pathMode && ParametersEqualForDisplay(parameters))
         {
@@ -1278,30 +1291,37 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         var slot = AcquireRingSlot();
         var commandBuffer = _ringCommands[slot];
-        ImageMemoryBarrier barrier = new()
+        ImageMemoryBarrier barrierA = new()
         {
             SType = StructureType.ImageMemoryBarrier,
-            OldLayout = _realtimeHistoryInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            OldLayout = _realtimeHistoryAInitialized ? ImageLayout.General : ImageLayout.Undefined,
             NewLayout = ImageLayout.General,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = _realtimeHistoryImage,
             SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
-            SrcAccessMask = _realtimeHistoryInitialized
-                ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit
-                : 0,
+            SrcAccessMask = _realtimeHistoryAInitialized
+                ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0,
             DstAccessMask = AccessFlags.TransferWriteBit
         };
+        ImageMemoryBarrier barrierB = barrierA;
+        barrierB.OldLayout = _realtimeHistoryBInitialized ? ImageLayout.General : ImageLayout.Undefined;
+        barrierB.Image = _realtimeHistoryImageB;
+        barrierB.SrcAccessMask = _realtimeHistoryBInitialized
+            ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0;
+        ImageMemoryBarrier* historyBarriers = stackalloc ImageMemoryBarrier[2] { barrierA, barrierB };
         api.CmdPipelineBarrier(commandBuffer,
-            _realtimeHistoryInitialized
+            (_realtimeHistoryAInitialized || _realtimeHistoryBInitialized)
                 ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit
                 : PipelineStageFlags.TopOfPipeBit,
-            PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in barrier);
+            PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 2, historyBarriers);
         ClearColorValue clear = new(0F, 0F, 0F, 0F);
         var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
         api.CmdClearColorImage(commandBuffer, _realtimeHistoryImage, ImageLayout.General, in clear, 1, in range);
+        api.CmdClearColorImage(commandBuffer, _realtimeHistoryImageB, ImageLayout.General, in clear, 1, in range);
         CommitRingSlot(slot);
-        _realtimeHistoryInitialized = true;
+        _realtimeHistoryAInitialized = true;
+        _realtimeHistoryBInitialized = true;
         _realtimeHistoryInvalid = false;
     }
 
@@ -1426,7 +1446,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
              Check(api.BindImageMemory(_device, _realtimeHistoryImageB, _realtimeHistoryMemoryB, 0), "绑定实时GI历史图像B");
              _realtimeHistoryViewB = CreateImageView(_realtimeHistoryImageB, Format.R8G8B8A8Unorm);
             _guideInitialized = false;
-            _realtimeHistoryInitialized = false;            _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
+             _realtimeHistoryAInitialized = false;
+             _realtimeHistoryBInitialized = false;
+             _realtimeHistoryReadIsA = true;
+             _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
             _outputHeight = height;
             _outputIsShaderReadOnly = false;
@@ -1519,22 +1542,34 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
     private void TransitionRealtimeHistoryToGeneral(CommandBuffer commandBuffer)
     {
-        ImageMemoryBarrier barrier = new()
+        var readIsA = _realtimeHistoryReadIsA;
+        ImageMemoryBarrier barrierA = new()
         {
             SType = StructureType.ImageMemoryBarrier,
-            OldLayout = _realtimeHistoryInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            OldLayout = _realtimeHistoryAInitialized ? ImageLayout.General : ImageLayout.Undefined,
             NewLayout = ImageLayout.General,
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = _realtimeHistoryImage,
             SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
-            SrcAccessMask = _realtimeHistoryInitialized ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0,
-            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
+            SrcAccessMask = _realtimeHistoryAInitialized
+                ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0,
+            DstAccessMask = readIsA ? AccessFlags.ShaderReadBit : AccessFlags.ShaderWriteBit
         };
+        ImageMemoryBarrier barrierB = barrierA;
+        barrierB.OldLayout = _realtimeHistoryBInitialized ? ImageLayout.General : ImageLayout.Undefined;
+        barrierB.Image = _realtimeHistoryImageB;
+        barrierB.SrcAccessMask = _realtimeHistoryBInitialized
+            ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit : 0;
+        barrierB.DstAccessMask = readIsA ? AccessFlags.ShaderWriteBit : AccessFlags.ShaderReadBit;
+        ImageMemoryBarrier* historyBarriers = stackalloc ImageMemoryBarrier[2] { barrierA, barrierB };
         _api!.CmdPipelineBarrier(commandBuffer,
-            _realtimeHistoryInitialized ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit : PipelineStageFlags.TopOfPipeBit,
-            PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 1, in barrier);
-        _realtimeHistoryInitialized = true;
+            (_realtimeHistoryAInitialized || _realtimeHistoryBInitialized)
+                ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit
+                : PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.ComputeShaderBit, 0, 0, null, 0, null, 2, historyBarriers);
+        _realtimeHistoryAInitialized = true;
+        _realtimeHistoryBInitialized = true;
     }
 
     private void TransitionGuideToGeneral(CommandBuffer commandBuffer)
@@ -1855,12 +1890,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             writes[10] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 10, DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &emissiveInfo };
-            DescriptorImageInfo historyInfo = new(default, _realtimeHistoryView, ImageLayout.General);
-             DescriptorImageInfo historyInfoB = new(default, _realtimeHistoryViewB, ImageLayout.General);
+            DescriptorImageInfo historyReadInfo = new(default, _realtimeHistoryReadIsA ? _realtimeHistoryView : _realtimeHistoryViewB, ImageLayout.General);
+            DescriptorImageInfo historyWriteInfo = new(default, _realtimeHistoryReadIsA ? _realtimeHistoryViewB : _realtimeHistoryView, ImageLayout.General);
             writes[11] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 11, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
-                PImageInfo = &historyInfo };
-            _api!.UpdateDescriptorSets(_device, 12, writes, 0, null);
+                PImageInfo = &historyReadInfo };
+            writes[12] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
+                DstBinding = 12, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
+                PImageInfo = &historyWriteInfo };
+            _api!.UpdateDescriptorSets(_device, 13, writes, 0, null);
         }
     }
 
@@ -1931,7 +1969,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _guideImage = default;
         _guideMemory = default;
         _guideInitialized = false;
-        _realtimeHistoryInitialized = false; api.DestroyImageView(_device, _accumulationView, null);
+        _realtimeHistoryAInitialized = false;
+        _realtimeHistoryBInitialized = false;
+        _realtimeHistoryReadIsA = true;
+        api.DestroyImageView(_device, _accumulationView, null);
         if (_accumulationImage.Handle != 0) api.DestroyImage(_device, _accumulationImage, null);
         if (_accumulationMemory.Handle != 0) api.FreeMemory(_device, _accumulationMemory, null);
         if (_outputView.Handle != 0) api.DestroyImageView(_device, _outputView, null);
@@ -1994,7 +2035,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
         layout(set = 0, binding = 8, rgba32f) uniform coherent image2D guideImage;
-        layout(set = 0, binding = 11, rgba8) uniform coherent image2D realtimeHistoryImage;
+        layout(set = 0, binding = 11, rgba8) uniform readonly image2D realtimeHistoryRead;
+        layout(set = 0, binding = 12, rgba8) uniform writeonly image2D realtimeHistoryWrite;
 
         struct MaterialSlotData
         {
@@ -3274,10 +3316,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         void StoreSceneOutput(ivec2 pixel, vec4 value)
         {
+            vec4 temporalValue = value;
+            if (values[86] < 0.5)
+            {
+                vec4 previousValue = imageLoad(realtimeHistoryRead, pixel);
+                float temporalWeight = clamp(values[P_REALTIME_TEMPORAL_WEIGHT], 0.0, 0.98);
+                // 清空后的历史透明度为0，首帧直接使用当前结果，避免黑帧污染
+                if (previousValue.a > 0.0 && temporalWeight > 0.0)
+                    temporalValue.rgb = mix(value.rgb, previousValue.rgb, temporalWeight);
+                imageStore(realtimeHistoryWrite, pixel, vec4(temporalValue.rgb, value.a));
+            }
             if (values[63] > 0.5 && values[63] < 1.5)
-                imageStore(accumulationImage, pixel, value);
+                imageStore(accumulationImage, pixel, temporalValue);
             else
-                imageStore(outputImage, pixel, value);
+                imageStore(outputImage, pixel, temporalValue);
         }
 
         // Background reachable along a screen axis is outside the selection silhouette.
@@ -3569,8 +3621,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
              float precipitation = values[P_WEATHER_RAIN] * streaks + values[P_WEATHER_SNOW] * smoothstep(0.78, 1.0, fract(weatherUv.y * 28.0 - windPhase * 0.4));
              color = mix(color, vec3(0.55, 0.68, 0.82), clamp(precipitation * 0.18, 0.0, 0.32));
              color *= 1.0 - values[P_WEATHER_STORM] * 0.32;
-             float lightning = values[P_WEATHER_LIGHTNING] * pow(max(0.0, sin(weatherTime * 6.0 + weatherUv.x * 17.0)), 32.0);
-             color += vec3(1.0, 0.92, 0.72) * lightning * values[P_WEATHER_STORM] * 0.8;
+              float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
+              float lightningCycle = weatherTime * max(lightningRate * 0.42, 0.0001);
+              float lightningIndex = floor(lightningCycle);
+              float lightningPhase = fract(lightningCycle);
+              float lightningSeed = fract(sin(lightningIndex * 91.173 + 17.31) * 43758.547);
+              float lightningGate = step(0.22, lightningSeed) * step(0.001, lightningRate);
+              float firstFlash = 1.0 - smoothstep(0.0, 0.08, lightningPhase);
+              float secondFlash = 1.0 - smoothstep(0.115, 0.17, lightningPhase);
+              float lightningSpatial = 0.72 + 0.28 * pow(max(0.0, sin(weatherUv.x * 19.0 + lightningSeed * 31.0)), 18.0);
+              float lightning = lightningGate * max(firstFlash, secondFlash * 0.62) * lightningSpatial;
+              color += vec3(1.0, 0.92, 0.72) * lightning * values[P_WEATHER_STORM] * min(lightningRate * 0.48, 1.0);
              float heat = values[P_WEATHER_HEAT_HAZE] * sin(weatherUv.y * 90.0 + weatherTime * 3.0) * 0.012;
              color += vec3(heat, heat * 0.5, 0.0);
             if (values[64] > 0.5)
