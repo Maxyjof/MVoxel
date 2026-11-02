@@ -1104,14 +1104,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
         parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
         parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
+        bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
+        parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels, _workset.SourceVersion);
         if (_realtimeHistorySignature != realtimeSignature)
         {
             _realtimeHistorySignature = realtimeSignature;
             _realtimeHistoryInvalid = true;
         }
-        bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
-        parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         bool historyWasInvalid = !pathMode && _realtimeHistoryInvalid;
         if (!pathMode && _realtimeHistoryInvalid)
         {
