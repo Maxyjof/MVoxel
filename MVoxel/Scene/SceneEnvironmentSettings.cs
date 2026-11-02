@@ -32,6 +32,13 @@ public sealed class SceneEnvironmentSettings
     public Vector2 WaterFlowDirection = new(1F, .35F);
     public float WaterDetailStrength = .35F;
     public float WaterSpecularStrength = .8F;
+    public float WeatherWindStrength;
+    public float WeatherWindDirection;
+    public float WeatherRainIntensity;
+    public float WeatherSnowIntensity;
+    public float WeatherStormIntensity;
+    public float WeatherHeatHaze;
+    public float WeatherLightningFrequency;
     public float NearFade;
 
     public void Normalize()
@@ -50,6 +57,13 @@ public sealed class SceneEnvironmentSettings
         WaterAnimationSpeed = Clamp(WaterAnimationSpeed, -8F, 8F);
         WaterDetailStrength = Clamp(WaterDetailStrength, 0F, 2F);
         WaterSpecularStrength = Clamp(WaterSpecularStrength, 0F, 4F);
+        WeatherWindStrength = Clamp(WeatherWindStrength, 0F, 4F);
+        WeatherWindDirection = Clamp(WeatherWindDirection, 0F, 360F);
+        WeatherRainIntensity = Clamp(WeatherRainIntensity, 0F, 1F);
+        WeatherSnowIntensity = Clamp(WeatherSnowIntensity, 0F, 1F);
+        WeatherStormIntensity = Clamp(WeatherStormIntensity, 0F, 1F);
+        WeatherHeatHaze = Clamp(WeatherHeatHaze, 0F, 1F);
+        WeatherLightningFrequency = Clamp(WeatherLightningFrequency, 0F, 4F);
         NearFade = Clamp(NearFade, 0F, 512F);
         SceneBackgroundColor = Color(SceneBackgroundColor, new(.025F, .035F, .05F));
         GroundColor = Color(GroundColor, Vector3.One);
@@ -86,6 +100,13 @@ public sealed class SceneEnvironmentSettings
         settings.WaterFlowDirection = WaterFlowDirection;
         settings.WaterDetailStrength = WaterDetailStrength;
         settings.WaterSpecularStrength = WaterSpecularStrength;
+        settings.WeatherWindStrength = WeatherWindStrength;
+        settings.WeatherWindDirection = WeatherWindDirection;
+        settings.WeatherRainIntensity = WeatherRainIntensity;
+        settings.WeatherSnowIntensity = WeatherSnowIntensity;
+        settings.WeatherStormIntensity = WeatherStormIntensity;
+        settings.WeatherHeatHaze = WeatherHeatHaze;
+        settings.WeatherLightningFrequency = WeatherLightningFrequency;
         settings.NearFade = NearFade;
     }
 
@@ -116,6 +137,13 @@ public sealed class SceneEnvironmentSettings
         WaterFlowDirection = settings.WaterFlowDirection;
         WaterDetailStrength = settings.WaterDetailStrength;
         WaterSpecularStrength = settings.WaterSpecularStrength;
+        WeatherWindStrength = settings.WeatherWindStrength;
+        WeatherWindDirection = settings.WeatherWindDirection;
+        WeatherRainIntensity = settings.WeatherRainIntensity;
+        WeatherSnowIntensity = settings.WeatherSnowIntensity;
+        WeatherStormIntensity = settings.WeatherStormIntensity;
+        WeatherHeatHaze = settings.WeatherHeatHaze;
+        WeatherLightningFrequency = settings.WeatherLightningFrequency;
         NearFade = settings.NearFade;
         Normalize();
     }
