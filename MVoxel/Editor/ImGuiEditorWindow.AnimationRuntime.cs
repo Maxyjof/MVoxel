@@ -52,7 +52,7 @@ internal sealed partial class ImGuiEditorWindow
         var scale = EvaluateVector(clip, target.Id.ToString(), "Scale", frame);
         if (target.Transform.Mode != TransformMode.Free) return;
         var current = target.Transform.Free;
-        var nextPosition = position ?? new Vector3((float)current.Position.X, (float)current.Position.Y, (float)current.Position.Z);
+        var nextPosition = position is null ? new Vector3((float)current.Position.X, (float)current.Position.Y, (float)current.Position.Z) : new Vector3(MathF.Round(position.Value.X), MathF.Round(position.Value.Y), MathF.Round(position.Value.Z));
         var nextRotation = rotation is null ? current.Rotation : Quaternion.CreateFromYawPitchRoll(rotation.Value.Y, rotation.Value.X, rotation.Value.Z);
         target.Transform.SetFree(new FreeTransform(new Double3(nextPosition.X, nextPosition.Y, nextPosition.Z), nextRotation));
     }
