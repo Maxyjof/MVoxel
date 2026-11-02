@@ -30,6 +30,8 @@ public static class SceneComponentTypes
     public const string Light = "mvoxel.light";
     /// <summary>体积光照探针组件的稳定类型标识</summary>
     public const string ProbeVolume = "mvoxel.probevolume";
+    /// <summary>全局环境Volume组件</summary>
+    public const string Volume = "mvoxel.volume";
 
     public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
     [
@@ -38,12 +40,30 @@ public static class SceneComponentTypes
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
+        new(Volume, "Volume", "渲染", true),
     ];
 
     public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
     public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
     public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
     public static bool IsProbeVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, ProbeVolume, StringComparison.Ordinal);
+    public static bool IsVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Volume, StringComparison.Ordinal);
+
+    public static ComponentRecord CreateVolume(VolumeComponentData data) => new()
+    {
+        TypeId = Volume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
+    };
+
+    public static VolumeComponentData ReadVolume(ComponentRecord component) =>
+        IsVolume(component) && component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<VolumeComponentData>()?.Normalize() ?? new VolumeComponentData()
+            : new VolumeComponentData();
+
+    public static void WriteVolume(ComponentRecord component, VolumeComponentData data)
+    {
+        if (!IsVolume(component)) throw new ArgumentException("组件记录不是Volume组件", nameof(component));
+        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+    }
 
     public static ComponentRecord CreateProbeVolume(ProbeVolumeComponentData data) => new()
     {
@@ -221,6 +241,13 @@ public static class SceneComponentTypes
             nearClip = normalized.NearClip,
             farClip = normalized.FarClip,
             cullingMask = normalized.CullingMask,
+            physicalCamera = normalized.PhysicalCamera,
+            focalLengthMillimeters = normalized.FocalLengthMillimeters,
+            sensorWidthMillimeters = normalized.SensorWidthMillimeters,
+            apertureFStop = normalized.ApertureFStop,
+            shutterSpeed = normalized.ShutterSpeed,
+            iso = normalized.Iso,
+            focusDistance = normalized.FocusDistance,
             postProcess = normalized.PostProcess,
         }, JsonOptions);
     }
@@ -265,7 +292,11 @@ public static class SceneComponentTypes
             ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask,
             data.TryGetProperty("postProcess", out var postProcess)
                 ? postProcess.Deserialize<CameraPostProcessStack>()
-                : null).Normalize();
+                : null,
+            data.TryGetProperty("physicalCamera", out var physical) && physical.ValueKind == JsonValueKind.True,
+            ReadFloat(data, "focalLengthMillimeters", 50F), ReadFloat(data, "sensorWidthMillimeters", 36F),
+            ReadFloat(data, "apertureFStop", 5.6F), ReadFloat(data, "shutterSpeed", 1F / 60F),
+            ReadFloat(data, "iso", 100F), ReadFloat(data, "focusDistance", 10F)).Normalize();
     }
 
     /// <summary>
@@ -436,7 +467,14 @@ public readonly record struct CameraComponentData(
     float NearClip,
     float FarClip,
     uint CullingMask,
-    CameraPostProcessStack? PostProcess = null)
+    CameraPostProcessStack? PostProcess = null,
+    bool PhysicalCamera = false,
+    float FocalLengthMillimeters = 50F,
+    float SensorWidthMillimeters = 36F,
+    float ApertureFStop = 5.6F,
+    float ShutterSpeed = 1F / 60F,
+    float Iso = 100F,
+    float FocusDistance = 10F)
 {
     /// <summary>
     /// 默认相机摄影参数：全图层遮罩
@@ -455,6 +493,13 @@ public readonly record struct CameraComponentData(
             20F, 120F);
         var normalizedPostProcess = (PostProcess ?? CameraPostProcessStack.Default).Clone();
         normalizedPostProcess.Normalize();
-        return new CameraComponentData(fov, near, far, CullingMask, normalizedPostProcess);
+        var focal = Math.Clamp(float.IsFinite(FocalLengthMillimeters) ? FocalLengthMillimeters : 50F, 1F, 500F);
+        var sensor = Math.Clamp(float.IsFinite(SensorWidthMillimeters) ? SensorWidthMillimeters : 36F, 1F, 100F);
+        var aperture = Math.Clamp(float.IsFinite(ApertureFStop) ? ApertureFStop : 5.6F, 0.7F, 64F);
+        var shutter = Math.Clamp(float.IsFinite(ShutterSpeed) ? ShutterSpeed : 1F / 60F, 1F / 8000F, 60F);
+        var iso = Math.Clamp(float.IsFinite(Iso) ? Iso : 100F, 25F, 51200F);
+        var focus = Math.Clamp(float.IsFinite(FocusDistance) ? FocusDistance : 10F, 0.01F, 1_000_000F);
+        return new CameraComponentData(fov, near, far, CullingMask, normalizedPostProcess,
+            PhysicalCamera, focal, sensor, aperture, shutter, iso, focus);
     }
 }

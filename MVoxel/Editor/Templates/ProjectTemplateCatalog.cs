@@ -962,6 +962,9 @@ public static class ProjectTemplateCatalog
                     position, CreateCameraRotation(forward, Vector3.UnitY))));
             cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
         }
+        var volumeObject = graph.Add("全局Volume", transform: TransformComponent.FromGrid(GridTransform.Identity));
+        volumeObject.Components.Add(SceneComponentTypes.CreateVolume(new VolumeComponentData()));
+
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
     }
 

@@ -3390,7 +3390,7 @@ DockId=0x6A3C3007,0
                     if (definition.TypeId == SceneComponentTypes.Transform) continue;
                     var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
                     if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
-                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume))
+                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume || definition.TypeId == SceneComponentTypes.Volume))
                     {
                         _componentWarning = $"{definition.DisplayName}组件不可重复添加";
                         SetStatus(_componentWarning);
@@ -3426,6 +3426,7 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
                         SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
+                        SceneComponentTypes.Volume => SceneComponentTypes.CreateVolume(new VolumeComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     });
@@ -3526,9 +3527,9 @@ DockId=0x6A3C3007,0
         {
             SceneComponentTypes.WriteLight(component, LightComponentData.Default);
         }
-        else if (SceneComponentTypes.IsProbeVolume(component))
+        else if (SceneComponentTypes.IsVolume(component))
         {
-            SceneComponentTypes.WriteProbeVolume(component, ProbeVolumeComponentData.Default);
+            SceneComponentTypes.WriteVolume(component, new VolumeComponentData());
         }
         else if (SceneComponentTypes.IsVoxelModel(component))
         {
@@ -3762,18 +3763,101 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (SceneComponentTypes.IsCamera(component))
+        if (SceneComponentTypes.IsVolume(component))
+        {
+            var volume = SceneComponentTypes.ReadVolume(component);
+            var changed = ImGui.Checkbox("启用Volume", ref volume.Enabled);
+            changed |= ImGui.Checkbox("全局Volume", ref volume.IsGlobal);
+            BeginInspectorField("权重", "Volume覆盖强度。");
+            changed |= ImGui.DragFloat("##VolumeWeight", ref volume.Weight, .01F, 0F, 1F);
+            BeginInspectorField("环境颜色", "全局环境光颜色。");
+            var environment = volume.EnvironmentColor;
+            changed |= ImGui.ColorEdit3("##VolumeEnvironment", ref environment);
+            volume.EnvironmentColor = environment;
+            BeginInspectorField("雾密度", "体积雾密度。");
+            changed |= ImGui.DragFloat("##VolumeFogDensity", ref volume.FogDensity, .001F, 0F, 1F);
+            BeginInspectorField("雾高度", "体积雾高度范围。");
+            changed |= ImGui.DragFloat("##VolumeFogHeight", ref volume.FogHeight, .1F, .01F, 100000F);
+            BeginInspectorField("雾各向异性", "体积散射方向性。");
+            changed |= ImGui.DragFloat("##VolumeFogAnisotropy", ref volume.FogAnisotropy, .01F, -.9F, .9F);
+            BeginInspectorField("Bloom强度", "体积后处理Bloom强度。");
+            changed |= ImGui.DragFloat("##VolumeBloom", ref volume.BloomIntensity, .01F, 0F, 8F);
+            BeginInspectorField("曝光", "全局曝光偏移。");
+            changed |= ImGui.DragFloat("##VolumeExposure", ref volume.Exposure, .01F, -16F, 16F);
+            if (changed)
+            {
+                SceneComponentTypes.WriteVolume(component, volume);
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
+
+
         {
             var data = SceneComponentTypes.ReadCamera(component);
             var fieldOfView = data.FieldOfViewDegrees;
             var nearClip = data.NearClip;
             var farClip = data.FarClip;
-            BeginInspectorField("视场角", "相机的视野角度。");
-            var changed = ImGui.DragFloat("##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");
+            var changed = false;
+            var physicalCamera = data.PhysicalCamera;
+            if (!physicalCamera)
+            {
+                BeginInspectorField("视场角", "非物理相机使用的垂直视野角度。");
+                var changedFov = ImGui.DragFloat("##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");
+                changed = changedFov;
+            }
+            else
+            {
+                changed = false;
+            }
+            if (ImGui.Checkbox("物理相机", ref physicalCamera))
+            {
+                data = data with { PhysicalCamera = physicalCamera };
+                changed = true;
+            }
             BeginInspectorField("近裁剪", "相机近平面距离；过近可能导致几何体被裁掉。");
             changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
             BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
+            var postProcess = data.PostProcess?.Clone() ?? CameraPostProcessStack.Default;
+            if (ImGui.CollapsingHeader("相机后处理", ImGuiTreeNodeFlags.DefaultOpen))
+            {
+                postProcess.OverrideProjectDefaults = ImGui.Checkbox("覆盖项目默认后处理", ref postProcess.OverrideProjectDefaults) ? postProcess.OverrideProjectDefaults : postProcess.OverrideProjectDefaults;
+                foreach (var effect in postProcess.Effects.ToArray())
+                {
+                    ImGui.PushID(effect.Type.ToString());
+                    var enabled = effect.Enabled;
+                    if (ImGui.Checkbox("启用", ref enabled)) { effect.Enabled = enabled; changed = true; }
+                    ImGui.SameLine(); ImGui.Text(effect.Type.ToString());
+                    var intensity = effect.Intensity;
+                    if (ImGui.DragFloat("强度", ref intensity, .01F, 0F, 8F)) { effect.Intensity = intensity; changed = true; }
+                    if (ImGui.SmallButton("删除")) { postProcess.Effects.Remove(effect); changed = true; }
+                    ImGui.PopID();
+                }
+                if (ImGui.Button("添加AO")) { postProcess.Effects.Add(new CameraPostProcessEffect { Type = CameraPostProcessEffectType.AmbientOcclusion }); changed = true; }
+                ImGui.SameLine();
+                if (ImGui.Button("添加景深")) { postProcess.Effects.Add(new CameraPostProcessEffect { Type = CameraPostProcessEffectType.DepthOfField }); changed = true; }
+            }
+            postProcess.Normalize();
+            data = data with { FieldOfViewDegrees = fieldOfView, NearClip = nearClip, FarClip = farClip, PostProcess = postProcess };
+            if (physicalCamera)
+            {
+                BeginInspectorField("焦距（mm）", "物理镜头焦距，影响视场角。");
+                var focal = data.FocalLengthMillimeters; changed |= ImGui.DragFloat("##CameraFocal", ref focal, .1F, 1F, 500F); data = data with { FocalLengthMillimeters = focal };
+                BeginInspectorField("传感器宽度（mm）", null);
+                var sensor = data.SensorWidthMillimeters; changed |= ImGui.DragFloat("##CameraSensor", ref sensor, .1F, 1F, 100F); data = data with { SensorWidthMillimeters = sensor };
+                BeginInspectorField("光圈（f）", null);
+                var aperture = data.ApertureFStop; changed |= ImGui.DragFloat("##CameraAperture", ref aperture, .05F, .7F, 64F); data = data with { ApertureFStop = aperture };
+                BeginInspectorField("快门（秒）", null);
+                var shutter = data.ShutterSpeed; changed |= ImGui.DragFloat("##CameraShutter", ref shutter, .001F, 1F / 8000F, 60F); data = data with { ShutterSpeed = shutter };
+                BeginInspectorField("ISO", null);
+                var iso = data.Iso; changed |= ImGui.DragFloat("##CameraIso", ref iso, 1F, 25F, 51200F); data = data with { Iso = iso };
+                BeginInspectorField("对焦距离", null);
+                var focus = data.FocusDistance; changed |= ImGui.DragFloat("##CameraFocus", ref focus, .1F, .01F, 1000000F); data = data with { FocusDistance = focus };
+            }
+            else
+            {
             var mask = data.CullingMask;
             var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
             var visibleCount = 0;
@@ -3823,10 +3907,13 @@ DockId=0x6A3C3007,0
 
             if (changed)
             {
-                SceneComponentTypes.WriteCamera(component, new CameraComponentData(fieldOfView, nearClip, farClip, mask));
+                SceneComponentTypes.WriteCamera(component, physicalCamera
+                    ? data
+                    : data with { CullingMask = mask, PhysicalCamera = false });
                 MarkSceneDocumentDirty();
             }
             return;
+        }
         }
 
         if (SceneComponentTypes.IsLight(component))
