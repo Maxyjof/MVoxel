@@ -1449,6 +1449,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
              _realtimeHistoryAInitialized = false;
              _realtimeHistoryBInitialized = false;
              _realtimeHistoryReadIsA = true;
+             _realtimeHistoryInvalid = true;
              _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
             _outputHeight = height;
