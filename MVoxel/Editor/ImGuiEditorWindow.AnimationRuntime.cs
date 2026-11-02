@@ -29,26 +29,45 @@ internal sealed partial class ImGuiEditorWindow
         if (clip is null || clip.Keyframes.Count == 0) return;
         clip.Normalize();
         var frame = Math.Clamp(animation.CurrentFrame, 0, clip.LengthFrames);
-        var keys = clip.Keyframes.Where(key => key.ObjectId == root.Id.ToString() && key.ComponentType == "Transform" && key.Parameter == "Position").OrderBy(key => key.Frame).ToArray();
-        var voxelKey = clip.Keyframes.Where(key => key.ObjectId == root.Id.ToString() && key.ComponentType == "VoxelModel" && key.Parameter == "VoxelData" && key.Frame <= frame).OrderBy(key => key.Frame).LastOrDefault();
-        if (voxelKey is not null && !string.IsNullOrWhiteSpace(voxelKey.SnapshotAsset))
-            ApplyVoxelAnimationSnapshot(root, voxelKey.SnapshotAsset);
-        var previous = keys.LastOrDefault(key => key.Frame <= frame);
-        var next = keys.FirstOrDefault(key => key.Frame >= frame);
-        if (previous is null) previous = next;
-        if (next is null) next = previous;
-        if (previous is null || next is null) return;
-        var t = previous.Frame == next.Frame ? 0F : (frame - previous.Frame) / (float)(next.Frame - previous.Frame);
-        if (previous.TransitionSide == AnimationTransitionSide.Left && frame > previous.Frame) t = 0F;
-        if (previous.TransitionSide == AnimationTransitionSide.Right && frame < next.Frame) t = 0F;
-        if (previous.RightCurve.Mode == AnimationInterpolation.Step) t = 0F;
-        var a = AnimationValueCodec.ToVector(previous.Values);
-        var b = AnimationValueCodec.ToVector(next.Values);
-        var value = Vector3.Lerp(a, b, t);
-        value = new Vector3(MathF.Round(value.X), MathF.Round(value.Y), MathF.Round(value.Z));
-        if (root.Transform.Mode == TransformMode.Free)
-            root.Transform.SetFree(new FreeTransform(new Double3(value.X, value.Y, value.Z), root.Transform.Free.Rotation));
+        foreach (var animatedObject in EnumerateAnimationObjects(root))
+        {
+            ApplyTransformAnimation(animatedObject, clip, frame);
+            var voxelKey = clip.Keyframes.Where(key => key.ObjectId == animatedObject.Id.ToString() && key.ComponentType == "VoxelModel" && key.Parameter == "VoxelData" && key.Frame <= frame).OrderBy(key => key.Frame).LastOrDefault();
+            if (voxelKey is not null && !string.IsNullOrWhiteSpace(voxelKey.SnapshotAsset))
+                ApplyVoxelAnimationSnapshot(animatedObject, voxelKey.SnapshotAsset);
+        }
     }
+
+    private IEnumerable<SceneObject> EnumerateAnimationObjects(SceneObject root)
+    {
+        yield return root;
+        foreach (var child in _sceneDocument?.Objects.Where(item => item.ParentId == root.Id) ?? [])
+        foreach (var item in EnumerateAnimationObjects(child)) yield return item;
+    }
+
+    private static void ApplyTransformAnimation(SceneObject target, AnimationClip clip, int frame)
+    {
+        var position = EvaluateVector(clip, target.Id.ToString(), "Position", frame);
+        var rotation = EvaluateVector(clip, target.Id.ToString(), "Rotation", frame);
+        var scale = EvaluateVector(clip, target.Id.ToString(), "Scale", frame);
+        if (target.Transform.Mode != TransformMode.Free) return;
+        var current = target.Transform.Free;
+        var nextPosition = position ?? new Vector3((float)current.Position.X, (float)current.Position.Y, (float)current.Position.Z);
+        var nextRotation = rotation is null ? current.Rotation : Quaternion.CreateFromYawPitchRoll(rotation.Value.Y, rotation.Value.X, rotation.Value.Z);
+        target.Transform.SetFree(new FreeTransform(new Double3(nextPosition.X, nextPosition.Y, nextPosition.Z), nextRotation));
+    }
+
+    private static Vector3? EvaluateVector(AnimationClip clip, string objectId, string parameter, int frame)
+    {
+        var keys = clip.Keyframes.Where(key => key.ObjectId == objectId && key.ComponentType == "Transform" && key.Parameter == parameter).OrderBy(key => key.Frame).ToArray();
+        if (keys.Length == 0) return null;
+        var previous = keys.LastOrDefault(key => key.Frame <= frame) ?? keys[0];
+        var next = keys.FirstOrDefault(key => key.Frame >= frame) ?? previous;
+        var t = previous.Frame == next.Frame ? 0F : (frame - previous.Frame) / (float)(next.Frame - previous.Frame);
+        if (previous.RightCurve.Mode == AnimationInterpolation.Step) t = 0F;
+        return Vector3.Lerp(AnimationValueCodec.ToVector(previous.Values), AnimationValueCodec.ToVector(next.Values), t);
+    }
+
 
     private void ApplyVoxelAnimationSnapshot(SceneObject root, string snapshotAsset)
     {
