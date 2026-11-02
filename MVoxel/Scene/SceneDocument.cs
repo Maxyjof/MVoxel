@@ -27,6 +27,11 @@ public sealed class SceneDocument
     public string Name { get; set; } = "Untitled Scene";
 
     /// <summary>
+    /// 场景唯一环境配置；旧场景缺失时使用默认环境
+    /// </summary>
+    public SceneEnvironmentSettings Environment { get; set; } = new();
+
+    /// <summary>
     /// 场景内全部对象，父子关系由每个对象的 ParentId 表达
     /// </summary>
     public List<SceneObject> Objects { get; set; } = new();
@@ -606,6 +611,8 @@ public static class SceneSerializer
         // 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
         // 保证内存中的场景图始终可被渲染与层级面板安全访问。
         scene.Objects ??= new List<SceneObject>();
+        scene.Environment ??= new SceneEnvironmentSettings();
+        scene.Environment.Normalize();
         scene.Objects.RemoveAll(sceneObject => sceneObject is null);
         // 图层不变量：缺失补默认、超上限截断、名称去空白；对象图层索引夹取
         scene.LayerNames ??= new List<string>();

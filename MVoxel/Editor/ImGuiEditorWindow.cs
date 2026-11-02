@@ -71,6 +71,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private volatile bool _openWindowMenuRequested;
     private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
+    private bool _showEnvironmentWindow;
     private bool _showProbeVolumeWindow;
     private bool _showAnimationWindow;
     private bool _animationWindowLocked;
@@ -978,6 +979,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawPluginPanels();
         DrawGeneratorWindow();
         DrawAnalysisWindows();
+        DrawEnvironmentWindow();
         DrawProbeVolumeWindow();
         DrawAnimationWindow();
         DrawStatusBar();
@@ -1079,6 +1081,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
+                if (ImGui.MenuItem("环境")) _showEnvironmentWindow = true;
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
                 if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
                 ImGui.EndMenu();
@@ -3568,7 +3571,6 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
                         SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
                         SceneComponentTypes.Volume => SceneComponentTypes.CreateVolume(new VolumeComponentData()),
-                        SceneComponentTypes.Environment => SceneComponentTypes.CreateEnvironment(new EnvironmentComponentData()),
                         SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
@@ -3689,10 +3691,6 @@ DockId=0x6A3C3007,0
         else if (SceneComponentTypes.IsVolume(component))
         {
             SceneComponentTypes.WriteVolume(component, new VolumeComponentData());
-        }
-        else if (SceneComponentTypes.IsEnvironment(component))
-        {
-            SceneComponentTypes.WriteEnvironment(component, new EnvironmentComponentData());
         }
         else if (SceneComponentTypes.IsProbeVolume(component))
         {
@@ -3967,41 +3965,6 @@ DockId=0x6A3C3007,0
             {
                 _showAnimationWindow = true;
                 _animationLinkedObjectId = GetSelectedSceneObject()?.Id;
-            }
-            return;
-        }
-
-        if (SceneComponentTypes.IsEnvironment(component))
-        {
-            var environment = SceneComponentTypes.ReadEnvironment(component);
-            var changed = ImGui.Checkbox("启用环境", ref environment.Enabled);
-            changed |= ImGui.Checkbox("全局环境", ref environment.IsGlobal);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前仅全局环境参与渲染；局部范围会在后续版本接入。");
-            BeginInspectorField("权重", "环境参数对项目渲染设置的覆盖权重。");
-            changed |= ImGui.DragFloat("##EnvironmentWeight", ref environment.Weight, .01F, 0F, 1F);
-            var background = environment.BackgroundColor;
-            BeginInspectorField("背景颜色", "场景背景颜色，按线性空间保存。");
-            changed |= ImGui.ColorEdit3("##EnvironmentBackground", ref background);
-            environment.BackgroundColor = background;
-            var fogColor = environment.FogColor;
-            BeginInspectorField("雾颜色", "体积雾颜色，按线性空间保存。");
-            changed |= ImGui.ColorEdit3("##EnvironmentFogColor", ref fogColor);
-            environment.FogColor = fogColor;
-            BeginInspectorField("雾密度", "环境雾密度，零表示关闭。");
-            changed |= ImGui.DragFloat("##EnvironmentFogDensity", ref environment.FogDensity, .001F, 0F, .05F);
-            BeginInspectorField("雾起始距离", "相机到该距离后开始出现雾。");
-            changed |= ImGui.DragFloat("##EnvironmentFogStart", ref environment.FogStart, .1F, 0F, 100000F);
-            BeginInspectorField("天空混合", "控制雾与天空颜色的混合比例。");
-            changed |= ImGui.DragFloat("##EnvironmentFogSkyBlend", ref environment.FogSkyBlend, .01F, 0F, 1F);
-            BeginInspectorField("最大不透明度", "限制远处雾的最大覆盖比例。");
-            changed |= ImGui.DragFloat("##EnvironmentFogMaxOpacity", ref environment.FogMaxOpacity, .01F, 0F, 1F);
-            BeginInspectorField("曝光", "环境曝光偏移，会按权重叠加到项目曝光。");
-            changed |= ImGui.DragFloat("##EnvironmentExposure", ref environment.Exposure, .01F, -16F, 16F);
-            if (changed)
-            {
-                SceneComponentTypes.WriteEnvironment(component, environment);
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
             }
             return;
         }

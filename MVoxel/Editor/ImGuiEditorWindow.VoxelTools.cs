@@ -283,6 +283,7 @@ internal sealed partial class ImGuiEditorWindow
         _selectedSceneObjectId = null;
         _pinnedVoxelModelId = null;
         _sceneDocument = preload?.Scene ?? LoadSceneDocument(project);
+        _sceneDocument.Environment.ApplyTo(_renderSettings);
         if (preload?.Scene is not null)
         {
             _sceneValidationErrors = Scene.SceneValidation.Validate(_sceneDocument);
@@ -542,6 +543,7 @@ internal sealed partial class ImGuiEditorWindow
     private RenderSettings ResolveRenderSettings(SceneObject? cameraObject, RenderSettings? baseSettings = null)
     {
         var settings = (baseSettings ?? _captureRenderSettings ?? _renderSettings).CloneForExport();
+        _sceneDocument?.Environment.ApplyTo(settings);
         var camera = cameraObject?.Components.FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsCamera(item));
         if (camera is not null)
         {
@@ -636,29 +638,7 @@ internal sealed partial class ImGuiEditorWindow
             settings.Vignette = vignette?.Enabled == true ? Math.Clamp(vignette.Intensity, 0F, 1F) : 0F;
         }
         }
-        var environments = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
-            .Where(item => item.Enabled && SceneComponentTypes.IsEnvironment(item))
-            .Select(SceneComponentTypes.ReadEnvironment)
-            .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
-            .ToArray();
-        if (environments is { Length: > 0 })
-        {
-            foreach (var environment in environments)
-            {
-                var weight = Math.Clamp(environment.Weight, 0F, 1F);
-                settings.SceneBackgroundColor = NumVector3.Lerp(settings.SceneBackgroundColor, environment.BackgroundColor, weight);
-                settings.FogColor = NumVector3.Lerp(settings.FogColor, environment.FogColor, weight);
-                settings.FogDensity += MathF.Max(0F, environment.FogDensity) * weight;
-                settings.FogStart = MathF.Max(settings.FogStart, environment.FogStart * weight);
-                settings.FogSkyBlend = Math.Clamp(settings.FogSkyBlend + (environment.FogSkyBlend - .55F) * weight, 0F, 1F);
-                settings.FogMaxOpacity = Math.Clamp(settings.FogMaxOpacity + (environment.FogMaxOpacity - .92F) * weight, 0F, 1F);
-                settings.Exposure += environment.Exposure * weight;
-            }
-            settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, .05F);
-            settings.Exposure = Math.Clamp(settings.Exposure, -6F, 6F);
-        }
         var volumes = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
-            .Where(item => item.Enabled && SceneComponentTypes.IsVolume(item))
             .Select(SceneComponentTypes.ReadVolume)
             .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
             .ToArray();
@@ -879,10 +859,12 @@ internal sealed partial class ImGuiEditorWindow
         }
         try
         {
+            _sceneDocument ??= new SceneDocument { Name = "主场景" };
+            _sceneDocument.Environment.Normalize();
             if (GetVoxelWorldObject() is null && _world.OccupiedVoxelCount == 0)
             {
                 Scene.SceneSerializer.Save(Path.Combine(project.AssetsPath, _activeSceneRelativePath.Replace('/', Path.DirectorySeparatorChar)),
-                    _sceneDocument ?? new SceneDocument { Name = "主场景" });
+                    _sceneDocument);
                 return true;
             }
             SaveObjectVoxelWorlds(project);
