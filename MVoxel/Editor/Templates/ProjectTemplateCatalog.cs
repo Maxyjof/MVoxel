@@ -34,6 +34,10 @@ public enum ProjectTemplateId
     WorldOcean,
     WorldMist,
     WorldSunset,
+    WeatherRain,
+    WeatherSnow,
+    WeatherStorm,
+    WeatherHeatHaze,
 
     /// <summary>
     /// 展示基础建模、树木、屋顶、玻璃和自发光
@@ -136,6 +140,10 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.WorldOcean, "晴海灯塔", "晴空海面环绕灯塔岛，展示细密水波与海天。", "世界环境 · 海面 · 灯塔", "小型", "调整水位、波长与水面粗糙度"),
         new(ProjectTemplateId.WorldMist, "雾海群岛", "冷色雾气笼罩群岛与航标，展示距离雾层次。", "世界环境 · 海雾 · 群岛", "小型", "调整雾浓度、起始距离和颜色"),
         new(ProjectTemplateId.WorldSunset, "晚霞海岸", "暖色天空下的海岛与灯塔，展示低角度日光和海面。", "世界环境 · 晚霞 · 水面", "小型", "组合天空、太阳与水面参数"),
+        new(ProjectTemplateId.WeatherRain, "季风暴雨", "强风推动的暴雨海岸，展示降雨、风向与雾气联动。", "天气 · 降雨 · 风", "小型", "调整风强度与降雨密度"),
+        new(ProjectTemplateId.WeatherSnow, "雪原微光", "低温雪原与冷色天空，展示降雪和微风效果。", "天气 · 降雪 · 冷光", "小型", "调整降雪强度和风向"),
+        new(ProjectTemplateId.WeatherStorm, "雷暴海湾", "雷云压境的海湾灯塔，展示风暴、闪电和海面动画。", "天气 · 雷暴 · 闪电", "小型", "调整雷暴强度与闪电频率"),
+        new(ProjectTemplateId.WeatherHeatHaze, "灼热荒岸", "高温荒岸与远方热浪，展示热浪扰动和稀薄雾气。", "天气 · 高温 · 热浪", "小型", "调整热浪折射散射强度"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -171,7 +179,7 @@ public static class ProjectTemplateCatalog
         ProjectTemplateId.MaterialLab or ProjectTemplateId.PaletteWorkshop or ProjectTemplateId.GlassStudy or
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or
             ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy or ProjectTemplateId.WorldOcean or
-            ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset => "材质与渲染",
+            ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset or ProjectTemplateId.WeatherRain or ProjectTemplateId.WeatherSnow or ProjectTemplateId.WeatherStorm or ProjectTemplateId.WeatherHeatHaze => "材质与渲染",
         ProjectTemplateId.Showcase or ProjectTemplateId.Architecture or ProjectTemplateId.MoonbaseOutpost or
             ProjectTemplateId.ClockworkConservatory or ProjectTemplateId.DesertCaravanserai => "建模与场景",
         ProjectTemplateId.ProceduralTerrain or ProjectTemplateId.MinecraftValley or ProjectTemplateId.SparseWorld or
@@ -442,6 +450,10 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.WorldOcean => TemplateScenes.BuildEnvironmentIsland(0),
             ProjectTemplateId.WorldMist => TemplateScenes.BuildEnvironmentIsland(1),
             ProjectTemplateId.WorldSunset => TemplateScenes.BuildEnvironmentIsland(2),
+            ProjectTemplateId.WeatherRain => TemplateScenes.BuildEnvironmentIsland(1),
+            ProjectTemplateId.WeatherSnow => TemplateScenes.BuildEnvironmentIsland(1),
+            ProjectTemplateId.WeatherStorm => TemplateScenes.BuildEnvironmentIsland(2),
+            ProjectTemplateId.WeatherHeatHaze => TemplateScenes.BuildEnvironmentIsland(0),
             ProjectTemplateId.DefaultRoom => TemplateScenes.BuildDefaultRoom(),
             ProjectTemplateId.GlassStudy => TemplateScenes.BuildGlassStudy(),
             ProjectTemplateId.CornellBox => TemplateScenes.BuildCornellBox(),
@@ -611,6 +623,92 @@ public static class ProjectTemplateCatalog
                     settings.RenderSettings.SunColor = new Vector3(1F, .68F, .43F);
                     settings.RenderSettings.AmbientTint = .3F;
                 }
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
+            case ProjectTemplateId.WeatherRain:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.ShowWater = true;
+                settings.RenderSettings.WaterHeight = 2F;
+                settings.RenderSettings.WaterAnimationEnabled = true;
+                settings.RenderSettings.WaterAnimationSpeed = 1.35F;
+                settings.RenderSettings.WaterFlowDirection = new Vector2(-.9F, .4F);
+                settings.RenderSettings.WaterDetailStrength = .72F;
+                settings.RenderSettings.SunElevationDegrees = 28F;
+                settings.RenderSettings.SunAzimuthDegrees = 205F;
+                settings.RenderSettings.FogDensity = .006F;
+                settings.RenderSettings.FogStart = 10F;
+                settings.RenderSettings.FogColor = new Vector3(.46F, .52F, .58F);
+                settings.RenderSettings.FogMaxOpacity = .72F;
+                settings.RenderSettings.WeatherWindStrength = 2.2F;
+                settings.RenderSettings.WeatherWindDirection = 205F;
+                settings.RenderSettings.WeatherRainIntensity = .9F;
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
+            case ProjectTemplateId.WeatherSnow:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.ShowGround = true;
+                settings.RenderSettings.ShowWater = false;
+                settings.RenderSettings.SunElevationDegrees = 18F;
+                settings.RenderSettings.SunAzimuthDegrees = 120F;
+                settings.RenderSettings.SkyTop = new Vector3(.34F, .42F, .58F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.72F, .8F, .9F);
+                settings.RenderSettings.SunColor = new Vector3(.72F, .82F, 1F);
+                settings.RenderSettings.AmbientTint = .62F;
+                settings.RenderSettings.FogDensity = .004F;
+                settings.RenderSettings.FogColor = new Vector3(.72F, .8F, .9F);
+                settings.RenderSettings.WeatherWindStrength = .7F;
+                settings.RenderSettings.WeatherWindDirection = 120F;
+                settings.RenderSettings.WeatherSnowIntensity = .85F;
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
+            case ProjectTemplateId.WeatherStorm:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.ShowWater = true;
+                settings.RenderSettings.WaterHeight = 2F;
+                settings.RenderSettings.WaterAnimationEnabled = true;
+                settings.RenderSettings.WaterAnimationSpeed = 1.8F;
+                settings.RenderSettings.WaterFlowDirection = new Vector2(-.75F, .66F);
+                settings.RenderSettings.WaterDetailStrength = .95F;
+                settings.RenderSettings.WaterSpecularStrength = .88F;
+                settings.RenderSettings.SunEnabled = true;
+                settings.RenderSettings.SunElevationDegrees = 22F;
+                settings.RenderSettings.SunAzimuthDegrees = 240F;
+                settings.RenderSettings.SkyTop = new Vector3(.06F, .08F, .14F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.25F, .29F, .36F);
+                settings.RenderSettings.SunColor = new Vector3(.5F, .58F, .72F);
+                settings.RenderSettings.FogDensity = .014F;
+                settings.RenderSettings.FogStart = 8F;
+                settings.RenderSettings.FogColor = new Vector3(.2F, .24F, .3F);
+                settings.RenderSettings.FogMaxOpacity = .88F;
+                settings.RenderSettings.WeatherWindStrength = 3.2F;
+                settings.RenderSettings.WeatherWindDirection = 240F;
+                settings.RenderSettings.WeatherRainIntensity = 1F;
+                settings.RenderSettings.WeatherStormIntensity = .95F;
+                settings.RenderSettings.WeatherLightningFrequency = 1.8F;
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
+            case ProjectTemplateId.WeatherHeatHaze:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.ShowGround = true;
+                settings.RenderSettings.ShowWater = true;
+                settings.RenderSettings.WaterHeight = 1.5F;
+                settings.RenderSettings.WaterAnimationEnabled = true;
+                settings.RenderSettings.WaterAnimationSpeed = .55F;
+                settings.RenderSettings.WaterFlowDirection = new Vector2(.8F, .2F);
+                settings.RenderSettings.SunElevationDegrees = 72F;
+                settings.RenderSettings.SunAzimuthDegrees = 148F;
+                settings.RenderSettings.SkyTop = new Vector3(.34F, .55F, .82F);
+                settings.RenderSettings.SkyHorizon = new Vector3(.96F, .72F, .42F);
+                settings.RenderSettings.SunColor = new Vector3(1F, .72F, .38F);
+                settings.RenderSettings.AmbientTint = .38F;
+                settings.RenderSettings.FogDensity = .002F;
+                settings.RenderSettings.FogStart = 24F;
+                settings.RenderSettings.FogColor = new Vector3(.86F, .64F, .42F);
+                settings.RenderSettings.WeatherWindStrength = .45F;
+                settings.RenderSettings.WeatherWindDirection = 148F;
+                settings.RenderSettings.WeatherHeatHaze = .85F;
                 settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
                 break;
             case ProjectTemplateId.CornellBox:
