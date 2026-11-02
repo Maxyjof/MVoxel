@@ -1737,7 +1737,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[11];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[12];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1841,7 +1841,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             writes[11] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 11, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
                 PImageInfo = &historyInfo };
-            _api!.UpdateDescriptorSets(_device, 11, writes, 0, null);
+            _api!.UpdateDescriptorSets(_device, 12, writes, 0, null);
         }
     }
 
