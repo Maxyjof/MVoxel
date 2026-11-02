@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MVoxel.Animation;
 using MVoxel.Scene;
+using MVoxel.Core;
 
 namespace MVoxel.Editor;
 
@@ -21,7 +22,7 @@ internal sealed partial class ImGuiEditorWindow
         var snapshotName = $"{target.Id}_{animation.CurrentFrame}.voxel.json";
         var snapshotDirectory = Path.Combine(_project.AssetsPath, "Animations", "Snapshots");
         Directory.CreateDirectory(snapshotDirectory);
-        File.WriteAllText(Path.Combine(snapshotDirectory, snapshotName), JsonSerializer.Serialize(snapshot));
+        AtomicFile.WriteText(Path.Combine(snapshotDirectory, snapshotName), JsonSerializer.Serialize(snapshot));
         clip.Keyframes.Add(new AnimationKeyframe
         {
             Frame = animation.CurrentFrame,
@@ -34,7 +35,7 @@ internal sealed partial class ImGuiEditorWindow
             RightCurve = new AnimationCurve()
         });
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
+        AtomicFile.WriteText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
         SetStatus($"录制体素动画第{animation.CurrentFrame}帧：{changedCellCount:N0}格");
     }
 }

@@ -2,14 +2,22 @@ using System.Text.Json;
 using ImGuiNET;
 using MVoxel.Animation;
 using MVoxel.Scene;
+using MVoxel.Core;
 
 namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    private static readonly JsonSerializerOptions AnimationJsonOptions = new() { WriteIndented = true };
+
+    private void SaveAnimationAsset(string path, AnimationClip clip)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        AtomicFile.WriteText(path, JsonSerializer.Serialize(clip, AnimationJsonOptions));
+    }
+
     private void DrawAnimationWindow()
     {
-        if (!_showAnimationWindow) return;
         var open = _showAnimationWindow;
         if (!ImGui.Begin("动画##AnimationWindow", ref open, PanelWindowFlags)) { ImGui.End(); _showAnimationWindow = open; return; }
         _showAnimationWindow = open;
@@ -58,14 +66,14 @@ internal sealed partial class ImGuiEditorWindow
                     var animationClip = JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(path)) ?? new AnimationClip();
                     animationClip.Normalize();
                     var length = animationClip.LengthFrames;
-                    if (ImGui.DragInt("片段长度", ref length, 1F, 1, 100000)) { animationClip.LengthFrames = length; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
+                    if (ImGui.DragInt("片段长度", ref length, 1F, 1, 100000)) { animationClip.LengthFrames = length; SaveAnimationAsset(path, animationClip); }
                     foreach (var key in animationClip.Keyframes.Where(item => item.Frame == animation.CurrentFrame).ToArray())
                     {
                         ImGui.Text($"{key.ComponentType}.{key.Parameter} · 第{key.Frame}帧");
                         var side = (int)key.TransitionSide;
-                        if (ImGui.Combo("过渡方向", ref side, "左侧\\0右侧\\0左右\\0")) { key.TransitionSide = (AnimationTransitionSide)side; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
+                        if (ImGui.Combo("过渡方向", ref side, "左侧\\0右侧\\0左右\\0")) { key.TransitionSide = (AnimationTransitionSide)side; SaveAnimationAsset(path, animationClip); }
                         var mode = (int)key.RightCurve.Mode;
-                        if (ImGui.Combo("右侧过渡", ref mode, "阶梯\\0线性\\0平滑\\0贝塞尔\\0")) { key.RightCurve.Mode = (AnimationInterpolation)mode; File.WriteAllText(path, JsonSerializer.Serialize(animationClip, new JsonSerializerOptions { WriteIndented = true })); }
+                        if (ImGui.Combo("右侧过渡", ref mode, "阶梯\\0线性\\0平滑\\0贝塞尔\\0")) { key.RightCurve.Mode = (AnimationInterpolation)mode; SaveAnimationAsset(path, animationClip); }
                         var leftTangent = key.LeftCurve.RightTangent;
                         if (ImGui.SliderFloat("左切线", ref leftTangent, -4F, 4F)) key.LeftCurve.RightTangent = leftTangent;
                         var rightTangent = key.RightCurve.LeftTangent;
@@ -103,7 +111,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 if (visible) clip.VisibleParameters.Add(parameter); else clip.VisibleParameters.Remove(parameter);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                File.WriteAllText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
+                SaveAnimationAsset(path, clip);
             }
         }
     }
@@ -133,7 +141,7 @@ internal sealed partial class ImGuiEditorWindow
         clip.Keyframes.Add(new AnimationKeyframe { Frame = frame, ObjectId = target.Id.ToString(), ComponentType = component, Parameter = parameter, Values = values });
         var path = Path.Combine(_project.AssetsPath, "Animations", clip.Name + ".mvanim.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
+        SaveAnimationAsset(path, clip);
         SceneComponentTypes.WriteAnimation(target.Components.First(SceneComponentTypes.IsAnimation), animation with { ClipAsset = "Animations/" + Path.GetFileName(path) });
         MarkSceneDocumentDirty();
     }
