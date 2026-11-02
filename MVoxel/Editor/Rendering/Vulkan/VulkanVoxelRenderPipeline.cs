@@ -1136,6 +1136,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
+                if (!pathMode) TransitionRealtimeHistoryToGeneral(commandBuffer);
                 if (pathMode || bloomActive || selectionActive)
                 {
                     TransitionAccumulationToGeneral(commandBuffer);
@@ -1169,6 +1170,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 UploadParameters(slot, parameters);
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
+                if (!pathMode) TransitionRealtimeHistoryToGeneral(commandBuffer);
                 if (pathMode || bloomActive || selectionActive)
                 {
                     // 收尾通道读取整张中间图，等待所有分块写入。
@@ -1924,7 +1926,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
         layout(set = 0, binding = 8, rgba32f) uniform coherent image2D guideImage;
-        layout(set = 0, binding = 11, rgba16f) uniform coherent image2D realtimeHistoryImage;
+        layout(set = 0, binding = 11, rgba8) uniform coherent image2D realtimeHistoryImage;
 
         struct MaterialSlotData
         {
