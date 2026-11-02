@@ -121,6 +121,10 @@ internal sealed partial class ImGuiEditorWindow
               Param("waterFlowZ", "number", false, "水面流向Z"),
               Param("waterDetailStrength", "number", false, "水面细节扰动"),
               Param("waterSpecularStrength", "number", false, "水面高光强度"),
+              Param("weatherWindStrength", "number", false, "风强度"), Param("weatherWindDirection", "number", false, "风向"),
+              Param("weatherRain", "number", false, "降雨强度"), Param("weatherSnow", "number", false, "降雪强度"),
+              Param("weatherStorm", "number", false, "雷暴强度"), Param("weatherHeatHaze", "number", false, "热浪折射散射"),
+              Param("weatherLightning", "number", false, "雷电频率"),
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
@@ -822,6 +826,13 @@ internal sealed partial class ImGuiEditorWindow
              waterFlowZ = settings.WaterFlowDirection.Y,
              waterDetailStrength = settings.WaterDetailStrength,
              waterSpecularStrength = settings.WaterSpecularStrength,
+             weatherWindStrength = settings.WeatherWindStrength,
+             weatherWindDirection = settings.WeatherWindDirection,
+             weatherRain = settings.WeatherRainIntensity,
+             weatherSnow = settings.WeatherSnowIntensity,
+             weatherStorm = settings.WeatherStormIntensity,
+             weatherHeatHaze = settings.WeatherHeatHaze,
+             weatherLightning = settings.WeatherLightningFrequency,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             denoise = settings.PathDenoising,
@@ -863,6 +874,13 @@ internal sealed partial class ImGuiEditorWindow
          if (ReadNumber(arguments, "waterFlowZ") is { } flowZ) settings.WaterFlowDirection.Y = (float)flowZ;
          if (ReadNumber(arguments, "waterDetailStrength") is { } detailStrength) settings.WaterDetailStrength = (float)detailStrength;
          if (ReadNumber(arguments, "waterSpecularStrength") is { } specularStrength) settings.WaterSpecularStrength = (float)specularStrength;
+         if (ReadNumber(arguments, "weatherWindStrength") is { } windStrength) settings.WeatherWindStrength = (float)windStrength;
+         if (ReadNumber(arguments, "weatherWindDirection") is { } windDirection) settings.WeatherWindDirection = (float)windDirection;
+         if (ReadNumber(arguments, "weatherRain") is { } rainIntensity) settings.WeatherRainIntensity = (float)rainIntensity;
+         if (ReadNumber(arguments, "weatherSnow") is { } snowIntensity) settings.WeatherSnowIntensity = (float)snowIntensity;
+         if (ReadNumber(arguments, "weatherStorm") is { } stormIntensity) settings.WeatherStormIntensity = (float)stormIntensity;
+         if (ReadNumber(arguments, "weatherHeatHaze") is { } heatHaze) settings.WeatherHeatHaze = (float)heatHaze;
+         if (ReadNumber(arguments, "weatherLightning") is { } lightningFrequency) settings.WeatherLightningFrequency = (float)lightningFrequency;
          if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;

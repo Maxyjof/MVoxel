@@ -232,6 +232,13 @@ public sealed class RenderSettings
     public Vector2 WaterFlowDirection = new(1F, 0.35F);
     public float WaterDetailStrength = 0.35F;
     public float WaterSpecularStrength = 0.8F;
+    public float WeatherWindStrength;
+    public float WeatherWindDirection = 0.35F;
+    public float WeatherRainIntensity;
+    public float WeatherSnowIntensity;
+    public float WeatherStormIntensity;
+    public float WeatherHeatHaze;
+    public float WeatherLightningFrequency;
 
     /// <summary>
     /// 近处淡入距离，0 关闭，用于模型贴脸时的柔化
@@ -582,6 +589,13 @@ public sealed class RenderSettings
         WaterFlowDirection = Vector2.Normalize(WaterFlowDirection.LengthSquared() > 0.0001F ? WaterFlowDirection : Vector2.UnitX);
         WaterDetailStrength = Math.Clamp(WaterDetailStrength, 0F, 2F);
         WaterSpecularStrength = Math.Clamp(WaterSpecularStrength, 0F, 4F);
+        WeatherWindStrength = Math.Clamp(WeatherWindStrength, 0F, 4F);
+        WeatherWindDirection = Wrap(WeatherWindDirection, 360F);
+        WeatherRainIntensity = Math.Clamp(WeatherRainIntensity, 0F, 1F);
+        WeatherSnowIntensity = Math.Clamp(WeatherSnowIntensity, 0F, 1F);
+        WeatherStormIntensity = Math.Clamp(WeatherStormIntensity, 0F, 1F);
+        WeatherHeatHaze = Math.Clamp(WeatherHeatHaze, 0F, 1F);
+        WeatherLightningFrequency = Math.Clamp(WeatherLightningFrequency, 0F, 4F);
         NearFade = Math.Clamp(NearFade, 0F, 512F);
         GroundFade = Math.Clamp(GroundFade, 0F, 4096F);
         Exposure = Math.Clamp(Exposure, -6F, 6F);
@@ -704,6 +718,13 @@ public sealed class RenderSettings
         WaterFlowDirection = SafeVector2(WaterFlowDirection, new Vector2(1F, 0.35F));
         WaterDetailStrength = Safe(WaterDetailStrength, 0.35F);
         WaterSpecularStrength = Safe(WaterSpecularStrength, 0.8F);
+        WeatherWindStrength = Safe(WeatherWindStrength, 0F);
+        WeatherWindDirection = Safe(WeatherWindDirection, 0.35F);
+        WeatherRainIntensity = Safe(WeatherRainIntensity, 0F);
+        WeatherSnowIntensity = Safe(WeatherSnowIntensity, 0F);
+        WeatherStormIntensity = Safe(WeatherStormIntensity, 0F);
+        WeatherHeatHaze = Safe(WeatherHeatHaze, 0F);
+        WeatherLightningFrequency = Safe(WeatherLightningFrequency, 0F);
         WaterColor = SafeChannel(WaterColor, new Vector3(0.08F, 0.32F, 0.42F));
         NearFade = Safe(NearFade, 0F);
         GroundFade = Safe(GroundFade, 0F);

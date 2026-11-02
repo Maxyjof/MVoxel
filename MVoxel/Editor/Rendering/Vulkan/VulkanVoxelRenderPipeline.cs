@@ -128,6 +128,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Image _realtimeHistoryImage;
     private DeviceMemory _realtimeHistoryMemory;
     private ImageView _realtimeHistoryView;
+    private Image _realtimeHistoryImageB;
+    private DeviceMemory _realtimeHistoryMemoryB;
+    private ImageView _realtimeHistoryViewB;
     private bool _realtimeHistoryInitialized;
     private nint _displayTextureId;
     private uint _outputWidth;
@@ -1416,6 +1419,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _realtimeHistoryMemory = AllocateMemory(historyRequirements, MemoryPropertyFlags.DeviceLocalBit);
             Check(api.BindImageMemory(_device, _realtimeHistoryImage, _realtimeHistoryMemory, 0), "绑定实时GI历史图像");
             _realtimeHistoryView = CreateImageView(_realtimeHistoryImage, Format.R8G8B8A8Unorm);
+             Check(api.CreateImage(_device, &historyCreateInfo, null, out _realtimeHistoryImageB), "创建实时GI历史图像B");
+             MemoryRequirements historyRequirementsB = default;
+             api.GetImageMemoryRequirements(_device, _realtimeHistoryImageB, &historyRequirementsB);
+             _realtimeHistoryMemoryB = AllocateMemory(historyRequirementsB, MemoryPropertyFlags.DeviceLocalBit);
+             Check(api.BindImageMemory(_device, _realtimeHistoryImageB, _realtimeHistoryMemoryB, 0), "绑定实时GI历史图像B");
+             _realtimeHistoryViewB = CreateImageView(_realtimeHistoryImageB, Format.R8G8B8A8Unorm);
             _guideInitialized = false;
             _realtimeHistoryInitialized = false;            _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
@@ -1605,7 +1614,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[12];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[13];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1618,10 +1627,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bindings[9] = new(9, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[10] = new(10, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[11] = new(11, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        bindings[12] = new(12, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 12,
+            BindingCount = 13,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1638,7 +1648,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
             new(DescriptorType.StorageBuffer, 8 * TileRingDepth),
-            new(DescriptorType.StorageImage, 4 * TileRingDepth)
+            new(DescriptorType.StorageImage, 5 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
@@ -1745,7 +1755,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[12];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[13];
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -1846,10 +1856,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DstBinding = 10, DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &emissiveInfo };
             DescriptorImageInfo historyInfo = new(default, _realtimeHistoryView, ImageLayout.General);
+             DescriptorImageInfo historyInfoB = new(default, _realtimeHistoryViewB, ImageLayout.General);
             writes[11] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 11, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
                 PImageInfo = &historyInfo };
-            _api!.UpdateDescriptorSets(_device, 12, writes, 0, null);
+            _api!.UpdateDescriptorSets(_device, 13, writes, 0, null);
         }
     }
 
@@ -1904,9 +1915,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (_realtimeHistoryView.Handle != 0) api.DestroyImageView(_device, _realtimeHistoryView, null);
         if (_realtimeHistoryImage.Handle != 0) api.DestroyImage(_device, _realtimeHistoryImage, null);
         if (_realtimeHistoryMemory.Handle != 0) api.FreeMemory(_device, _realtimeHistoryMemory, null);
+        if (_realtimeHistoryViewB.Handle != 0) api.DestroyImageView(_device, _realtimeHistoryViewB, null);
+        if (_realtimeHistoryImageB.Handle != 0) api.DestroyImage(_device, _realtimeHistoryImageB, null);
+        if (_realtimeHistoryMemoryB.Handle != 0) api.FreeMemory(_device, _realtimeHistoryMemoryB, null);
         _realtimeHistoryView = default;
         _realtimeHistoryImage = default;
         _realtimeHistoryMemory = default;
+        _realtimeHistoryViewB = default;
+        _realtimeHistoryImageB = default;
+        _realtimeHistoryMemoryB = default;
         if (_guideView.Handle != 0) api.DestroyImageView(_device, _guideView, null);
         if (_guideImage.Handle != 0) api.DestroyImage(_device, _guideImage, null);
         if (_guideMemory.Handle != 0) api.FreeMemory(_device, _guideMemory, null);
@@ -3545,6 +3562,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
             color = max(color, vec3(0.0));
+             vec2 weatherUv = (vec2(pixel) + 0.5) / vec2(width, height);
+             float weatherTime = float(values[P_FRAME]) * 0.0166667;
+             float windPhase = dot(weatherUv, vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])))) * 48.0 - weatherTime * values[P_WEATHER_WIND_STRENGTH] * 8.0;
+             float streaks = smoothstep(0.72, 0.98, fract(weatherUv.y * 42.0 + windPhase));
+             float precipitation = values[P_WEATHER_RAIN] * streaks + values[P_WEATHER_SNOW] * smoothstep(0.78, 1.0, fract(weatherUv.y * 28.0 - windPhase * 0.4));
+             color = mix(color, vec3(0.55, 0.68, 0.82), clamp(precipitation * 0.18, 0.0, 0.32));
+             color *= 1.0 - values[P_WEATHER_STORM] * 0.32;
+             float lightning = values[P_WEATHER_LIGHTNING] * pow(max(0.0, sin(weatherTime * 6.0 + weatherUv.x * 17.0)), 32.0);
+             color += vec3(1.0, 0.92, 0.72) * lightning * values[P_WEATHER_STORM] * 0.8;
+             float heat = values[P_WEATHER_HEAT_HAZE] * sin(weatherUv.y * 90.0 + weatherTime * 3.0) * 0.012;
+             color += vec3(heat, heat * 0.5, 0.0);
             if (values[64] > 0.5)
             {
                 if (int(values[64]) == 1)

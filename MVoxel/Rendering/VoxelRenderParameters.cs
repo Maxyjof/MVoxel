@@ -112,8 +112,10 @@ public sealed class VoxelRenderParameters
     public const int WaterWaveSize = 149, WaterWaveLength = 150, WaterRoughness = 151;
     public const int WaterAnimationEnabled = 155, WaterAnimationSpeed = 156, WaterFlowX = 157, WaterFlowZ = 158;
     public const int WaterDetailStrength = 159, WaterSpecularStrength = 160;
+    public const int WeatherWindStrength = 161, WeatherWindDirection = 162, WeatherRain = 163, WeatherSnow = 164;
+    public const int WeatherStorm = 165, WeatherHeatHaze = 166, WeatherLightning = 167;
     public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
-    public const int SlotCount = 161;
+    public const int SlotCount = 168;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -177,6 +179,9 @@ public sealed class VoxelRenderParameters
             ("P_WATER_ANIMATION_ENABLED", WaterAnimationEnabled), ("P_WATER_ANIMATION_SPEED", WaterAnimationSpeed),
             ("P_WATER_FLOW_X", WaterFlowX), ("P_WATER_FLOW_Z", WaterFlowZ),
             ("P_WATER_DETAIL_STRENGTH", WaterDetailStrength), ("P_WATER_SPECULAR_STRENGTH", WaterSpecularStrength),
+            ("P_WEATHER_WIND_STRENGTH", WeatherWindStrength), ("P_WEATHER_WIND_DIRECTION", WeatherWindDirection),
+            ("P_WEATHER_RAIN", WeatherRain), ("P_WEATHER_SNOW", WeatherSnow),
+            ("P_WEATHER_STORM", WeatherStorm), ("P_WEATHER_HEAT_HAZE", WeatherHeatHaze), ("P_WEATHER_LIGHTNING", WeatherLightning),
         };
 
         var builder = new StringBuilder();
@@ -405,6 +410,13 @@ public sealed class VoxelRenderParameters
         parameters[WaterFlowZ] = settings.WaterFlowDirection.Y;
         parameters[WaterDetailStrength] = settings.WaterDetailStrength;
         parameters[WaterSpecularStrength] = settings.WaterSpecularStrength;
+        parameters[WeatherWindStrength] = settings.WeatherWindStrength;
+        parameters[WeatherWindDirection] = settings.WeatherWindDirection;
+        parameters[WeatherRain] = settings.WeatherRainIntensity;
+        parameters[WeatherSnow] = settings.WeatherSnowIntensity;
+        parameters[WeatherStorm] = settings.WeatherStormIntensity;
+        parameters[WeatherHeatHaze] = settings.WeatherHeatHaze;
+        parameters[WeatherLightning] = settings.WeatherLightningFrequency;
         parameters[FogStart] = settings.FogStart;
         parameters[FogSkyBlend] = settings.FogSkyBlend;
         parameters[FogMaxOpacity] = settings.FogMaxOpacity;

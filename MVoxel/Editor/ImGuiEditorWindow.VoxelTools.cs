@@ -2590,6 +2590,14 @@ internal sealed partial class ImGuiEditorWindow
          SliderFloat("流向Z", ref settings.WaterFlowDirection.Y, -1F, 1F, "%.2f");
          SliderFloat("细节扰动", ref settings.WaterDetailStrength, 0F, 2F, "%.2f");
          SliderFloat("高光强度", ref settings.WaterSpecularStrength, 0F, 4F, "%.2f");
+         ImGui.SeparatorText("天气与大气");
+         SliderFloat("风强度", ref settings.WeatherWindStrength, 0F, 4F, "%.2f");
+         SliderFloat("风向", ref settings.WeatherWindDirection, 0F, 360F, "%.0f°");
+         SliderFloat("降雨强度", ref settings.WeatherRainIntensity, 0F, 1F, "%.2f");
+         SliderFloat("降雪强度", ref settings.WeatherSnowIntensity, 0F, 1F, "%.2f");
+         SliderFloat("雷暴强度", ref settings.WeatherStormIntensity, 0F, 1F, "%.2f");
+         SliderFloat("热浪折射散射", ref settings.WeatherHeatHaze, 0F, 1F, "%.2f");
+         SliderFloat("雷电频率", ref settings.WeatherLightningFrequency, 0F, 4F, "%.2f");
         ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
         SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
