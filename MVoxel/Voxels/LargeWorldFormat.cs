@@ -25,6 +25,7 @@ public static class LargeWorldFormat
     private const int ObjectFormatVersion = 4;
     private const int MaximumObjectSegments = 4096;
     private const int MaximumObjectNameBytes = 1 * 1024 * 1024;
+    private const int MaximumObjectIdBytes = 256;
 
     /// <summary>原生v4对象片段，体素坐标相对于片段原点保存</summary>
     public sealed record NativeObjectSegment(string ObjectId, string Name, VoxelCoord64 Origin, VoxelWorld World);
@@ -109,6 +110,8 @@ public static class LargeWorldFormat
         {
             if (string.IsNullOrWhiteSpace(segment.ObjectId) || segment.World is null)
                 throw new InvalidDataException("对象片段缺少标识或体素世界");
+            var idBytes = System.Text.Encoding.UTF8.GetBytes(segment.ObjectId);
+            if (idBytes.Length > MaximumObjectIdBytes) throw new InvalidDataException("对象标识过长");
             var nameBytes = System.Text.Encoding.UTF8.GetBytes(segment.Name ?? string.Empty);
             if (nameBytes.Length > MaximumObjectNameBytes) throw new InvalidDataException("对象名称过长");
             writer.Write(segment.ObjectId);
@@ -148,6 +151,9 @@ public static class LargeWorldFormat
         for (var index = 0; index < count; index++)
         {
             var id = reader.ReadString();
+            var idBytes = System.Text.Encoding.UTF8.GetByteCount(id);
+            if (string.IsNullOrWhiteSpace(id) || idBytes > MaximumObjectIdBytes)
+                throw new InvalidDataException("对象标识无效或过长");
             var nameLength = reader.ReadInt32();
             if (nameLength < 0 || nameLength > MaximumObjectNameBytes || nameLength > stream.Length - stream.Position)
                 throw new InvalidDataException("对象名称长度无效");
@@ -166,7 +172,9 @@ public static class LargeWorldFormat
             segments.Add(new NativeObjectSegment(id, name, origin, world));
         }
         var metadataLength = reader.ReadInt32();
-        if (metadataLength < 1 || metadataLength > MaterialExchangeCodec.MaximumBytes || stream.Length - stream.Position != metadataLength)
+        if (metadataLength == 0 && stream.Position == stream.Length)
+            return new NativeObjectDocument(segments, new MaterialExchangeMetadata());
+        if (metadataLength < 0 || metadataLength > MaterialExchangeCodec.MaximumBytes || stream.Length - stream.Position != metadataLength)
             throw new InvalidDataException("v4材质元数据长度无效");
         return new NativeObjectDocument(segments, MaterialExchangeCodec.Decode(reader.ReadBytes(metadataLength)));
     }
