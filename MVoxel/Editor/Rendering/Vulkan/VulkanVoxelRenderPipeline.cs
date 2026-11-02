@@ -1103,8 +1103,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _realtimeHistorySignature = realtimeSignature;
             _realtimeHistoryInvalid = true;
         }
-        if (_realtimeHistoryInvalid && pathMode)
-            _realtimeHistoryInvalid = false;
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         if (!pathMode && ParametersEqualForDisplay(parameters))
@@ -1115,6 +1113,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (pathMode && _clearAccumulationPending)
         {
             ClearAccumulation();
+        }
+        else if (!pathMode && _realtimeHistoryInvalid)
+        {
+            ClearRealtimeHistory();
         }
 
         // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
@@ -1251,6 +1253,45 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         api.CmdClearColorImage(commandBuffer, _accumulationImage, ImageLayout.General, in clear, 1, in range);
         CommitRingSlot(slot);
         _accumulationInitialized = true;
+    }
+
+    /// <summary>
+    /// 清零实时GI历史图像，避免相机、场景或参数变化后继续采样旧历史
+    /// </summary>
+    private void ClearRealtimeHistory()
+    {
+        if (_context is null || _api is not { } api || _realtimeHistoryImage.Handle == 0)
+        {
+            return;
+        }
+
+        var slot = AcquireRingSlot();
+        var commandBuffer = _ringCommands[slot];
+        ImageMemoryBarrier barrier = new()
+        {
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = _realtimeHistoryInitialized ? ImageLayout.General : ImageLayout.Undefined,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = _realtimeHistoryImage,
+            SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+            SrcAccessMask = _realtimeHistoryInitialized
+                ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit | AccessFlags.TransferWriteBit
+                : 0,
+            DstAccessMask = AccessFlags.TransferWriteBit
+        };
+        api.CmdPipelineBarrier(commandBuffer,
+            _realtimeHistoryInitialized
+                ? PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit
+                : PipelineStageFlags.TopOfPipeBit,
+            PipelineStageFlags.TransferBit, 0, 0, null, 0, null, 1, in barrier);
+        ClearColorValue clear = new(0F, 0F, 0F, 0F);
+        var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
+        api.CmdClearColorImage(commandBuffer, _realtimeHistoryImage, ImageLayout.General, in clear, 1, in range);
+        CommitRingSlot(slot);
+        _realtimeHistoryInitialized = true;
+        _realtimeHistoryInvalid = false;
     }
 
     private static long ComputeRealtimeHistorySignature(float[] parameters, int width, int height, int sourceVersion)
