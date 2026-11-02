@@ -104,6 +104,8 @@ internal sealed class EditorControlServer : IDisposable
     public void Dispose()
     {
         _cancellation.Cancel();
+        while (_pendingRequests.TryDequeue(out var pending))
+            pending.Completion.TrySetCanceled();
         try { _worker?.Wait(TimeSpan.FromSeconds(1)); } catch (Exception) { }
         _cancellation.Dispose();
         try
