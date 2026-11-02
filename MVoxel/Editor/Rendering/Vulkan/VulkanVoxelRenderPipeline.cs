@@ -1117,7 +1117,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             ClearRealtimeHistory();
         }
-        if (!pathMode && ParametersEqualForDisplay(parameters))
+        if (!pathMode && !historyWasInvalid && ParametersEqualForDisplay(parameters))
         {
             return true;
         }
