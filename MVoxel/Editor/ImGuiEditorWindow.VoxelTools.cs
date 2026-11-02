@@ -551,9 +551,11 @@ internal sealed partial class ImGuiEditorWindow
                 settings.Exposure += volumeData.Exposure * weight;
                 settings.FogDensity += MathF.Max(0F, volumeData.FogDensity) * weight;
                 settings.BloomIntensity += MathF.Max(0F, volumeData.BloomIntensity) * weight;
+                 settings.BloomThreshold += (Math.Clamp(volumeData.BloomThreshold, 0F, 8F) - 1F) * weight;
             }
             settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, 1F);
             settings.BloomIntensity = Math.Clamp(settings.BloomIntensity, 0F, 100F);
+             settings.BloomThreshold = Math.Clamp(settings.BloomThreshold, 0F, 8F);
         }
         var probe = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsProbeVolume);
         if (probe is not null)
