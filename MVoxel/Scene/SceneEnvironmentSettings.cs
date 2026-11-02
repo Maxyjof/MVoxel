@@ -27,6 +27,11 @@ public sealed class SceneEnvironmentSettings
     public float WaterWaveSize = .35F;
     public float WaterWaveLength = 16F;
     public float WaterRoughness = .12F;
+    public bool WaterAnimationEnabled = true;
+    public float WaterAnimationSpeed = .7F;
+    public Vector2 WaterFlowDirection = new(1F, .35F);
+    public float WaterDetailStrength = .35F;
+    public float WaterSpecularStrength = .8F;
     public float NearFade;
 
     public void Normalize()
@@ -42,6 +47,9 @@ public sealed class SceneEnvironmentSettings
         WaterWaveSize = Clamp(WaterWaveSize, 0F, 4F);
         WaterWaveLength = Clamp(WaterWaveLength, .1F, 1024F);
         WaterRoughness = Clamp(WaterRoughness, .01F, 1F);
+        WaterAnimationSpeed = Clamp(WaterAnimationSpeed, -8F, 8F);
+        WaterDetailStrength = Clamp(WaterDetailStrength, 0F, 2F);
+        WaterSpecularStrength = Clamp(WaterSpecularStrength, 0F, 4F);
         NearFade = Clamp(NearFade, 0F, 512F);
         SceneBackgroundColor = Color(SceneBackgroundColor, new(.025F, .035F, .05F));
         GroundColor = Color(GroundColor, Vector3.One);
@@ -73,6 +81,11 @@ public sealed class SceneEnvironmentSettings
         settings.WaterWaveSize = WaterWaveSize;
         settings.WaterWaveLength = WaterWaveLength;
         settings.WaterRoughness = WaterRoughness;
+        settings.WaterAnimationEnabled = WaterAnimationEnabled;
+        settings.WaterAnimationSpeed = WaterAnimationSpeed;
+        settings.WaterFlowDirection = WaterFlowDirection;
+        settings.WaterDetailStrength = WaterDetailStrength;
+        settings.WaterSpecularStrength = WaterSpecularStrength;
         settings.NearFade = NearFade;
     }
 
@@ -98,6 +111,11 @@ public sealed class SceneEnvironmentSettings
         WaterWaveSize = settings.WaterWaveSize;
         WaterWaveLength = settings.WaterWaveLength;
         WaterRoughness = settings.WaterRoughness;
+        WaterAnimationEnabled = settings.WaterAnimationEnabled;
+        WaterAnimationSpeed = settings.WaterAnimationSpeed;
+        WaterFlowDirection = settings.WaterFlowDirection;
+        WaterDetailStrength = settings.WaterDetailStrength;
+        WaterSpecularStrength = settings.WaterSpecularStrength;
         NearFade = settings.NearFade;
         Normalize();
     }

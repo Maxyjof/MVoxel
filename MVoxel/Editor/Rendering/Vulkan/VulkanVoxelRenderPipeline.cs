@@ -2719,11 +2719,21 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         hitNormal = vec3(0.0, 1.0, 0.0);
                         if (waterHit)
                         {
-                            vec3 wp = rayOrigin + rayDirection * hitDistance;
-                            float k = 6.28318530718 / max(values[150], 0.1);
-                            float dx = cos(wp.x * k + wp.z * k * 0.37) * values[149] * k;
-                            float dz = cos(wp.z * k * 1.31 - wp.x * k * 0.23) * values[149] * k;
-                            hitNormal = normalize(vec3(-dx, 1.0, -dz));
+                             vec3 wp = rayOrigin + rayDirection * hitDistance;
+                             float wavelength = max(values[P_WATER_WAVE_LENGTH], 0.1);
+                             float k = 6.28318530718 / wavelength;
+                             float animationTime = values[P_WATER_ANIMATION_ENABLED] > 0.5 ? float(values[P_FRAME]) * 0.0166667 * values[P_WATER_ANIMATION_SPEED] : 0.0;
+                             vec2 flow = normalize(vec2(values[P_WATER_FLOW_X], values[P_WATER_FLOW_Z]));
+                             vec2 p = wp.xz;
+                             float phaseA = dot(p, flow) * k - animationTime * k;
+                             float phaseB = dot(p, vec2(-flow.y, flow.x)) * k * 1.37 + animationTime * k * 0.73;
+                             float detail = values[P_WATER_DETAIL_STRENGTH];
+                             float waveA = sin(phaseA) + sin(phaseA * 1.91 + phaseB * 0.43) * detail * 0.35;
+                             float waveB = cos(phaseB) + cos(phaseB * 1.67 - phaseA * 0.29) * detail * 0.3;
+                             float slope = values[P_WATER_WAVE_SIZE] * k;
+                             float dx = (flow.x * waveA - flow.y * waveB * 0.72) * slope;
+                             float dz = (flow.y * waveA + flow.x * waveB * 0.72) * slope;
+                             hitNormal = normalize(vec3(-dx, 1.0, -dz));
                         }
                         hitColor = vec4(0.0, 0.0, 0.0, 1.0);
                         hitFlags = 0u;
@@ -2783,9 +2793,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 MaterialSlotData material = materialSlots[int(hitSlot)];
                 if (waterHit)
                 {
-                    material.scalars.x = clamp(values[151], 0.01, 1.0);
+                     material.scalars.x = clamp(values[P_WATER_ROUGHNESS], 0.01, 1.0);
                     material.scalars.y = 0.0;
-                    material.optics.y = 1.0;
+                     material.optics.y = values[P_WATER_SPECULAR_STRENGTH];
                 }
                 vec3 hitLinearColor = waterHit
                     ? SrgbToLinear(clamp(vec3(values[146], values[147], values[148]), vec3(0.0), vec3(1.0)))

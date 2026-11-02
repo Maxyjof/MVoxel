@@ -115,6 +115,12 @@ internal sealed partial class ImGuiEditorWindow
               Param("waterWaveSize", "number", false, "水面波浪大小"),
               Param("waterWaveLength", "number", false, "水面波长"),
               Param("waterRoughness", "number", false, "水面粗糙度"),
+              Param("waterAnimationEnabled", "boolean", false, "是否启用实时水面动画"),
+              Param("waterAnimationSpeed", "number", false, "水面动画速度"),
+              Param("waterFlowX", "number", false, "水面流向X"),
+              Param("waterFlowZ", "number", false, "水面流向Z"),
+              Param("waterDetailStrength", "number", false, "水面细节扰动"),
+              Param("waterSpecularStrength", "number", false, "水面高光强度"),
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
@@ -810,6 +816,12 @@ internal sealed partial class ImGuiEditorWindow
              waterWaveSize = settings.WaterWaveSize,
              waterWaveLength = settings.WaterWaveLength,
              waterRoughness = settings.WaterRoughness,
+             waterAnimationEnabled = settings.WaterAnimationEnabled,
+             waterAnimationSpeed = settings.WaterAnimationSpeed,
+             waterFlowX = settings.WaterFlowDirection.X,
+             waterFlowZ = settings.WaterFlowDirection.Y,
+             waterDetailStrength = settings.WaterDetailStrength,
+             waterSpecularStrength = settings.WaterSpecularStrength,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             denoise = settings.PathDenoising,
@@ -845,6 +857,12 @@ internal sealed partial class ImGuiEditorWindow
          if (ReadNumber(arguments, "waterWaveSize") is { } waterWaveSize) settings.WaterWaveSize = (float)waterWaveSize;
          if (ReadNumber(arguments, "waterWaveLength") is { } waterWaveLength) settings.WaterWaveLength = (float)waterWaveLength;
          if (ReadNumber(arguments, "waterRoughness") is { } waterRoughness) settings.WaterRoughness = (float)waterRoughness;
+         if (ReadBoolean(arguments, "waterAnimationEnabled") is { } animationEnabled) settings.WaterAnimationEnabled = animationEnabled;
+         if (ReadNumber(arguments, "waterAnimationSpeed") is { } animationSpeed) settings.WaterAnimationSpeed = (float)animationSpeed;
+         if (ReadNumber(arguments, "waterFlowX") is { } flowX) settings.WaterFlowDirection.X = (float)flowX;
+         if (ReadNumber(arguments, "waterFlowZ") is { } flowZ) settings.WaterFlowDirection.Y = (float)flowZ;
+         if (ReadNumber(arguments, "waterDetailStrength") is { } detailStrength) settings.WaterDetailStrength = (float)detailStrength;
+         if (ReadNumber(arguments, "waterSpecularStrength") is { } specularStrength) settings.WaterSpecularStrength = (float)specularStrength;
          if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;

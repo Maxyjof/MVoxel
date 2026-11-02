@@ -110,8 +110,10 @@ public sealed class VoxelRenderParameters
     public const int RealtimeTemporalWeight = 143;
     public const int WaterEnabled = 144, WaterHeight = 145, WaterR = 146, WaterG = 147, WaterB = 148;
     public const int WaterWaveSize = 149, WaterWaveLength = 150, WaterRoughness = 151;
+    public const int WaterAnimationEnabled = 155, WaterAnimationSpeed = 156, WaterFlowX = 157, WaterFlowZ = 158;
+    public const int WaterDetailStrength = 159, WaterSpecularStrength = 160;
     public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
-    public const int SlotCount = 155;
+    public const int SlotCount = 161;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -172,6 +174,9 @@ public sealed class VoxelRenderParameters
             ("P_SPLIT_BALANCE", SplitToneBalance), ("P_SPLIT_MIX", SplitToneMix),
             ("P_FXAA_PASS", FxaaPass), ("P_FXAA_THRESHOLD", FxaaThreshold), ("P_FXAA_STRENGTH", FxaaStrength),
             ("P_REALTIME_TEMPORAL_WEIGHT", RealtimeTemporalWeight),
+            ("P_WATER_ANIMATION_ENABLED", WaterAnimationEnabled), ("P_WATER_ANIMATION_SPEED", WaterAnimationSpeed),
+            ("P_WATER_FLOW_X", WaterFlowX), ("P_WATER_FLOW_Z", WaterFlowZ),
+            ("P_WATER_DETAIL_STRENGTH", WaterDetailStrength), ("P_WATER_SPECULAR_STRENGTH", WaterSpecularStrength),
         };
 
         var builder = new StringBuilder();
@@ -394,6 +399,12 @@ public sealed class VoxelRenderParameters
         parameters[WaterWaveSize] = settings.WaterWaveSize;
         parameters[WaterWaveLength] = settings.WaterWaveLength;
         parameters[WaterRoughness] = settings.WaterRoughness;
+        parameters[WaterAnimationEnabled] = settings.WaterAnimationEnabled ? 1F : 0F;
+        parameters[WaterAnimationSpeed] = settings.WaterAnimationSpeed;
+        parameters[WaterFlowX] = settings.WaterFlowDirection.X;
+        parameters[WaterFlowZ] = settings.WaterFlowDirection.Y;
+        parameters[WaterDetailStrength] = settings.WaterDetailStrength;
+        parameters[WaterSpecularStrength] = settings.WaterSpecularStrength;
         parameters[FogStart] = settings.FogStart;
         parameters[FogSkyBlend] = settings.FogSkyBlend;
         parameters[FogMaxOpacity] = settings.FogMaxOpacity;

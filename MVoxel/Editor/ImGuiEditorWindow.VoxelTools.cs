@@ -1158,7 +1158,7 @@ internal sealed partial class ImGuiEditorWindow
             width, height,
             // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
             // 路径追踪仍需帧号驱动样本去相关。
-            FrameIndex: pathMode ? framePipeline?.AccumulatedSamples ?? 0 : 0,
+            FrameIndex: pathMode ? framePipeline?.AccumulatedSamples ?? 0 : ImGui.GetFrameCount(),
             framePipeline?.RegionMin ?? default,
             framePipeline?.RegionSize ?? default,
             framePipeline?.StepBudget ?? 8192,
@@ -1195,7 +1195,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SkyTop.Z).Append(',').Append(settings.SkyHorizon.X).Append(',').Append(settings.SkyHorizon.Y)
             .Append(',').Append(settings.SkyHorizon.Z).Append(',').Append(settings.SkyAmbient).Append(',').Append(settings.AmbientTint)
             .Append(',').Append(settings.FogColor.X).Append(',').Append(settings.FogColor.Y).Append(',').Append(settings.FogColor.Z)
-            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.PathTracingEnabled)
+            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.WaterAnimationEnabled).Append(',').Append(settings.WaterAnimationSpeed).Append(',').Append(settings.WaterFlowDirection).Append(',').Append(settings.WaterDetailStrength).Append(',').Append(settings.WaterSpecularStrength).Append(',').Append(settings.PathTracingEnabled)
             .Append(',').Append(settings.UseHardwareRayTracing)
             .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
@@ -2581,7 +2581,15 @@ internal sealed partial class ImGuiEditorWindow
         DrawColorSlider("水面颜色", ref settings.WaterColor);
         SliderFloat("波浪大小", ref settings.WaterWaveSize, 0F, 4F, "%.2f");
         SliderFloat("波长", ref settings.WaterWaveLength, 0.1F, 256F, "%.1f 格");
-        SliderFloat("水面粗糙度", ref settings.WaterRoughness, 0.01F, 1F, "%.2f");
+                 SliderFloat("水面粗糙度", ref settings.WaterRoughness, 0.01F, 1F, "%.2f");
+         ImGui.SeparatorText("水面动画与Shader");
+         ImGui.Checkbox("启用实时水面动画", ref settings.WaterAnimationEnabled);
+         if (ImGui.IsItemHovered()) ImGui.SetTooltip("使用实时帧时间驱动双层流动波纹，只影响水面法线和高光，不改变无限平面轮廓");
+         SliderFloat("动画速度", ref settings.WaterAnimationSpeed, -4F, 4F, "%.2f");
+         SliderFloat("流向X", ref settings.WaterFlowDirection.X, -1F, 1F, "%.2f");
+         SliderFloat("流向Z", ref settings.WaterFlowDirection.Y, -1F, 1F, "%.2f");
+         SliderFloat("细节扰动", ref settings.WaterDetailStrength, 0F, 2F, "%.2f");
+         SliderFloat("高光强度", ref settings.WaterSpecularStrength, 0F, 4F, "%.2f");
         ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
         SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");

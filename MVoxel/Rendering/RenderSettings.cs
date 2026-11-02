@@ -227,6 +227,11 @@ public sealed class RenderSettings
     public float WaterWaveSize = 0.35F;
     public float WaterWaveLength = 16F;
     public float WaterRoughness = 0.12F;
+    public bool WaterAnimationEnabled = true;
+    public float WaterAnimationSpeed = 0.7F;
+    public Vector2 WaterFlowDirection = new(1F, 0.35F);
+    public float WaterDetailStrength = 0.35F;
+    public float WaterSpecularStrength = 0.8F;
 
     /// <summary>
     /// 近处淡入距离，0 关闭，用于模型贴脸时的柔化
@@ -573,6 +578,10 @@ public sealed class RenderSettings
         WaterWaveSize = Math.Clamp(WaterWaveSize, 0F, 4F);
         WaterWaveLength = Math.Clamp(WaterWaveLength, 0.1F, 1024F);
         WaterRoughness = Math.Clamp(WaterRoughness, 0.01F, 1F);
+        WaterAnimationSpeed = Math.Clamp(WaterAnimationSpeed, -8F, 8F);
+        WaterFlowDirection = Vector2.Normalize(WaterFlowDirection.LengthSquared() > 0.0001F ? WaterFlowDirection : Vector2.UnitX);
+        WaterDetailStrength = Math.Clamp(WaterDetailStrength, 0F, 2F);
+        WaterSpecularStrength = Math.Clamp(WaterSpecularStrength, 0F, 4F);
         NearFade = Math.Clamp(NearFade, 0F, 512F);
         GroundFade = Math.Clamp(GroundFade, 0F, 4096F);
         Exposure = Math.Clamp(Exposure, -6F, 6F);
@@ -691,6 +700,10 @@ public sealed class RenderSettings
         WaterWaveSize = Safe(WaterWaveSize, 0.35F);
         WaterWaveLength = Safe(WaterWaveLength, 16F);
         WaterRoughness = Safe(WaterRoughness, 0.12F);
+        WaterAnimationSpeed = Safe(WaterAnimationSpeed, 0.7F);
+        WaterFlowDirection = SafeVector2(WaterFlowDirection, new Vector2(1F, 0.35F));
+        WaterDetailStrength = Safe(WaterDetailStrength, 0.35F);
+        WaterSpecularStrength = Safe(WaterSpecularStrength, 0.8F);
         WaterColor = SafeChannel(WaterColor, new Vector3(0.08F, 0.32F, 0.42F));
         NearFade = Safe(NearFade, 0F);
         GroundFade = Safe(GroundFade, 0F);
@@ -725,4 +738,7 @@ public sealed class RenderSettings
         static Vector3 SafeChannel(Vector3 value, Vector3 fallback) => new(
             Safe(value.X, fallback.X), Safe(value.Y, fallback.Y), Safe(value.Z, fallback.Z));
     }
+         static Vector2 SafeVector2(Vector2 value, Vector2 fallback) =>
+             float.IsFinite(value.X) && float.IsFinite(value.Y) && value.LengthSquared() > 0.0001F
+                 ? Vector2.Normalize(value) : fallback;
 }
