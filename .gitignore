@@ -66,5 +66,14 @@ coverage-report/
 # Local scratch used by capture harness runs
 .scratch/
 .workbuddy/
+.workbuddy-*/
+.ai-cache/
+.ai-cache-*/
+.claude/
+.cursor/
+.vscode/
 .trash/
+
+# Portable packages are generated deliverables, not source
 /MVoxel绿色版-*.zip
+/portable/

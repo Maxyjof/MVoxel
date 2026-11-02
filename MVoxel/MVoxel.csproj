@@ -1,10 +1,13 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
         <AssemblyName>MVoxel</AssemblyName>
         <RootNamespace>MVoxel</RootNamespace>
         <ApplicationIcon>Editor\Brand\MVoxelLogo.ico</ApplicationIcon>
+        <!--漏洞审计需要联网，离线构建不因NuGet服务SSL失败产生NU1900；CI应单独启用审计-->
+        <NuGetAudit>false</NuGetAudit>
+        <NoWarn>$(NoWarn);NU1900</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>
