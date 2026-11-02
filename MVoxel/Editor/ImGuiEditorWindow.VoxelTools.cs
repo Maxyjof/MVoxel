@@ -538,17 +538,22 @@ internal sealed partial class ImGuiEditorWindow
         settings.ApertureRadius = data.PhysicalCamera ? Math.Clamp(1F / data.ApertureFStop, 0F, 1F) : settings.ApertureRadius;
         settings.FocusDistance = data.PhysicalCamera ? data.FocusDistance : settings.FocusDistance;
         settings.Exposure = data.PhysicalCamera ? MathF.Log2(Math.Max(data.Iso / 100F, .01F) * Math.Max(data.ShutterSpeed * 60F, .01F) / Math.Max(data.ApertureFStop, .7F)) : settings.Exposure;
-        var volume = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsVolume);
-        if (volume is not null)
+        var volumes = _sceneDocument?.Objects.SelectMany(item => item.Components)
+            .Where(SceneComponentTypes.IsVolume)
+            .Select(SceneComponentTypes.ReadVolume)
+            .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
+            .ToArray();
+        if (volumes is { Length: > 0 })
         {
-            var volumeData = SceneComponentTypes.ReadVolume(volume);
-            if (volumeData.Enabled)
+            foreach (var volumeData in volumes)
             {
-                var weight = volumeData.IsGlobal ? volumeData.Weight : 0F;
+                var weight = Math.Clamp(volumeData.Weight, 0F, 1F);
                 settings.Exposure += volumeData.Exposure * weight;
-                settings.FogDensity = MathF.Max(settings.FogDensity, volumeData.FogDensity * weight);
-                settings.BloomIntensity = MathF.Max(settings.BloomIntensity, volumeData.BloomIntensity * weight);
+                settings.FogDensity += MathF.Max(0F, volumeData.FogDensity) * weight;
+                settings.BloomIntensity += MathF.Max(0F, volumeData.BloomIntensity) * weight;
             }
+            settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, 1F);
+            settings.BloomIntensity = Math.Clamp(settings.BloomIntensity, 0F, 100F);
         }
         var probe = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsProbeVolume);
         if (probe is not null)
