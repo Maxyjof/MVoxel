@@ -768,6 +768,54 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocument = document;
     }
 
+    private static bool IsNativeObjectDocument(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var reader = new BinaryReader(stream);
+        return stream.Length >= 8 && reader.ReadUInt32() == 0x3158564D && reader.ReadInt32() == 4;
+    }
+
+    private void ImportNativeObjectDocument(string path)
+    {
+        if (_project is null) return;
+        var document = LargeWorldFormat.ReadObjects(path);
+        var materialById = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var definition in document.Materials.Definitions)
+        {
+            var dir = Path.Combine(_project.AssetsPath, "Materials");
+            Directory.CreateDirectory(dir);
+            var file = UniqueAssetFileName(dir, definition.Value.Name, ".material");
+            var absolute = Path.Combine(dir, file);
+            definition.Value.Save(absolute);
+            AssetMetaStore.EnsureMeta(absolute);
+            materialById[definition.Key] = "Materials/" + file;
+        }
+        var graph = new Scene.SceneGraph(_sceneDocument ??= new Scene.SceneDocument { Name = "主场景" });
+        foreach (var segment in document.Objects)
+        {
+            var objectId = StableId.TryParse(segment.ObjectId, out var parsed) ? parsed : StableId.New();
+            var sceneObject = _sceneDocument.Objects.FirstOrDefault(item => item.Id == objectId) ?? graph.Add(segment.Name, transform: TransformComponent.FromGrid(new GridTransform(segment.Origin, OrthogonalRotation.Identity)));
+            sceneObject.Id = objectId;
+            sceneObject.Name = segment.Name;
+            var relative = $"Assets/Worlds/{UniqueAssetFileName(Path.Combine(_project.AssetsPath, "Worlds"), segment.Name, ".mvmodel")}";
+            var worldPath = Path.Combine(_project.AssetsPath, relative["Assets/".Length..].Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(worldPath)!);
+            LargeWorldFormat.Write(worldPath, segment.World);
+            var bindings = document.Materials.ObjectBindings.TryGetValue(segment.ObjectId, out var map) ? map : document.Materials.Bindings;
+            var slots = bindings.Where(item => materialById.ContainsKey(item.Value)).Select(item => new MaterialSlotBinding(item.Key, materialById[item.Value])).ToArray();
+            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is null)
+            {
+                component = SceneComponentTypes.CreateVoxelModel(relative, segment.World.OccupiedVoxelCount, segment.Name, segment.Name);
+                sceneObject.Components.Add(component);
+            }
+            SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with { Model = relative, VoxelCount = segment.World.OccupiedVoxelCount, MaterialSlots = slots });
+        }
+        MarkSceneDocumentDirty();
+        LoadObjectVoxelWorlds(_project);
+        SetStatus($"已导入原生v4对象片段：{document.Objects.Count}个对象");
+    }
+
     private Dictionary<int, MaterialSlotBinding> ImportNativeMaterials(ProjectHandle project, MaterialExchangeMetadata metadata)
     {
         var result = new Dictionary<int, MaterialSlotBinding>();
@@ -812,6 +860,11 @@ internal sealed partial class ImGuiEditorWindow
         {
             var workingRelativePath = relativePath.Replace('\\', '/');
             var extension = Path.GetExtension(absolute).ToLowerInvariant();
+            if (extension == ".mvworld" && IsNativeObjectDocument(absolute))
+            {
+                ImportNativeObjectDocument(absolute);
+                return;
+            }
             MaterialExchangeMetadata? importedMaterials = null;
             if (extension is ".mvmodel" or ".mvworld")
             {

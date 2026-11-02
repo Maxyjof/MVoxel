@@ -22,6 +22,16 @@ public static class LargeWorldFormat
     /// 低于该记录数时串行填充，避免小文件付线程调度成本
     /// </summary>
     private const int ParallelWriteThreshold = 500_000;
+    private const int ObjectFormatVersion = 4;
+    private const int MaximumObjectSegments = 4096;
+    private const int MaximumObjectNameBytes = 1 * 1024 * 1024;
+
+    /// <summary>原生v4对象片段，体素坐标相对于片段原点保存</summary>
+    public sealed record NativeObjectSegment(string ObjectId, string Name, VoxelCoord64 Origin, VoxelWorld World);
+
+    /// <summary>原生v4对象片段文档，导入方可据此逐对象恢复场景对象和局部材质绑定</summary>
+    public sealed record NativeObjectDocument(IReadOnlyList<NativeObjectSegment> Objects,
+        MaterialExchangeMetadata Materials);
 
     /// <summary>
     /// 将稀疏世界保存为大世界模型文件；记录按区块连续排布，
@@ -84,7 +94,84 @@ public static class LargeWorldFormat
         WriteStreaming(path, width, depth, height, count, chunks, offsets, minimum, metadata);
     }
 
-    /// <summary>保留空模型资产及其场景引用，供擦除全部体素后继续在原对象上绘制。</summary>
+    /// <summary>写入v4对象片段文件；对象体素坐标保存在各自World中，原点单独保存</summary>
+    public static void WriteObjects(string path, IReadOnlyList<NativeObjectSegment> objects,
+        MaterialExchangeMetadata? materials = null)
+    {
+        ArgumentNullException.ThrowIfNull(objects);
+        if (objects.Count == 0 || objects.Count > MaximumObjectSegments)
+            throw new ArgumentException("对象片段数量无效", nameof(objects));
+        var metadata = materials is null ? Array.Empty<byte>() : MaterialExchangeCodec.Encode(materials);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        writer.Write(Magic); writer.Write(ObjectFormatVersion); writer.Write(objects.Count);
+        foreach (var segment in objects)
+        {
+            if (string.IsNullOrWhiteSpace(segment.ObjectId) || segment.World is null)
+                throw new InvalidDataException("对象片段缺少标识或体素世界");
+            var nameBytes = System.Text.Encoding.UTF8.GetBytes(segment.Name ?? string.Empty);
+            if (nameBytes.Length > MaximumObjectNameBytes) throw new InvalidDataException("对象名称过长");
+            writer.Write(segment.ObjectId);
+            writer.Write(nameBytes.Length); writer.Write(nameBytes);
+            writer.Write(segment.Origin.X); writer.Write(segment.Origin.Y); writer.Write(segment.Origin.Z);
+            writer.Write(segment.World.OccupiedVoxelCount);
+            foreach (var (coordinate, value) in segment.World.EnumerateOccupied())
+            {
+                writer.Write(coordinate.X); writer.Write(coordinate.Y); writer.Write(coordinate.Z);
+                writer.Write(value.Color.R); writer.Write(value.Color.G); writer.Write(value.Color.B); writer.Write(value.Color.A);
+                writer.Write(value.MaterialSlot); writer.Write(value.Flags);
+            }
+        }
+        writer.Write(metadata.Length); writer.Write(metadata);
+        writer.Flush();
+        AtomicFile.WriteBytes(path, stream.ToArray());
+    }
+
+    /// <summary>读取v4对象片段文件；v2/v3请继续使用ReadDocument</summary>
+    public static NativeObjectDocument ReadObjects(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return ReadObjects(File.ReadAllBytes(path));
+    }
+
+    /// <summary>从字节读取v4对象片段文件</summary>
+    public static NativeObjectDocument ReadObjects(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        using var stream = new MemoryStream(bytes, writable: false);
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+        if (reader.ReadUInt32() != Magic || reader.ReadInt32() != ObjectFormatVersion)
+            throw new InvalidDataException("不是MVoxel v4对象片段文件");
+        var count = reader.ReadInt32();
+        if (count < 1 || count > MaximumObjectSegments) throw new InvalidDataException("对象片段数量无效");
+        var segments = new List<NativeObjectSegment>(count);
+        for (var index = 0; index < count; index++)
+        {
+            var id = reader.ReadString();
+            var nameLength = reader.ReadInt32();
+            if (nameLength < 0 || nameLength > MaximumObjectNameBytes || nameLength > stream.Length - stream.Position)
+                throw new InvalidDataException("对象名称长度无效");
+            var name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLength));
+            var origin = new VoxelCoord64(reader.ReadInt64(), reader.ReadInt64(), reader.ReadInt64());
+            var voxelCount = reader.ReadInt32();
+            if (voxelCount < 0 || voxelCount > MaximumVoxelRecords) throw new InvalidDataException("对象体素数量无效");
+            var world = new VoxelWorld();
+            for (var voxel = 0; voxel < voxelCount; voxel++)
+            {
+                var coordinate = new VoxelCoord64(reader.ReadInt64(), reader.ReadInt64(), reader.ReadInt64());
+                var value = new VoxelValue(new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()), reader.ReadUInt16(), reader.ReadByte());
+                if (value.IsEmpty) throw new InvalidDataException("v4对象包含空体素");
+                world.Set(coordinate, value);
+            }
+            segments.Add(new NativeObjectSegment(id, name, origin, world));
+        }
+        var metadataLength = reader.ReadInt32();
+        if (metadataLength < 1 || metadataLength > MaterialExchangeCodec.MaximumBytes || stream.Length - stream.Position != metadataLength)
+            throw new InvalidDataException("v4材质元数据长度无效");
+        return new NativeObjectDocument(segments, MaterialExchangeCodec.Decode(reader.ReadBytes(metadataLength)));
+    }
+
+
     public static void WriteEmpty(string path)
     {
         var header = new byte[24];

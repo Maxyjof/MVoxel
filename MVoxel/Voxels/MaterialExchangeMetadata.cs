@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MVoxel.Project;
+using MVoxel.Core;
 
 namespace MVoxel.Voxels;
 
@@ -44,6 +45,11 @@ public sealed class MaterialExchangeMetadata
         }
     }
 }
+
+public sealed record NativeVoxelPart(MVoxel.Core.StableId ObjectId, string Name, VoxelCoord64 Origin,
+    VoxelWorld World, IReadOnlyDictionary<ushort, string> MaterialBindings);
+
+public sealed record NativeVoxelPartsDocument(IReadOnlyList<NativeVoxelPart> Parts, MaterialExchangeMetadata Materials);
 
 /// <summary>
 /// 原生模型与独立材质定义，导入方负责创建新资产并重建项目引用

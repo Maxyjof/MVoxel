@@ -278,6 +278,20 @@ internal sealed partial class ImGuiEditorWindow
         return result;
     }
 
+    private IReadOnlyList<LargeWorldFormat.NativeObjectSegment> BuildNativeObjectSegments()
+    {
+        var segments = new List<LargeWorldFormat.NativeObjectSegment>();
+        foreach (var sceneObject in _sceneDocument?.Objects ?? [])
+        {
+            if (!sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel)) continue;
+            var world = CaptureObjectVoxels(sceneObject);
+            if (world.OccupiedVoxelCount == 0) continue;
+            segments.Add(new LargeWorldFormat.NativeObjectSegment(sceneObject.Id.ToString(), sceneObject.Name,
+                GetSceneModelOrigin(sceneObject), world));
+        }
+        return segments;
+    }
+
     private void DrawVoxExportConfirmation()
     {
         if (!_openVoxExportConfirmation || _pendingVoxExportPlan is null) return;
@@ -323,12 +337,23 @@ internal sealed partial class ImGuiEditorWindow
             MaterialExchangeMetadata? nativeMetadata = null;
             if (native && !selectedOnly)
             {
-                nativeMetadata = BuildNativeMaterialMetadata(null, false);
-                if (nativeMetadata is null)
+                var segments = BuildNativeObjectSegments();
+                var objectMetadata = BuildNativeMaterialMetadata(null, false);
+                if (segments.Count == 0 || objectMetadata is null)
                 {
-                    SetStatus("全场景没有可交换的材质映射");
+                    SetStatus("全场景没有可交换的模型对象或材质映射");
                     return;
                 }
+                var objectDirectory = Path.Combine(_project.AssetsPath, "Exports");
+                Directory.CreateDirectory(objectDirectory);
+                var objectName = _project.Manifest.Name;
+                var objectPath = Path.Combine(objectDirectory, UniqueAssetFileName(objectDirectory, objectName, ".mvworld"));
+                _projectOperation.TryStart("导出原生v4对象片段", objectPath,
+                    (_, _) => { LargeWorldFormat.WriteObjects(objectPath, segments, objectMetadata); return segments.Sum(item => item.World.OccupiedVoxelCount); },
+                    count => SetStatus($"已导出原生v4对象片段 · {count:N0}体素：{objectPath}"),
+                    exception => SetStatus($"原生v4导出失败：{exception.Message}"),
+                    () => SetStatus("已取消原生v4导出"));
+                return;
             }
             var name = selectedOnly ? target!.Name : _project.Manifest.Name;
             source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
