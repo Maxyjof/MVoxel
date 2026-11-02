@@ -581,16 +581,20 @@ internal sealed partial class ImGuiEditorWindow
                                 Math.Clamp((float)(cameraPosition.Y - probePosition.Y) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
                                 Math.Clamp((float)(cameraPosition.Z - probePosition.Z) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
                             var weightedOcclusion = 0F;
+                            var weightedRadiance = 0F;
                             var totalWeight = 0F;
                             foreach (var sample in bake.Samples.OrderBy(sample => (sample.X - normalized.X) * (sample.X - normalized.X) + (sample.Y - normalized.Y) * (sample.Y - normalized.Y) + (sample.Z - normalized.Z) * (sample.Z - normalized.Z)).Take(8))
                             {
                                 var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
                                 var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
                                 weightedOcclusion += Math.Clamp(sample.Occlusion, 0F, 1F) * weight;
+                                var radiance = Math.Clamp(sample.R, 0F, 1F) * 0.2126F + Math.Clamp(sample.G, 0F, 1F) * 0.7152F + Math.Clamp(sample.B, 0F, 1F) * 0.0722F;
+                                weightedRadiance += radiance * weight;
                                 totalWeight += weight;
                             }
                             var occlusion = totalWeight > 0F ? weightedOcclusion / totalWeight : 1F;
-                            settings.SkyAmbient = Math.Clamp(settings.SkyAmbient + occlusion * settings.ProbeVolumeGiStrength * .1F, 0F, 2F);
+                            settings.SkyAmbient = Math.Clamp(settings.SkyAmbient +
+                                (totalWeight > 0F ? weightedRadiance / totalWeight : 0F) * (0.35F + occlusion * 0.65F) * settings.ProbeVolumeGiStrength * .35F, 0F, 2F);
                         }
                     }
                     catch (JsonException) { }
