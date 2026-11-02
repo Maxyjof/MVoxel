@@ -100,8 +100,15 @@ public sealed class VoxelRenderParameters
     public const int EmissiveLightTree = 118;
     public const int VoxelIndirectStrength = 119, ProbeGiStrength = 120;
     public const int VolumeWeight = 121, VolumeFogDensity = 122, VolumeBloomIntensity = 123, VolumeExposure = 124;
-    public const int RealtimeTemporalWeight = 125;
-    public const int SlotCount = 126;
+    public const int RealtimeAntiAliasingSamples = 125;
+    public const int RealtimeAntiAliasingPattern = 126, RealtimeAntiAliasingSpread = 127;
+    public const int FilmGrainIntensity = 128, FilmGrainSize = 129, PosterizeLevels = 130, PosterizeMix = 131;
+    public const int SplitToneShadowR = 132, SplitToneShadowG = 133, SplitToneShadowB = 134;
+    public const int SplitToneHighlightR = 135, SplitToneHighlightG = 136, SplitToneHighlightB = 137;
+    public const int SplitToneBalance = 138, SplitToneMix = 139;
+    public const int FxaaPass = 140, FxaaThreshold = 141, FxaaStrength = 142;
+    public const int RealtimeTemporalWeight = 143;
+    public const int SlotCount = 144;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -153,6 +160,14 @@ public sealed class VoxelRenderParameters
             ("P_PROBE_GI_STRENGTH", ProbeGiStrength),
             ("P_VOLUME_WEIGHT", VolumeWeight), ("P_VOLUME_FOG_DENSITY", VolumeFogDensity),
             ("P_VOLUME_BLOOM_INTENSITY", VolumeBloomIntensity), ("P_VOLUME_EXPOSURE", VolumeExposure),
+            ("P_REALTIME_AA_SAMPLES", RealtimeAntiAliasingSamples),
+            ("P_REALTIME_AA_PATTERN", RealtimeAntiAliasingPattern), ("P_REALTIME_AA_SPREAD", RealtimeAntiAliasingSpread),
+            ("P_FILM_GRAIN_INTENSITY", FilmGrainIntensity), ("P_FILM_GRAIN_SIZE", FilmGrainSize),
+            ("P_POSTERIZE_LEVELS", PosterizeLevels), ("P_POSTERIZE_MIX", PosterizeMix),
+            ("P_SPLIT_SHADOW_R", SplitToneShadowR), ("P_SPLIT_SHADOW_G", SplitToneShadowG), ("P_SPLIT_SHADOW_B", SplitToneShadowB),
+            ("P_SPLIT_HIGHLIGHT_R", SplitToneHighlightR), ("P_SPLIT_HIGHLIGHT_G", SplitToneHighlightG), ("P_SPLIT_HIGHLIGHT_B", SplitToneHighlightB),
+            ("P_SPLIT_BALANCE", SplitToneBalance), ("P_SPLIT_MIX", SplitToneMix),
+            ("P_FXAA_PASS", FxaaPass), ("P_FXAA_THRESHOLD", FxaaThreshold), ("P_FXAA_STRENGTH", FxaaStrength),
             ("P_REALTIME_TEMPORAL_WEIGHT", RealtimeTemporalWeight),
         };
 
@@ -321,6 +336,24 @@ public sealed class VoxelRenderParameters
         parameters[VolumeFogDensity] = settings.FogDensity;
         parameters[VolumeBloomIntensity] = settings.BloomIntensity;
         parameters[VolumeExposure] = settings.Exposure;
+        parameters[RealtimeAntiAliasingSamples] = settings.RealtimeAntiAliasingSamples switch { 2 => 2F, 4 => 4F, 8 => 8F, 16 => 16F, _ => 1F };
+        parameters[RealtimeAntiAliasingPattern] = settings.RealtimeAntiAliasingPattern == 1 ? 1F : 0F;
+        parameters[RealtimeAntiAliasingSpread] = float.IsFinite(settings.RealtimeAntiAliasingSpread) ? Math.Clamp(settings.RealtimeAntiAliasingSpread, .25F, 1F) : 1F;
+        parameters[FilmGrainIntensity] = float.IsFinite(settings.FilmGrainIntensity) ? Math.Clamp(settings.FilmGrainIntensity, 0F, 1F) : 0F;
+        parameters[FilmGrainSize] = float.IsFinite(settings.FilmGrainSize) ? Math.Clamp(settings.FilmGrainSize, 1F, 8F) : 1F;
+        parameters[PosterizeLevels] = Math.Clamp(settings.PosterizeLevels, 2, 64);
+        parameters[PosterizeMix] = float.IsFinite(settings.PosterizeMix) ? Math.Clamp(settings.PosterizeMix, 0F, 1F) : 0F;
+        parameters[SplitToneShadowR] = settings.SplitToneShadows.X;
+        parameters[SplitToneShadowG] = settings.SplitToneShadows.Y;
+        parameters[SplitToneShadowB] = settings.SplitToneShadows.Z;
+        parameters[SplitToneHighlightR] = settings.SplitToneHighlights.X;
+        parameters[SplitToneHighlightG] = settings.SplitToneHighlights.Y;
+        parameters[SplitToneHighlightB] = settings.SplitToneHighlights.Z;
+        parameters[SplitToneBalance] = settings.SplitToneBalance;
+        parameters[SplitToneMix] = settings.SplitToneMix;
+        parameters[FxaaPass] = 0F;
+        parameters[FxaaThreshold] = float.IsFinite(settings.FxaaThreshold) ? Math.Clamp(settings.FxaaThreshold, .0312F, .333F) : .125F;
+        parameters[FxaaStrength] = float.IsFinite(settings.FxaaStrength) ? Math.Clamp(settings.FxaaStrength, 0F, 1F) : .75F;
         parameters[RealtimeTemporalWeight] = 0F;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
