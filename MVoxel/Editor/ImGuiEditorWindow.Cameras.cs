@@ -21,7 +21,7 @@ internal sealed partial class ImGuiEditorWindow
     private IReadOnlyList<SceneObject> GetRenderCameraObjects()
     {
         return _sceneDocument?.Objects
-                   .Where(item => item.Visible && item.Components.Any(component =>
+                   .Where(item => IsSceneObjectVisible(item) && item.Components.Any(component =>
                        SceneComponentTypes.IsCamera(component) && component.Enabled))
                    .ToArray()
                ?? Array.Empty<SceneObject>();
@@ -152,7 +152,7 @@ internal sealed partial class ImGuiEditorWindow
 
         right = Vector3.Normalize(right);
         up = Vector3.Normalize(Vector3.Cross(right, forward));
-        var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(SceneComponentTypes.IsCamera));
+        var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(component => component.Enabled && SceneComponentTypes.IsCamera(component)));
         return new SceneCamera(position, position + forward * 100F, forward, right, up)
         {
             NearClip = data.NearClip,
@@ -386,7 +386,7 @@ internal sealed partial class ImGuiEditorWindow
         var free = cameraObject.Transform.Mode == TransformMode.Free
             ? cameraObject.Transform.Free
             : FreeTransform.Identity;
-        var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(SceneComponentTypes.IsCamera));
+        var data = SceneComponentTypes.ReadCamera(cameraObject.Components.First(component => component.Enabled && SceneComponentTypes.IsCamera(component)));
         return $"object:{cameraObject.Id}:{free.Position.X:F4},{free.Position.Y:F4},{free.Position.Z:F4}:" +
                $"{free.Rotation.X:F5},{free.Rotation.Y:F5},{free.Rotation.Z:F5},{free.Rotation.W:F5}:" +
                $"{data.FieldOfViewDegrees:F2},{data.NearClip:F4},{data.FarClip:F1}";
