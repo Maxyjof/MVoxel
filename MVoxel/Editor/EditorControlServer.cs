@@ -10,6 +10,9 @@ namespace MVoxel.Editor;
 /// </summary>
 internal sealed class EditorControlServer : IDisposable
 {
+    private const int MaximumRequestChars = 4 * 1024 * 1024;
+    private const int MaximumResponseChars = 4 * 1024 * 1024;
+    private static readonly JsonDocumentOptions RequestJsonOptions = new() { MaxDepth = 32 };
     private readonly string _pipeName = $"MVoxel.Editor.{Environment.ProcessId}";
     private readonly Func<JsonElement, object?> _handler;
     private readonly CancellationTokenSource _cancellation = new();
@@ -52,8 +55,9 @@ internal sealed class EditorControlServer : IDisposable
                 try
                 {
                     var line = await reader.ReadLineAsync(_cancellation.Token);
+                    if (line is null || line.Length > MaximumRequestChars) throw new InvalidDataException("编辑器命令请求过大");
                     if (string.IsNullOrWhiteSpace(line)) continue;
-                    using var document = JsonDocument.Parse(line);
+                    using var document = JsonDocument.Parse(line, RequestJsonOptions);
                     var result = _handler(document.RootElement);
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = true, result }));
                 }
@@ -64,7 +68,8 @@ internal sealed class EditorControlServer : IDisposable
                 catch (Exception exception)
                 {
                     MVoxelLog.Warn($"编辑器 CLI 命令失败：{exception.Message}");
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = false, error = exception.Message }));
+                    var error = exception.Message.Length > 1024 ? exception.Message[..1024] : exception.Message;
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new { ok = false, error }));
                 }
             }
             catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
