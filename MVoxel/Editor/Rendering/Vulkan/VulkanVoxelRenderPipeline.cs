@@ -1097,7 +1097,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
         parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
         parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
-        var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels);
+        var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels, _workset.SourceVersion);
         if (_realtimeHistorySignature != realtimeSignature)
         {
             _realtimeHistorySignature = realtimeSignature;
@@ -1253,11 +1253,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _accumulationInitialized = true;
     }
 
-    private static long ComputeRealtimeHistorySignature(float[] parameters, int width, int height)
+    private static long ComputeRealtimeHistorySignature(float[] parameters, int width, int height, int sourceVersion)
     {
         unchecked
         {
             long hash = width * 397L + height;
+            hash = hash * 31 + sourceVersion;
             for (var index = 0; index < parameters.Length; index++)
             {
                 if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel) continue;
