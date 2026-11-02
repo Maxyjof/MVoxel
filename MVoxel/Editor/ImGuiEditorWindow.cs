@@ -320,6 +320,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2, "editor.input.shortcuts");
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         if (_historyConfirmation is null) _projectOperation.Pump();
+        if (_project is null && _welcomeWindow?.IsOpen != true) RequestWelcomeWindow();
         EnsureWelcomeWindow();
         if (_project is not null && _editorSettings.AutoSave && _sceneDocumentDirty)
         {
@@ -728,7 +729,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void EnsureWelcomeWindow()
     {
-        if (!_showWelcomeRequested || _welcomeWindow is not null) return;
+        if (!_showWelcomeRequested) return;
+        if (_welcomeWindow?.IsOpen == true)
+        {
+            _showWelcomeRequested = false;
+            return;
+        }
+        _welcomeWindow?.Dispose();
         _showWelcomeRequested = false;
         _welcomeWindow = new ImGuiWelcomeContent(this);
         _welcomeWindow.Initialize(_imguiRenderer!, _fonts);
@@ -812,26 +819,27 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Panel);
         style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);
-        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.PanelHeader);
-        style.Colors[(int)ImGuiCol.FrameBgActive] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.Hover);
+        style.Colors[(int)ImGuiCol.FrameBgActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.TitleBg] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TitleBgActive] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.MenuBarBg] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.Header] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.HeaderHovered] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Accent);
-        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.HeaderHovered] = ToColor(EditorPalette.SelectedHover);
+        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Hover);
+        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
         style.Colors[(int)ImGuiCol.Separator] = ToColor(EditorPalette.Border);
         style.Colors[(int)ImGuiCol.SeparatorHovered] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.Tab] = ToColor(EditorPalette.PanelHeader);
-        style.Colors[(int)ImGuiCol.TabHovered] = ToColor(EditorPalette.AccentSoft);
+        style.Colors[(int)ImGuiCol.TabHovered] = ToColor(EditorPalette.SelectedHover);
         style.Colors[(int)ImGuiCol.TabSelected] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.TabDimmed] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TabDimmedSelected] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.TabDimmedSelectedOverline] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.TabSelectedOverline] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.HeaderActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.SliderGrab] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.SliderGrabActive] = ToColor(EditorPalette.Accent);
@@ -964,7 +972,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
                 if (ImGui.MenuItem("层级")) { _showHierarchy = true; ImGui.SetWindowFocus("层级##层级面板"); }
                 if (ImGui.MenuItem("检查器")) { _showInspector = true; _requestedInspectorTab = 0; }
-                if (ImGui.MenuItem("调色板")) { _showModelingTools = true; _focusModelingTools = true; }
+                if (ImGui.MenuItem("调色盘")) { _showModelingTools = true; _focusModelingTools = true; }
                 if (ImGui.MenuItem("项目资产")) { _showProjectAssets = true; ImGui.SetWindowFocus("项目资产##资源浏览器"); }
                 ImGui.EndMenu();
             }
@@ -1113,7 +1121,7 @@ DockId=0x6A3C3005,0
 DockId=0x6A3C3005,1
 [Window][检查器##检查器窗口]
 DockId=0x6A3C3006,0
-[Window][调色板##建模工具窗口]
+[Window][调色盘##建模工具窗口]
 DockId=0x6A3C3006,1
 [Window][渲染配置##渲染配置窗口]
 DockId=0x6A3C3006,2
@@ -2905,7 +2913,7 @@ DockId=0x6A3C3007,0
         var (exportSize, exportScale) = ResolveExportCanvas();
         job.Size = exportSize;
         job.Scale = exportScale;
-        job.Materials = _project is null ? null : MaterialAsset.PackTable(MaterialAsset.LoadFromProject(_project));
+        job.Materials = MaterialAsset.PackTable(_runtimeMaterials);
         job.CameraName ??= GetActiveRenderCameraObject()?.Name ?? "场景视角";
         _exportQueue.Enqueue(job);
     }
@@ -2989,11 +2997,12 @@ DockId=0x6A3C3007,0
             case "层级": DrawHierarchyContent(); break;
             case "场景": _centerTab = 0; DrawSceneView(); break;
             case "渲染": _centerTab = 1; DrawRenderView(); break;
-            case "调色板": DrawPaletteContents(); break;
+            case "调色盘": DrawPaletteContents(); break;
             case "项目资产":
                 _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset,
                     ExportVoxAsset, OpenGeneratorAsset, ExportQubicleAsset,
-                    path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
+                    path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count,
+                    path => _sceneDocument is null ? Array.Empty<string>() : AssetReferences.FindReferencingObjects(_sceneDocument, path).Select(item => item.Name).ToArray());
                 break;
             case "渲染配置": DrawConfigurationPanel(); break;
             case "生成器": DrawGeneratorToolbar(); ImGui.Separator(); DrawGeneratorEditor(); ImGui.Separator(); DrawGeneratorParameters(); DrawGeneratorMessage(); break;
@@ -3030,7 +3039,7 @@ DockId=0x6A3C3007,0
         {
             if (ImGui.BeginMenu("常规"))
             {
-                foreach (var name in new[] { "场景", "层级", "检查器", "调色板", "项目资产" })
+                foreach (var name in new[] { "场景", "层级", "检查器", "调色盘", "项目资产" })
                     if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
                 ImGui.EndMenu();
             }
@@ -3699,6 +3708,7 @@ DockId=0x6A3C3007,0
             var voxelCount = _objectVoxels.TryGetWorld(selectedObject.Id, out var objectWorld)
                 ? objectWorld.OccupiedVoxelCount : data.VoxelCount;
             ImGui.TextDisabled($"{voxelCount:N0}");
+            DrawModelMaterialSlots(selectedObject);
             if (changed)
             {
                 ApplyVoxelModelReference(selectedObject, component, model);
@@ -3859,13 +3869,10 @@ DockId=0x6A3C3007,0
 
     private void DrawConfigurationPanel()
     {
-        DrawSettingsPageHeader("视口渲染", _project is null
-            ? "编辑器默认值 · 实时生效"
-            : "当前项目值 · 实时生效");
+        DrawSettingsPageHeader("视口渲染", "当前项目值 · 实时生效");
         var activeRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
-            OpenSettings(_project is null ? 0 : 1, _project is null ? 3 : 1,
-                _project is null ? "editor.visual.render" : "project.visual.render");
+            OpenSettings(1, 1, "project.visual.render");
         DrawLodSection(activeRenderSettings);
 
         DrawSettingsSectionHeader("场景视图辅助显示");
@@ -3905,7 +3912,8 @@ DockId=0x6A3C3007,0
         DrawPanelWindowMenu();
         _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
-            path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count);
+            path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count,
+            path => _sceneDocument is null ? Array.Empty<string>() : AssetReferences.FindReferencingObjects(_sceneDocument, path).Select(item => item.Name).ToArray());
         var selectedAssetPath = _assetBrowser.SelectedAssetPath;
         if (!string.Equals(selectedAssetPath, _lastAssetSelectionPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -3947,7 +3955,7 @@ DockId=0x6A3C3007,0
                 if (updatedReferences > 0) MarkSceneDocumentDirty();
             }
 
-            updatedReferences += AssetReferences.UpdatePrefabReferences(
+            updatedReferences += AssetReferences.UpdateProjectReferences(
                 _project.AssetsPath, oldPath, newPath);
             SetStatus(updatedReferences > 0
                 ? $"已跟随更新 {updatedReferences} 处对 {oldPath} 的引用"
@@ -4494,7 +4502,7 @@ DockId=0x6A3C3007,0
                         try
                         {
                             materials = MaterialAsset.LoadFromProject(project);
-                            materialTable = MaterialAsset.PackTable(materials);
+                            materialTable = MaterialAsset.PackTable(new Dictionary<int, MaterialAsset>());
                         }
                         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
                         {
@@ -4616,9 +4624,10 @@ DockId=0x6A3C3007,0
         if (prepared?.Materials is { } materials && prepared.MaterialTable is { } table)
         {
             _brushMaterials = materials;
-            if (!materials.Any(item => item.Slot == _brushMaterialSlot)) _brushMaterialSlot = 0;
-            _pipeline?.SetMaterialTable(table);
-            if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个材质槽定义");
+            _brushMaterialSlot = 0;
+            _runtimeMaterialSignature = string.Empty;
+            RefreshRuntimeMaterialTable();
+            if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
         }
         else ReloadMaterialTable();
         if (prepared is null) _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));

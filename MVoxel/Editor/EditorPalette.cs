@@ -11,7 +11,7 @@ internal static class EditorPalette
     /// <summary>
     /// 默认主题名称
     /// </summary>
-    internal const string DefaultThemeName = "MVoxel 暗色";
+    internal const string DefaultThemeName = "柔和浅色";
 
     /// <summary>
     /// 可用主题名称
@@ -19,13 +19,19 @@ internal static class EditorPalette
     internal static readonly string[] BuiltInThemeNames =
     {
         DefaultThemeName,
-        "柔和浅色",
+        "暗色",
         "石墨灰",
         "高对比度",
         "海蓝清新",
     };
 
     private static Dictionary<string, int[]>? _customThemes;
+    // 状态底色保持正文对比度，强调色只用于细线、图标和焦点。
+    internal static Color Hover => Blend(Panel, AccentSoft, .65F);
+    internal static Color Pressed => Blend(AccentSoft, Accent, .22F);
+    internal static Color SelectedHover => Blend(AccentSoft, Accent, .12F);
+    private static Color Blend(Color a, Color b, float t) => Color.FromArgb(255,
+        (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
     private static string ThemeFile => MVoxel.Core.AppPaths.ConfigPath("themes.json");
     internal static string[] ThemeNames => BuiltInThemeNames.Concat(LoadThemes().Keys
         .Where(name => !BuiltInThemeNames.Contains(name, StringComparer.OrdinalIgnoreCase))) .ToArray();
@@ -136,43 +142,21 @@ internal static class EditorPalette
     internal static void ApplyTheme(string? themeName)
     {
         var theme = themeName?.Trim();
+        var builtIn = IsBuiltIn(theme ?? string.Empty) ? theme : DefaultThemeName;
         (Window, Panel, PanelHeader, Input, Border, Accent, AccentSoft, Text, MutedText, Icon, Success, Error) =
-            theme switch
+            builtIn switch
             {
                 "柔和浅色" => (
-                    Color.FromArgb(255, 232, 237, 243), Color.FromArgb(255, 247, 249, 251),
-                    Color.FromArgb(255, 204, 214, 225), Color.FromArgb(255, 239, 243, 247),
-                    Color.FromArgb(255, 128, 145, 163), Color.FromArgb(255, 43, 103, 155),
-                    Color.FromArgb(255, 198, 218, 236), Color.FromArgb(255, 25, 37, 51),
-                    Color.FromArgb(255, 83, 98, 115), Color.FromArgb(255, 52, 83, 112),
-                    Color.FromArgb(255, 37, 139, 94), Color.FromArgb(255, 194, 64, 76)),
+                    Color.FromArgb(unchecked((int)0xFFE9EDF2)), Color.FromArgb(unchecked((int)0xFFF7F9FC)), Color.FromArgb(unchecked((int)0xFFDCE3EC)), Color.FromArgb(unchecked((int)0xFFFFFFFF)), Color.FromArgb(unchecked((int)0xFFA5B2C3)), Color.FromArgb(unchecked((int)0xFF245EB8)), Color.FromArgb(unchecked((int)0xFFD4E3FA)), Color.FromArgb(unchecked((int)0xFF202C3C)), Color.FromArgb(unchecked((int)0xFF596A80)), Color.FromArgb(unchecked((int)0xFF426389)), Color.FromArgb(unchecked((int)0xFF23804F)), Color.FromArgb(unchecked((int)0xFFB83B4A))),
+                "暗色" => (
+                    Color.FromArgb(unchecked((int)0xFF181D26)), Color.FromArgb(unchecked((int)0xFF222A36)), Color.FromArgb(unchecked((int)0xFF2C3746)), Color.FromArgb(unchecked((int)0xFF141B25)), Color.FromArgb(unchecked((int)0xFF516179)), Color.FromArgb(unchecked((int)0xFF7CAFFF)), Color.FromArgb(unchecked((int)0xFF30496B)), Color.FromArgb(unchecked((int)0xFFE8EEF7)), Color.FromArgb(unchecked((int)0xFFA9B8CD)), Color.FromArgb(unchecked((int)0xFFA6C5EF)), Color.FromArgb(unchecked((int)0xFF75D6A5)), Color.FromArgb(unchecked((int)0xFFFF939C))),
                 "石墨灰" => (
-                    Color.FromArgb(255, 39, 42, 47), Color.FromArgb(255, 52, 56, 62),
-                    Color.FromArgb(255, 66, 71, 78), Color.FromArgb(255, 31, 34, 39),
-                    Color.FromArgb(255, 128, 137, 149), Color.FromArgb(255, 103, 175, 226),
-                    Color.FromArgb(255, 48, 82, 110), Color.FromArgb(255, 246, 246, 244),
-                    Color.FromArgb(255, 196, 198, 201), Color.FromArgb(255, 157, 200, 232),
-                    Color.FromArgb(255, 112, 214, 157), Color.FromArgb(255, 255, 122, 122)),
+                    Color.FromArgb(unchecked((int)0xFF202122)), Color.FromArgb(unchecked((int)0xFF2B2D30)), Color.FromArgb(unchecked((int)0xFF373A3E)), Color.FromArgb(unchecked((int)0xFF191B1E)), Color.FromArgb(unchecked((int)0xFF62666F)), Color.FromArgb(unchecked((int)0xFFBAA7F5)), Color.FromArgb(unchecked((int)0xFF49405E)), Color.FromArgb(unchecked((int)0xFFF0EFF4)), Color.FromArgb(unchecked((int)0xFFB7B4C0)), Color.FromArgb(unchecked((int)0xFFC6BEDA)), Color.FromArgb(unchecked((int)0xFF8AD2AF)), Color.FromArgb(unchecked((int)0xFFF599A5))),
                 "高对比度" => (
-                    Color.Black, Color.FromArgb(255, 18, 18, 18), Color.FromArgb(255, 40, 40, 40),
-                    Color.Black, Color.White, Color.FromArgb(255, 255, 224, 0),
-                    Color.FromArgb(255, 120, 80, 0), Color.White, Color.FromArgb(255, 235, 235, 235),
-                    Color.FromArgb(255, 255, 224, 0), Color.FromArgb(255, 80, 255, 130),
-                    Color.FromArgb(255, 255, 90, 90)),
+                    Color.FromArgb(unchecked((int)0xFF080B10)), Color.FromArgb(unchecked((int)0xFF10151C)), Color.FromArgb(unchecked((int)0xFF202B39)), Color.FromArgb(unchecked((int)0xFF000000)), Color.FromArgb(unchecked((int)0xFFBAC9DA)), Color.FromArgb(unchecked((int)0xFFFFD65A)), Color.FromArgb(unchecked((int)0xFF3D3540)), Color.FromArgb(unchecked((int)0xFFFFFFFF)), Color.FromArgb(unchecked((int)0xFFD3DDE9)), Color.FromArgb(unchecked((int)0xFFFFE39A)), Color.FromArgb(unchecked((int)0xFF89F5B4)), Color.FromArgb(unchecked((int)0xFFFFABB3))),
                 "海蓝清新" => (
-                    Color.FromArgb(255, 235, 247, 250), Color.White, Color.FromArgb(255, 211, 235, 241),
-                    Color.FromArgb(255, 247, 252, 253), Color.FromArgb(255, 115, 168, 180),
-                    Color.FromArgb(255, 28, 133, 164), Color.FromArgb(255, 185, 226, 235),
-                    Color.FromArgb(255, 24, 52, 62), Color.FromArgb(255, 75, 112, 123),
-                    Color.FromArgb(255, 27, 117, 143), Color.FromArgb(255, 25, 150, 105),
-                    Color.FromArgb(255, 198, 65, 72)),
-                _ => (
-                    Color.FromArgb(255, 16, 21, 28), Color.FromArgb(255, 27, 35, 45),
-                    Color.FromArgb(255, 38, 49, 63), Color.FromArgb(255, 18, 26, 34),
-                    Color.FromArgb(255, 98, 119, 142), Color.FromArgb(255, 76, 176, 238),
-                    Color.FromArgb(255, 33, 82, 116), Color.FromArgb(255, 235, 240, 246),
-                    Color.FromArgb(255, 155, 170, 188), Color.FromArgb(255, 184, 202, 220),
-                    Color.FromArgb(255, 104, 214, 147), Color.FromArgb(255, 255, 102, 112)),
+                    Color.FromArgb(unchecked((int)0xFFE5F0F2)), Color.FromArgb(unchecked((int)0xFFF6FBFC)), Color.FromArgb(unchecked((int)0xFFD2E5E9)), Color.FromArgb(unchecked((int)0xFFFFFFFF)), Color.FromArgb(unchecked((int)0xFF8FAFB7)), Color.FromArgb(unchecked((int)0xFF066B85)), Color.FromArgb(unchecked((int)0xFFC5E6EC)), Color.FromArgb(unchecked((int)0xFF17373F)), Color.FromArgb(unchecked((int)0xFF4D6C75)), Color.FromArgb(unchecked((int)0xFF286C7D)), Color.FromArgb(unchecked((int)0xFF187E60)), Color.FromArgb(unchecked((int)0xFFB34251))),
+                _ => throw new ArgumentException("未知内置主题"),
             };
         if (theme is not null && LoadThemes().TryGetValue(theme, out var colors) && colors is { Length: 12 })
             (Window, Panel, PanelHeader, Input, Border, Accent, AccentSoft, Text, MutedText, Icon, Success, Error) =

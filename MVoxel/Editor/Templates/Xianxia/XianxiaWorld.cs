@@ -41,8 +41,10 @@ internal static class XianxiaWorld
     /// 生成整套仙域世界并写入项目
     /// </summary>
     /// <param name="project">目标项目</param>
+    /// <param name="baseMaterialSlots">基础材质资产的本地槽绑定</param>
     /// <param name="report">进度回调</param>
-    public static void Populate(ProjectHandle project, Action<string, float, bool>? report = null)
+    public static void Populate(ProjectHandle project, IReadOnlyDictionary<int, string> baseMaterialSlots,
+        Action<string, float, bool>? report = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         report?.Invoke("正在隆起云海仙峰…", .6F, true);
@@ -56,11 +58,11 @@ internal static class XianxiaWorld
 
         report?.Invoke("正在写入体素数据…", .86F, true);
         WriteModelFiles(project, parts);
-        WriteExtraMaterials(project);
+        var materialSlots = WriteExtraMaterials(project, baseMaterialSlots);
         EditorPalettes.SaveProjectPalette(project, XianxiaPalette.BuildProjectPalette());
 
         report?.Invoke("正在编排场景与相机…", .94F, false);
-        WriteScene(project, parts);
+        WriteScene(project, parts, materialSlots);
     }
 
     private static void AddTerrainParts(List<Piece> parts, XianxiaTerrainResult terrain)
@@ -150,27 +152,33 @@ internal static class XianxiaWorld
         return $"仙域·{sanitized}.mvmodel";
     }
 
-    private static void WriteExtraMaterials(ProjectHandle project)
+    private static Dictionary<int, string> WriteExtraMaterials(ProjectHandle project,
+        IReadOnlyDictionary<int, string> baseMaterialSlots)
     {
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
-        var materials = new[]
+        var bindings = baseMaterialSlots.ToDictionary(item => item.Key, item => item.Value);
+        var materials = new (int Slot, MaterialAsset Asset)[]
         {
-            new MaterialAsset { Name = "灵玉", Slot = XianxiaPalette.SlotJade, Roughness = .07F, Metallic = .12F },
-            new MaterialAsset
+            (XianxiaPalette.SlotJade, new MaterialAsset { Name = "灵玉", Roughness = .07F, Metallic = .12F }),
+            (XianxiaPalette.SlotCloud, new MaterialAsset
             {
-                Name = "云海", Slot = XianxiaPalette.SlotCloud, Roughness = .55F, AbsorptionStep = .35F,
+                Name = "云海", Roughness = .55F, AbsorptionStep = .35F,
                 AbsorptionColor = new Rgba32(214, 226, 238),
-            },
-            new MaterialAsset { Name = "绸缎", Slot = XianxiaPalette.SlotCloth, Roughness = .72F },
+            }),
+            (XianxiaPalette.SlotCloth, new MaterialAsset { Name = "绸缎", Roughness = .72F }),
         };
-        foreach (var material in materials)
+        foreach (var (slot, material) in materials)
         {
-            material.Save(Path.Combine(directory, $"{material.Name}.material"));
+            var fileName = $"{material.Name}.material";
+            material.Save(Path.Combine(directory, fileName));
+            bindings[slot] = "Materials/" + fileName;
         }
+        return bindings;
     }
 
-    private static void WriteScene(ProjectHandle project, List<Piece> parts)
+    private static void WriteScene(ProjectHandle project, List<Piece> parts,
+        IReadOnlyDictionary<int, string> materialSlots)
     {
         var scene = new SceneDocument
         {
@@ -197,9 +205,12 @@ internal static class XianxiaWorld
             var sceneObject = graph.Add(piece.Name, parent,
                 TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
             sceneObject.LayerIndex = (int)piece.Layer;
-            sceneObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
+            sceneObject.Components.Add(ProjectTemplateCatalog.CreateModelComponent(
                 "Assets/Worlds/" + FileNameOf(piece.Name), piece.World.OccupiedVoxelCount,
-                TemplateId, piece.Role));
+                TemplateId, piece.Role, piece.World.EnumerateOccupied()
+                    .Select(item => (int)item.Value.MaterialSlot).Distinct()
+                    .Where(materialSlots.ContainsKey).Order()
+                    .Select(slot => new MaterialSlotBinding(slot, materialSlots[slot])).ToArray()));
         }
 
         var worldTreeObject = scene.Objects.FirstOrDefault(item => item.Name == "世界树");

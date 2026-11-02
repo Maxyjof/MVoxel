@@ -26,11 +26,11 @@ internal static class GuideQuickStart
             [
                 "左侧“层级”是场景对象树，可选择对象并控制显隐。",
                 "中间的“场景”用来快速编辑，“渲染”用来看最终画面。",
-                "右侧“检查器”和“调色板”通过标签切换；需要画面参数时可从“视图 → 渲染配置”打开。",
+                "右侧“检查器”和“调色盘”通过标签切换；需要画面参数时可从“视图 → 渲染配置”打开。",
                 "底部“项目资产”按分类浏览资产，双击体素数据可以切换当前编辑对象。",
             ],
             "面板被关掉或者挤乱了，用“布局 → 建模布局”恢复。",
-            [new GuideAction("应用建模布局", GuideActionId.ModelingLayout), new GuideAction("显示调色板", GuideActionId.ShowModelingTools)]),
+            [new GuideAction("应用建模布局", GuideActionId.ModelingLayout), new GuideAction("显示调色盘", GuideActionId.ShowModelingTools)]),
         new(
             "观察视角",
             "MVoxel 的左键留给绘制，观察模型靠另外三个动作。",
@@ -46,13 +46,13 @@ internal static class GuideQuickStart
             "放下第一笔",
             "新建空项目包含示例场景；可通过“项目 → 新建体素模型”建立自己的对象。",
             [
-                "在调色板里点一个颜色，把鼠标移到网格或模型表面按左键。",
+                "在调色盘里点一个颜色，把鼠标移到网格或模型表面按左键。",
                 "Shift+左键擦除；按住左键移动鼠标可以连续绘制，停住不动不会重复盖章。",
                 "画错了按 Ctrl+Z，Ctrl+Y 重做，按住撤销键会连续回退。",
                 "如果没有反应，先看对象或图层是不是被隐藏、模型组件是不是被禁用；状态栏会显示操作反馈。",
             ],
             null,
-            [new GuideAction("显示调色板", GuideActionId.ShowModelingTools)]),
+            [new GuideAction("显示调色盘", GuideActionId.ShowModelingTools)]),
         new(
             "搭出体积",
             "有了第一笔，按住鼠标连续绘制或擦除，逐步搭出形状。",

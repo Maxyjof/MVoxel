@@ -1,4 +1,6 @@
-using MVoxel.Core;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace MVoxel.Scene;
 
@@ -43,12 +45,21 @@ public static class AssetReferences
         {
             foreach (var component in sceneObject.Components)
             {
-                if (SceneComponentTypes.IsVoxelModel(component) &&
-                    PathEquals(SceneComponentTypes.ReadVoxelModel(component).Model, oldPath))
+                if (!SceneComponentTypes.IsVoxelModel(component) ||
+                    component.Data.ValueKind != JsonValueKind.Object) continue;
+
+                var data = JsonNode.Parse(component.Data.GetRawText())!.AsObject();
+                var componentUpdates = UpdatePath(data, "model", oldPath, newPath);
+                if (data["materialSlots"] is JsonArray slots)
                 {
-                    var data = SceneComponentTypes.ReadVoxelModel(component);
-                    SceneComponentTypes.WriteVoxelModel(component, data with { Model = ToCanonical(newPath) });
-                    updated++;
+                    //只替换引用路径，不删除失效绑定，也不重排或重编号槽位
+                    foreach (var slot in slots.OfType<JsonObject>())
+                        componentUpdates += UpdatePath(slot, "materialAsset", oldPath, newPath);
+                }
+                if (componentUpdates > 0)
+                {
+                    component.Data = JsonSerializer.SerializeToElement(data);
+                    updated += componentUpdates;
                 }
             }
 
@@ -63,10 +74,34 @@ public static class AssetReferences
     }
 
     /// <summary>
+    /// 更新项目 Assets 下场景与预制体文件内的资产路径引用
+    /// </summary>
+    /// <param name="assetsDirectory">项目 Assets 目录</param>
+    /// <param name="oldPath">旧资产相对路径</param>
+    /// <param name="newPath">新资产相对路径</param>
+    /// <returns>发生修改的文件数</returns>
+    public static int UpdateProjectReferences(string assetsDirectory, string oldPath, string newPath)
+    {
+        if (!Directory.Exists(assetsDirectory)) return 0;
+        var changed = 0;
+        foreach (var file in Directory.EnumerateFiles(assetsDirectory, "*", SearchOption.AllDirectories))
+        {
+            var extension = Path.GetExtension(file);
+            if (!extension.Equals(".mvox", StringComparison.OrdinalIgnoreCase) &&
+                !extension.Equals(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
+            var content = File.ReadAllText(file);
+            var updated = ReplaceQuotedPath(content, oldPath, newPath);
+            if (updated == content) continue;
+            File.WriteAllText(file, updated);
+            changed++;
+        }
+        return changed;
+    }
+
+    /// <summary>
     /// 更新目录下全部预制体资产文件内的引用（模型路径与预制体链接路径）
     /// </summary>
-    /// <param name="prefabsDirectory">Assets/Prefabs 目录</param>
-    /// <param name="oldPath">旧资产相对路径</param>
+    /// <param name="prefabsDirectory">Assets/Prefabs目录</param>
     /// <param name="newPath">新资产相对路径</param>
     /// <returns>发生修改的文件数</returns>
     public static int UpdatePrefabReferences(string prefabsDirectory, string oldPath, string newPath)
@@ -98,10 +133,21 @@ public static class AssetReferences
     {
         foreach (var component in sceneObject.Components)
         {
-            if (SceneComponentTypes.IsVoxelModel(component) &&
-                PathEquals(SceneComponentTypes.ReadVoxelModel(component).Model, assetRelativePath))
-            {
+            if (!SceneComponentTypes.IsVoxelModel(component) ||
+                component.Data.ValueKind != JsonValueKind.Object) continue;
+            var data = component.Data;
+            if (data.TryGetProperty("model", out var model) &&
+                model.ValueKind == JsonValueKind.String && PathEquals(model.GetString(), assetRelativePath))
                 return true;
+            if (data.TryGetProperty("materialSlots", out var slots) && slots.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var slot in slots.EnumerateArray())
+                {
+                    if (slot.ValueKind == JsonValueKind.Object &&
+                        slot.TryGetProperty("materialAsset", out var material) &&
+                        material.ValueKind == JsonValueKind.String && PathEquals(material.GetString(), assetRelativePath))
+                        return true;
+                }
             }
         }
 
@@ -113,16 +159,37 @@ public static class AssetReferences
     /// </summary>
     private static string ReplaceQuotedPath(string content, string oldPath, string newPath)
     {
-        var canonicalOld = ToCanonical(oldPath);
-        var canonicalNew = ToCanonical(newPath);
-        return content
-            .Replace($"\"{canonicalOld}\"", $"\"{canonicalNew}\"", StringComparison.OrdinalIgnoreCase)
-            .Replace($"\"/{canonicalOld}\"", $"\"/{canonicalNew}\"", StringComparison.OrdinalIgnoreCase);
+        return Regex.Replace(content, "\"(?:[^\"\\\\]|\\\\.)*\"", match =>
+        {
+            var candidate = JsonSerializer.Deserialize<string>(match.Value);
+            return PathEquals(candidate, oldPath)
+                ? JsonSerializer.Serialize(ReplacementPath(candidate!, newPath))
+                : match.Value;
+        });
+    }
+
+    private static int UpdatePath(JsonObject data, string property, string oldPath, string newPath)
+    {
+        if (data[property] is not JsonValue value || !value.TryGetValue<string>(out var candidate) ||
+            !PathEquals(candidate, oldPath)) return 0;
+        data[property] = ReplacementPath(candidate, newPath);
+        return 1;
+    }
+
+    private static string ReplacementPath(string candidate, string newPath)
+    {
+        var original = ToCanonical(candidate);
+        var replacement = ToCanonical(newPath);
+        if (original.TrimStart('/').StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
+            !replacement.TrimStart('/').StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+            replacement = "Assets/" + replacement.TrimStart('/');
+        return original.StartsWith('/') ? "/" + replacement.TrimStart('/') : replacement;
     }
 
     private static bool PathEquals(string? candidate, string assetRelativePath) =>
         !string.IsNullOrWhiteSpace(candidate) &&
-        string.Equals(ToCanonical(candidate), ToCanonical(assetRelativePath), StringComparison.OrdinalIgnoreCase);
+        string.Equals(AssetDependencies.NormalizeKey(candidate.TrimStart('/')),
+            AssetDependencies.NormalizeKey(assetRelativePath.TrimStart('/')), StringComparison.OrdinalIgnoreCase);
 
-    private static string ToCanonical(string path) => path.Replace('\\', '/');
+    private static string ToCanonical(string path) => path.Replace('\\', '/').Trim();
 }

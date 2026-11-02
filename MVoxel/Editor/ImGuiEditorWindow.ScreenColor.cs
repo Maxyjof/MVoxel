@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using ImGuiNET;
 
 namespace MVoxel.Editor;
@@ -60,9 +60,14 @@ internal sealed partial class ImGuiEditorWindow
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * .07F, 28F, 36F);
         if (Vector2.Distance(mouse, gizmoCenter) <= gizmoRadius + 8F) return false;
         var hit = PickVoxel(mouse, origin, size, GetSceneCamera());
-        if (hit is not { } voxel || !GetRenderWorld(uint.MaxValue, true).TryGet(voxel.Coordinate, out var value)) return false;
+        if (hit is not { } voxel || !GetRenderWorld(uint.MaxValue, true).TryGet(voxel.Coordinate, out var value) ||
+            _sceneDocument is null || !_objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true,
+                voxel.Coordinate, out var owner, out _)) return false;
         _sampledBrushColor = value.Color;
-        _brushMaterialSlot = value.MaterialSlot;
+        _selectedSceneObjectId = owner;
+        _voxelEditTargetId = owner;
+        EnsureModelBrushMaterialTarget();
+        SetModelBrushMaterialSlot(value.MaterialSlot);
         _brushEmissive = (value.Flags & (byte)MVoxel.Voxels.VoxelFlags.Emissive) != 0;
         SetStatus($"已取体素原色：RGB({value.Color.R}, {value.Color.G}, {value.Color.B})，并取样材质与发光标记");
         return true;

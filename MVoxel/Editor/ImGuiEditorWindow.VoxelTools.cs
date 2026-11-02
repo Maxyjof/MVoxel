@@ -82,8 +82,9 @@ internal sealed partial class ImGuiEditorWindow
         _pipelineStatus = "显卡体素管线正在初始化";
         try
         {
+            RefreshRuntimeMaterialTable();
             _pipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
-            _pipeline.SetMaterialTable(Project.MaterialAsset.PackTable(_brushMaterials));
+            _pipeline.SetMaterialTable(Project.MaterialAsset.PackTable(_runtimeMaterials));
             _pipelineStatus = string.Empty;
         }
         catch (Exception exception) when (exception is InvalidOperationException or DllNotFoundException)
@@ -447,6 +448,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>可同步到 GPU 的渲染世界</returns>
     private VoxelWorld GetRenderWorld(uint cullingMask, bool sceneVisibility = false)
     {
+        RefreshRuntimeMaterialTable();
         if (_sceneDocument is null)
         {
             return _world;
@@ -458,7 +460,8 @@ internal sealed partial class ImGuiEditorWindow
             return cached;
         }
 
-        var composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility);
+        var composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility,
+            remap: RemapRuntimeMaterial);
         _composedRenderWorld = composed;
         _composedSignature = signature;
         _composedMask = cullingMask;
@@ -486,6 +489,11 @@ internal sealed partial class ImGuiEditorWindow
                     hash = hash * 31 + (component.Enabled ? 7 : 3);
                     hash = hash * 31 + StringComparer.Ordinal.GetHashCode(model.SortingLayer);
                     hash = hash * 31 + model.SortingOrder;
+                    foreach (var slot in model.MaterialSlots ?? [])
+                    {
+                        hash = hash * 31 + slot.Slot;
+                        hash = hash * 31 + StringComparer.OrdinalIgnoreCase.GetHashCode(slot.MaterialAsset);
+                    }
                 }
             }
 
@@ -1387,11 +1395,12 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 按当前调色板与发光开关计算笔刷值
+    /// 按当前调色盘与发光开关计算笔刷值
     /// </summary>
     private VoxelValue CurrentBrushValue(bool erase)
     {
         if (erase) return default;
+        EnsureModelBrushMaterialTarget();
         var paletteColor = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
         var flags = (byte)((_brushEmissive ? VoxelFlags.Emissive : VoxelFlags.None) |
                            (paletteColor.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
@@ -1601,10 +1610,10 @@ internal sealed partial class ImGuiEditorWindow
         {
             var materials = Project.MaterialAsset.LoadFromProject(_project);
             _brushMaterials = materials;
-            if (!materials.Any(item => item.Slot == _brushMaterialSlot)) _brushMaterialSlot = 0;
-            _pipeline?.SetMaterialTable(Project.MaterialAsset.PackTable(materials));
+            _runtimeMaterialSignature = string.Empty;
+            RefreshRuntimeMaterialTable();
             if (materials.Count > 0)
-                MVoxelLog.Info($"已加载 {materials.Count} 个材质槽定义");
+                MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -1643,13 +1652,12 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var material = _editingMaterial!;
+        ImGui.PushID(path);
         ImGui.Text("材质");
         ImGui.Separator();
         ImGui.TextWrapped(Path.GetFileName(path));
         var name = material.Name;
         if (ImGui.InputText("名称", ref name, 48)) material.Name = name;
-        var slot = material.Slot;
-        if (ExpressionInput.Int("槽位", ref slot)) material.Slot = Math.Clamp(slot, 0, Project.MaterialAsset.TableSlots - 1);
 
         DrawFollowableSlider("粗糙度", "粗糙度##mat", 0.01F, 1F, material.Roughness, value => material.Roughness = value);
         DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);
@@ -1698,6 +1706,30 @@ internal sealed partial class ImGuiEditorWindow
                 (byte)Math.Round(Math.Clamp(absorptionColor.Y, 0F, 1F) * 255F),
                 (byte)Math.Round(Math.Clamp(absorptionColor.Z, 0F, 1F) * 255F));
 
+        ImGui.TextDisabled("当前场景引用");
+        if (_sceneDocument is null)
+        {
+            ImGui.TextDisabled("未打开场景");
+        }
+        else
+        {
+            var relativeMaterialPath = Path.GetRelativePath(_project!.AssetsPath, path).Replace('\\', '/');
+            var references = AssetReferences.FindReferencingObjects(_sceneDocument, relativeMaterialPath);
+            if (references.Count == 0) ImGui.TextDisabled("当前场景没有引用");
+            foreach (var reference in references)
+            {
+                ImGui.PushID(reference.Id.ToString());
+                if (ImGui.SmallButton(reference.Name))
+                {
+                    _selectedSceneObjectId = reference.Id;
+                    _voxelEditTargetId = reference.Id;
+                    FocusHierarchyObject(reference);
+                }
+                ImGui.SameLine();
+                ImGui.TextDisabled("模型组件");
+                ImGui.PopID();
+            }
+        }
         ImGui.Spacing();
         if (ImGui.Button("保存材质", new Vector2(120F, 30F)))
         {
@@ -1705,7 +1737,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 material.Save(path);
                 ReloadMaterialTable();
-                SetStatus($"材质已保存并生效：{material.Name}（槽位 {material.Slot}）");
+                SetStatus($"材质已保存并生效：{material.Name}");
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -1720,6 +1752,7 @@ internal sealed partial class ImGuiEditorWindow
             _editingMaterialPath = string.Empty;
         }
 
+        ImGui.PopID();
         return true;
     }
 
@@ -2265,8 +2298,8 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPaletteSection(RenderSettings settings)
     {
         ImGui.SeparatorText("基础色与色相");
-        Toggle("调色板着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色板，不使用贴图");
+        Toggle("调色盘着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色盘，不使用贴图");
         SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
         SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
         SliderFloat("对比度", ref settings.ColorContrast, 0.3F, 2.5F, "%.2f");
@@ -2277,15 +2310,6 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawBrushProperties()
     {
-        var selectedMaterial = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
-        if (ImGui.BeginCombo("笔刷材质", selectedMaterial?.Name ?? "默认材质（槽 0）"))
-        {
-            if (ImGui.Selectable("默认材质（槽 0）", _brushMaterialSlot == 0)) _brushMaterialSlot = 0;
-            foreach (var material in _brushMaterials)
-                if (ImGui.Selectable($"{material.Name}（槽 {material.Slot}）", _brushMaterialSlot == material.Slot))
-                    _brushMaterialSlot = (ushort)material.Slot;
-            ImGui.EndCombo();
-        }
         var shape = _brushShape == VoxelBrushShape.Cube ? "立方" : "球";
         if (ImGui.BeginCombo("形状", shape))
         {
@@ -2310,15 +2334,6 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus(_brushEmissive ? "新绘制的体素将带自发光标记" : "新绘制的体素为普通颜色");
         }
 
-        ImGui.SeparatorText("色板");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(_paletteIsProjectLevel
-            ? $"项目调色板：{_selectedProjectPalettePath}" : "编辑器默认调色板");
-        DrawPaletteSelector();
-        if (_project is not null)
-        {
-            if (ImGui.Button("在项目设置中编辑调色板", new Vector2(-1F, 30F)))
-                OpenSettings(1, 3);
-        }
     }
 
     private void DrawPostSection(RenderSettings settings)

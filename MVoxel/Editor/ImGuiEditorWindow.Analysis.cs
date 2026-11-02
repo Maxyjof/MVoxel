@@ -60,6 +60,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawVoxelMeasurements()
     {
         var unit = ImGui.GetFontSize();
+        ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(unit * 35F, unit * 18F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("体素度量", ref _showVoxelMeasurements))
         {
@@ -71,6 +72,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPerformanceAnalyzer()
     {
         var unit = ImGui.GetFontSize();
+        ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(unit * 42F, unit * 36F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("性能分析器", ref _showPerformanceAnalyzer))
         {

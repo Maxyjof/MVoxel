@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Scene;
@@ -10,12 +10,70 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    private Dictionary<StableId, Dictionary<int, int>> _runtimeMaterialSlotsByObject = [];
+    private IReadOnlyDictionary<int, MaterialAsset> _runtimeMaterials = new Dictionary<int, MaterialAsset>();
+    private string _runtimeMaterialSignature = string.Empty;
+
+    private void RefreshRuntimeMaterialTable()
+    {
+        var byPath = _brushMaterials.ToDictionary(item => Path.GetFullPath(item.SourcePath), StringComparer.OrdinalIgnoreCase);
+        var runtimeByPath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var objectSlots = new Dictionary<StableId, Dictionary<int, int>>();
+        var runtimeMaterials = new Dictionary<int, MaterialAsset>();
+        foreach (var sceneObject in _sceneDocument?.Objects ?? [])
+        {
+            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is null) continue;
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            var localSlots = new Dictionary<int, int>();
+            foreach (var binding in data.MaterialSlots ?? [])
+            {
+                if (_project is null) continue;
+                var assetPath = Path.GetFullPath(Path.Combine(_project.AssetsPath,
+                    binding.MaterialAsset.Replace('/', Path.DirectorySeparatorChar)));
+                if (!byPath.TryGetValue(assetPath, out var material)) continue;
+                if (!runtimeByPath.TryGetValue(assetPath, out var runtimeSlot))
+                {
+                    runtimeSlot = runtimeByPath.Count + 1;
+                    if (runtimeSlot >= MaterialAsset.TableSlots)
+                        throw new InvalidOperationException("场景材质数量超过16位运行时容量，请减少同时使用的不同材质资产");
+                    runtimeByPath.Add(assetPath, runtimeSlot);
+                    runtimeMaterials[runtimeSlot] = material;
+                }
+                localSlots[binding.Slot] = runtimeSlot;
+            }
+            objectSlots[sceneObject.Id] = localSlots;
+        }
+
+        var signature = string.Join("|", runtimeMaterials.OrderBy(item => item.Key)
+            .Select(item => $"{item.Key}:{item.Value.SourcePath}:{File.GetLastWriteTimeUtc(item.Value.SourcePath).Ticks}")) +
+            ";" + string.Join("|", objectSlots.OrderBy(item => item.Key)
+                .SelectMany(item => item.Value.OrderBy(slot => slot.Key)
+                    .Select(slot => $"{item.Key}:{slot.Key}>{slot.Value}")));
+        _runtimeMaterialSlotsByObject = objectSlots;
+        _runtimeMaterials = runtimeMaterials;
+        if (signature == _runtimeMaterialSignature) return;
+        _runtimeMaterialSignature = signature;
+        _composedRenderWorld = null;
+        _composedSignature = 0;
+        _pipeline?.SetMaterialTable(MaterialAsset.PackTable(runtimeMaterials));
+        _pipeline?.ResetAccumulation();
+        _accumulationSignature = string.Empty;
+    }
+
+    private VoxelValue RemapRuntimeMaterial(StableId objectId, VoxelValue value)
+    {
+        if (value.MaterialSlot == 0) return value;
+        var runtimeSlot = _runtimeMaterialSlotsByObject.TryGetValue(objectId, out var slots) &&
+            slots.TryGetValue(value.MaterialSlot, out var mapped) ? mapped : (ushort)0;
+        return value with { MaterialSlot = (ushort)runtimeSlot };
+    }
+
     private bool _showModelingTools = true;
     private bool _resetDockLayoutRequested;
     private bool _focusModelingTools;
     private Action? _afterProjectClose;
     private bool _allowProjectReplacement;
-    private StableId? _repaintModelId;
     private bool _showRenderStatistics;
 
     private bool DeferProjectReplacement(Action continuation)
@@ -113,7 +171,7 @@ internal sealed partial class ImGuiEditorWindow
             new Vector2(layout.RightWidth, layout.MainHeight));
         if (_focusModelingTools) ImGui.SetNextWindowFocus();
         _focusModelingTools = false;
-        if (ImGui.Begin("调色板##建模工具窗口", PanelWindowFlags))
+        if (ImGui.Begin("调色盘##建模工具窗口", PanelWindowFlags))
         {
             DrawPanelWindowMenu();
             DrawPaletteContents();
@@ -121,60 +179,39 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.End();
     }
 
-    private void DrawPaletteContents()
+    private void DrawPaletteContents() => DrawPaletteContentsCore();
+
+    private void DrawBrushMaterialSelector() => DrawBrushMaterialSelectorCore();
+
+    private void DrawModelMaterialSlots(SceneObject modelObject) => DrawModelMaterialSlotsCore(modelObject);
+
+    private MaterialAsset? FindCurrentBrushMaterial()
     {
-            var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
-            ImGui.ColorButton("当前笔刷色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F), ImGuiColorEditFlags.NoTooltip,
-                new Vector2(ImGui.GetFrameHeight() * 2F, ImGui.GetFrameHeight()));
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"颜色 {_paletteIndex} · RGB({color.R}, {color.G}, {color.B}) · A {color.A}");
-            ImGui.SameLine();
-            ImGui.TextUnformatted(_sampledBrushColor.HasValue ? "取样色" : $"颜色 {_paletteIndex}");
-            ImGui.SameLine();
-            var sampling = _screenColorSampling;
-            if (ImGui.Button(sampling ? "取消取色" : "取色"))
-            {
-                _screenColorSampling = !sampling;
-                _screenColorSamplingArmed = false;
-                SetStatus(sampling ? "已取消取色" : "点击场景体素取原色，其他位置取显示颜色；Esc 取消");
-            }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景体素取原色、材质和发光标记；其他位置取显示颜色，保留笔刷材质与发光标记。Esc 取消");
-            DrawBrushProperties();
-            var material = _brushMaterials.FirstOrDefault(item => item.Slot == _brushMaterialSlot);
-            if (material is not null && ImGui.Button("编辑共享材质", new Vector2(-1F, ImGui.GetFrameHeight())))
-            {
-                _assetBrowser.SelectAsset(Path.GetRelativePath(_project!.AssetsPath, material.SourcePath));
-                _showInspector = true;
-                _requestedInspectorTab = 0;
-            }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("修改此材质槽会影响所有引用它的体素；选择笔刷颜色不会重绘已有方块。");
+        EnsureModelBrushMaterialTarget();
+        var component = FindBrushModelComponent();
+        if (component is null || _brushMaterialSlot == 0) return null;
+        var binding = (SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [])
+            .FirstOrDefault(item => item.Slot == _brushMaterialSlot);
+        return binding is { } selected ? FindMaterialAsset(selected.MaterialAsset) : null;
     }
 
-    private void DrawRepaintModelAction(SceneObject target)
+    private MaterialAsset? FindMaterialAsset(string? relativePath) => string.IsNullOrWhiteSpace(relativePath) || _project is null
+        ? null : _brushMaterials.FirstOrDefault(item =>
+            string.Equals(Path.GetRelativePath(_project.AssetsPath, item.SourcePath).Replace('\\', '/'),
+                relativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase));
+
+    private void SaveModelMaterialBindings(SceneObject modelObject, ComponentRecord component,
+        VoxelModelComponentData data, Dictionary<int, MaterialSlotBinding> bindings)
     {
-        if (ImGui.Button("重绘当前模型…", new Vector2(-1F, ImGui.GetFrameHeight())))
-        {
-            _repaintModelId = target.Id;
-            ImGui.OpenPopup("重绘模型确认");
-        }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前颜色、材质槽与发光标记应用到此模型已有方块，不添加新方块；整次操作可撤销。");
-        if (CenteredModal.Begin("重绘模型确认", ImGuiWindowFlags.AlwaysAutoResize))
-        {
-            var repaintTarget = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _repaintModelId);
-            ImGui.TextWrapped($"将当前笔刷应用到“{repaintTarget?.Name}”的所有已有方块。共享材质的参数不会被修改。");
-            if (ImGui.Button("应用并保留撤销"))
-            {
-                if (repaintTarget is not null)
-                {
-                    var cells = _objectVoxels.GetOrCreate(repaintTarget.Id).EnumerateOccupied()
-                        .Select(cell => cell.Coordinate).ToArray();
-                    CommitCells("重绘模型", cells, CurrentBrushValue(false), repaintTarget.Id);
-                }
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("取消")) ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-        }
+        //只写组件映射，不改体素内容或本地编号
+        SceneComponentTypes.WriteVoxelModel(component, data with { MaterialSlots = bindings.Values.OrderBy(item => item.Slot).ToArray() });
+        EnsureModelBrushMaterialTarget();
+        MarkSceneDocumentDirty();
+        _composedRenderWorld = null;
+        _composedSignature = 0;
+        _pipeline?.ResetAccumulation();
+        _accumulationSignature = string.Empty;
+        SetStatus($"已更新“{modelObject.Name}”的材质槽位映射");
     }
 
     private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false, bool obj = false)

@@ -81,7 +81,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Pipeline _computePipeline;
     private VkBuffer _materialTableBuffer;
     private DeviceMemory _materialTableMemory;
-    private float[] _materialTable = [];
+    private float[] _materialTable = MVoxel.Project.MaterialAsset.PackTable(new Dictionary<int, MVoxel.Project.MaterialAsset>());
+    private int MaterialTableSlotCount => Math.Max(1, _materialTable.Length / MVoxel.Project.MaterialAsset.FloatsPerSlot);
     // 上传暂存缓冲持久复用：切换视图会触发工作集重传，
     // 每次同步都新建再销毁缓冲会让驱动分配器频繁抖动，也放大了驱动异常的概率
     private VkBuffer _stagingBuffer;
@@ -371,9 +372,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal void SetMaterialTable(float[] table)
     {
         ArgumentNullException.ThrowIfNull(table);
-        var expected = MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot;
-        if (table.Length != expected)
-            throw new ArgumentException($"材质槽表长度应为 {expected}，实际 {table.Length}", nameof(table));
+        var stride = MVoxel.Project.MaterialAsset.FloatsPerSlot;
+        if (table.Length == 0 || table.Length % stride != 0 || table.Length / stride > MVoxel.Project.MaterialAsset.TableSlots)
+            throw new ArgumentException("材质槽表长度无效", nameof(table));
+        var normalizedTable = table.Length == MVoxel.Project.MaterialAsset.TableSlots * stride
+            ? table
+            : PadMaterialTable(table, MVoxel.Project.MaterialAsset.TableSlots * stride);
+        table = normalizedTable;
         if (_context is null || _api is not { } api || _materialTableBuffer.Handle == 0)
         {
             _materialTable = (float[])table.Clone();
@@ -406,9 +411,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 上传线性 RGB 环境经纬图到固定容量缓冲；宽高为 0 表示关闭环境贴图
+    /// 将动态材质表补齐到GPU固定容量，槽位数据本身仍按原生16位编号保存
     /// </summary>
-    /// <param name="linearRgb">每像素 3 个 float 的线性 RGB 数据</param>
+    private static float[] PadMaterialTable(float[] source, int length)
+    {
+        var result = new float[length];
+        Array.Fill(result, MVoxel.Project.MaterialAsset.FollowGlobal);
+        source.AsSpan().CopyTo(result);
+        return result;
+    }
+
+    /// <summary>
+    /// 上传线性RGB环境经纬图到固定容量缓冲；宽高为0表示关闭环境贴图
+    /// </summary>
+    /// <param name="linearRgb">每像素3个float的线性RGB数据</param>
     /// <param name="width">经纬图宽度</param>
     /// <param name="height">经纬图高度</param>
     /// <param name="intensity">环境强度</param>
@@ -981,7 +997,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     tableBytes,
                     BufferUsageFlags.StorageBufferBit,
                     MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-                SetMaterialTable(MVoxel.Project.MaterialAsset.PackTable([]));
+                 SetMaterialTable(MVoxel.Project.MaterialAsset.PackTable(new Dictionary<int, MVoxel.Project.MaterialAsset>()));
                 (_environmentBuffer, _environmentMemory) = CreateBuffer(
                     (ulong)(EnvironmentCapacity * 4 * sizeof(float)),
                     BufferUsageFlags.StorageBufferBit,
@@ -2598,7 +2614,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     primaryNormal = hitNormal;
                     primarySelected = (hitFlags & 256u) != 0u;
                 }
-                MaterialSlotData material = materialSlots[int(hitSlot) % 256];
+                MaterialSlotData material = materialSlots[int(hitSlot)];
                 vec3 hitLinearColor = groundHit
                     ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
                     : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
@@ -2674,9 +2690,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             float segment;
                             vec3 segmentNormal;
                             if (!IntersectBox(cursor, rayDirection, boxMin, boxMax, segment, segmentNormal)) break;
-                            float overrideOpacity = materialSlots[int(currentSlot) % 256].optics.z;
+                            float overrideOpacity = materialSlots[int(currentSlot)].optics.z;
                             float density = overrideOpacity >= 0.0 ? overrideOpacity : currentColor.a;
-                            MaterialSlotData layerMaterial = materialSlots[int(currentSlot) % 256];
+                            MaterialSlotData layerMaterial = materialSlots[int(currentSlot)];
                             float hazeDensity = max(layerMaterial.haze.w, 0.0);
                             float opacity = 1.0 - exp(-clamp(density, 0.0, 1.0) * max(segment, 0.001) * (0.5 + hazeDensity));
                             vec3 tint = SrgbToLinear(clamp(currentColor.rgb, vec3(0.0), vec3(1.0)));
@@ -2703,7 +2719,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             if ((nextFlags & 1u) == 0u)
                             {
                                 if (dot(nextNormal, rayDirection) > 0.0) nextNormal = -nextNormal;
-                                MaterialSlotData nextMaterial = materialSlots[int(nextSlot) % 256];
+                                MaterialSlotData nextMaterial = materialSlots[int(nextSlot)];
                                 accumulated += remaining * RealtimeShade(cursor + rayDirection * nextDistance,
                                     nextNormal, rayDirection, nextColor, nextFlags, nextMaterial, false,
                                     SrgbToLinear(clamp(nextColor.rgb, vec3(0.0), vec3(1.0))), state);
@@ -2866,7 +2882,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         {
                             if (insideNext && (nextFlags & 1u) != 0u)
                             {
-                                float nextIor = materialSlots[int(nextSlot) % 256].optics.x;
+                                float nextIor = materialSlots[int(nextSlot)].optics.x;
                                 nextMediumIor = nextIor > 1.001 ? nextIor : 1.0;
                             }
                             foundExit = true;

@@ -15,6 +15,8 @@ internal sealed partial class ImGuiEditorWindow
     private ProjectSettingsDocument _projectSettings = ProjectSettingsDocument.CreateDefault();
     private bool _useHardwareRayTracing;
     private bool _showSettingsWindow;
+    private bool _editorSettingsTabOpen;
+    private bool _projectSettingsTabOpen;
     private int _settingsScope;
     private bool _settingsScopeSelectionPending;
     private string? _requestedSettingsSubTab;
@@ -25,7 +27,7 @@ internal sealed partial class ImGuiEditorWindow
     private string _renameShortcutScheme = string.Empty;
     private string _shortcutSearch = string.Empty;
     private string _selectedProjectPalettePath = EditorPalettes.ProjectPaletteRelativePath;
-    private string _newProjectPaletteName = "新调色板";
+    private string _newProjectPaletteName = "新调色盘";
     private string _newRenderPresetName = "自定义画面";
     private string _lastEditorSettingsSnapshot = string.Empty;
     private string _lastProjectSettingsSnapshot = string.Empty;
@@ -344,6 +346,8 @@ internal sealed partial class ImGuiEditorWindow
             scope = 0;
 
         _settingsScope = scope;
+        if (scope == 0) _editorSettingsTabOpen = true;
+        else _projectSettingsTabOpen = true;
         if (scope == 0) _editorSettingsCategory = category;
         else _projectSettingsCategory = category;
         _settingsScopeSelectionPending = true;
@@ -365,70 +369,45 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawSettingsWindow()
     {
         if (!_showSettingsWindow) return;
+        if (_project is null) _projectSettingsTabOpen = false;
+        if (!_editorSettingsTabOpen && !_projectSettingsTabOpen) _editorSettingsTabOpen = true;
 
-        var open = true;
-        ImGui.SetNextWindowSize(new Vector2(1080F, 760F), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSizeConstraints(new Vector2(820F, 560F), new Vector2(1800F, 1400F));
-        if (ImGui.Begin("设置##MVoxelSettings", ref open,
-                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings))
-        {
-            FloatingWindowShadow.Draw();
-            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9F, 7F));
-            if (ImGui.BeginChild("##SettingsHeader", new Vector2(0F, 78F), ImGuiChildFlags.Borders))
-            {
-                ImGui.TextColored(ToColor(EditorPalette.Accent), "配置中心");
-                ImGui.SameLine();
-                ImGui.TextDisabled(_project is null ? "编辑器级设置" : "编辑器级设置 · 当前项目级设置");
-                ImGui.TextDisabled("按职责进入分类；修改会自动保存并立即作用于当前编辑器。");
-            }
+        var requestedScope = _settingsScope;
+        var focusRequested = _settingsScopeSelectionPending;
+        DrawSettingsDockTab("编辑器设置##EditorSettingsDock", 0, ref _editorSettingsTabOpen,
+            focusRequested && requestedScope == 0, DrawEditorSettingsSurface);
+        if (_project is not null)
+            DrawSettingsDockTab("项目设置##ProjectSettingsDock", 1, ref _projectSettingsTabOpen,
+                focusRequested && requestedScope == 1, DrawProjectSettingsSurface);
+        _settingsScopeSelectionPending = false;
 
-            ImGui.EndChild();
-            ImGui.Spacing();
-            if (ImGui.BeginTabBar("##SettingsScopes"))
-            {
-                var selectEditorSettings = _settingsScopeSelectionPending && _settingsScope == 0;
-                var editorSettingsTabOpen = true;
-                if (ImGui.BeginTabItem("编辑器设置", ref editorSettingsTabOpen,
-                        selectEditorSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None))
-                {
-                    _settingsScope = 0;
-                    DrawEditorSettingsSurface();
-                    ImGui.EndTabItem();
-                }
-
-                var projectEnabled = _project is not null;
-                var selectProjectSettings = _settingsScopeSelectionPending && _settingsScope == 1;
-                var projectSettingsTabOpen = true;
-                if (projectEnabled && ImGui.BeginTabItem("项目设置", ref projectSettingsTabOpen,
-                        selectProjectSettings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None))
-                {
-                    _settingsScope = 1;
-                    DrawProjectSettingsSurface();
-                    ImGui.EndTabItem();
-                }
-
-                ImGui.EndTabBar();
-                _settingsScopeSelectionPending = false;
-            }
-
-            ImGui.PopStyleVar();
-        }
-
-        if (_settingsScope == 1 && _projectSettingsCategory == 1 && ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) &&
-            ImGui.IsAnyItemActive())
-            _renderSettingsInteractionAt = Environment.TickCount64;
-
-        ImGui.End();
-        if (!open)
+        if (!_editorSettingsTabOpen && !_projectSettingsTabOpen)
         {
             _showSettingsWindow = false;
-            _settingsScopeSelectionPending = false;
             _requestedSettingsSubTab = null;
             SaveEditorSettings();
             SaveProjectSettings();
         }
     }
 
+    private void DrawSettingsDockTab(string title, int scope, ref bool open, bool focus, Action drawContent)
+    {
+        if (!open) return;
+        ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
+        ImGui.SetNextWindowSize(new Vector2(1080F, 760F), ImGuiCond.FirstUseEver);
+        if (focus) ImGui.SetNextWindowFocus();
+        if (ImGui.Begin(title, ref open, PanelWindowFlags))
+        {
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _settingsScope = scope;
+            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9F, 7F));
+            drawContent();
+            ImGui.PopStyleVar();
+            if (scope == 1 && _projectSettingsCategory == 1 &&
+                ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && ImGui.IsAnyItemActive())
+                _renderSettingsInteractionAt = Environment.TickCount64;
+        }
+        ImGui.End();
+    }
     private void DrawEditorSettingsSurface()
     {
         var categories = new[] { "常规", "布局", "输入", "画面", "外观", "性能" };
@@ -450,7 +429,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawProjectSettingsSurface()
     {
-        var categories = new[] { "项目", "画面", "资产", "调色板", "主题管理" };
+        var categories = new[] { "项目", "画面", "资产", "调色盘", "主题管理" };
         DrawSettingsSidebar(categories, ref _projectSettingsCategory, "##项目设置分类", () =>
         {
             switch (_projectSettingsCategory)
@@ -478,8 +457,6 @@ internal sealed partial class ImGuiEditorWindow
         var contentHeight = Math.Max(1F, ImGui.GetContentRegionAvail().Y);
         ImGui.BeginChild(id, new Vector2(202F, contentHeight), ImGuiChildFlags.Borders);
         ImGui.TextColored(ToColor(EditorPalette.Accent), "设置分类");
-        ImGui.TextDisabled("按职责组织，不混放运行参数");
-        ImGui.Separator();
         for (var index = 0; index < categories.Count; index++)
         {
             var isSelected = selected == index;
@@ -487,7 +464,7 @@ internal sealed partial class ImGuiEditorWindow
             if (isSelected)
             {
                 ImGui.PushStyleColor(ImGuiCol.Header, ToColor(EditorPalette.AccentSoft));
-                ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(EditorPalette.AccentSoft));
+                ImGui.PushStyleColor(ImGuiCol.HeaderHovered, ToColor(EditorPalette.SelectedHover));
             }
 
             if (ImGui.Selectable(categories[index], isSelected, ImGuiSelectableFlags.None,
@@ -725,8 +702,8 @@ internal sealed partial class ImGuiEditorWindow
 
         DrawRenderSettingsAccordion("color", "色彩输出", () =>
         {
-                DrawSettingsSectionHeader("颜色与输出", "调色板、色调映射和输出观感");
-                ImGui.Checkbox("调色板着色", ref settings.PaletteShading);
+                DrawSettingsSectionHeader("颜色与输出", "调色盘、色调映射和输出观感");
+                ImGui.Checkbox("调色盘着色", ref settings.PaletteShading);
                 SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
                 SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
                 SliderFloat("颜色对比度", ref settings.ColorContrast, 0.2F, 2.5F, "%.2f");
@@ -1210,7 +1187,7 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("目录", "project.asset.directory"))
             {
                 ImGui.TextUnformatted("项目资源目录");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Assets 下的项目资源由目录结构统一管理，体素材质使用调色板基础色");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Assets 下的项目资源由目录结构统一管理，体素材质使用调色盘基础色");
                 ImGui.EndTabItem();
             }
 
@@ -1232,24 +1209,24 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 项目级调色板管理：一个项目可以拥有多个调色板资产，项目设置只指定当前使用项。
+    /// 项目级调色盘管理：一个项目可以拥有多个调色盘资产，项目设置只指定当前使用项。
     /// 颜色编辑、创建、切换和保存集中在这里，不再混入渲染参数页面。
     /// </summary>
     private void DrawProjectPaletteSettings()
     {
-        DrawSettingsPageHeader("调色板", "管理项目内的多个调色板，并指定建模笔刷当前使用的调色板");
+        DrawSettingsPageHeader("调色盘", "管理项目内的多个调色盘，并指定建模笔刷当前使用的调色盘");
         if (_project is null)
         {
-            ImGui.TextDisabled("打开项目后即可管理项目调色板。");
+            ImGui.TextDisabled("打开项目后即可管理项目调色盘。");
             return;
         }
 
         var paths = EditorPalettes.EnumerateProjectPalettePaths(_project);
         if (paths.Count == 0)
         {
-            ImGui.TextDisabled("项目中还没有调色板资产。");
-            ImGui.InputText("新调色板名称", ref _newProjectPaletteName, 96);
-            if (ImGui.Button("创建默认调色板", new Vector2(170F, 30F)))
+            ImGui.TextDisabled("项目中还没有调色盘资产。");
+            ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96);
+            if (ImGui.Button("创建默认调色盘", new Vector2(170F, 30F)))
                 CreateProjectPaletteAsset(VoxelPalette.Build());
             return;
         }
@@ -1266,9 +1243,9 @@ internal sealed partial class ImGuiEditorWindow
         if (!paths.Contains(_selectedProjectPalettePath, StringComparer.OrdinalIgnoreCase))
             _selectedProjectPalettePath = activePath;
 
-        ImGui.TextUnformatted("当前调色板");
+        ImGui.TextUnformatted("当前调色盘");
         ImGui.SetNextItemWidth(-1F);
-        if (ImGui.BeginCombo("##当前项目调色板", PaletteDisplayName(_selectedProjectPalettePath)))
+        if (ImGui.BeginCombo("##当前项目调色盘", PaletteDisplayName(_selectedProjectPalettePath)))
         {
             foreach (var path in paths)
             {
@@ -1287,15 +1264,15 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.TextDisabled($"项目配置当前指向：{_projectSettings.ActivePalettePath}");
         ImGui.Separator();
-        ImGui.InputText("新调色板名称", ref _newProjectPaletteName, 96);
-        if (ImGui.Button("新建当前调色板副本", new Vector2(180F, 30F)))
+        ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96);
+        if (ImGui.Button("新建当前调色盘副本", new Vector2(180F, 30F)))
             CreateProjectPaletteAsset(_palette);
         ImGui.SameLine();
-        if (ImGui.Button("保存调色板", new Vector2(128F, 30F)))
+        if (ImGui.Button("保存调色盘", new Vector2(128F, 30F)))
         {
             SetStatus(EditorPalettes.SaveProjectPalette(_project, _selectedProjectPalettePath, _palette)
-                ? $"已保存调色板：{PaletteDisplayName(_selectedProjectPalettePath)}"
-                : "调色板保存失败");
+                ? $"已保存调色盘：{PaletteDisplayName(_selectedProjectPalettePath)}"
+                : "调色盘保存失败");
         }
 
         ImGui.SameLine();
@@ -1304,7 +1281,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SameLine();
         ImGui.BeginDisabled(paths.Count <= 1);
-        if (ImGui.Button("删除调色板", new Vector2(128F, 30F)))
+        if (ImGui.Button("删除调色盘", new Vector2(128F, 30F)))
             DeleteSelectedProjectPalette(paths);
         ImGui.EndDisabled();
 
@@ -1322,7 +1299,7 @@ internal sealed partial class ImGuiEditorWindow
                 (byte)Math.Clamp((int)MathF.Round(editableColor.Y * 255F), 0, 255),
                 (byte)Math.Clamp((int)MathF.Round(editableColor.Z * 255F), 0, 255),
                 (byte)Math.Clamp((int)MathF.Round(editableColor.W * 255F), 0, 255));
-            SetStatus($"已修改调色板颜色 #{_paletteIndex}，请点击“保存调色板”写入项目资产");
+            SetStatus($"已修改调色盘颜色 #{_paletteIndex}，请点击“保存调色盘”写入项目资产");
         }
     }
 
@@ -1345,12 +1322,12 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             _pipeline?.ResetAccumulation();
-            SetStatus($"已载入项目调色板：{PaletteDisplayName(normalized)}");
+            SetStatus($"已载入项目调色盘：{PaletteDisplayName(normalized)}");
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            SetStatus($"调色板载入失败：{exception.Message}");
+            SetStatus($"调色盘载入失败：{exception.Message}");
             return false;
         }
     }
@@ -1360,7 +1337,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_project is null) return;
         var name = _newProjectPaletteName.Trim();
         foreach (var invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
-        if (name.Length == 0) name = "新调色板";
+        if (name.Length == 0) name = "新调色盘";
         if (!name.EndsWith(".palette", StringComparison.OrdinalIgnoreCase) &&
             !name.EndsWith(".pal", StringComparison.OrdinalIgnoreCase))
             name += ".palette";
@@ -1369,7 +1346,7 @@ internal sealed partial class ImGuiEditorWindow
         var absolutePath = EditorPalettes.ProjectPaletteFilePath(_project, relativePath);
         if (File.Exists(absolutePath))
         {
-            SetStatus($"调色板已存在：{name}");
+            SetStatus($"调色盘已存在：{name}");
             return;
         }
 
@@ -1382,11 +1359,11 @@ internal sealed partial class ImGuiEditorWindow
             SaveProjectSettings();
             _assetBrowser.Reset();
             TryLoadProjectPalette(relativePath, false);
-            SetStatus($"已创建项目调色板：{name}");
+            SetStatus($"已创建项目调色盘：{name}");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            SetStatus($"创建调色板失败：{exception.Message}");
+            SetStatus($"创建调色盘失败：{exception.Message}");
         }
     }
 
@@ -1410,11 +1387,11 @@ internal sealed partial class ImGuiEditorWindow
                 TryLoadProjectPalette(next, false);
             }
 
-            SetStatus($"已删除调色板：{PaletteDisplayName(deletedPath)}");
+            SetStatus($"已删除调色盘：{PaletteDisplayName(deletedPath)}");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            SetStatus($"删除调色板失败：{exception.Message}");
+            SetStatus($"删除调色盘失败：{exception.Message}");
         }
     }
 }

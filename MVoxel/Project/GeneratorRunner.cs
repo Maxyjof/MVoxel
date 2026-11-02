@@ -36,9 +36,9 @@ public static class GeneratorRunner
     public const int MaxParameters = 32;
 
     /// <summary>
-    /// 材质槽上限，与材质资产槽表一致
+    /// 模型本地材质槽上限，槽0为默认材质
     /// </summary>
-    public const int MaxMaterialSlot = 63;
+    public const int MaxMaterialSlot = ushort.MaxValue;
 
     /// <summary>
     /// 只执行 generator.define 读取名称、包围盒与参数表，不执行 run
@@ -1164,7 +1164,7 @@ ctx = {
         }
 
         /// <summary>
-        /// 校验材质槽为 0 到 63 的整数
+        /// 校验模型本地材质槽为0到65535的整数
         /// </summary>
         private static ushort ToSlot(double materialSlot)
         {

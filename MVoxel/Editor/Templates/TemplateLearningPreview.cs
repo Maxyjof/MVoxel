@@ -71,7 +71,7 @@ internal static class TemplateLearningPreview
         ProjectTemplateId.DefaultRoom => ["在层级中选择桌椅、杯子或壁画", "展开纸杯对象并选择可乐", "切换渲染视图，Ctrl+S 保存项目"],
         ProjectTemplateId.XianxiaContinent => ["在层级中选择山体、宗门或浮空岛并聚焦", "锁定一个分件，取色并修改局部体素", "切换场景相机，保存项目并导出画面"],
         ProjectTemplateId.MaterialLab => ["选择玻璃、金属与发光样品并取色", "从笔刷材质进入共享材质，比较粗糙度与透明度", "切到渲染视图，保存并导出 PNG"],
-        ProjectTemplateId.PaletteWorkshop => ["取样色卡并在空白处绘制", "在项目设置中创建与保存调色板副本", "比较新笔刷颜色与已有方块，再保存项目"],
+        ProjectTemplateId.PaletteWorkshop => ["取样色卡并在空白处绘制", "在项目设置中创建与保存调色盘副本", "比较新笔刷颜色与已有方块，再保存项目"],
         ProjectTemplateId.SparseWorld => ["在层级中选择远距离地标并聚焦", "锁定地标，观察远近移动与编辑归属", "打开信息统计，保存并导出选中地标"],
         ProjectTemplateId.LodPlayground => ["比较不同建筑的细节层级", "手动开关场景 LOD 并移动相机比较", "通过信息统计比较工作集，再保存配置"],
         ProjectTemplateId.ProceduralTerrain => ["切面查看地形内部的材质层", "锁定地形模型，使用球形笔刷修改局部", "关闭切面，保存并导出地形模型"],

@@ -143,8 +143,9 @@ internal sealed class ObjectVoxelStore
     /// <summary>
     /// 按对象可见性和排序配置合成世界
     /// </summary>
-    internal VoxelWorld Compose(SceneDocument scene, uint cameraMask, bool useSceneVisibility, CancellationToken cancellation = default) =>
-        Compose(GetVisibleEntries(scene, cameraMask, useSceneVisibility), cancellation);
+    internal VoxelWorld Compose(SceneDocument scene, uint cameraMask, bool useSceneVisibility,
+        CancellationToken cancellation = default, Func<StableId, VoxelValue, VoxelValue>? remap = null) =>
+        Compose(GetVisibleEntries(scene, cameraMask, useSceneVisibility), cancellation, remap);
 
     /// <summary>
     /// 查询指定位置最终可见的对象和体素，与合成顺序保持一致
@@ -171,7 +172,8 @@ internal sealed class ObjectVoxelStore
     /// <summary>
     /// 按排序图层、排序顺序和调用方提供的层级顺序覆盖重叠坐标
     /// </summary>
-    internal VoxelWorld Compose(IEnumerable<ObjectVoxelRenderEntry> entries, CancellationToken cancellation = default)
+    internal VoxelWorld Compose(IEnumerable<ObjectVoxelRenderEntry> entries, CancellationToken cancellation = default,
+        Func<StableId, VoxelValue, VoxelValue>? remap = null)
     {
         var result = new VoxelWorld();
         var writer = result.CreateBulkWriter();
@@ -185,7 +187,7 @@ internal sealed class ObjectVoxelStore
             foreach (var (coordinate, value) in world.EnumerateOccupied())
             {
                 if ((processed++ & 4095) == 0) cancellation.ThrowIfCancellationRequested();
-                writer.Set(coordinate, value);
+                writer.Set(coordinate, remap is null ? value : remap(entry.value.ObjectId, value));
             }
         }
         return result;

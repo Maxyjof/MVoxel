@@ -142,7 +142,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool DrawPaletteAssetInspector(string relativePath, string path)
     {
-        ImGui.Text("调色板");
+        ImGui.Text("调色盘");
         ImGui.Separator();
         ImGui.TextWrapped(Path.GetFileName(path));
         ImGui.TextDisabled($"路径  {relativePath}");
@@ -153,7 +153,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.Button("在项目设置中编辑", new Vector2(-1F, 30F)))
             {
                 OpenSettings(1, 3);
-                SetStatus("已打开项目设置的“调色板”，可编辑当前调色板颜色");
+                SetStatus("已打开项目设置的“调色盘”，可编辑当前调色盘颜色");
             }
             var draw = ImGui.GetWindowDrawList();
             var start = ImGui.GetCursorScreenPos();
@@ -169,11 +169,11 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             ImGui.Dummy(new Vector2(16F * cell, 16F * cell));
-            ImGui.TextWrapped("该调色板是项目内的独立资产；项目可以同时保存多个调色板，并在项目设置中指定当前使用项。");
+            ImGui.TextWrapped("该调色盘是项目内的独立资产；项目可以同时保存多个调色盘，并在项目设置中指定当前使用项。");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException)
         {
-            ImGui.TextColored(new System.Numerics.Vector4(1F, .55F, .35F, 1F), "调色板文件损坏或长度不正确");
+            ImGui.TextColored(new System.Numerics.Vector4(1F, .55F, .35F, 1F), "调色盘文件损坏或长度不正确");
             ImGui.TextWrapped(exception.Message);
         }
 

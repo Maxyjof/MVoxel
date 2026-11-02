@@ -6,16 +6,15 @@ using MVoxel.Voxels;
 namespace MVoxel.Project;
 
 /// <summary>
-/// 项目内 .material 材质资产：按槽位覆盖路径追踪的默认表面属性，
+/// 项目内可共享的 .material 材质资产：定义路径追踪的表面属性，
 /// 未填写的字段跟随全局渲染设置
 /// </summary>
 public sealed class MaterialAsset
 {
     /// <summary>
-    /// 材质槽表容量，体素 MaterialSlot 只在表内寻址。
-    /// 取 256 与 MagicaVoxel 的调色板索引一一对应，导入 .vox 的 MATL 时不会撞上限。
+    /// 原生体素材质槽容量上限，槽0为默认材质，运行时表按需分配
     /// </summary>
-    public const int TableSlots = 256;
+    public const int TableSlots = ushort.MaxValue + 1;
 
     /// <summary>
     /// 每个槽位的打包 float 数：粗糙度、金属度、发光强度倍率、吸收步长倍率、
@@ -42,11 +41,6 @@ public sealed class MaterialAsset
     /// 材质显示名
     /// </summary>
     public string Name { get; set; } = "材质";
-
-    /// <summary>
-    /// 材质槽位，0 到 63
-    /// </summary>
-    public int Slot { get; set; }
 
     /// <summary>
     /// 粗糙度覆盖，null 表示跟随全局
@@ -108,11 +102,7 @@ public sealed class MaterialAsset
     /// <summary>
     /// 默认材质：所有字段跟随全局渲染设置
     /// </summary>
-    public static MaterialAsset CreateDefault(int slot) => new()
-    {
-        Name = $"材质 {slot}",
-        Slot = slot,
-    };
+    public static MaterialAsset CreateDefault(string name = "材质") => new() { Name = name };
 
     /// <summary>
     /// 从文件读取材质资产
@@ -151,15 +141,27 @@ public sealed class MaterialAsset
     }
 
     /// <summary>
-    /// 把一组材质打包成 GPU 槽位表：每槽 16 个 float，未覆盖字段写入跟随哨兵
+    /// 把运行时槽位到材质资产的映射打包成GPU表，每槽16个float
     /// </summary>
-    /// <param name="materials">项目材质集合，槽位冲突时后写入者生效</param>
-    /// <returns>长度 TableSlots × FloatsPerSlot 的打包表</returns>
-    public static float[] PackTable(IReadOnlyList<MaterialAsset> materials)
+    /// <param name="materials">
+    /// 由模型组件材质槽映射生成的运行时槽位表
+    /// </param>
+    /// <returns>
+    /// 按最高槽位分配的打包表，至少包含默认槽
+    /// </returns>
+    public static float[] PackTable(IReadOnlyDictionary<int, MaterialAsset> materials)
     {
         ArgumentNullException.ThrowIfNull(materials);
-        var table = new float[TableSlots * FloatsPerSlot];
-        for (var slot = 0; slot < TableSlots; slot++)
+        var slotCount = 1;
+        foreach (var slot in materials.Keys)
+        {
+            if (slot is < 0 or >= TableSlots)
+                throw new ArgumentOutOfRangeException(nameof(materials), slot, "材质槽必须在0到65535之间");
+            slotCount = Math.Max(slotCount, slot + 1);
+        }
+
+        var table = new float[slotCount * FloatsPerSlot];
+        for (var slot = 0; slot < slotCount; slot++)
         {
             var base0 = slot * FloatsPerSlot;
             table[base0] = FollowGlobal;
@@ -174,10 +176,9 @@ public sealed class MaterialAsset
             table[base0 + 15] = FollowGlobal;
         }
 
-        foreach (var material in materials)
+        foreach (var (slot, material) in materials)
         {
-            if (material.Slot < 0 || material.Slot >= TableSlots) continue;
-            var base0 = material.Slot * FloatsPerSlot;
+            var base0 = slot * FloatsPerSlot;
             table[base0] = material.Roughness ?? FollowGlobal;
             table[base0 + 1] = material.Metallic ?? FollowGlobal;
             table[base0 + 2] = material.EmissiveScale ?? FollowGlobal;
@@ -233,11 +234,10 @@ public sealed class MaterialAsset
     }
 
     /// <summary>
-    /// 规范化：槽位取模，可空字段钳制到合法区间，非法值回退为跟随全局
+    /// 规范化可空字段：非法值回退为跟随全局。
     /// </summary>
     public void Normalize()
     {
-        Slot = Math.Clamp(Slot, 0, TableSlots - 1);
         Roughness = ClampOrFollow(Roughness, 0.01F, 1F);
         Metallic = ClampOrFollow(Metallic, 0F, 1F);
         EmissiveScale = ClampOrFollow(EmissiveScale, 0F, 32F);
@@ -247,7 +247,7 @@ public sealed class MaterialAsset
         Opacity = ClampOrFollow(Opacity, 0F, 1F);
         VolumeScattering = ClampOrFollow(VolumeScattering, 0F, 1F);
         HazeDensity = ClampOrFollow(HazeDensity, 0F, 8F);
-        if (string.IsNullOrWhiteSpace(Name)) Name = $"材质 {Slot}";
+        if (string.IsNullOrWhiteSpace(Name)) Name = "材质";
     }
 
     private static float? ClampOrFollow(float? value, float minimum, float maximum)

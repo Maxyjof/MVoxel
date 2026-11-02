@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using MVoxel.Core;
 
@@ -79,7 +79,8 @@ public static class SceneComponentTypes
             ReadModelScale(data, "scaleY"),
             ReadModelScale(data, "scaleZ"),
             ReadString(data, "sortingLayer", "默认"),
-            data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0);
+            data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0,
+            ReadMaterialSlots(data));
     }
 
     /// <summary>
@@ -97,6 +98,7 @@ public static class SceneComponentTypes
             ScaleY = ClampModelScale(data.ScaleY),
             ScaleZ = ClampModelScale(data.ScaleZ),
             SortingLayer = string.IsNullOrWhiteSpace(data.SortingLayer) ? "默认" : data.SortingLayer.Trim(),
+            MaterialSlots = NormalizeMaterialSlots(data.MaterialSlots),
         }, JsonOptions)!.AsObject();
         // 旧版本只认单个 scale，这里补一份，用旧版打开时至少能看到大致倍数
         updated["scale"] = JsonValue.Create(ClampModelScale(data.ScaleX));
@@ -121,6 +123,22 @@ public static class SceneComponentTypes
     /// <summary>倍数统一夹在缩放下限与上限之间</summary>
     private static float ClampModelScale(float scale) =>
         float.IsFinite(scale) ? Math.Clamp(scale, 0.125F, 8F) : 1F;
+
+    private static MaterialSlotBinding[] ReadMaterialSlots(JsonElement data)
+    {
+        if (!data.TryGetProperty("materialSlots", out var property) || property.ValueKind != JsonValueKind.Array)
+            return [];
+        try { return NormalizeMaterialSlots(property.Deserialize<MaterialSlotBinding[]>(JsonOptions) ?? []); }
+        catch (JsonException) { return []; }
+    }
+
+    //仅规范化槽号和路径文本，缺失资产的引用保留以便重新绑定或恢复
+    private static MaterialSlotBinding[] NormalizeMaterialSlots(IEnumerable<MaterialSlotBinding>? slots) =>
+        (slots ?? []).Where(item => item.Slot is > 0 and <= ushort.MaxValue &&
+                                     !string.IsNullOrWhiteSpace(item.MaterialAsset))
+            .GroupBy(item => item.Slot).Select(group => group.Last())
+            .Select(item => new MaterialSlotBinding(item.Slot, item.MaterialAsset.Replace('\\', '/').Trim()))
+            .OrderBy(item => item.Slot).ToArray();
 
     public static ComponentRecord CreateLight(LightComponentData data) => new()
     {
@@ -287,10 +305,14 @@ public static class SceneComponentTypes
 public readonly record struct VoxelModelComponentData(
     string Model, string Part, int VoxelCount, string Template,
     float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
-    string SortingLayer = "默认", int SortingOrder = 0)
+    string SortingLayer = "默认", int SortingOrder = 0,
+    MaterialSlotBinding[]? MaterialSlots = null)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }
+
+/// <summary>模型组件的本地体素材质槽到共享材质资产的映射。</summary>
+public readonly record struct MaterialSlotBinding(int Slot, string MaterialAsset);
 
 /// <summary>
 /// 场景光照组件的类型；方向光不需要位置范围，由对象朝向决定照射方向

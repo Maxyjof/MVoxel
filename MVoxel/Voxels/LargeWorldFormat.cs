@@ -29,8 +29,11 @@ public static class LargeWorldFormat
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="world">待保存的稀疏世界</param>
-    public static void Write(string path, VoxelWorld world)
+    public static void Write(string path, VoxelWorld world) => Write(path, world, null);
+
+    public static void Write(string path, VoxelWorld world, MaterialExchangeMetadata? materials)
     {
+        var metadata = materials is null ? null : MaterialExchangeCodec.Encode(materials);
         ArgumentNullException.ThrowIfNull(world);
         if (!world.TryGetBounds(out var minimum, out var maximum))
         {
@@ -56,11 +59,11 @@ public static class LargeWorldFormat
 
         if (count < ParallelWriteThreshold)
         {
-            var bytes = new byte[checked(24 + count * RecordSize)];
+            var bytes = new byte[checked(24 + count * RecordSize + (metadata is null ? 0 : 4 + metadata.Length))];
             using (var stream = new MemoryStream(bytes, writable: true))
             using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
             {
-                WriteHeader(writer, width, depth, height, count);
+                WriteHeader(writer, width, depth, height, count, metadata is null ? Version : 3);
             }
 
             for (var index = 0; index < chunks.Count; index++)
@@ -68,11 +71,17 @@ public static class LargeWorldFormat
                 SerializeChunkRecords(bytes.AsSpan((int)(24 + offsets[index] * RecordSize)), chunks[index], minimum);
             }
 
+            if (metadata is not null)
+            {
+                var tail = 24 + count * RecordSize;
+                BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(tail), metadata.Length);
+                metadata.CopyTo(bytes, tail + 4);
+            }
             AtomicFile.WriteBytes(path, bytes);
             return;
         }
 
-        WriteStreaming(path, width, depth, height, count, chunks, offsets, minimum);
+        WriteStreaming(path, width, depth, height, count, chunks, offsets, minimum, metadata);
     }
 
     /// <summary>保留空模型资产及其场景引用，供擦除全部体素后继续在原对象上绘制。</summary>
@@ -81,7 +90,7 @@ public static class LargeWorldFormat
         var header = new byte[24];
         using (var stream = new MemoryStream(header, writable: true))
         using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
-            WriteHeader(writer, 1, 1, 1, 0);
+            WriteHeader(writer, 1, 1, 1, 0, Version);
         AtomicFile.WriteBytes(path, header);
     }
 
@@ -91,7 +100,7 @@ public static class LargeWorldFormat
     /// 峰值内存只有一个区块的缓冲规模，不再要求整份文件驻留内存
     /// </summary>
     private static void WriteStreaming(string path, int width, int depth, int height, int count,
-        List<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)> chunks, long[] offsets, VoxelCoord64 minimum)
+        List<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)> chunks, long[] offsets, VoxelCoord64 minimum, byte[]? metadata)
     {
         var temporaryPath = AtomicFile.BeginTemporary(path);
         try
@@ -106,7 +115,7 @@ public static class LargeWorldFormat
             using (var headerStream = new MemoryStream(header, writable: true))
             using (var headerWriter = new BinaryWriter(headerStream, System.Text.Encoding.ASCII, leaveOpen: true))
             {
-                WriteHeader(headerWriter, width, depth, height, count);
+                WriteHeader(headerWriter, width, depth, height, count, metadata is null ? Version : 3);
             }
 
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
@@ -139,6 +148,13 @@ public static class LargeWorldFormat
                         System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
                     }
                 });
+                if (metadata is not null)
+                {
+                    stream.Position = 24L + count * RecordSize;
+                    using var tailWriter = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+                    tailWriter.Write(metadata.Length);
+                    tailWriter.Write(metadata);
+                }
                 stream.Flush(flushToDisk: true);
             }
 
@@ -261,6 +277,10 @@ public static class LargeWorldFormat
     /// <returns>读取出的稀疏世界</returns>
     public static VoxelWorld Read(string path, VoxelCoord64 origin = default,
         CancellationToken cancellationToken = default, Action<int, int>? reportProgress = null)
+        => ReadDocument(path, origin, cancellationToken, reportProgress).World;
+
+    public static NativeVoxelDocument ReadDocument(string path, VoxelCoord64 origin = default,
+        CancellationToken cancellationToken = default, Action<int, int>? reportProgress = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
@@ -287,7 +307,8 @@ public static class LargeWorldFormat
             reportProgress?.Invoke(count - remaining, count);
         }
 
-        return world;
+        var materials = ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(4)));
+        return new NativeVoxelDocument(world, materials);
     }
 
     /// <summary>
@@ -296,7 +317,7 @@ public static class LargeWorldFormat
     private static (int Width, int Depth, int Height, int Count) ValidateHeader(ReadOnlySpan<byte> header, long fileLength)
     {
         if (BinaryPrimitives.ReadUInt32LittleEndian(header) != Magic ||
-            BinaryPrimitives.ReadInt32LittleEndian(header[4..]) != Version)
+            BinaryPrimitives.ReadInt32LittleEndian(header[4..]) is not (2 or 3))
         {
             throw new InvalidDataException("不是受支持的 MVoxel 大世界模型文件");
         }
@@ -306,7 +327,11 @@ public static class LargeWorldFormat
         var height = BinaryPrimitives.ReadInt32LittleEndian(header[16..]);
         var count = BinaryPrimitives.ReadInt32LittleEndian(header[20..]);
         ValidateDimensions(width, height, depth);
-        if (count < 0 || count > MaximumVoxelRecords || 24L + count * RecordSize != fileLength)
+        var recordEnd = 24L + (long)count * RecordSize;
+        var version = BinaryPrimitives.ReadInt32LittleEndian(header[4..]);
+        if (count < 0 || count > MaximumVoxelRecords ||
+            (version == 2 ? recordEnd != fileLength : fileLength < recordEnd + 4 ||
+                fileLength > recordEnd + 4 + MaterialExchangeCodec.MaximumBytes))
         {
             throw new InvalidDataException("大世界模型体素记录数量或文件长度不一致");
         }
@@ -341,7 +366,9 @@ public static class LargeWorldFormat
     /// <param name="bytes">完整文件内容</param>
     /// <param name="origin">模型在世界中的起点</param>
     /// <returns>读取出的稀疏世界</returns>
-    public static VoxelWorld Read(byte[] bytes, VoxelCoord64 origin = default)
+    public static VoxelWorld Read(byte[] bytes, VoxelCoord64 origin = default) => ReadDocument(bytes, origin).World;
+
+    public static NativeVoxelDocument ReadDocument(byte[] bytes, VoxelCoord64 origin = default)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         if (bytes.Length < 24)
@@ -357,7 +384,23 @@ public static class LargeWorldFormat
             ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, origin, writer);
         }
 
-        return world;
+        using var stream = new MemoryStream(bytes, writable: false);
+        stream.Position = 24L + count * RecordSize;
+        var materials = ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(4)));
+        return new NativeVoxelDocument(world, materials);
+    }
+
+    private static MaterialExchangeMetadata ReadMetadata(Stream stream, int version)
+    {
+        if (version == 2) return new MaterialExchangeMetadata();
+        var lengthBytes = new byte[4];
+        ReadFully(stream, lengthBytes, 4);
+        var length = BinaryPrimitives.ReadInt32LittleEndian(lengthBytes);
+        if (length < 1 || length > MaterialExchangeCodec.MaximumBytes || stream.Length - stream.Position != length)
+            throw new InvalidDataException("材质元数据长度无效");
+        var bytes = new byte[length];
+        ReadFully(stream, bytes, length);
+        return MaterialExchangeCodec.Decode(bytes);
     }
 
     /// <summary>

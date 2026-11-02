@@ -76,22 +76,20 @@ internal sealed partial class ImGuiEditorWindow
         new("camera.setActive", "相机", "设为渲染相机", "让渲染窗口使用指定相机",
             [.. TargetIdOrName]),
         new("material.list", "材质", "列出材质", "列出项目内全部 .material 资产", []),
-        new("material.get", "材质", "读取材质", "按槽位读取材质参数",
-            [Param("slot", "integer", true, "材质槽位")]),
-        new("material.set", "材质", "写入材质", "按槽位新建或覆盖材质，未给出的字段保持原值",
-            [Param("slot", "integer", true, "材质槽位"), Param("name", "string", false, "材质名称"),
-             Param("roughness", "number", false, "粗糙度 0.01–1"), Param("metallic", "number", false, "金属度 0–1"),
-             Param("emissive", "number", false, "发光强度倍率 0–32"),
-             Param("opacity", "number", false, "半透明不透明度 0–1"),
-             Param("volumeScattering", "number", false, "体积散射强度 0–1"),
-             Param("hazeDensity", "number", false, "雾化密度 0–8"),
-             Param("scatteringColor", "number[3]", false, "散射色 r/g/b，0–255"),
-             Param("absorptionStep", "number", false, "半透明吸收步长倍率 0–8"),
-             Param("absorptionColor", "number[3]", false, "吸收色 r/g/b，0–255"),
-             Param("ior", "number", false, "折射率，1 表示不偏折，玻璃约 1.5"),
-             Param("specular", "number", false, "镜面强度（菲涅尔 F0 倍率）")]),
-        new("material.remove", "材质", "删除材质", "删除槽位对应的材质文件",
-            [Param("slot", "integer", true, "材质槽位")]),
+        new("material.get", "材质", "读取材质", "按资产路径读取材质参数，路径相对项目Assets目录",
+            [Param("path", "string", true, "材质资产路径，以.material结尾")]),
+        new("material.create", "材质", "新建材质", "创建默认材质资产，不覆盖已有文件，材质参数只能在材质检查器中编辑",
+            [Param("path", "string", true, "相对Assets目录的.material路径"), Param("name", "string", false, "材质名称")]),
+        new("material.set", "材质", "材质参数编辑说明", "此接口不修改参数，始终提示到材质检查器编辑；不再支持全局slot", []),
+        new("material.remove", "材质", "删除材质", "按路径删除材质资产，保留组件中的失效引用，不改体素编号",
+            [Param("path", "string", true, "相对Assets目录的.material路径")]),
+        new("material.references", "材质", "查询材质引用", "查询当前场景引用此路径的模型组件，资产删除后仍可查询失效引用",
+            [Param("path", "string", true, "相对Assets目录的.material路径")]),
+        new("model.materials.get", "材质", "读取组件材质槽", "读取指定模型组件的本地槽位引用；槽0始终为默认材质",
+            [Param("objectId", "string", true, "场景对象标识")]),
+        new("model.materials.bind", "材质", "绑定组件材质", "绑定或替换本地槽位的资产引用，影响该组件使用此槽的全部体素，不修改体素编号",
+            [Param("objectId", "string", true, "场景对象标识"), Param("localSlot", "integer", true, "本地槽位1至65535，槽0不可绑定"),
+             Param("path", "string", true, "相对Assets目录的.material路径")]),
         new("render.settings.get", "渲染", "读取渲染设置", "读取当前场景的渲染设置", []),
         new("render.settings.set", "渲染", "写入渲染设置", "逐字段修改渲染设置，未给出的字段保持原值",
             [Param("pathTracing", "boolean", false, "是否开启路径追踪"),
@@ -164,6 +162,8 @@ internal sealed partial class ImGuiEditorWindow
         if (string.IsNullOrWhiteSpace(commandId)) throw new ArgumentException("缺少 commandId");
         var payload = arguments.TryGetProperty("arguments", out var nested) && nested.ValueKind == JsonValueKind.Object
             ? nested : arguments;
+        if (commandId.StartsWith("material.", StringComparison.Ordinal) || commandId.StartsWith("model.materials.", StringComparison.Ordinal))
+            RejectLegacyMaterialSlot(payload);
         return commandId switch
         {
             "scene.list" => ListSceneObjects(),
@@ -187,8 +187,12 @@ internal sealed partial class ImGuiEditorWindow
             "camera.setActive" => SetActiveCamera(payload),
             "material.list" => ListMaterials(),
             "material.get" => GetMaterial(payload),
-            "material.set" => SetMaterial(payload),
+            "material.create" => CreateMaterial(payload),
+            "material.set" => throw new InvalidOperationException("材质参数只能在材质检查器中编辑。创建资产请用material.create(path,name)，查询请用material.get(path)，组件绑定请用model.materials.bind(objectId,localSlot,path)；不支持全局slot"),
             "material.remove" => RemoveMaterial(payload),
+            "material.references" => GetMaterialReferences(payload),
+            "model.materials.get" => GetModelMaterials(payload),
+            "model.materials.bind" => BindModelMaterial(payload),
             "render.settings.get" => DescribeRenderSettings(),
             "render.settings.set" => ApplyRenderSettings(payload),
             "render.resetAccumulation" => ResetRenderAccumulation(),
@@ -613,15 +617,14 @@ internal sealed partial class ImGuiEditorWindow
         return new
         {
             count = materials.Count,
-            materials = materials.OrderBy(item => item.Slot).Select(DescribeMaterial).ToArray(),
+            materials = materials.OrderBy(item => item.SourcePath, StringComparer.OrdinalIgnoreCase).Select(DescribeMaterial).ToArray(),
         };
     }
 
-    private static object DescribeMaterial(MaterialAsset material) => new
+    private object DescribeMaterial(MaterialAsset material) => new
     {
-        slot = material.Slot,
         name = material.Name,
-        path = material.SourcePath,
+        path = Path.GetRelativePath(RequireProject().AssetsPath, material.SourcePath).Replace('\\', '/'),
         roughness = material.Roughness,
         metallic = material.Metallic,
         emissive = material.EmissiveScale,
@@ -635,80 +638,133 @@ internal sealed partial class ImGuiEditorWindow
         specular = material.Specular,
     };
 
-    private object GetMaterial(JsonElement arguments)
+    private object GetMaterial(JsonElement arguments) => RunOnUi(() =>
     {
-        var project = RequireProject();
-        var slot = (int?)ReadNumber(arguments, "slot") ?? throw new ArgumentException("缺少 slot");
-        var matches = MaterialAsset.LoadFromProject(project).Where(item => item.Slot == slot).ToArray();
-        // 同一槽位有多份定义时只有一份生效，这里把冲突报出来，避免改了文件画面却不变
-        var material = matches.FirstOrDefault();
-        return material is null
-            ? new { slot, exists = false }
-            : new { material = DescribeMaterial(material), conflictCount = matches.Length - 1 };
-    }
+        var path = RequireMaterialPath(arguments);
+        return File.Exists(path)
+            ? new { material = DescribeMaterial(MaterialAsset.Load(path)), exists = true }
+            : (object)new { path = MaterialRelativePath(path), exists = false };
+    });
 
-    private object SetMaterial(JsonElement arguments) => RunOnUi(() =>
+    private object CreateMaterial(JsonElement arguments) => RunOnUi(() =>
     {
-        var project = RequireProject();
-        var slot = (int?)ReadNumber(arguments, "slot") ?? throw new ArgumentException("缺少 slot");
-        slot = Math.Clamp(slot, 0, MaterialAsset.TableSlots - 1);
-        var materials = MaterialAsset.LoadFromProject(project);
-        var material = materials.FirstOrDefault(item => item.Slot == slot);
-        var isNew = material is null;
-        material ??= MaterialAsset.CreateDefault(slot);
+        //仅允许资产标识和名称，不能通过创建接口注入材质参数
+        RequireMaterialArguments(arguments, "path", "name");
+        var path = RequireMaterialPath(arguments);
+        if (File.Exists(path)) throw new InvalidOperationException("材质资产已存在，不允许覆盖；材质参数请在材质检查器中编辑");
         var name = ReadString(arguments, "name");
-        if (!string.IsNullOrWhiteSpace(name)) material.Name = name;
-        if (ReadNumber(arguments, "roughness") is { } roughness) material.Roughness = (float)roughness;
-        if (ReadNumber(arguments, "metallic") is { } metallic) material.Metallic = (float)metallic;
-        if (ReadNumber(arguments, "emissive") is { } emissive) material.EmissiveScale = (float)emissive;
-        if (ReadNumber(arguments, "opacity") is { } opacity) material.Opacity = (float)opacity;
-        if (ReadNumber(arguments, "volumeScattering") is { } scattering) material.VolumeScattering = (float)scattering;
-        if (ReadNumber(arguments, "hazeDensity") is { } haze) material.HazeDensity = (float)haze;
-        if (ReadVector(arguments, "scatteringColor") is { } scatterRgb)
-            material.ScatteringColor = new Rgba32(
-                (byte)Math.Clamp((int)Math.Round(scatterRgb[0]), 0, 255),
-                (byte)Math.Clamp((int)Math.Round(scatterRgb[1]), 0, 255),
-                (byte)Math.Clamp((int)Math.Round(scatterRgb[2]), 0, 255));
-        if (ReadNumber(arguments, "absorptionStep") is { } step) material.AbsorptionStep = (float)step;
-        if (ReadNumber(arguments, "ior") is { } ior) material.Ior = (float)ior;
-        if (ReadNumber(arguments, "specular") is { } specular) material.Specular = (float)specular;
-        if (ReadVector(arguments, "absorptionColor") is { } rgb)
-            material.AbsorptionColor = new Rgba32(
-                (byte)Math.Clamp((int)Math.Round(rgb[0]), 0, 255),
-                (byte)Math.Clamp((int)Math.Round(rgb[1]), 0, 255),
-                (byte)Math.Clamp((int)Math.Round(rgb[2]), 0, 255));
-        material.Normalize();
-        var directory = Path.Combine(project.AssetsPath, "Materials");
-        Directory.CreateDirectory(directory);
-        // 已存在的材质必须写回原文件：改名后按新名字另存会让同一槽位出现两份定义，
-        // 加载顺序决定谁生效，画面会莫名跳变
-        var path = isNew || material.SourcePath.Length == 0
-            ? Path.Combine(directory, $"{MaterialFileName(material.Name)}.material")
-            : material.SourcePath;
+        var material = MaterialAsset.CreateDefault(string.IsNullOrWhiteSpace(name) ? Path.GetFileNameWithoutExtension(path) : name);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         material.Save(path);
         ReloadMaterialTable();
         _pipeline?.ResetAccumulation();
-        SetStatus($"已{(isNew ? "新建" : "更新")}材质：{material.Name}（槽位 {material.Slot}）");
+        SetStatus($"已新建材质：{material.Name}，参数请在材质检查器中编辑");
         return DescribeMaterial(material);
     });
 
     private object RemoveMaterial(JsonElement arguments) => RunOnUi(() =>
     {
-        var project = RequireProject();
-        var slot = (int?)ReadNumber(arguments, "slot") ?? throw new ArgumentException("缺少 slot");
-        var material = MaterialAsset.LoadFromProject(project).FirstOrDefault(item => item.Slot == slot);
-        if (material is null) return new { slot, removed = false };
-        if (material.SourcePath.Length > 0 && File.Exists(material.SourcePath)) File.Delete(material.SourcePath);
+        var path = RequireMaterialPath(arguments);
+        var exists = File.Exists(path);
+        if (exists) File.Delete(path);
+        //只删除资产文件，组件引用保留以便查询和重新绑定
         ReloadMaterialTable();
         _pipeline?.ResetAccumulation();
-        return new { slot, removed = true, name = material.Name };
+        return new { path = MaterialRelativePath(path), removed = exists, referencesPreserved = true };
     });
 
-    /// <summary>材质文件用名称命名，非法字符交给编辑器统一的清理函数处理</summary>
-    private static string MaterialFileName(string name)
+    private object GetMaterialReferences(JsonElement arguments) => RunOnUi(() =>
     {
-        var text = SanitizeFileName(name);
-        return text.Length == 0 ? "材质" : text;
+        var path = RequireMaterialPath(arguments);
+        var relative = MaterialRelativePath(path);
+        var references = RequireScene().Objects.SelectMany(item => item.Components
+            .Where(SceneComponentTypes.IsVoxelModel)
+            .SelectMany(component => SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [])
+            .Where(binding => string.Equals(binding.MaterialAsset.Replace('\\', '/'), relative, StringComparison.OrdinalIgnoreCase))
+            .Select(binding => new { objectId = item.Id.ToString(), name = item.Name, localSlot = binding.Slot })).ToArray();
+        return new { path = relative, exists = File.Exists(path), scope = "currentScene", count = references.Length, references };
+    });
+
+    private object GetModelMaterials(JsonElement arguments) => RunOnUi(() =>
+    {
+        RejectLegacyMaterialSlot(arguments);
+        var (target, component) = RequireMaterialModel(arguments);
+        var bindings = SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [];
+        var materials = MaterialAsset.LoadFromProject(RequireProject())
+            .Select(material => MaterialRelativePath(material.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return new
+        {
+            objectId = target.Id.ToString(), defaultLocalSlot = 0,
+            bindings = bindings.Select(binding => new
+            {
+                localSlot = binding.Slot, path = binding.MaterialAsset,
+                exists = materials.Contains(binding.MaterialAsset.Replace('\\', '/')),
+            }).ToArray(),
+        };
+    });
+
+    private object BindModelMaterial(JsonElement arguments) => RunOnUi(() =>
+    {
+        RequireMaterialArguments(arguments, "objectId", "localSlot", "path");
+        var (target, component) = RequireMaterialModel(arguments);
+        if (!arguments.TryGetProperty("localSlot", out var value) || value.ValueKind != JsonValueKind.Number ||
+            !value.TryGetInt32(out var slot) || slot <= 0 || slot >= MaterialAsset.TableSlots)
+            throw new ArgumentException("localSlot必须为1至65535的整数；槽0始终使用默认材质，不能绑定资产");
+        var path = RequireMaterialPath(arguments);
+        if (!File.Exists(path)) throw new FileNotFoundException("材质资产不存在，请先用material.create创建", path);
+        _ = MaterialAsset.Load(path);
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        var bindings = (data.MaterialSlots ?? []).ToDictionary(item => item.Slot);
+        var previousPath = bindings.TryGetValue(slot, out var previous) ? previous.MaterialAsset : null;
+        var relative = MaterialRelativePath(path);
+        bindings[slot] = new MaterialSlotBinding(slot, relative);
+        //只更新组件引用，体素存储及其本地槽位编号保持不变
+        SaveModelMaterialBindings(target, component, data, bindings);
+        return new { objectId = target.Id.ToString(), localSlot = slot, path = relative, previousPath };
+    });
+
+    private (SceneObject Target, ComponentRecord Component) RequireMaterialModel(JsonElement arguments)
+    {
+        var objectId = ReadString(arguments, "objectId");
+        if (!StableId.TryParse(objectId ?? string.Empty, out var id))
+            throw new ArgumentException("需要有效的objectId；请先用scene.list查询对象标识，不能仅提供slot");
+        var target = RequireScene().Objects.FirstOrDefault(item => item.Id == id)
+            ?? throw new InvalidOperationException($"找不到对象：{objectId}");
+        var components = target.Components.Where(SceneComponentTypes.IsVoxelModel).ToArray();
+        if (components.Length != 1) throw new InvalidOperationException("对象必须恰好包含一个体素模型组件，否则objectId无法唯一确定绑定目标");
+        return (target, components[0]);
+    }
+
+    private string RequireMaterialPath(JsonElement arguments)
+    {
+        RejectLegacyMaterialSlot(arguments);
+        var path = ReadString(arguments, "path");
+        if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path))
+            throw new ArgumentException("需要相对项目Assets目录的材质path，不支持全局slot或绝对路径");
+        var root = Path.GetFullPath(RequireProject().AssetsPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullPath = Path.GetFullPath(Path.Combine(root, path));
+        if (!fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetExtension(fullPath), ".material", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("path必须指向项目Assets目录内的.material资产");
+        return fullPath;
+    }
+
+    private string MaterialRelativePath(string path) =>
+        Path.GetRelativePath(RequireProject().AssetsPath, path).Replace('\\', '/');
+
+    private static void RejectLegacyMaterialSlot(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object) throw new ArgumentException("材质命令参数必须是对象");
+        if (arguments.TryGetProperty("slot", out _))
+            throw new ArgumentException("不再支持全局slot；资产请用material.get/create/remove(path)，组件绑定请用model.materials.bind(objectId,localSlot,path)");
+    }
+
+    private static void RequireMaterialArguments(JsonElement arguments, params string[] allowed)
+    {
+        RejectLegacyMaterialSlot(arguments);
+        foreach (var property in arguments.EnumerateObject())
+            if (property.Name != "commandId" && !allowed.Contains(property.Name, StringComparer.Ordinal))
+                throw new ArgumentException($"不支持参数：{property.Name}；材质参数只能在材质检查器中编辑");
     }
 
     private object DescribeRenderSettings()

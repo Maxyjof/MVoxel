@@ -43,7 +43,7 @@ public enum ProjectTemplateId
     MaterialLab,
 
     /// <summary>
-    /// 展示调色板基础色和纯色体素材质
+    /// 展示调色盘基础色和纯色体素材质
     /// </summary>
     PaletteWorkshop,
 
@@ -133,7 +133,7 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
-        new(ProjectTemplateId.PaletteWorkshop, "调色板工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色板 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
+        new(ProjectTemplateId.PaletteWorkshop, "调色盘工坊", "用色卡墙、螺旋看台和中央发光展台演示颜色层级，而不是堆叠孤立色块。", "调色盘 · 纯色材质 · 材质属性", "小型", "建立可复用的颜色系统"),
         new(ProjectTemplateId.SparseWorld, "灯塔与远方", "一座灯塔岛连接悬索桥与远处信号塔，地标分散在负坐标和远距离位置。", "大世界 · 稀疏存储 · 负坐标", "大型", "理解稀疏世界和远距离编辑"),
         new(ProjectTemplateId.LodPlayground, "建筑细节展示场", "同一座建筑从完整细节到块状轮廓排列成渐变展廊，距离变化一眼可见。", "LOD · 场景性能 · 批量对象", "中型", "验证距离 LOD 的视觉与性能取舍"),
         new(ProjectTemplateId.ProceduralTerrain, "山地湖泊", "从沙滩、湖盆、雪线到针叶林逐层过渡的山地剖面，适合观察生成结果。", "程序化 · 地形 · 大量体素", "大型", "理解噪声地形和分层材质"),
@@ -216,12 +216,12 @@ public static class ProjectTemplateCatalog
             SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), new SceneDocument { Name = "主场景" });
         else
         {
-            WriteMaterials(project, id);
+            var materialSlots = WriteMaterials(project, id);
             WriteProjectPalette(project);
             WriteRenderPreset(project, settings);
             if (id == ProjectTemplateId.XianxiaContinent)
             {
-                Xianxia.XianxiaWorld.Populate(project, report);
+                Xianxia.XianxiaWorld.Populate(project, materialSlots, report);
             }
             else if (id == ProjectTemplateId.MinecraftValley)
             {
@@ -238,7 +238,7 @@ public static class ProjectTemplateCatalog
                 }
 
                 WriteScene(project, Get(id), terrain.OccupiedVoxelCount, "Assets/Worlds/山谷分层模型.mvmodel",
-                    modelParts: modelParts, framingWorld: terrain);
+                    modelParts: modelParts, framingWorld: terrain, materialSlots: materialSlots);
             }
             else if (id is ProjectTemplateId.LargeWorld or ProjectTemplateId.RenderingGallery)
             {
@@ -248,7 +248,7 @@ public static class ProjectTemplateCatalog
                 LargeWorldFormat.Write(largePath, world);
                 var modelParts = WriteTemplateModelParts(project, id, world);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount, $"Assets/Worlds/{largeFileName}",
-                    modelParts: modelParts, framingWorld: world);
+                    modelParts: modelParts, framingWorld: world, materialSlots: materialSlots);
             }
             else
             {
@@ -258,7 +258,7 @@ public static class ProjectTemplateCatalog
                     "Assets/Worlds/分层模型.mvmodel",
                     cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1,
                     modelParts: modelParts,
-                    framingWorld: world);
+                    framingWorld: world, materialSlots: materialSlots);
             }
         }
 
@@ -283,6 +283,7 @@ public static class ProjectTemplateCatalog
         if (modelName.Length == 0) modelName = "导入模型";
         var safeName = ToSafeFileName(modelName);
         var multiple = document.Instances.Count > 1 || document.Models.Count > 1;
+        var materialSlots = WriteVoxMaterials(project, document, safeName, modelName);
 
         report?.Invoke("正在写入项目体素资产…", .82F, true);
         // 一个模型写一份资产，多个实例共享同一份，和 MagicaVoxel 的 Reference 语义一致
@@ -291,7 +292,7 @@ public static class ProjectTemplateCatalog
         var worldOrigins = new VoxelCoord64[document.Models.Count];
         for (var index = 0; index < document.Models.Count; index++)
         {
-            var world = BuildModelWorld(document.Models[index]);
+            var world = BuildModelWorld(document.Models[index], materialSlots);
             var fileName = (multiple ? $"{safeName}_{index + 1}" : safeName) + ".mvmodel";
             var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
@@ -301,8 +302,6 @@ public static class ProjectTemplateCatalog
             voxelCounts[index] = world.OccupiedVoxelCount;
             worldOrigins[index] = GetWorldOrigin(world);
         }
-
-        WriteVoxMaterials(project, document, safeName, modelName);
 
         report?.Invoke("正在生成主场景…", .90F, true);
         var layerIndexById = new Dictionary<int, int>();
@@ -314,7 +313,10 @@ public static class ProjectTemplateCatalog
             var name = document.Instances.Count == 1 ? modelName : instance.Name;
             parts.Add(new SceneModelPart(name, "MagicaVoxel 导入", assets[instance.ModelIndex],
                 voxelCounts[instance.ModelIndex], instance.Offset + worldOrigins[instance.ModelIndex],
-                layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, instance.Rotation));
+                layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, instance.Rotation,
+                document.Models[instance.ModelIndex].Voxels.Select(voxel => (int)voxel.PaletteIndex)
+                    .Distinct().Where(materialSlots.ContainsKey).Order()
+                    .Select(slot => new MaterialSlotBinding(slot, materialSlots[slot])).ToArray()));
             totalVoxels += voxelCounts[instance.ModelIndex];
         }
 
@@ -325,7 +327,8 @@ public static class ProjectTemplateCatalog
             "由 MagicaVoxel 文件创建", "MagicaVoxel 兼容导入",
             multiple ? $"{parts.Count} 个对象" : "单模型", "继续在原生格式上编辑");
         WriteScene(project, definition, (int)Math.Min(totalVoxels, int.MaxValue), assets[0], cameraCount: 1,
-            modelParts: parts, framingWorld: VoxFormat.Compose(document), layers: layers);
+            modelParts: parts, framingWorld: VoxFormat.Compose(document), layers: layers,
+            materialSlots: materialSlots);
 
         report?.Invoke("正在写入项目设置…", .94F, false);
         var settings = CreateSettings(ProjectTemplateId.Empty);
@@ -335,19 +338,21 @@ public static class ProjectTemplateCatalog
     }
 
     /// <summary>
-    /// 把 .vox 的 MATL 写成项目的 .material 资产：材质 id 就是调色板索引，
-    /// 体素的 MaterialSlot 早已指向同一个索引，导入后立刻能在材质面板里看到。
+    /// 将VOX材质写成共享资产，返回导入模型本地槽到资产相对路径的绑定
     /// </summary>
-    private static void WriteVoxMaterials(ProjectHandle project, VoxDocument document,
+    private static Dictionary<int, string> WriteVoxMaterials(ProjectHandle project, VoxDocument document,
         string safeName, string modelName)
     {
-        if (document.Materials.Count == 0) return;
+        var bindings = new Dictionary<int, string>();
+        if (document.Materials.Count == 0) return bindings;
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
         foreach (var source in document.Materials)
         {
-            var slot = Math.Clamp(source.Id, 0, MaterialAsset.TableSlots - 1);
-            var asset = new MaterialAsset { Name = $"{modelName} 材质 {slot}", Slot = slot };
+            var slot = source.Id;
+            if (slot is <= 0 or > ushort.MaxValue)
+                throw new InvalidDataException($"导入材质槽超出1到65535范围：{slot}");
+            var asset = MaterialAsset.CreateDefault($"{modelName} 材质 {slot}");
             if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
             if (source.Specular >= 0F) asset.Specular = Math.Clamp(source.Specular, 0F, 1F);
             if (source.Ior > 0F) asset.Ior = Math.Clamp(source.Ior, 1F, 2.5F);
@@ -369,17 +374,20 @@ public static class ProjectTemplateCatalog
                     break;
             }
 
-            asset.Save(Path.Combine(directory, $"{safeName}_材质{slot:000}.material"));
+            var fileName = $"{safeName}_材质{slot:000}.material";
+            asset.Save(Path.Combine(directory, fileName));
+            bindings[slot] = "Materials/" + fileName;
         }
+        return bindings;
     }
 
     /// <summary>把 .vox 里的一个模型转成原生体素世界：MagicaVoxel 的 Z 轴映射到 MVoxel 的 Y 轴</summary>
-    private static VoxelWorld BuildModelWorld(VoxModel model)
+    private static VoxelWorld BuildModelWorld(VoxModel model, IReadOnlyDictionary<int, string> materialSlots)
     {
         var world = new VoxelWorld();
         foreach (var voxel in model.Voxels)
             world.Set(new VoxelCoord64(voxel.X, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
-                (ushort)Math.Clamp(voxel.PaletteIndex, 0, MaterialAsset.TableSlots - 1),
+                materialSlots.ContainsKey(voxel.PaletteIndex) ? checked((ushort)voxel.PaletteIndex) : (ushort)0,
                 voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
         return world;
     }
@@ -404,7 +412,7 @@ public static class ProjectTemplateCatalog
     /// 构建模板对应的内存世界，供测试和编辑器初始化使用
     /// </summary>
     /// <param name="id">模板 ID</param>
-    /// <param name="palette">当前调色板</param>
+    /// <param name="palette">当前调色盘</param>
     /// <returns>模板世界</returns>
     public static VoxelWorld BuildWorld(ProjectTemplateId id, Rgba32[] palette)
     {
@@ -439,52 +447,54 @@ public static class ProjectTemplateCatalog
     /// <summary>
     /// 为模板写入配套的 .material 材质定义，槽位与场景构建器约定一致
     /// </summary>
-    private static void WriteMaterials(ProjectHandle project, ProjectTemplateId id)
+    private static Dictionary<int, string> WriteMaterials(ProjectHandle project, ProjectTemplateId id)
     {
-        if (id == ProjectTemplateId.Empty) return;
+        if (id == ProjectTemplateId.Empty) return [];
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
-        var materials = new List<MaterialAsset>
+        static (int Slot, MaterialAsset Asset) At(int slot, MaterialAsset asset) => (slot, asset);
+        var materials = new List<(int Slot, MaterialAsset Asset)>
         {
-            new() { Name = "清水玻璃", Slot = TemplateKit.SlotGlass, Roughness = .06F, Metallic = 0F, AbsorptionStep = .8F },
-            new() { Name = "池水", Slot = TemplateKit.SlotWater, Roughness = .08F, Metallic = 0F, AbsorptionStep = 1.4F,
-                AbsorptionColor = new Rgba32(48, 118, 168) },
-            new() { Name = "抛光金属", Slot = TemplateKit.SlotMetal, Roughness = .12F, Metallic = 1F },
-            new() { Name = "灯与炉", Slot = TemplateKit.SlotGlow, EmissiveScale = 6F },
+            At(TemplateKit.SlotGlass, new() { Name = "清水玻璃", Roughness = .06F, Metallic = 0F, AbsorptionStep = .8F }),
+            At(TemplateKit.SlotWater, new() { Name = "池水", Roughness = .08F, Metallic = 0F, AbsorptionStep = 1.4F,
+                AbsorptionColor = new Rgba32(48, 118, 168) }),
+            At(TemplateKit.SlotMetal, new() { Name = "抛光金属", Roughness = .12F, Metallic = 1F }),
+            At(TemplateKit.SlotGlow, new() { Name = "灯与炉", EmissiveScale = 6F }),
         };
         if (id == ProjectTemplateId.DefaultRoom)
         {
-            materials[0].Ior = 1.5F;
-            materials[0].Opacity = .08F;
-            materials[0].AbsorptionStep = .25F;
-            materials[0].VolumeScattering = 0F;
-            materials.Add(new MaterialAsset { Name = "可乐", Slot = TemplateKit.SlotCola,
+            materials[0].Asset.Ior = 1.5F;
+            materials[0].Asset.Opacity = .08F;
+            materials[0].Asset.AbsorptionStep = .25F;
+            materials[0].Asset.VolumeScattering = 0F;
+            materials.Add(At(TemplateKit.SlotCola, new MaterialAsset { Name = "可乐",
                 Roughness = .08F, Metallic = 0F, AbsorptionStep = 3F, Ior = 1.33F,
-                Opacity = .8F, VolumeScattering = .08F });
+                Opacity = .8F, VolumeScattering = .08F }));
         }
         if (id is ProjectTemplateId.GlassStudy or ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy)
         {
             materials.Clear();
             var opticalMaterials = new[]
             {
-                new MaterialAsset { Name = "透明玻璃", Slot = 10, Ior = 1.5F, Roughness = .02F,
-                    Opacity = .05F, AbsorptionStep = .2F, VolumeScattering = 0F },
-                new MaterialAsset { Name = "毛玻璃", Slot = 11, Ior = 1.5F, Roughness = .8F,
-                    Opacity = .22F, AbsorptionStep = .3F, VolumeScattering = .12F, HazeDensity = .06F },
-                new MaterialAsset { Name = "琥珀玻璃", Slot = 12, Ior = 1.5F, Roughness = .04F,
-                    Opacity = .5F, AbsorptionStep = 1.4F, VolumeScattering = .04F },
-                new MaterialAsset { Name = "薄雾", Slot = 13, Ior = 1F, Roughness = .9F,
+                At(10, new MaterialAsset { Name = "透明玻璃", Ior = 1.5F, Roughness = .02F,
+                    Opacity = .05F, AbsorptionStep = .2F, VolumeScattering = 0F }),
+                At(11, new MaterialAsset { Name = "毛玻璃", Ior = 1.5F, Roughness = .8F,
+                    Opacity = .22F, AbsorptionStep = .3F, VolumeScattering = .12F, HazeDensity = .06F }),
+                At(12, new MaterialAsset { Name = "琥珀玻璃", Ior = 1.5F, Roughness = .04F,
+                    Opacity = .85F, AbsorptionStep = 6F, VolumeScattering = 0F,
+                    AbsorptionColor = new Rgba32(250, 155, 45) }),
+                At(13, new MaterialAsset { Name = "薄雾", Ior = 1F, Roughness = .9F,
                     Opacity = .32F, AbsorptionStep = .05F, HazeDensity = .12F, VolumeScattering = .65F,
-                    ScatteringColor = new Rgba32(218, 228, 236) },
-                new MaterialAsset { Name = "云朵", Slot = 14, Ior = 1F, Roughness = 1F,
+                    ScatteringColor = new Rgba32(218, 228, 236) }),
+                At(14, new MaterialAsset { Name = "云朵", Ior = 1F, Roughness = 1F,
                     Opacity = .65F, AbsorptionStep = .05F, HazeDensity = .32F, VolumeScattering = .9F,
-                    ScatteringColor = new Rgba32(244, 246, 250) },
-                new MaterialAsset { Name = "浓雾", Slot = 16, Ior = 1F, Roughness = 1F,
+                    ScatteringColor = new Rgba32(244, 246, 250) }),
+                At(16, new MaterialAsset { Name = "浓雾", Ior = 1F, Roughness = 1F,
                     Opacity = .75F, AbsorptionStep = .05F, HazeDensity = .45F, VolumeScattering = .85F,
-                    ScatteringColor = new Rgba32(211, 222, 232) },
-                new MaterialAsset { Name = "清水", Slot = 15, Ior = 1.33F, Roughness = .03F,
+                    ScatteringColor = new Rgba32(211, 222, 232) }),
+                At(15, new MaterialAsset { Name = "清水", Ior = 1.33F, Roughness = .03F,
                     Opacity = .18F, AbsorptionStep = .4F, VolumeScattering = .03F,
-                    AbsorptionColor = new Rgba32(155, 218, 229) },
+                    AbsorptionColor = new Rgba32(155, 218, 229) }),
             };
             materials.AddRange(opticalMaterials.Where(material => id switch
             {
@@ -494,26 +504,29 @@ public static class ProjectTemplateCatalog
             }));
         }
         if (id == ProjectTemplateId.SphereOptics)
-            materials.Add(new MaterialAsset { Name = "实验玻璃", Slot = 10, Ior = 1.5F, Roughness = .02F,
-                Opacity = .08F, AbsorptionStep = .3F, VolumeScattering = 0F });
+            materials.Add(At(10, new MaterialAsset { Name = "实验玻璃", Ior = 1.5F, Roughness = .02F,
+                Opacity = .08F, AbsorptionStep = .3F, VolumeScattering = 0F }));
         if (id == ProjectTemplateId.MaterialLab)
         {
             for (var step = 0; step < 5; step++)
             {
-                materials.Add(new MaterialAsset
+                materials.Add(At(5 + step, new MaterialAsset
                 {
                     Name = $"粗糙度阶梯 {step + 1}",
-                    Slot = 5 + step,
                     Roughness = .05F + step * .22F,
                     Metallic = .2F,
-                });
+                }));
             }
         }
 
-        foreach (var material in materials)
+        var bindings = new Dictionary<int, string>();
+        foreach (var (slot, material) in materials)
         {
-            material.Save(Path.Combine(directory, $"{material.Name}.material"));
+            var fileName = $"{material.Name}.material";
+            material.Save(Path.Combine(directory, fileName));
+            bindings[slot] = "Materials/" + fileName;
         }
+        return bindings;
     }
 
     private static void WriteProjectPalette(ProjectHandle project)
@@ -633,7 +646,7 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.PathDenoiseStrength = .65F;
                 break;
             case ProjectTemplateId.PaletteWorkshop:
-                settings.DefaultRenderPreset = "调色板材质展示";
+                settings.DefaultRenderPreset = "调色盘材质展示";
                 settings.RenderSettings.PathMaxAccumulatedSamples = 256;
                 settings.RenderSettings.PaletteShading = true;
                 settings.RenderSettings.Saturation = 1.12F;
@@ -842,8 +855,11 @@ public static class ProjectTemplateCatalog
         IReadOnlyList<(string Name, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position)>? layerParts = null,
         IReadOnlyList<SceneModelPart>? modelParts = null,
         VoxelWorld? framingWorld = null,
-        IReadOnlyList<(string Name, bool Hidden)>? layers = null)
+        IReadOnlyList<(string Name, bool Hidden)>? layers = null,
+        IReadOnlyDictionary<int, string>? materialSlots = null)
     {
+        var bindings = materialSlots?.OrderBy(item => item.Key)
+            .Select(item => new MaterialSlotBinding(item.Key, item.Value)).ToArray() ?? [];
         var scene = new SceneDocument { Name = template.Name };
         var graph = new SceneGraph(scene);
         if (modelParts is not null)
@@ -856,8 +872,9 @@ public static class ProjectTemplateCatalog
                         modelPart.Position, modelPart.Rotation ?? OrthogonalRotation.Identity)));
                 modelObject.LayerIndex = Math.Clamp(modelPart.LayerIndex, 0, Math.Max(0, scene.LayerNames.Count - 1));
                 modelObject.Visible = !modelPart.Hidden;
-                modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
-                    modelPart.ModelAssetPath, modelPart.VoxelCount, template.Id.ToString(), modelPart.Part));
+                modelObject.Components.Add(CreateModelComponent(
+                    modelPart.ModelAssetPath, modelPart.VoxelCount, template.Id.ToString(), modelPart.Part,
+                    modelPart.MaterialSlots ?? bindings));
             }
             if (template.Id == ProjectTemplateId.DefaultRoom)
             {
@@ -889,8 +906,8 @@ public static class ProjectTemplateCatalog
                     position.Z + modelOrigin.Z);
                 var modelObject = graph.Add(name,
                     transform: TransformComponent.FromGrid(new GridTransform(placement, OrthogonalRotation.Identity)));
-                modelObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
-                    modelAssetPath, voxelCount, template.Id.ToString(), part));
+                modelObject.Components.Add(CreateModelComponent(
+                    modelAssetPath, voxelCount, template.Id.ToString(), part, bindings));
             }
         }
 
@@ -900,8 +917,8 @@ public static class ProjectTemplateCatalog
             {
                 var layerObject = graph.Add(name,
                     transform: TransformComponent.FromGrid(new GridTransform(position, OrthogonalRotation.Identity)));
-                layerObject.Components.Add(SceneComponentTypes.CreateVoxelModel(
-                    assetPath, count, template.Id.ToString(), "分层对象"));
+                layerObject.Components.Add(CreateModelComponent(
+                    assetPath, count, template.Id.ToString(), "分层对象", bindings));
             }
         }
 
@@ -937,7 +954,20 @@ public static class ProjectTemplateCatalog
 
     private readonly record struct SceneModelPart(
         string Name, string Part, string ModelAssetPath, int VoxelCount, VoxelCoord64 Position,
-        int LayerIndex = 0, bool Hidden = false, OrthogonalRotation? Rotation = null);
+        int LayerIndex = 0, bool Hidden = false, OrthogonalRotation? Rotation = null,
+        MaterialSlotBinding[]? MaterialSlots = null);
+
+    /// <summary>
+    /// 创建模型组件并保存本地槽绑定，材质参数仅由共享资产提供
+    /// </summary>
+    internal static ComponentRecord CreateModelComponent(string model, int voxelCount, string template,
+        string part, MaterialSlotBinding[] materialSlots)
+    {
+        var component = SceneComponentTypes.CreateVoxelModel(model, voxelCount, template, part);
+        SceneComponentTypes.WriteVoxelModel(component,
+            SceneComponentTypes.ReadVoxelModel(component) with { MaterialSlots = materialSlots });
+        return component;
+    }
 
     /// <summary>
     /// 写入模板拆分后的独立模型，并返回场景层级所需的模型组件数据。
@@ -1022,7 +1052,7 @@ public static class ProjectTemplateCatalog
                 ("门口提灯", "提灯", new VoxelCoord64(3, 0, 8)),
             ],
             ProjectTemplateId.MaterialLab => [("材质实验区", "材质实验区", new VoxelCoord64(0, 0, 0))],
-            ProjectTemplateId.PaletteWorkshop => [("调色板展示台", "调色板展示台", new VoxelCoord64(0, 0, 0))],
+            ProjectTemplateId.PaletteWorkshop => [("调色盘展示台", "调色盘展示台", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.SparseWorld => [("远距离地标群", "地标群", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.LodPlayground => [("LOD 建筑组", "建筑组", new VoxelCoord64(0, 0, 0))],
             ProjectTemplateId.ProceduralTerrain => [("山地湖泊", "地形", new VoxelCoord64(0, 0, 0))],

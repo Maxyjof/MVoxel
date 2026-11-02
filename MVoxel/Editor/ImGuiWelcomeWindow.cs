@@ -97,11 +97,12 @@ internal sealed class ImGuiWelcomeContent
         style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Window);
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.FrameBg] = ToColor(EditorPalette.Input);
-        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.PanelHeader);
-        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.AccentSoft);
-        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Accent);
-        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Accent);
+        style.Colors[(int)ImGuiCol.FrameBgHovered] = ToColor(EditorPalette.Hover);
+        style.Colors[(int)ImGuiCol.Button] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.ButtonHovered] = ToColor(EditorPalette.Hover);
+        style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
+        style.Colors[(int)ImGuiCol.HeaderActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.CheckMark] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.Text] = ToColor(EditorPalette.Text);
         style.Colors[(int)ImGuiCol.TextDisabled] = ToColor(EditorPalette.MutedText);

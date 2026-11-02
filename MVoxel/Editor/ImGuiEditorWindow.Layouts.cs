@@ -234,7 +234,7 @@ internal sealed partial class ImGuiEditorWindow
         // 历史布局可能把单标签栏保存为隐藏；只恢复标签栏，不重置用户的停靠位置。
         contents = System.Text.RegularExpressions.Regex.Replace(contents,
             @"(?m)^([ \t]*DockNode\b[^\r\n]*?)[ \t]+HiddenTabBar=1(?=[ \t\r\n]|$)", "$1");
-        contents = contents.Replace("[Window][颜色与笔刷##建模工具窗口]", "[Window][调色板##建模工具窗口]", StringComparison.Ordinal);
+        contents = contents.Replace("[Window][颜色与笔刷##建模工具窗口]", "[Window][调色盘##建模工具窗口]", StringComparison.Ordinal);
         const string toolHeader = "[Window][工具##建模工具箱]";
         var sections = System.Text.RegularExpressions.Regex.Matches(contents,
             @"(?ms)^\[Window\]\[(?<name>[^\r\n]*)\]\r?\n.*?(?=^\[|\z)");

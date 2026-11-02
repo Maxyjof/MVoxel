@@ -81,7 +81,8 @@ internal sealed class ProjectAssetBrowser
     internal void Draw(ProjectHandle? project, Action<string> reportStatus, Action<ProjectAssetChange> assetChanged,
         Action<string>? openWorldRequest = null, Action<string>? instantiatePrefabRequest = null,
         Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
-        Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null)
+        Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null,
+        Func<string, IReadOnlyList<string>>? findReferenceNames = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -116,7 +117,7 @@ internal sealed class ProjectAssetBrowser
             ImGui.OpenPopup("##资源移动");
             _openMoveDialog = false;
         }
-        DrawAssetDialogs(project, reportStatus, trackedChange, countReferences);
+        DrawAssetDialogs(project, reportStatus, trackedChange, countReferences, findReferenceNames);
         ImGui.EndChild();
 
         ImGui.Separator();
@@ -129,7 +130,7 @@ internal sealed class ProjectAssetBrowser
         if (!string.IsNullOrEmpty(_selectedFolder))
         {
             ImGui.SameLine();
-            if (ImGui.SmallButton("↑ 上级")) ActivateFolder(ParentFolder(_selectedFolder));
+            if (ImGui.SmallButton("上级")) ActivateFolder(ParentFolder(_selectedFolder));
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级资产文件夹");
         }
 
@@ -386,6 +387,7 @@ internal sealed class ProjectAssetBrowser
                     if (ImGui.MenuItem("删除"))
                     {
                         _deletePath = entry.RelativePath;
+                        _referencedBy = null;
                         _openDeleteDialog = true;
                     }
                 }
@@ -440,7 +442,8 @@ internal sealed class ProjectAssetBrowser
     }
 
     private void DrawAssetDialogs(ProjectHandle? project, Action<string> reportStatus,
-        Action<ProjectAssetChange> assetChanged, Func<string, int>? countReferences)
+        Action<ProjectAssetChange> assetChanged, Func<string, int>? countReferences,
+        Func<string, IReadOnlyList<string>>? findReferenceNames)
     {
         if (project is null) return;
 
@@ -499,13 +502,21 @@ internal sealed class ProjectAssetBrowser
 
         if (_deletePath is not null && CenteredModal.Begin("##资源删除确认", ImGuiWindowFlags.AlwaysAutoResize))
         {
-            var referenceCount = countReferences?.Invoke(_deletePath) ?? 0;
+            var referenceNames = findReferenceNames?.Invoke(_deletePath) ?? Array.Empty<string>();
+            var referenceCount = Math.Max(countReferences?.Invoke(_deletePath) ?? 0, referenceNames.Count);
             var referencingFiles = GetReferencingFiles(project, _deletePath);
-            ImGui.TextWrapped($"确定删除文件“{Path.GetFileName(_deletePath)}”吗？此操作不可撤回。");
+            var isMaterial = ProjectAssetCatalog.Classify(_deletePath, false) == ProjectAssetKind.Material;
+            ImGui.TextWrapped($"确定删除文件“{Path.GetFileName(_deletePath)}”吗？");
             if (referenceCount > 0)
             {
                 ImGui.TextColored(new Vector4(1F, 0.5F, 0.3F, 1F),
                     $"警告：该资产正被 {referenceCount} 个场景对象引用，删除后将出现断链。");
+                if (referenceNames.Count > 0)
+                    ImGui.TextWrapped($"引用模型或对象：{string.Join("、", referenceNames)}");
+            }
+            if (isMaterial)
+            {
+                ImGui.TextWrapped("删除后保留组件中的失效材质引用和本地槽位编号，不清空、不重编号；引用模型将使用默认外观。仍可确认继续删除。");
             }
 
             if (referencingFiles.Count > 0)
@@ -740,7 +751,7 @@ internal sealed class ProjectAssetBrowser
     }
 
     /// <summary>
-    /// 在指定目录创建新材质，自动跳过已占用的材质槽
+    /// 在指定目录创建新的可共享材质资产
     /// </summary>
     private void CreateMaterialAsset(ProjectHandle? project, Action<string> reportStatus,
         Action<ProjectAssetChange> assetChanged, string folder)
@@ -751,27 +762,22 @@ internal sealed class ProjectAssetBrowser
             return;
         }
         var directory = ResolveAssetPath(project, folder)!;
-        var usedSlots = new HashSet<int>();
-        foreach (var material in MaterialAsset.LoadFromProject(project))
-            usedSlots.Add(material.Slot);
-
-        var slot = 0;
-        while (slot < MaterialAsset.TableSlots && usedSlots.Contains(slot)) slot++;
-        if (slot >= MaterialAsset.TableSlots)
+        var index = 1;
+        var relativePath = CombineRelative(folder, "新材质.material");
+        var absolutePath = Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        while (File.Exists(absolutePath))
         {
-            reportStatus($"材质槽位已满（{MaterialAsset.TableSlots} 个），先删除闲置材质");
-            return;
+            relativePath = CombineRelative(folder, $"新材质 {index++}.material");
+            absolutePath = Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
         }
-
-        var relativePath = CombineRelative(folder, $"材质{slot}.material");
         try
         {
-            var material = MaterialAsset.CreateDefault(slot);
-            material.Save(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-            AssetMetaStore.EnsureMeta(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var material = MaterialAsset.CreateDefault(Path.GetFileNameWithoutExtension(relativePath));
+            material.Save(absolutePath);
+            AssetMetaStore.EnsureMeta(absolutePath);
             _selectedAsset = relativePath;
             assetChanged(new ProjectAssetChange(relativePath, relativePath));
-            reportStatus($"已创建材质：材质{slot}（槽位 {slot}），在检查器中编辑属性");
+            reportStatus("已创建共享材质资产；在模型组件的材质槽位列表中添加引用");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -865,7 +871,7 @@ internal enum ProjectAssetKind
     Prefab,
     /// <summary>材质 .material</summary>
     Material,
-    /// <summary>调色板 .palette</summary>
+    /// <summary>调色盘 .palette</summary>
     Palette,
     /// <summary>环境</summary>
     Environment,
@@ -1046,7 +1052,7 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.VoxelModel => "体素数据",
         ProjectAssetKind.Prefab => "预制体",
         ProjectAssetKind.Material => "材质",
-        ProjectAssetKind.Palette => "调色板",
+        ProjectAssetKind.Palette => "调色盘",
         ProjectAssetKind.Environment => "环境",
         ProjectAssetKind.RenderPreset => "渲染预设",
         ProjectAssetKind.Generator => "生成器",
@@ -1066,7 +1072,7 @@ internal static class ProjectAssetCatalog
         "prefabs" => "保存 .prefab 预制体：可复用的对象子树和变体。通过层级右键创建。",
         "worlds" => "保存 .mvmodel/.mvworld 体素数据；外部 .vox 文件也会在这里显示。",
         "materials" => "保存 .material 材质槽覆盖，供渲染管线加载。",
-        "palettes" => "保存多个 .palette/.pal 调色板；当前使用的调色板在项目设置中指定。",
+        "palettes" => "保存多个 .palette/.pal 调色盘；当前使用的调色盘在项目设置中指定。",
         "environments" => "放置可被检视器加载的 .hdr/.exr 环境贴图。",
         "renderpresets" => "保存 .mvrenderpreset/.mvrender 渲染参数，可在检视器中应用。",
         "generators" => "保存 .mvgenerator 生成器脚本，可在生成器面板运行。",
@@ -1147,7 +1153,7 @@ internal static class ProjectAssetCatalog
         "Prefabs" => "预制体",
         "Worlds" => "体素数据",
         "Materials" => "材质",
-        "Palettes" => "调色板",
+        "Palettes" => "调色盘",
         "Environments" => "环境",
         "RenderPresets" => "渲染预设",
         "Generators" => "生成器",

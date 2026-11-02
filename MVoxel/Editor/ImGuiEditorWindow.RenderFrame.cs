@@ -209,6 +209,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void DrawFramePresetManager(ProjectSettingsDocument settings)
     {
+        ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(460F, 520F), ImGuiCond.FirstUseEver);
         if (!ImGui.Begin("画面比例与分辨率", ref _showFramePresetManager))
         {
