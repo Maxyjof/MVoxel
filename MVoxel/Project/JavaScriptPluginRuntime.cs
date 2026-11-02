@@ -152,9 +152,12 @@ public sealed class PluginScriptRuntime : IDisposable
     {
         if (!_automationOwners.TryGetValue(automationId, out var package))
             throw new InvalidOperationException($"未找到已启用的自动化入口：{automationId}");
-        if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
-            return InvokeLua(package, "runAutomation", automationId, arguments, timeout);
-        return InvokeJavaScript(package, "runAutomation", automationId, arguments, timeout);
+        ValidatePluginPayload(arguments);
+        var result = package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)
+            ? InvokeLua(package, "runAutomation", automationId, arguments, timeout)
+            : InvokeJavaScript(package, "runAutomation", automationId, arguments, timeout);
+        ValidatePluginPayload(result);
+        return result;
     }
 
     /// <summary>
@@ -168,9 +171,12 @@ public sealed class PluginScriptRuntime : IDisposable
     {
         if (!_commandOwners.TryGetValue(commandId, out var package))
             throw new InvalidOperationException($"未找到已启用的编辑器命令：{commandId}");
-        if (package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
-            return InvokeLua(package, "runCommand", commandId, arguments, timeout);
-        return InvokeJavaScript(package, "runCommand", commandId, arguments, timeout);
+        ValidatePluginPayload(arguments);
+        var result = package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)
+            ? InvokeLua(package, "runCommand", commandId, arguments, timeout)
+            : InvokeJavaScript(package, "runCommand", commandId, arguments, timeout);
+        ValidatePluginPayload(result);
+        return result;
     }
 
     /// <summary>
@@ -440,6 +446,12 @@ public sealed class PluginScriptRuntime : IDisposable
     }
 
     private const int MaximumPluginJsonChars = 1 * 1024 * 1024;
+
+    private static void ValidatePluginPayload(JsonElement payload)
+    {
+        if (payload.GetRawText().Length > MaximumPluginJsonChars)
+            throw new InvalidDataException("插件参数或返回值过大");
+    }
 
     private static readonly HashSet<string> KnownPermissions = new(StringComparer.Ordinal)
     {
