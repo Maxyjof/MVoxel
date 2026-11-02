@@ -79,19 +79,32 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawAnimationHierarchy(SceneObject root)
     {
-        ImGui.TreeNodeEx($"根节点：{root.Name}", ImGuiTreeNodeFlags.DefaultOpen | ImGuiTreeNodeFlags.Leaf);
+        ImGui.TreeNodeEx($"根节点：{root.Name}", ImGuiTreeNodeFlags.DefaultOpen);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("动画根节点");
         foreach (var child in _sceneDocument?.Objects.Where(item => item.ParentId == root.Id) ?? [])
-            ImGui.TreeNodeEx($"子节点：{child.Name}", ImGuiTreeNodeFlags.Leaf);
+        {
+            ImGui.TreeNodeEx($"子节点：{child.Name}", ImGuiTreeNodeFlags.DefaultOpen | ImGuiTreeNodeFlags.Leaf);
+            DrawAnimationHierarchy(child);
+        }
+        ImGui.TreePop();
     }
 
     private void DrawAnimationParameterList(SceneObject root, AnimationComponentData animation)
     {
         ImGui.SeparatorText("可显示参数");
+        if (_project is null || string.IsNullOrWhiteSpace(animation.ClipAsset)) return;
+        var path = Path.Combine(_project.RootPath, animation.ClipAsset.Replace('/', Path.DirectorySeparatorChar));
+        var clip = File.Exists(path) ? JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(path)) ?? new AnimationClip() : new AnimationClip();
+        clip.Normalize();
         foreach (var parameter in new[] { "Transform.Position", "Transform.Rotation", "Transform.Scale", "VoxelModel.Scale", "VoxelModel.Asset" })
         {
-            var visible = animation.ClipAsset.Contains(parameter, StringComparison.Ordinal);
+            var visible = clip.VisibleParameters.Contains(parameter);
             if (ImGui.Checkbox(parameter, ref visible))
-                SetStatus(visible ? $"已显示参数：{parameter}" : $"已隐藏参数：{parameter}");
+            {
+                if (visible) clip.VisibleParameters.Add(parameter); else clip.VisibleParameters.Remove(parameter);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, JsonSerializer.Serialize(clip, new JsonSerializerOptions { WriteIndented = true }));
+            }
         }
     }
 
