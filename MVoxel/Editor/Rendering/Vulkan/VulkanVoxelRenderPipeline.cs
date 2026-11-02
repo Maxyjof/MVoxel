@@ -2393,10 +2393,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             if (values[119] <= 0.0001) return vec3(0.0);
             vec3 accumulated = vec3(0.0);
-            const int sampleCount = 2;
+            const int sampleCount = 4;
             for (int index = 0; index < sampleCount; index++)
             {
                 vec3 direction = CosineHemisphere(hitNormal, state);
+                // 交替扩大法线偏移，减少贴面自相交，同时保持体素接触区域的遮蔽
+                float originOffset = index % 2 == 0 ? 0.006 : 0.014;
+                float maxDistance = 8.0 + float(index) * 2.0;
                 float distance;
                 vec3 normal;
                 vec4 color;
@@ -2404,11 +2407,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 uint slot;
                 ivec3 cell;
                 ivec3 extent;
-                if (TraceClosestWithin(hitPoint + hitNormal * 0.004, direction, distance, normal, color,
-                    flags, slot, cell, extent, true, 8.0, false))
+                if (TraceClosestWithin(hitPoint + hitNormal * originOffset, direction, distance, normal, color,
+                    flags, slot, cell, extent, true, maxDistance, false))
                 {
                     accumulated += SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0))) *
-                        max(dot(normal, -direction), 0.0) * (1.0 - distance / 8.0);
+                        max(dot(normal, -direction), 0.0) * (1.0 - distance / maxDistance);
                 }
                 else accumulated += Sky(direction) * 0.35;
             }

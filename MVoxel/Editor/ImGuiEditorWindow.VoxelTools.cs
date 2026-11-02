@@ -562,9 +562,21 @@ internal sealed partial class ImGuiEditorWindow
                     try
                     {
                         var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath));
-                        var sample = bake?.Samples.FirstOrDefault();
-                        if (sample is not null)
+                        if (bake is not null && bake.Samples.Count > 0)
+                        {
+                            var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
+                                ? cameraObject.Transform.Free.Position
+                                : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
+                            var probePosition = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe))?.Transform.Mode == TransformMode.Free
+                                ? _sceneDocument.Objects.First(item => item.Components.Contains(probe)).Transform.Free.Position
+                                : new Double3(0D, 0D, 0D);
+                            var normalized = new Vector3(
+                                Math.Clamp((float)(cameraPosition.X - probePosition.X) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
+                                Math.Clamp((float)(cameraPosition.Y - probePosition.Y) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
+                                Math.Clamp((float)(cameraPosition.Z - probePosition.Z) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
+                            var sample = bake.Samples.OrderBy(item => MathF.Pow(item.X - normalized.X, 2F) + MathF.Pow(item.Y - normalized.Y, 2F) + MathF.Pow(item.Z - normalized.Z, 2F)).First();
                             settings.SkyAmbient = Math.Clamp(settings.SkyAmbient + sample.Occlusion * settings.ProbeVolumeGiStrength * .1F, 0F, 2F);
+                        }
                     }
                     catch (JsonException) { }
                 }
