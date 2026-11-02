@@ -1860,7 +1860,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             writes[11] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 11, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
                 PImageInfo = &historyInfo };
-            _api!.UpdateDescriptorSets(_device, 13, writes, 0, null);
+            _api!.UpdateDescriptorSets(_device, 12, writes, 0, null);
         }
     }
 
