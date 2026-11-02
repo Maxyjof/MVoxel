@@ -1103,7 +1103,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _realtimeHistorySignature = realtimeSignature;
             _realtimeHistoryInvalid = true;
         }
-        if (_realtimeHistoryInvalid) _realtimeHistoryInvalid = false;
+        if (_realtimeHistoryInvalid && pathMode)
+            _realtimeHistoryInvalid = false;
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         if (!pathMode && ParametersEqualForDisplay(parameters))
