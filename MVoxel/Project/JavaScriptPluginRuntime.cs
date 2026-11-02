@@ -439,8 +439,16 @@ public sealed class PluginScriptRuntime : IDisposable
         }
     }
 
+    private const int MaximumPluginJsonChars = 1 * 1024 * 1024;
+
+    private static readonly HashSet<string> KnownPermissions = new(StringComparer.Ordinal)
+    {
+        "automation.register", "editor.command", "editor.panel", "scene.component"
+    };
+
     internal static bool HasRegistrationPermission(EditorPluginPackage package) =>
-        package.Permissions.Any(permission => permission is "automation.register" or "editor.command" or "editor.panel" or "scene.component");
+        package.Permissions.All(KnownPermissions.Contains) &&
+        package.Permissions.Any(permission => KnownPermissions.Contains(permission));
 
     /// <summary>
     /// 停用当前运行时中的插件
