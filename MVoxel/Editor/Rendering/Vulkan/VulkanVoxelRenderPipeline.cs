@@ -124,6 +124,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Image _guideImage;
     private DeviceMemory _guideMemory;
     private ImageView _guideView;
+    private Image _realtimeHistoryImage;
+    private DeviceMemory _realtimeHistoryMemory;
+    private ImageView _realtimeHistoryView;
     private bool _guideInitialized;
     private nint _displayTextureId;
     private uint _outputWidth;
@@ -1054,6 +1057,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             (Format.R8G8B8A8Unorm, FormatFeatureFlags.StorageImageBit | FormatFeatureFlags.SampledImageBit),
             (Format.R16G16B16A16Sfloat, FormatFeatureFlags.StorageImageBit),
+            (Format.R16G16B16A16Sfloat, FormatFeatureFlags.StorageImageBit | FormatFeatureFlags.SampledImageBit),
             (Format.R32G32B32A32Sfloat, FormatFeatureFlags.StorageImageBit),
         })
         {
@@ -1348,6 +1352,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _guideMemory = AllocateMemory(guideRequirements, MemoryPropertyFlags.DeviceLocalBit);
             Check(api.BindImageMemory(_device, _guideImage, _guideMemory, 0), "绑定降噪辅助图像");
             _guideView = CreateImageView(_guideImage, Format.R32G32B32A32Sfloat);
+            var historyCreateInfo = createInfo;
+            historyCreateInfo.Format = Format.R16G16B16A16Sfloat;
+            historyCreateInfo.Usage = ImageUsageFlags.StorageBit;
+            Check(api.CreateImage(_device, &historyCreateInfo, null, out _realtimeHistoryImage), "创建实时GI历史图像");
+            MemoryRequirements historyRequirements = default;
+            api.GetImageMemoryRequirements(_device, _realtimeHistoryImage, &historyRequirements);
+            _realtimeHistoryMemory = AllocateMemory(historyRequirements, MemoryPropertyFlags.DeviceLocalBit);
+            Check(api.BindImageMemory(_device, _realtimeHistoryImage, _realtimeHistoryMemory, 0), "绑定实时GI历史图像");
+            _realtimeHistoryView = CreateImageView(_realtimeHistoryImage, Format.R16G16B16A16Sfloat);
             _guideInitialized = false;
             _displayTextureId = _imguiRenderer!.RegisterExternalTexture(_outputView);
             _outputWidth = width;
@@ -1518,7 +1531,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[11];
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[12];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -1530,10 +1543,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bindings[8] = new(8, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[9] = new(9, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[10] = new(10, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        bindings[11] = new(11, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 11,
+            BindingCount = 12,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -1550,7 +1564,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
         {
             new(DescriptorType.StorageBuffer, 8 * TileRingDepth),
-            new(DescriptorType.StorageImage, 3 * TileRingDepth)
+            new(DescriptorType.StorageImage, 4 * TileRingDepth)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
@@ -1757,6 +1771,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             writes[10] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 10, DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &emissiveInfo };
+            DescriptorImageInfo historyInfo = new(default, _realtimeHistoryView, ImageLayout.General);
+            writes[11] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
+                DstBinding = 11, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
+                PImageInfo = &historyInfo };
             _api!.UpdateDescriptorSets(_device, 11, writes, 0, null);
         }
     }
@@ -1809,6 +1827,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="api">Vulkan API</param>
     private void DestroyOutputImage(Vk api)
     {
+        if (_realtimeHistoryView.Handle != 0) api.DestroyImageView(_device, _realtimeHistoryView, null);
+        if (_realtimeHistoryImage.Handle != 0) api.DestroyImage(_device, _realtimeHistoryImage, null);
+        if (_realtimeHistoryMemory.Handle != 0) api.FreeMemory(_device, _realtimeHistoryMemory, null);
+        _realtimeHistoryView = default;
+        _realtimeHistoryImage = default;
+        _realtimeHistoryMemory = default;
         if (_guideView.Handle != 0) api.DestroyImageView(_device, _guideView, null);
         if (_guideImage.Handle != 0) api.DestroyImage(_device, _guideImage, null);
         if (_guideMemory.Handle != 0) api.FreeMemory(_device, _guideMemory, null);
@@ -1879,6 +1903,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         layout(set = 0, binding = 4, rgba16f) uniform coherent image2D accumulationImage;
         layout(set = 0, binding = 8, rgba32f) uniform coherent image2D guideImage;
+        layout(set = 0, binding = 11, rgba16f) uniform coherent image2D realtimeHistoryImage;
 
         struct MaterialSlotData
         {
