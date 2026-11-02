@@ -23,6 +23,8 @@ internal sealed partial class ImGuiEditorWindow
     private int _sceneGizmoDragAxis;
     private bool _sceneGizmoDragRange;
     private bool _sceneGizmoDragScale;
+    private bool _sceneGizmoDragProbe;    private System.Numerics.Vector3 _sceneGizmoProbeStartSize;
+    private System.Numerics.Vector3 _sceneGizmoProbeStartOffset;
     private bool _sceneGizmoDragRotation;
     private int _sceneGizmoDragPlane = -1;
     private Quaternion _sceneGizmoStartRotation;
@@ -387,6 +389,22 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (selected is null || !IsSceneObjectVisible(selected) || !_sceneDocument.IsLayerVisible(selected.LayerIndex)) return false;
+        var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
+        if (probeComponent is not null && SceneComponentTypes.ReadProbeVolume(probeComponent).Editing)
+        {
+            var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
+            if (SceneProjection.Project(GetObjectPivot(selected), origin, size, camera, out var probeCenter, out var probeDepth) &&
+                Vector2.Distance(mouse, probeCenter) < 18F)
+            {
+                _sceneGizmoDragProbe = true;
+                _sceneGizmoDragging = true;
+                _sceneGizmoDragStartMouse = mouse;
+                _sceneGizmoProbeStartSize = new System.Numerics.Vector3(probe.SizeX, probe.SizeY, probe.SizeZ);
+                _sceneGizmoProbeStartOffset = new System.Numerics.Vector3(probe.OffsetX, probe.OffsetY, probe.OffsetZ);
+                _sceneGizmoDragPixelsPerUnit = MathF.Max(.001F, SceneProjection.FocalLength(size, camera) / MathF.Max(1F, probeDepth));
+                return true;
+            }
+        }
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
@@ -477,6 +495,18 @@ internal sealed partial class ImGuiEditorWindow
         var selected = GetSelectedSceneObject();
         if (selected is null) return;
         var mouse = ImGui.GetIO().MousePos;
+        if (_sceneGizmoDragProbe)
+        {
+            var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
+            if (probeComponent is null) return;
+            var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
+            var deltaX = (mouse.X - _sceneGizmoDragStartMouse.X) / _sceneGizmoDragPixelsPerUnit;
+            var deltaY = (_sceneGizmoDragStartMouse.Y - mouse.Y) / _sceneGizmoDragPixelsPerUnit;
+            SceneComponentTypes.WriteProbeVolume(probeComponent, probe with { OffsetX = _sceneGizmoProbeStartOffset.X + deltaX, OffsetY = _sceneGizmoProbeStartOffset.Y + deltaY, SizeX = Math.Max(.1F, _sceneGizmoProbeStartSize.X + deltaX), SizeY = Math.Max(.1F, _sceneGizmoProbeStartSize.Y + deltaY) });
+            MarkSceneDocumentDirty();
+            _pipeline?.ResetAccumulation();
+            return;
+        }
         if (_sceneGizmoDragRotation)
         {
             var angle = MathF.Atan2(mouse.Y - _sceneGizmoPivotScreen.Y, mouse.X - _sceneGizmoPivotScreen.X);
