@@ -8,6 +8,7 @@ using MVoxel.Editor.Assets;
 using MVoxel.Project;
 using MVoxel.Core;
 using MVoxel.Rendering;
+using MVoxel.Animation;
 using MVoxel.Voxels;
 using MVoxel.Editor.Rendering;
 using MVoxel.Editor.Rendering.Vulkan;
@@ -71,6 +72,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
     private bool _showProbeVolumeWindow;
+    private bool _showAnimationWindow;
+    private bool _animationWindowLocked;
+    private StableId? _animationLinkedObjectId;
     private int _probeVolumeSelection;
     private int _centerTab;
     private int? _requestedCenterTab;
@@ -885,6 +889,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawGeneratorWindow();
         DrawAnalysisWindows();
         DrawProbeVolumeWindow();
+        DrawAnimationWindow();
         DrawStatusBar();
         DrawProjectPathDialog();
         DrawLayoutNameDialog();
@@ -985,6 +990,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
+                if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
                 ImGui.EndMenu();
             }
             if (ImGui.BeginMenu("工具"))
@@ -3390,7 +3396,7 @@ DockId=0x6A3C3007,0
                     if (definition.TypeId == SceneComponentTypes.Transform) continue;
                     var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
                     if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
-                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume || definition.TypeId == SceneComponentTypes.Volume))
+                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume || definition.TypeId == SceneComponentTypes.Volume || definition.TypeId == SceneComponentTypes.Animation))
                     {
                         _componentWarning = $"{definition.DisplayName}组件不可重复添加";
                         SetStatus(_componentWarning);
@@ -3427,6 +3433,7 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
                         SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
                         SceneComponentTypes.Volume => SceneComponentTypes.CreateVolume(new VolumeComponentData()),
+                        SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     });
@@ -3759,6 +3766,31 @@ DockId=0x6A3C3007,0
                 SceneComponentTypes.WriteProbeVolume(component, data);
                 MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
+
+        if (SceneComponentTypes.IsAnimation(component))
+        {
+            var animation = SceneComponentTypes.ReadAnimation(component);
+            var clip = animation.ClipAsset;
+            BeginInspectorField("动画片段", "动画片段资产路径；可在动画窗口中创建和编辑。");
+            var changed = ImGui.InputText("##AnimationClip", ref clip, 512);
+            var playing = animation.Playing;
+            changed |= ImGui.Checkbox("播放", ref playing);
+            var loop = animation.Loop;
+            changed |= ImGui.Checkbox("循环", ref loop);
+            var speed = animation.Speed;
+            changed |= ImGui.DragFloat("速度", ref speed, .05F, -8F, 8F);
+            if (changed)
+            {
+                SceneComponentTypes.WriteAnimation(component, animation with { ClipAsset = clip, Playing = playing, Loop = loop, Speed = speed });
+                MarkSceneDocumentDirty();
+            }
+            if (ImGui.Button("打开动画窗口"))
+            {
+                _showAnimationWindow = true;
+                _animationLinkedObjectId = GetSelectedSceneObject()?.Id;
             }
             return;
         }

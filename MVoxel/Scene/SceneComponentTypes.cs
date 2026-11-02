@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using MVoxel.Core;
 using MVoxel.Rendering;
+using MVoxel.Animation;
 
 namespace MVoxel.Scene;
 
@@ -33,6 +34,9 @@ public static class SceneComponentTypes
     /// <summary>全局环境Volume组件</summary>
     public const string Volume = "mvoxel.volume";
 
+    /// <summary>动画组件的稳定类型标识</summary>
+    public const string Animation = "mvoxel.animation";
+
     public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
     [
         new(Transform, "变换", "基础", true),
@@ -41,7 +45,17 @@ public static class SceneComponentTypes
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
         new(Volume, "Volume", "渲染", true),
+        new(Animation, "动画", "动画", true),
     ];
+
+    public static bool IsAnimation(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Animation, StringComparison.Ordinal);
+    public static ComponentRecord CreateAnimation(AnimationComponentData data) => new() { TypeId = Animation, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions) };
+    public static AnimationComponentData ReadAnimation(ComponentRecord component) => IsAnimation(component) && component.Data.ValueKind == JsonValueKind.Object ? component.Data.Deserialize<AnimationComponentData>()?.Normalize() ?? new AnimationComponentData() : new AnimationComponentData();
+    public static void WriteAnimation(ComponentRecord component, AnimationComponentData data)
+    {
+        if (!IsAnimation(component)) throw new ArgumentException("组件记录不是动画组件", nameof(component));
+        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+    }
 
     public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
     public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);

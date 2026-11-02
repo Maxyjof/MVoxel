@@ -510,6 +510,8 @@ public static class SceneValidation
                 errors.Add($"对象“{sceneObject.Name}”包含重复的自动探针组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsVolume) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的Volume组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsAnimation) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的动画组件");
         }
 
         return errors;
