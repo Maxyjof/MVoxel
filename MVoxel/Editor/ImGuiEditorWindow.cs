@@ -315,6 +315,20 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             EndSceneMouseCapture();
         }
 
+        if (_project is not null && _sceneDocument is not null)
+        {
+            foreach (var sceneObject in _sceneDocument.Objects)
+            {
+                var animationComponent = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
+                if (animationComponent is null) continue;
+                var animation = SceneComponentTypes.ReadAnimation(animationComponent);
+                if (!animation.Playing) continue;
+                EvaluateAnimation(sceneObject, animation);
+                animation.CurrentFrame++;
+                SceneComponentTypes.WriteAnimation(animationComponent, animation);
+            }
+        }
+
         while (_historyConfirmation is null && _pendingActions.TryDequeue(out var action))
         {
             BeginEditorHistory();

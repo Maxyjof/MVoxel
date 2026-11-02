@@ -1590,17 +1590,19 @@ internal sealed partial class ImGuiEditorWindow
 
         _pipeline?.ResetAccumulation();
         MarkSceneDocumentDirty();
+        RecordVoxelAnimationFrame(target, command.ChangedCellCount);
     }
 
     private void CreateVoxelModel()
     {
         if (_project is null) return;
         _sceneDocument ??= new SceneDocument { Name = "主场景" };
+        var sceneDocument = _sceneDocument;
         var firstModel = GetVoxelWorldObject() is null;
         var name = "体素模型";
-        for (var suffix = 2; _sceneDocument.Objects.Any(item => item.Name == name); suffix++)
+        for (var suffix = 2; sceneDocument.Objects.Any(item => item.Name == name); suffix++)
             name = $"体素模型 {suffix}";
-        var model = new SceneGraph(_sceneDocument).Add(name,
+        var model = new SceneGraph(sceneDocument).Add(name,
             transform: TransformComponent.FromGrid(GridTransform.Identity));
         var relative = firstModel ? "Assets/Worlds/主世界.mvmodel" : $"Assets/Worlds/模型_{model.Id}.mvmodel";
         model.Components.Add(SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动创建", name));
