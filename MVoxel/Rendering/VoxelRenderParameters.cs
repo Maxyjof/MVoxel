@@ -108,7 +108,10 @@ public sealed class VoxelRenderParameters
     public const int SplitToneBalance = 138, SplitToneMix = 139;
     public const int FxaaPass = 140, FxaaThreshold = 141, FxaaStrength = 142;
     public const int RealtimeTemporalWeight = 143;
-    public const int SlotCount = 144;
+    public const int WaterEnabled = 144, WaterHeight = 145, WaterR = 146, WaterG = 147, WaterB = 148;
+    public const int WaterWaveSize = 149, WaterWaveLength = 150, WaterRoughness = 151;
+    public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
+    public const int SlotCount = 155;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -383,6 +386,17 @@ public sealed class VoxelRenderParameters
         parameters[BloomRadius] = settings.BloomRadius;
         parameters[SceneShading] = settings.SceneShading ? 1F : 0F;
         parameters[ScenePreview] = frame.ScenePreview ? 1F : 0F;
+        parameters[WaterEnabled] = settings.ShowWater ? 1F : 0F;
+        parameters[WaterHeight] = settings.WaterHeight;
+        parameters[WaterR] = settings.WaterColor.X;
+        parameters[WaterG] = settings.WaterColor.Y;
+        parameters[WaterB] = settings.WaterColor.Z;
+        parameters[WaterWaveSize] = settings.WaterWaveSize;
+        parameters[WaterWaveLength] = settings.WaterWaveLength;
+        parameters[WaterRoughness] = settings.WaterRoughness;
+        parameters[FogStart] = settings.FogStart;
+        parameters[FogSkyBlend] = settings.FogSkyBlend;
+        parameters[FogMaxOpacity] = settings.FogMaxOpacity;
 
         for (var index = 0; index < parameters.Length; index++)
         {

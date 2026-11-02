@@ -201,12 +201,22 @@ public sealed class PluginScriptRuntime : IDisposable
     {
         if (!_automationOwners.TryGetValue(automationId, out var package))
             throw new InvalidOperationException($"未找到已启用的自动化入口：{automationId}");
+        EnsureInvocationPermission(package, "automation.register", automationId);
         ValidatePluginPayload(arguments);
         var result = package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)
             ? InvokeLua(package, "runAutomation", automationId, arguments, timeout)
             : InvokeJavaScript(package, "runAutomation", automationId, arguments, timeout);
         ValidatePluginPayload(result);
         return result;
+    }
+
+    private void EnsureInvocationPermission(EditorPluginPackage package, string permission, string entryId)
+    {
+        if (package.Permissions.Contains(permission, StringComparer.Ordinal)) return;
+        var reason = $"缺少调用权限：{permission}";
+        _activationStatus[package.Id] = reason;
+        MVoxelLog.Warn($"插件入口调用被拒绝：{package.Id}/{entryId}，原因：{reason}");
+        throw new UnauthorizedAccessException(reason);
     }
 
     /// <summary>
@@ -220,6 +230,7 @@ public sealed class PluginScriptRuntime : IDisposable
     {
         if (!_commandOwners.TryGetValue(commandId, out var package))
             throw new InvalidOperationException($"未找到已启用的编辑器命令：{commandId}");
+        EnsureInvocationPermission(package, "editor.command", commandId);
         ValidatePluginPayload(arguments);
         var result = package.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)
             ? InvokeLua(package, "runCommand", commandId, arguments, timeout)

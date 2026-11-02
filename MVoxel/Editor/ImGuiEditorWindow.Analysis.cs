@@ -72,6 +72,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawPerformanceAnalyzer()
     {
         var unit = ImGui.GetFontSize();
+        if (_applyPreset && _layoutPreset == LayoutPreset.Analysis) ImGui.SetNextWindowFocus();
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(unit * 42F, unit * 36F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("性能分析器", ref _showPerformanceAnalyzer))

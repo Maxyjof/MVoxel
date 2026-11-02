@@ -8,12 +8,12 @@ internal sealed partial class ImGuiEditorWindow
 {
     private bool _showGettingStarted;
     private int _guidePage;
-    private static readonly string[] GuidePageNames = ["快速入门", "视角与绘制", "对象与图层", "资产与渲染", "MagicaVoxel 迁移", "撤销与重做", "脚本生成器", "插件开发"];
-    private static readonly string[] GuideFiles = ["快速入门.md", "视角与绘制.md", "对象与图层.md", "资产与渲染.md", "MagicaVoxel迁移.md", "撤销与重做.md", "脚本生成器.md", "插件开发.md"];
+    private static readonly string[] GuidePageNames = ["快速入门", "视角与绘制", "对象与图层", "资产与渲染", "动画", "脚本生成器", "插件开发", "MagicaVoxel 迁移", "撤销与重做"];
+    private static readonly string[] GuideFiles = ["快速入门.md", "视角与绘制.md", "对象与图层.md", "资产与渲染.md", "动画.md", "脚本生成器.md", "插件开发.md", "MagicaVoxel迁移.md", "撤销与重做.md"];
 
     private void OpenGuide(int page)
     {
-        _guidePage = page == 2 ? 4 : 0;
+        _guidePage = page == 2 ? 5 : 0;
         _showGettingStarted = true;
     }
 
@@ -33,7 +33,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Spacing();
             for (var index = 0; index < GuidePageNames.Length; index++)
             {
-                if (index == 4) ImGui.Spacing();
+                if (index == 5) ImGui.Spacing();
                 if (ImGui.Selectable(GuidePageNames[index], _guidePage == index,
                     ImGuiSelectableFlags.None, new Vector2(0F, ImGui.GetFrameHeight() * 1.25F)))
                     _guidePage = index;

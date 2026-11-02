@@ -171,6 +171,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
     private readonly Dictionary<string, string> _pluginCommandResults = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _pluginCommandInputs = new(StringComparer.Ordinal);
     private readonly HashSet<string> _visiblePluginPanels = new(StringComparer.Ordinal);
 
     public ImGuiEditorWindow(string[] args)
@@ -732,6 +733,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         if (_project is null) return;
         _pluginCommandResults.Clear();
+        _pluginCommandInputs.Clear();
         _pluginRuntime?.Dispose();
         _pluginRuntime = new PluginScriptRuntime();
         _pluginRuntime.Activate(_project, TimeSpan.FromSeconds(2));
@@ -795,13 +797,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     /// 在窗口线程执行插件命令
     /// </summary>
     /// <param name="commandId">命令 ID</param>
-    private void ExecutePluginCommand(string commandId)
+    private void ExecutePluginCommand(string commandId, string argumentsJson = "{}")
     {
         if (_pluginRuntime is null) return;
         var owner = _pluginRuntime.Commands.FirstOrDefault(command => command.Id == commandId)?.PluginId;
         try
         {
-            using var payload = JsonDocument.Parse("{}");
+            using var payload = JsonDocument.Parse(argumentsJson);
             var result = _pluginRuntime.InvokeCommand(commandId, payload.RootElement, TimeSpan.FromSeconds(10)).GetRawText();
             if (owner is not null)
                 _pluginCommandResults[owner] = $"{commandId}\n{(result.Length > 4096 ? result[..4096] + "…" : result)}";
@@ -1105,7 +1107,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 foreach (var package in installed)
                 {
                     var isEnabled = enabled.Contains(package.Id);
-                    if (ImGui.MenuItem($"{package.Name}##plugin:{package.Id}", null, isEnabled))
+                    var displayName = string.IsNullOrWhiteSpace(package.Name) ? package.Id : package.Name;
+                    if (ImGui.MenuItem($"{displayName}##plugin:{package.Id}", null, isEnabled))
                         _pendingActions.Enqueue(() => SetProjectPluginFromMenu(pluginProject, package.Id, !isEnabled));
                     if (ImGui.IsItemHovered())
                     {
@@ -1127,7 +1130,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 foreach (var (id, status) in _pluginRuntime.ActivationStatus.OrderBy(item => item.Key, StringComparer.Ordinal))
                 {
                     ImGui.TextUnformatted(id);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip(status);
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.BeginTooltip();
+                        ImGui.TextUnformatted(status);
+                        ImGui.EndTooltip();
+                    }
                 }
                 ImGui.EndMenu();
             }
@@ -3560,6 +3568,7 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
                         SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
                         SceneComponentTypes.Volume => SceneComponentTypes.CreateVolume(new VolumeComponentData()),
+                        SceneComponentTypes.Environment => SceneComponentTypes.CreateEnvironment(new EnvironmentComponentData()),
                         SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
@@ -3680,6 +3689,10 @@ DockId=0x6A3C3007,0
         else if (SceneComponentTypes.IsVolume(component))
         {
             SceneComponentTypes.WriteVolume(component, new VolumeComponentData());
+        }
+        else if (SceneComponentTypes.IsEnvironment(component))
+        {
+            SceneComponentTypes.WriteEnvironment(component, new EnvironmentComponentData());
         }
         else if (SceneComponentTypes.IsProbeVolume(component))
         {
@@ -3958,6 +3971,41 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        if (SceneComponentTypes.IsEnvironment(component))
+        {
+            var environment = SceneComponentTypes.ReadEnvironment(component);
+            var changed = ImGui.Checkbox("启用环境", ref environment.Enabled);
+            changed |= ImGui.Checkbox("全局环境", ref environment.IsGlobal);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前仅全局环境参与渲染；局部范围会在后续版本接入。");
+            BeginInspectorField("权重", "环境参数对项目渲染设置的覆盖权重。");
+            changed |= ImGui.DragFloat("##EnvironmentWeight", ref environment.Weight, .01F, 0F, 1F);
+            var background = environment.BackgroundColor;
+            BeginInspectorField("背景颜色", "场景背景颜色，按线性空间保存。");
+            changed |= ImGui.ColorEdit3("##EnvironmentBackground", ref background);
+            environment.BackgroundColor = background;
+            var fogColor = environment.FogColor;
+            BeginInspectorField("雾颜色", "体积雾颜色，按线性空间保存。");
+            changed |= ImGui.ColorEdit3("##EnvironmentFogColor", ref fogColor);
+            environment.FogColor = fogColor;
+            BeginInspectorField("雾密度", "环境雾密度，零表示关闭。");
+            changed |= ImGui.DragFloat("##EnvironmentFogDensity", ref environment.FogDensity, .001F, 0F, .05F);
+            BeginInspectorField("雾起始距离", "相机到该距离后开始出现雾。");
+            changed |= ImGui.DragFloat("##EnvironmentFogStart", ref environment.FogStart, .1F, 0F, 100000F);
+            BeginInspectorField("天空混合", "控制雾与天空颜色的混合比例。");
+            changed |= ImGui.DragFloat("##EnvironmentFogSkyBlend", ref environment.FogSkyBlend, .01F, 0F, 1F);
+            BeginInspectorField("最大不透明度", "限制远处雾的最大覆盖比例。");
+            changed |= ImGui.DragFloat("##EnvironmentFogMaxOpacity", ref environment.FogMaxOpacity, .01F, 0F, 1F);
+            BeginInspectorField("曝光", "环境曝光偏移，会按权重叠加到项目曝光。");
+            changed |= ImGui.DragFloat("##EnvironmentExposure", ref environment.Exposure, .01F, -16F, 16F);
+            if (changed)
+            {
+                SceneComponentTypes.WriteEnvironment(component, environment);
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
+
         if (SceneComponentTypes.IsVolume(component))
         {
             var volume = SceneComponentTypes.ReadVolume(component);
@@ -4024,7 +4072,7 @@ DockId=0x6A3C3007,0
             BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
             changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
             var aaMode = data.RealtimeAntiAliasingPattern == 2 ? 3 : data.RealtimeAntiAliasingSamples == 1 ? 0 : data.RealtimeAntiAliasingPattern + 1;
-            BeginInspectorField("实时抗锯齿", "超采样对每个像素追踪多条完整光照射线。路径追踪使用独立累积采样；更高采样数会显著增加开销。");
+            BeginInspectorField("实时抗锯齿", "FXAA 在显示图上平滑边缘；超采样追踪多条完整光照射线。路径追踪使用独立累积采样。");
             if (ImGui.Combo("##CameraAAMode", ref aaMode, "关闭\0规则网格超采样\0旋转网格超采样\0FXAA\0", 4))
             {
                 data = data with { RealtimeAntiAliasingSamples = aaMode is 0 or 3 ? 1 : data.RealtimeAntiAliasingSamples == 1 ? 4 : data.RealtimeAntiAliasingSamples, RealtimeAntiAliasingPattern = aaMode == 3 ? 2 : Math.Max(0, aaMode - 1) };
@@ -4083,7 +4131,19 @@ DockId=0x6A3C3007,0
                         _ => effect.Type.ToString(),
                     });
                     if (effect.Type == CameraPostProcessEffectType.DepthOfField && ImGui.IsItemHovered())
-                        ImGui.SetTooltip("仅路径追踪生效；物理相机使用镜头参数，其他相机使用项目景深参数。启用覆盖后使用此开关。");
+                        ImGui.SetTooltip("仅路径追踪生效；物理相机使用镜头参数，普通相机可继承项目参数或单独设置。启用覆盖后使用此开关。");
+                    if (effect.Type == CameraPostProcessEffectType.DepthOfField && !physicalCamera)
+                    {
+                        BeginInspectorField("独立景深参数", "关闭时继承项目的光圈半径和对焦距离。");
+                        changed |= ImGui.Checkbox("##CameraDofOverride", ref effect.OverrideDepthOfFieldParameters);
+                        if (effect.OverrideDepthOfFieldParameters)
+                        {
+                            BeginInspectorField("光圈半径", "镜头采样半径；零表示没有景深模糊。");
+                            changed |= ImGui.DragFloat("##CameraDofAperture", ref effect.DepthOfFieldAperture, .005F, 0F, .5F, "%.3f");
+                            BeginInspectorField("对焦距离", "沿相机前向到焦平面的距离。");
+                            changed |= ImGui.DragFloat("##CameraDofFocus", ref effect.DepthOfFieldFocusDistance, .1F, .01F, 1_000_000F);
+                        }
+                    }
                     if (effect.Type is CameraPostProcessEffectType.AmbientOcclusion or CameraPostProcessEffectType.VoxelIndirectLight or CameraPostProcessEffectType.ProbeVolumeGi or CameraPostProcessEffectType.Vignette)
                     {
                         var intensity = effect.Intensity;
@@ -4484,11 +4544,20 @@ DockId=0x6A3C3007,0
             if (commands.Length > 0)
             {
                 ImGui.Separator();
+                var input = _pluginCommandInputs.GetValueOrDefault(panel.PluginId, "{}");
+                ImGui.SetNextItemWidth(-1F);
+                if (ImGui.InputTextMultiline($"##PluginArguments:{panel.Id}", ref input, 65536,
+                    new Vector2(-1F, ImGui.GetTextLineHeightWithSpacing() * 3F)))
+                    _pluginCommandInputs[panel.PluginId] = input;
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("命令参数，使用 JSON 格式；默认为空对象。");
                 foreach (var command in commands)
                 {
                     ImGui.PushID(command.Id);
                     if (ImGui.Button(command.Name))
-                        _pendingActions.Enqueue(() => ExecutePluginCommand(command.Id));
+                    {
+                        var arguments = input;
+                        _pendingActions.Enqueue(() => ExecutePluginCommand(command.Id, arguments));
+                    }
                     if (ImGui.IsItemHovered())
                     {
                         ImGui.BeginTooltip();
@@ -5098,6 +5167,7 @@ DockId=0x6A3C3007,0
         ResetGeneratorPanel();
         _pluginRuntime?.Dispose();
         _pluginCommandResults.Clear();
+        _pluginCommandInputs.Clear();
         _pluginRuntime = prepared?.Runtime ?? new PluginScriptRuntime();
         _project = project;
         _activeSceneRelativePath = preloadedModels?.ScenePath ?? FindStartupSceneRelativePath(project);
@@ -5197,6 +5267,7 @@ DockId=0x6A3C3007,0
         _assetBrowser.Reset();
         _lastAssetSelectionPath = string.Empty;
         _pluginCommandResults.Clear();
+        _pluginCommandInputs.Clear();
         ResetGeneratorPanel();
         _world = new VoxelWorld();
         _layerOwnership.Clear();

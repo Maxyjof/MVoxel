@@ -31,6 +31,9 @@ public enum ProjectTemplateId
     CloudAndFog,
     /// <summary>水面与水下观察。</summary>
     WaterStudy,
+    WorldOcean,
+    WorldMist,
+    WorldSunset,
 
     /// <summary>
     /// 展示基础建模、树木、屋顶、玻璃和自发光
@@ -130,6 +133,9 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.GlassStudy, "玻璃透射对照", "在棋盘背景前比较透明玻璃、有色玻璃和毛玻璃。", "透射 · 折射 · 毛玻璃", "小型", "观察不同玻璃对背景的影响"),
         new(ProjectTemplateId.CloudAndFog, "云雾与散射", "在山景中观察漂浮云朵、薄雾和浓雾的体积效果。", "云朵 · 雾气 · 体积散射", "小型", "调整雾化密度、散射色和不透明度"),
         new(ProjectTemplateId.WaterStudy, "水面与池底", "用浅水池、池底棋盘和水中物件观察水体透射与折射。", "水面 · 吸收 · 折射", "小型", "比较水深及吸收对池底的影响"),
+        new(ProjectTemplateId.WorldOcean, "晴海灯塔", "晴空海面环绕灯塔岛，展示细密水波与海天。", "世界环境 · 海面 · 灯塔", "小型", "调整水位、波长与水面粗糙度"),
+        new(ProjectTemplateId.WorldMist, "雾海群岛", "冷色雾气笼罩群岛与航标，展示距离雾层次。", "世界环境 · 海雾 · 群岛", "小型", "调整雾浓度、起始距离和颜色"),
+        new(ProjectTemplateId.WorldSunset, "晚霞海岸", "暖色天空下的海岛与灯塔，展示低角度日光和海面。", "世界环境 · 晚霞 · 水面", "小型", "组合天空、太阳与水面参数"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -164,7 +170,8 @@ public static class ProjectTemplateCatalog
         ProjectTemplateId.Empty or ProjectTemplateId.DefaultRoom => "入门",
         ProjectTemplateId.MaterialLab or ProjectTemplateId.PaletteWorkshop or ProjectTemplateId.GlassStudy or
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or
-            ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy => "材质与渲染",
+            ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy or ProjectTemplateId.WorldOcean or
+            ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset => "材质与渲染",
         ProjectTemplateId.Showcase or ProjectTemplateId.Architecture or ProjectTemplateId.MoonbaseOutpost or
             ProjectTemplateId.ClockworkConservatory or ProjectTemplateId.DesertCaravanserai => "建模与场景",
         ProjectTemplateId.ProceduralTerrain or ProjectTemplateId.MinecraftValley or ProjectTemplateId.SparseWorld or
@@ -432,6 +439,9 @@ public static class ProjectTemplateCatalog
         ArgumentNullException.ThrowIfNull(palette);
         return id switch
         {
+            ProjectTemplateId.WorldOcean => TemplateScenes.BuildEnvironmentIsland(0),
+            ProjectTemplateId.WorldMist => TemplateScenes.BuildEnvironmentIsland(1),
+            ProjectTemplateId.WorldSunset => TemplateScenes.BuildEnvironmentIsland(2),
             ProjectTemplateId.DefaultRoom => TemplateScenes.BuildDefaultRoom(),
             ProjectTemplateId.GlassStudy => TemplateScenes.BuildGlassStudy(),
             ProjectTemplateId.CornellBox => TemplateScenes.BuildCornellBox(),
@@ -574,6 +584,35 @@ public static class ProjectTemplateCatalog
         settings.TemplateId = id.ToString();
         switch (id)
         {
+            case ProjectTemplateId.WorldOcean:
+            case ProjectTemplateId.WorldMist:
+            case ProjectTemplateId.WorldSunset:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.ShowWater = true;
+                settings.RenderSettings.WaterHeight = 2F;
+                settings.RenderSettings.WaterWaveSize = id == ProjectTemplateId.WorldMist ? .2F : .6F;
+                settings.RenderSettings.WaterWaveLength = id == ProjectTemplateId.WorldSunset ? 12F : 18F;
+                settings.RenderSettings.WaterRoughness = .12F;
+                settings.RenderSettings.WaterColor = id == ProjectTemplateId.WorldSunset
+                    ? new Vector3(.18F, .28F, .36F) : new Vector3(.07F, .32F, .42F);
+                settings.RenderSettings.SunElevationDegrees = id == ProjectTemplateId.WorldSunset ? 12F : 38F;
+                if (id == ProjectTemplateId.WorldMist)
+                {
+                    settings.RenderSettings.FogDensity = .012F;
+                    settings.RenderSettings.FogStart = 12F;
+                    settings.RenderSettings.FogColor = new Vector3(.68F, .76F, .78F);
+                    settings.RenderSettings.FogMaxOpacity = .8F;
+                }
+                if (id == ProjectTemplateId.WorldSunset)
+                {
+                    settings.RenderSettings.SkyTop = new Vector3(.22F, .27F, .48F);
+                    settings.RenderSettings.SkyHorizon = new Vector3(.95F, .55F, .34F);
+                    settings.RenderSettings.SunColor = new Vector3(1F, .68F, .43F);
+                    settings.RenderSettings.AmbientTint = .3F;
+                }
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
             case ProjectTemplateId.CornellBox:
                 settings.DefaultRenderPreset = "康奈尔盒光照";
                 settings.RenderSettings.PathTracingEnabled = true;

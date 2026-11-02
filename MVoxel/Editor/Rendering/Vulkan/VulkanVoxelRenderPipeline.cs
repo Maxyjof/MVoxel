@@ -655,7 +655,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _hardwareLightFallbackCount = -1;
         }
 
-        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && !emissiveLighting && _context is not null && _imguiRenderer is not null &&
+        // 硬件 RT 尚无这些后处理，启用时走完整 Compute 路径，避免静默忽略相机效果。
+        bool needsCameraEffects = settings.FilmGrainIntensity > 0F || settings.PosterizeMix > 0F || settings.SplitToneMix > 0F;
+        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && !emissiveLighting && !needsCameraEffects && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
         {
             _hardwareRayTracingPipeline ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
@@ -1162,7 +1164,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
         // 实时模式也可以使用 Bloom，但不执行路径专用降噪。
         bool denoiseActive = pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F;
-        if (bloomActive || denoiseActive || selectionActive)
+        bool fxaaActive = !pathMode && !frameState.ScenePreview && settings.RealtimeAntiAliasingPattern == 2 && settings.FxaaStrength > 0F;
+        if (bloomActive || denoiseActive || selectionActive || fxaaActive)
         {
             void DispatchFinalPass(int modeSlot, float modeValue)
             {
@@ -1174,7 +1177,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
                 if (!pathMode) TransitionRealtimeHistoryToGeneral(commandBuffer);
-                if (pathMode || bloomActive || selectionActive)
+                if (pathMode || bloomActive || selectionActive || fxaaActive)
                 {
                     // 收尾通道读取整张中间图，等待所有分块写入。
                     TransitionAccumulationToGeneral(commandBuffer);
@@ -1205,6 +1208,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             else if (denoiseActive)
             {
                 DispatchFinalPass(VoxelRenderParameters.DenoisePass, 1F);
+            }
+            if (fxaaActive)
+            {
+                DispatchFinalPass(VoxelRenderParameters.FxaaPass, 1F);
+                DispatchFinalPass(VoxelRenderParameters.FxaaPass, 2F);
             }
         }
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
@@ -1440,10 +1448,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = _outputImage,
             SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
-            SrcAccessMask = _outputIsShaderReadOnly ? AccessFlags.ShaderReadBit : 0,
-            DstAccessMask = AccessFlags.ShaderWriteBit
+            SrcAccessMask = _outputIsShaderReadOnly ? AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit : 0,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit
         };
-        var sourceStage = _outputIsShaderReadOnly ? PipelineStageFlags.FragmentShaderBit : PipelineStageFlags.TopOfPipeBit;
+        var sourceStage = _outputIsShaderReadOnly ? PipelineStageFlags.FragmentShaderBit | PipelineStageFlags.ComputeShaderBit : PipelineStageFlags.TopOfPipeBit;
         api.CmdPipelineBarrier(commandBuffer, sourceStage, PipelineStageFlags.ComputeShaderBit,
             0, 0, null, 0, null, 1, in barrier);
     }
@@ -1960,7 +1968,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             BvhNode nodes[];
         };
 
-        layout(set = 0, binding = 2, rgba8) uniform writeonly image2D outputImage;
+        layout(set = 0, binding = 2, rgba8) uniform coherent image2D outputImage;
 
         layout(set = 0, binding = 3, std430) readonly buffer ParameterBuffer
         {
@@ -2599,11 +2607,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             float fogDensity = max(values[51], 0.0);
             if (fogDensity > 0.0)
             {
-                float fogAmount = 1.0 - exp(-fogDensity * cameraDistance);
+                float fogAmount = 1.0 - exp(-fogDensity * max(cameraDistance - values[152], 0.0));
                 vec3 fogColor = mix(Sky(rayDirection),
                     SrgbToLinear(clamp(vec3(values[48], values[49], values[50]),
-                        vec3(0.0), vec3(1.0))), 0.55);
-                result = mix(result, fogColor, clamp(fogAmount, 0.0, 0.92));
+                        vec3(0.0), vec3(1.0))), clamp(values[153], 0.0, 1.0));
+                result = mix(result, fogColor, clamp(fogAmount, 0.0, values[154]));
             }
             return max(result, vec3(0.0));
         }
@@ -2684,23 +2692,39 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 ivec3 hitCell;
                 ivec3 hitExtent;
                 bool groundHit = false;
-                if (!TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false))
+                bool waterHit = false;
+                bool voxelHit = TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false);
+                float waterDistance = values[144] > 0.5 && abs(rayDirection.y) > 0.00001
+                    ? (values[145] - rayOrigin.y) / rayDirection.y : 3.402823e+38;
+                float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5 && values[115] < 0.5)) && abs(rayDirection.y) > 0.00001
+                    ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
+                if (groundDistance <= 0.001) groundDistance = 3.402823e+38;
+                if (waterDistance <= 0.001) waterDistance = 3.402823e+38;
+                float planeDistance = min(groundDistance, waterDistance);
+                if (!voxelHit || planeDistance < hitDistance)
                 {
-                    float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5 && values[115] < 0.5)) && abs(rayDirection.y) > 0.00001
-                        ? -rayOrigin.y / rayDirection.y : 3.402823e+38;
-                    if (groundDistance > 0.0 && groundDistance < values[97])
+                    if (planeDistance < values[97])
                     {
                         if (bounce == 0)
                         {
                             primarySurfaceHit = true;
-                            primarySurfaceDistance = groundDistance;
+                            primarySurfaceDistance = planeDistance;
                         }
                         // 把无限地面作为真正的表面命中，而不是背景颜色。
                         // 这样它会复用体素表面的太阳阴影、AO、环境高光和路径弹射，
                         // 远离模型时也不会出现只剩一块背景色的假地面。
                         groundHit = true;
-                        hitDistance = groundDistance;
+                        waterHit = waterDistance <= groundDistance;
+                        hitDistance = planeDistance;
                         hitNormal = vec3(0.0, 1.0, 0.0);
+                        if (waterHit)
+                        {
+                            vec3 wp = rayOrigin + rayDirection * hitDistance;
+                            float k = 6.28318530718 / max(values[150], 0.1);
+                            float dx = cos(wp.x * k + wp.z * k * 0.37) * values[149] * k;
+                            float dz = cos(wp.z * k * 1.31 - wp.x * k * 0.23) * values[149] * k;
+                            hitNormal = normalize(vec3(-dx, 1.0, -dz));
+                        }
                         hitColor = vec4(0.0, 0.0, 0.0, 1.0);
                         hitFlags = 0u;
                         hitSlot = 0u;
@@ -2757,8 +2781,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     primarySelected = (hitFlags & 256u) != 0u;
                 }
                 MaterialSlotData material = materialSlots[int(hitSlot)];
-                vec3 hitLinearColor = groundHit
-                    ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
+                if (waterHit)
+                {
+                    material.scalars.x = clamp(values[151], 0.01, 1.0);
+                    material.scalars.y = 0.0;
+                    material.optics.y = 1.0;
+                }
+                vec3 hitLinearColor = waterHit
+                    ? SrgbToLinear(clamp(vec3(values[146], values[147], values[148]), vec3(0.0), vec3(1.0)))
+                    : groundHit ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
                     : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
                 if (!pathMode && values[115] > 0.5 && values[57] <= 0.5)
                 {
@@ -3242,6 +3273,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return false;
         }
 
+        // Storage image 没有硬件线性采样，手动插值以保留 FXAA 的亚像素方向。
+        vec3 FxaaSample(vec2 position, ivec2 limit)
+        {
+            vec2 bounded = clamp(position, vec2(0.0), vec2(limit));
+            ivec2 base = ivec2(floor(bounded));
+            ivec2 next = min(base + ivec2(1), limit);
+            vec2 f = fract(bounded);
+            vec3 top = mix(imageLoad(outputImage, base).rgb, imageLoad(outputImage, ivec2(next.x, base.y)).rgb, f.x);
+            vec3 bottom = mix(imageLoad(outputImage, ivec2(base.x, next.y)).rgb, imageLoad(outputImage, next).rgb, f.x);
+            return mix(top, bottom, f.y);
+        }
+
         void main()
         {
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
@@ -3249,6 +3292,41 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             int width = int(values[11]);
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
+
+            // 先从完整显示图检测边缘并写入中间图，再复制回输出，避免同一通道读写竞争。
+            if (values[P_FXAA_PASS] > 1.5)
+            {
+                imageStore(outputImage, pixel, imageLoad(accumulationImage, pixel));
+                return;
+            }
+            if (values[P_FXAA_PASS] > 0.5)
+            {
+                ivec2 limit = ivec2(width - 1, height - 1);
+                vec4 center = imageLoad(outputImage, pixel);
+                vec3 nw = imageLoad(outputImage, clamp(pixel + ivec2(-1, -1), ivec2(0), limit)).rgb;
+                vec3 ne = imageLoad(outputImage, clamp(pixel + ivec2(1, -1), ivec2(0), limit)).rgb;
+                vec3 sw = imageLoad(outputImage, clamp(pixel + ivec2(-1, 1), ivec2(0), limit)).rgb;
+                vec3 se = imageLoad(outputImage, clamp(pixel + ivec2(1, 1), ivec2(0), limit)).rgb;
+                vec3 luma = vec3(0.299, 0.587, 0.114);
+                float m = dot(center.rgb, luma), a = dot(nw, luma), b = dot(ne, luma), c = dot(sw, luma), d = dot(se, luma);
+                float lo = min(m, min(min(a, b), min(c, d)));
+                float hi = max(m, max(max(a, b), max(c, d)));
+                vec3 result = center.rgb;
+                if (hi - lo >= max(0.0312, hi * values[P_FXAA_THRESHOLD]))
+                {
+                    vec2 direction = vec2(-((a + b) - (c + d)), (a + c) - (b + d));
+                    float reduce = max((a + b + c + d) * 0.03125, 0.0078125);
+                    direction = clamp(direction / (min(abs(direction.x), abs(direction.y)) + reduce), vec2(-2.0), vec2(2.0));
+                    vec2 pos = vec2(pixel);
+                    vec3 inner = 0.5 * (FxaaSample(pos - direction / 6.0, limit) + FxaaSample(pos + direction / 6.0, limit));
+                    vec3 wide = inner * 0.5 + 0.25 * (FxaaSample(pos - direction * 0.5, limit) + FxaaSample(pos + direction * 0.5, limit));
+                    float wideLuma = dot(wide, luma);
+                    vec3 filtered = wideLuma < lo || wideLuma > hi ? inner : wide;
+                    result = mix(center.rgb, filtered, clamp(values[P_FXAA_STRENGTH], 0.0, 1.0));
+                }
+                imageStore(accumulationImage, pixel, vec4(result, center.a));
+                return;
+            }
 
             if (values[63] > 1.5)
             {
@@ -3292,7 +3370,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 return;
             }
 
-            int samples = pathMode ? max(int(values[78]), 1) : 1;
+            int samples = pathMode ? max(int(values[78]), 1) : clamp(int(values[P_REALTIME_AA_SAMPLES]), 1, 16);
             int accumulatedSamples = max(int(values[79]), 0);
             // 实时模式保持屏幕空间效果稳定，不把毫秒级帧号带入 AO/阴影随机种子；
             // 路径模式才使用帧号做时间去相关并交给累积缓冲收敛。
@@ -3322,6 +3400,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     jitter = vec2(fract(saltX + sampleNumber * 0.6180339887),
                         fract(saltY + sampleNumber * 0.7548776662)) - 0.5;
                 }
+                if (!pathMode && samples > 1)
+                {
+                    int columns = samples >= 8 ? 4 : 2;
+                    int rows = samples / columns;
+                    vec2 grid = (vec2(float(sampleIndex % columns) + 0.5, float(sampleIndex / columns) + 0.5)
+                        / vec2(float(columns), float(rows))) - 0.5;
+                    if (values[P_REALTIME_AA_PATTERN] > 0.5)
+                        grid = vec2(grid.x - grid.y, grid.x + grid.y) * 0.70710678;
+                    jitter = grid * clamp(values[P_REALTIME_AA_SPREAD], 0.25, 1.0);
+                }
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
                 vec3 sampleOrigin = origin;
                 if (pathMode && values[87] > 0.0)
@@ -3333,7 +3421,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     float radius = sqrt(Random(state)) * values[82];
                     float angle = 6.28318530718 * Random(state);
                     vec2 lens = vec2(cos(angle), sin(angle)) * radius;
-                    vec3 focusPoint = sampleOrigin + direction * max(values[83], 0.01);
+                    // 焦距沿相机前向测量：屏幕各处射线应落在同一焦平面上。
+                    float focusRayDistance = max(values[83], 0.01) / max(dot(direction, forward), 0.0001);
+                    vec3 focusPoint = sampleOrigin + direction * focusRayDistance;
                     vec3 lensOrigin = sampleOrigin + right * lens.x + up * lens.y;
                     sampleOrigin = lensOrigin;
                     direction = normalize(focusPoint - lensOrigin);
@@ -3444,13 +3534,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 vec2 uv = (vec2(pixel) + 0.5) / vec2(width, height) * 2.0 - 1.0;
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
-            if (values[84] > 0.5)
-            {
-                vec2 dofUv = (vec2(pixel) + 0.5) / vec2(width, height);
-                float focus = clamp(values[83] / max(values[97], 1.0), 0.0, 1.0);
-                float blur = clamp(values[82] * (1.0 - focus) * 2.0, 0.0, 1.0);
-                color = mix(color, color * (0.96 + 0.04 * blur), blur * 0.25);
-            }
             color = max(color, vec3(0.0));
             if (values[64] > 0.5)
             {
@@ -3465,6 +3548,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             color = pow(color, vec3(1.0 / gamma));
             if (values[56] > 0.5)
                 color = (color - 0.5) * max(values[54], 0.0) + 0.5;
+            if (values[P_SPLIT_MIX] > 0.0)
+            {
+                float luminance = dot(clamp(color, 0.0, 1.0), vec3(0.2126, 0.7152, 0.0722));
+                float balance = clamp(values[P_SPLIT_BALANCE], 0.05, 0.95);
+                float highlightWeight = smoothstep(max(0.0, balance - 0.25), min(1.0, balance + 0.25), luminance);
+                vec3 shadowTint = vec3(values[P_SPLIT_SHADOW_R], values[P_SPLIT_SHADOW_G], values[P_SPLIT_SHADOW_B]);
+                vec3 highlightTint = vec3(values[P_SPLIT_HIGHLIGHT_R], values[P_SPLIT_HIGHLIGHT_G], values[P_SPLIT_HIGHLIGHT_B]);
+                color = mix(color, color * mix(shadowTint, highlightTint, highlightWeight), clamp(values[P_SPLIT_MIX], 0.0, 1.0));
+            }
+            if (values[P_POSTERIZE_MIX] > 0.0)
+            {
+                float levels = max(values[P_POSTERIZE_LEVELS], 2.0) - 1.0;
+                vec3 quantized = floor(clamp(color, 0.0, 1.0) * levels + 0.5) / levels;
+                color = mix(color, quantized, clamp(values[P_POSTERIZE_MIX], 0.0, 1.0));
+            }
+            if (values[P_FILM_GRAIN_INTENSITY] > 0.0)
+            {
+                vec2 grainPixel = floor(vec2(pixel) / max(values[P_FILM_GRAIN_SIZE], 1.0));
+                float grain = fract(sin(dot(grainPixel, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+                color += grain * values[P_FILM_GRAIN_INTENSITY] * 0.25;
+            }
             if (values[71] > 0.5)
             {
                 float noise = fract(sin(dot(vec2(pixel), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;

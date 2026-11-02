@@ -106,7 +106,7 @@ internal sealed partial class ImGuiEditorWindow
              Param("aoStrength", "number", false, "环境光遮蔽强度"),
              Param("fogDensity", "number", false, "雾浓度"),
              Param("showGround", "boolean", false, "是否显示地面"),
-             Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
+              Param("fogStart", "number", false, "雾起始距离"),`r`n              Param("fogSkyBlend", "number", false, "雾颜色与天空颜色混合权重"),`r`n              Param("fogMaxOpacity", "number", false, "雾最大不透明度"),`r`n              Param("showWater", "boolean", false, "是否显示水面"),`r`n              Param("waterHeight", "number", false, "水面高度"),`r`n              Param("waterColor", "string", false, "水面颜色，格式为R,G,B"),`r`n              Param("waterWaveSize", "number", false, "水面波浪大小"),`r`n              Param("waterWaveLength", "number", false, "水面波长"),`r`n              Param("waterRoughness", "number", false, "水面粗糙度"),`r`n             Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",

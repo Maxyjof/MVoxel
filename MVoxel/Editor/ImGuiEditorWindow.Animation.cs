@@ -29,6 +29,7 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawAnimationWindow()
     {
+        if (!_showAnimationWindow) return;
         var open = _showAnimationWindow;
         if (!ImGui.Begin("动画##AnimationWindow", ref open, PanelWindowFlags)) { ImGui.End(); _showAnimationWindow = open; return; }
         _showAnimationWindow = open;

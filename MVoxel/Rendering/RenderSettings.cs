@@ -128,6 +128,11 @@ public sealed class RenderSettings
     /// <summary>
     /// AO 强度，0 关闭效果 1 全量
     /// </summary>
+    public int RealtimeAntiAliasingSamples = 1;
+    public int RealtimeAntiAliasingPattern;
+    public float RealtimeAntiAliasingSpread = 1F;
+    public float FxaaThreshold = .125F;
+    public float FxaaStrength = .75F;
     public float AoStrength = 0.85F;
 
     /// <summary>
@@ -211,6 +216,17 @@ public sealed class RenderSettings
     /// 指数距离雾浓度，0 关闭
     /// </summary>
     public float FogDensity;
+    public float FogStart;
+    public float FogSkyBlend = 0.55F;
+    public float FogMaxOpacity = 0.92F;
+
+    // 无限水面；波纹改变表面法线，平面高度保持稳定。
+    public bool ShowWater;
+    public float WaterHeight;
+    public Vector3 WaterColor = new(0.08F, 0.32F, 0.42F);
+    public float WaterWaveSize = 0.35F;
+    public float WaterWaveLength = 16F;
+    public float WaterRoughness = 0.12F;
 
     /// <summary>
     /// 近处淡入距离，0 关闭，用于模型贴脸时的柔化
@@ -243,6 +259,17 @@ public sealed class RenderSettings
     /// 暗角强度
     /// </summary>
     public float Vignette;
+
+    /// <summary>相机覆盖的固定画面颗粒强度与尺寸（像素）。</summary>
+    public float FilmGrainIntensity;
+    public float FilmGrainSize = 1F;
+    /// <summary>色阶分离级数与混合强度，零强度为关闭。</summary>
+    public int PosterizeLevels = 8;
+    public float PosterizeMix;
+    public Vector3 SplitToneShadows = Vector3.One;
+    public Vector3 SplitToneHighlights = Vector3.One;
+    public float SplitToneBalance = .5F;
+    public float SplitToneMix;
 
     /// <summary>
     /// 输出抖动开关，消除平滑渐变的色带
@@ -462,6 +489,7 @@ public sealed class RenderSettings
         preview.Backend = RenderBackend.Gpu;
         preview.PathTracingEnabled = false;
         preview.ShowGround = false;
+        preview.ShowWater = false;
         preview.AmbientOcclusionEnabled = false;
         preview.EmissiveVoxels = false;
         preview.FogDensity = 0F;
@@ -519,6 +547,7 @@ public sealed class RenderSettings
         SkyTop = ClampChannel(SkyTop);
         SkyHorizon = ClampChannel(SkyHorizon);
         FogColor = ClampChannel(FogColor);
+        WaterColor = ClampChannel(WaterColor);
         SunAzimuthDegrees = Wrap(SunAzimuthDegrees, 360F);
         SunElevationDegrees = Math.Clamp(SunElevationDegrees, 2F, 90F);
         SunIntensity = Math.Clamp(SunIntensity, 0F, 8F);
@@ -537,6 +566,13 @@ public sealed class RenderSettings
         Brightness = Math.Clamp(Brightness, 0.1F, 3F);
         HueCycleSpeed = Math.Clamp(HueCycleSpeed, 0F, 180F);
         FogDensity = Math.Clamp(FogDensity, 0F, 0.05F);
+        FogStart = Math.Clamp(FogStart, 0F, 100000F);
+        FogSkyBlend = Math.Clamp(FogSkyBlend, 0F, 1F);
+        FogMaxOpacity = Math.Clamp(FogMaxOpacity, 0F, 1F);
+        WaterHeight = Math.Clamp(WaterHeight, -100000F, 100000F);
+        WaterWaveSize = Math.Clamp(WaterWaveSize, 0F, 4F);
+        WaterWaveLength = Math.Clamp(WaterWaveLength, 0.1F, 1024F);
+        WaterRoughness = Math.Clamp(WaterRoughness, 0.01F, 1F);
         NearFade = Math.Clamp(NearFade, 0F, 512F);
         GroundFade = Math.Clamp(GroundFade, 0F, 4096F);
         Exposure = Math.Clamp(Exposure, -6F, 6F);
@@ -648,6 +684,14 @@ public sealed class RenderSettings
         Brightness = Safe(Brightness, 1F);
         HueCycleSpeed = Safe(HueCycleSpeed, 20F);
         FogDensity = Safe(FogDensity, 0F);
+        FogStart = Safe(FogStart, 0F);
+        FogSkyBlend = Safe(FogSkyBlend, 0.55F);
+        FogMaxOpacity = Safe(FogMaxOpacity, 0.92F);
+        WaterHeight = Safe(WaterHeight, 0F);
+        WaterWaveSize = Safe(WaterWaveSize, 0.35F);
+        WaterWaveLength = Safe(WaterWaveLength, 16F);
+        WaterRoughness = Safe(WaterRoughness, 0.12F);
+        WaterColor = SafeChannel(WaterColor, new Vector3(0.08F, 0.32F, 0.42F));
         NearFade = Safe(NearFade, 0F);
         GroundFade = Safe(GroundFade, 0F);
         Exposure = Safe(Exposure, 0F);

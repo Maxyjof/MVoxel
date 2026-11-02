@@ -217,6 +217,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (!_showGeneratorPanel) return;
         var open = true;
+        if (_applyPreset && _layoutPreset == LayoutPreset.Generator) ImGui.SetNextWindowFocus();
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(560F, 620F), ImGuiCond.FirstUseEver);
         if (!ImGui.Begin("生成器##生成器面板", ref open, ImGuiWindowFlags.NoCollapse))

@@ -35,6 +35,9 @@ public static class SceneComponentTypes
     /// <summary>全局环境Volume组件</summary>
     public const string Volume = "mvoxel.volume";
 
+    /// <summary>场景环境组件的稳定类型标识</summary>
+    public const string Environment = "mvoxel.environment";
+
     /// <summary>动画组件的稳定类型标识</summary>
     public const string Animation = "mvoxel.animation";
 
@@ -46,6 +49,7 @@ public static class SceneComponentTypes
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
         new(Volume, "Volume", "渲染", true),
+        new(Environment, "环境", "环境", true),
         new(Animation, "动画", "动画", true),
     ];
 
@@ -63,6 +67,24 @@ public static class SceneComponentTypes
     public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
     public static bool IsProbeVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, ProbeVolume, StringComparison.Ordinal);
     public static bool IsVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Volume, StringComparison.Ordinal);
+    public static bool IsEnvironment(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Environment, StringComparison.Ordinal);
+
+    public static ComponentRecord CreateEnvironment(EnvironmentComponentData data) => new()
+    {
+        TypeId = Environment, SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
+    };
+
+    public static EnvironmentComponentData ReadEnvironment(ComponentRecord component) =>
+        IsEnvironment(component) && component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<EnvironmentComponentData>(FieldJsonOptions)?.Normalize() ?? new EnvironmentComponentData()
+            : new EnvironmentComponentData();
+
+    public static void WriteEnvironment(ComponentRecord component, EnvironmentComponentData data)
+    {
+        if (!IsEnvironment(component)) throw new ArgumentException("组件记录不是环境组件", nameof(component));
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
+    }
 
     public static ComponentRecord CreateVolume(VolumeComponentData data) => new()
     {

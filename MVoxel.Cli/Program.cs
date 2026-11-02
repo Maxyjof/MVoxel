@@ -175,6 +175,7 @@ internal static class Program
                 var scenePath = args.Length == 4 ? args[3] : Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox");
                 var scene = SceneSerializer.Load(scenePath);
                 var parts = new List<VoxFormat.VoxScenePart>();
+                var exportBindings = new Dictionary<int, string>();
                 var skipped = 0;
                 foreach (var sceneObject in scene.Objects)
                 {
@@ -193,16 +194,26 @@ internal static class Program
                         continue;
                     }
 
+                    foreach (var binding in model.MaterialSlots ?? [])
+                    {
+                        if (exportBindings.TryGetValue(binding.Slot, out var previous) &&
+                            !string.Equals(previous, binding.MaterialAsset, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException($"材质槽 {binding.Slot} 在不同对象中绑定了不同材质，无法无损导出为 VOX");
+                        exportBindings[binding.Slot] = binding.MaterialAsset;
+                    }
                     var placement = sceneObject.Transform.Grid.Position;
                     parts.Add(new VoxFormat.VoxScenePart(sceneObject.Name, LargeWorldFormat.Read(worldPath), placement));
                 }
 
                 if (parts.Count == 0) throw new InvalidOperationException("场景里没有可导出的体素模型对象");
-                var materials = MaterialAsset.LoadFromProject(project)
-                    .Select(asset => new VoxMaterial(asset.Slot, MaterialType(asset), 1F,
+                var materials = exportBindings.Select(binding =>
+                {
+                    var assetPath = Path.Combine(project.AssetsPath, binding.Value.Replace('/', Path.DirectorySeparatorChar));
+                    var asset = MaterialAsset.Load(assetPath);
+                    return new VoxMaterial(binding.Key, MaterialType(asset), 1F,
                         asset.Roughness ?? -1F, asset.Specular ?? -1F, asset.Ior ?? -1F,
-                        asset.AbsorptionStep ?? -1F, asset.EmissiveScale ?? -1F))
-                    .ToList();
+                        asset.AbsorptionStep ?? -1F, asset.EmissiveScale ?? -1F);
+                }).ToList();
                 VoxFormat.WriteScene(args[2], parts, materials);
                 Console.WriteLine($"已导出场景 .vox：{args[2]}");
                 Console.WriteLine($"对象 {parts.Count} 个，体素 {parts.Sum(part => part.World.OccupiedVoxelCount):N0}，" +
@@ -365,7 +376,7 @@ internal static class Program
             }
             case "--editor-commands" when args.Length is 1 or 2:
             {
-                object filter = args.Length == 2 ? new { category = args[1] } : new { category = (string?)null };
+                object filter = new { category = args.Length == 2 ? args[1] : null };
                 using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(filter, JsonOptions));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.commands", arguments.RootElement), JsonOptions));
                 return 0;

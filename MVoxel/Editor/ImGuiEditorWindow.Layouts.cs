@@ -40,7 +40,10 @@ internal sealed partial class ImGuiEditorWindow
             if (name.StartsWith("@builtin:", StringComparison.Ordinal))
             {
                 if (Enum.TryParse<LayoutPreset>(name[9..], out var preset) && preset != LayoutPreset.Custom)
+                {
                     _layoutPreset = preset;
+                    ApplyPresetPanels(preset);
+                }
                 return;
             }
             var path = LayoutFileName(name);
@@ -91,14 +94,22 @@ internal sealed partial class ImGuiEditorWindow
         {
             LayoutPreset.Modeling => (320, 360, 250),
             LayoutPreset.Rendering => (270, 400, 300),
+            LayoutPreset.Assets => (270, 320, 380),
+            LayoutPreset.Generator => (250, 440, 260),
+            LayoutPreset.Analysis => (260, 400, 310),
             _ => (300, 360, 225),
         };
-        return DefaultDockLayout
+        var layout = DefaultDockLayout
             .Replace("SizeRef=300,615", $"SizeRef={left},615")
             .Replace("SizeRef=1140,615 Split=X", $"SizeRef={1440 - left},615 Split=X")
             .Replace("SizeRef=780,615 Selected", $"SizeRef={1440 - left - right},615 Selected")
             .Replace("SizeRef=360,615", $"SizeRef={right},615")
             .Replace("SizeRef=1440,225", $"SizeRef=1440,{bottom}");
+        if (preset == LayoutPreset.Generator)
+            layout += "\n[Window][生成器##生成器面板]\nDockId=0x6A3C3006,3\n";
+        if (preset == LayoutPreset.Analysis)
+            layout += "\n[Window][体素度量]\nDockId=0x6A3C3007,1\n[Window][性能分析器]\nDockId=0x6A3C3006,3\n";
+        return layout;
     }
 
     private void DrawLayoutMenu()
@@ -110,6 +121,12 @@ internal sealed partial class ImGuiEditorWindow
             SelectLayout(LayoutPreset.Modeling);
         if (ImGui.MenuItem("渲染布局", null, _activeLayoutFile is null && _layoutPreset == LayoutPreset.Rendering))
             SelectLayout(LayoutPreset.Rendering);
+        if (ImGui.MenuItem("资产布局", null, _activeLayoutFile is null && _layoutPreset == LayoutPreset.Assets))
+            SelectLayout(LayoutPreset.Assets);
+        if (ImGui.MenuItem("生成器布局", null, _activeLayoutFile is null && _layoutPreset == LayoutPreset.Generator))
+            SelectLayout(LayoutPreset.Generator);
+        if (ImGui.MenuItem("分析布局", null, _activeLayoutFile is null && _layoutPreset == LayoutPreset.Analysis))
+            SelectLayout(LayoutPreset.Analysis);
 
         var layouts = GetCustomLayouts();
         if (layouts.Count > 0)

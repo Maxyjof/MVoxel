@@ -192,16 +192,18 @@ internal sealed partial class ImGuiEditorWindow
 
     private sealed record PreparedOpenProject(ProjectHandle Project, PreloadedModels Models,
         PreloadedModels? Recovery, RecoverySnapshot? Snapshot, IReadOnlyList<MaterialAsset>? Materials,
-        float[]? MaterialTable, PluginScriptRuntime Runtime) : IDisposable
+        PluginScriptRuntime Runtime) : IDisposable
     {
         public void Dispose() => Runtime.Dispose();
     }
 
     internal sealed record PreloadedModels(string ScenePath, Scene.SceneDocument? Scene,
-        Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed);
+        Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed,
+        bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum);
 
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
-        CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null)
+        CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null,
+        Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null)
     {
         var relative = FindStartupSceneRelativePath(project);
         var path = Path.Combine(project.AssetsPath, relative.Replace('/', Path.DirectorySeparatorChar));
@@ -212,7 +214,7 @@ internal sealed partial class ImGuiEditorWindow
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException) { }
         }
         var worlds = new Dictionary<StableId, VoxelWorld>();
-        var cache = new Dictionary<ModelLoadKey, VoxelWorld>();
+        var cache = modelCache ?? new Dictionary<ModelLoadKey, VoxelWorld>();
         var failed = false;
         if (scene is not null)
         {
@@ -255,8 +257,21 @@ internal sealed partial class ImGuiEditorWindow
         var store = new ObjectVoxelStore();
         store.RestoreReferences(worlds);
         var composed = scene is null ? null : store.Compose(scene, uint.MaxValue, false, cancellation);
+        report(new BlockingOperationProgress("正在计算场景边界…", .88F, true));
+        var minimum = default(VoxelCoord64);
+        var maximum = default(VoxelCoord64);
+        var hasBounds = composed is not null && composed.TryGetBounds(out minimum, out maximum);
         cancellation.ThrowIfCancellationRequested();
-        return new PreloadedModels(relative, scene, worlds, composed, failed);
+        return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum);
+    }
+
+    private void ApplyPreloadedBounds(PreloadedModels preload)
+    {
+        _axisOcclusionBoundsWorld = preload.Composed;
+        _axisOcclusionBoundsVersion = preload.Composed!.ContentVersion;
+        _axisOcclusionHasBounds = preload.HasBounds;
+        _axisOcclusionMinimum = preload.Minimum;
+        _axisOcclusionMaximum = preload.Maximum;
     }
 
     private void LoadWorldForProject(ProjectHandle project,
@@ -297,6 +312,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             _objectVoxels.RestoreReferences(preload.ObjectWorlds);
             _world = preload.Composed;
+            ApplyPreloadedBounds(preload);
             _worldLoadFailed = preload.LoadFailed;
             _pickVersion++;
         }
@@ -519,27 +535,130 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 解析当前渲染配置。渲染参数只来自编辑器默认配置或当前项目配置，
-    /// 相机对象不再拥有独立覆盖。
+    /// 在独立快照上合并项目配置、相机参数和场景覆盖。
     /// </summary>
     /// <param name="cameraObject">相机对象，可为空</param>
     /// <returns>生效渲染配置</returns>
-    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject)
+    private RenderSettings ResolveRenderSettings(SceneObject? cameraObject, RenderSettings? baseSettings = null)
     {
-        var settings = _captureRenderSettings ?? _renderSettings;
-        if (cameraObject is null) return settings;
-        var camera = cameraObject.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
-        if (camera is null) return settings;
+        var settings = (baseSettings ?? _captureRenderSettings ?? _renderSettings).CloneForExport();
+        var camera = cameraObject?.Components.FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsCamera(item));
+        if (camera is not null)
+        {
         var data = SceneComponentTypes.ReadCamera(camera);
+        settings.RealtimeAntiAliasingSamples = data.RealtimeAntiAliasingSamples;
+        settings.RealtimeAntiAliasingPattern = data.RealtimeAntiAliasingPattern;
+        settings.RealtimeAntiAliasingSpread = data.RealtimeAntiAliasingSpread;
+        settings.FxaaThreshold = data.FxaaThreshold;
+        settings.FxaaStrength = data.FxaaStrength;
         settings.CameraFovDegrees = data.PhysicalCamera
             ? 2F * MathF.Atan(data.SensorWidthMillimeters / (2F * data.FocalLengthMillimeters)) * (180F / MathF.PI)
             : data.FieldOfViewDegrees;
-        settings.DepthOfField = data.PhysicalCamera && data.PostProcess?.Find(CameraPostProcessEffectType.DepthOfField)?.Enabled == true;
         settings.ApertureRadius = data.PhysicalCamera ? Math.Clamp(1F / data.ApertureFStop, 0F, 1F) : settings.ApertureRadius;
         settings.FocusDistance = data.PhysicalCamera ? data.FocusDistance : settings.FocusDistance;
         settings.Exposure = data.PhysicalCamera ? MathF.Log2(Math.Max(data.Iso / 100F, .01F) * Math.Max(data.ShutterSpeed * 60F, .01F) / Math.Max(data.ApertureFStop, .7F)) : settings.Exposure;
-        var volumes = _sceneDocument?.Objects.SelectMany(item => item.Components)
-            .Where(SceneComponentTypes.IsVolume)
+        if (data.PostProcess is { OverrideProjectDefaults: true } stack)
+        {
+            var dof = stack.Find(CameraPostProcessEffectType.DepthOfField);
+            settings.DepthOfField = dof?.Enabled == true;
+            if (!data.PhysicalCamera && dof is { Enabled: true, OverrideDepthOfFieldParameters: true })
+            {
+                settings.ApertureRadius = dof.DepthOfFieldAperture;
+                settings.FocusDistance = dof.DepthOfFieldFocusDistance;
+            }
+            var ao = stack.Find(CameraPostProcessEffectType.AmbientOcclusion);
+            settings.AmbientOcclusionEnabled = ao?.Enabled == true;
+            if (ao is not null)
+            {
+                settings.AoStrength = Math.Clamp(ao.Intensity, 0F, 1F);
+                settings.AoSamples = Math.Clamp(ao.Samples, 4, 64);
+                settings.AoPower = ao.AoPower;
+            }
+            var indirect = stack.Find(CameraPostProcessEffectType.VoxelIndirectLight);
+            settings.VoxelIndirectLightStrength = indirect?.Enabled == true ? indirect.Intensity : 0F;
+            var probeGi = stack.Find(CameraPostProcessEffectType.ProbeVolumeGi);
+            settings.ProbeVolumeGiStrength = probeGi?.Enabled == true ? probeGi.Intensity : 0F;
+            var tone = stack.Find(CameraPostProcessEffectType.ToneMapping);
+            if (tone is not null)
+            {
+                settings.Tone = tone.Enabled ? tone.ToneCurve : ToneCurve.Linear;
+                if (tone.Enabled)
+                {
+                    settings.Exposure += tone.ExposureOffset;
+                    settings.Gamma = tone.Gamma;
+                    settings.WhiteBalance = tone.WhiteBalance;
+                }
+            }
+            var dither = stack.Find(CameraPostProcessEffectType.Dither);
+            if (dither is not null) settings.Dither = dither.Enabled;
+            var bloom = stack.Find(CameraPostProcessEffectType.Bloom);
+            if (bloom is not null)
+            {
+                settings.BloomEnabled = bloom.Enabled;
+                settings.BloomIntensity = Math.Clamp(bloom.Intensity, 0F, 2F);
+                settings.BloomThreshold = bloom.Threshold;
+                settings.BloomRadius = Math.Clamp(bloom.Radius, 1F, 64F);
+            }
+            var grading = stack.Find(CameraPostProcessEffectType.ColorGrading);
+            if (grading is not null)
+            {
+                settings.PaletteShading = grading.Enabled;
+                if (grading.Enabled)
+                {
+                    settings.Saturation = grading.Saturation;
+                    settings.HueShiftDegrees = grading.HueShift;
+                    settings.ColorContrast = grading.Contrast;
+                    settings.Brightness = grading.Brightness;
+                    settings.HueCycle = false;
+                }
+            }
+            var grain = stack.Find(CameraPostProcessEffectType.FilmGrain);
+            if (grain is not null)
+            {
+                settings.FilmGrainIntensity = grain.Enabled ? Math.Clamp(grain.Intensity, 0F, 1F) : 0F;
+                settings.FilmGrainSize = Math.Clamp(grain.Radius, 1F, 8F);
+            }
+            var posterize = stack.Find(CameraPostProcessEffectType.Posterize);
+            if (posterize is not null)
+            {
+                settings.PosterizeMix = posterize.Enabled ? Math.Clamp(posterize.Intensity, 0F, 1F) : 0F;
+                settings.PosterizeLevels = Math.Clamp(posterize.Samples, 2, 64);
+            }
+            var splitTone = stack.Find(CameraPostProcessEffectType.SplitToning);
+            if (splitTone is not null)
+            {
+                settings.SplitToneMix = splitTone.Enabled ? Math.Clamp(splitTone.Intensity, 0F, 1F) : 0F;
+                settings.SplitToneShadows = new System.Numerics.Vector3(splitTone.ShadowR, splitTone.ShadowG, splitTone.ShadowB);
+                settings.SplitToneHighlights = new System.Numerics.Vector3(splitTone.HighlightR, splitTone.HighlightG, splitTone.HighlightB);
+                settings.SplitToneBalance = splitTone.ToningBalance;
+            }
+            var vignette = stack.Find(CameraPostProcessEffectType.Vignette);
+            settings.Vignette = vignette?.Enabled == true ? Math.Clamp(vignette.Intensity, 0F, 1F) : 0F;
+        }
+        }
+        var environments = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
+            .Where(item => item.Enabled && SceneComponentTypes.IsEnvironment(item))
+            .Select(SceneComponentTypes.ReadEnvironment)
+            .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
+            .ToArray();
+        if (environments is { Length: > 0 })
+        {
+            foreach (var environment in environments)
+            {
+                var weight = Math.Clamp(environment.Weight, 0F, 1F);
+                settings.SceneBackgroundColor = NumVector3.Lerp(settings.SceneBackgroundColor, environment.BackgroundColor, weight);
+                settings.FogColor = NumVector3.Lerp(settings.FogColor, environment.FogColor, weight);
+                settings.FogDensity += MathF.Max(0F, environment.FogDensity) * weight;
+                settings.FogStart = MathF.Max(settings.FogStart, environment.FogStart * weight);
+                settings.FogSkyBlend = Math.Clamp(settings.FogSkyBlend + (environment.FogSkyBlend - .55F) * weight, 0F, 1F);
+                settings.FogMaxOpacity = Math.Clamp(settings.FogMaxOpacity + (environment.FogMaxOpacity - .92F) * weight, 0F, 1F);
+                settings.Exposure += environment.Exposure * weight;
+            }
+            settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, .05F);
+            settings.Exposure = Math.Clamp(settings.Exposure, -6F, 6F);
+        }
+        var volumes = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
+            .Where(item => item.Enabled && SceneComponentTypes.IsVolume(item))
             .Select(SceneComponentTypes.ReadVolume)
             .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
             .ToArray();
@@ -551,14 +670,15 @@ internal sealed partial class ImGuiEditorWindow
                 settings.Exposure += volumeData.Exposure * weight;
                 settings.FogDensity += MathF.Max(0F, volumeData.FogDensity) * weight;
                 settings.BloomIntensity += MathF.Max(0F, volumeData.BloomIntensity) * weight;
-                 settings.BloomThreshold += (Math.Clamp(volumeData.BloomThreshold, 0F, 8F) - 1F) * weight;
+               settings.BloomThreshold += (Math.Clamp(volumeData.BloomThreshold, 0F, 8F) - 1F) * weight;
             }
             settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, 1F);
             settings.BloomIntensity = Math.Clamp(settings.BloomIntensity, 0F, 100F);
-             settings.BloomThreshold = Math.Clamp(settings.BloomThreshold, 0F, 8F);
+            settings.BloomThreshold = Math.Clamp(settings.BloomThreshold, 0F, 8F);
         }
-        var probe = _sceneDocument?.Objects.SelectMany(item => item.Components).FirstOrDefault(SceneComponentTypes.IsProbeVolume);
-        if (probe is not null)
+        var probe = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
+            .FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsProbeVolume(item));
+        if (probe is not null && cameraObject is not null)
         {
             var probeData = SceneComponentTypes.ReadProbeVolume(probe);
             if (!string.IsNullOrWhiteSpace(probeData.BakedAsset) && _project is not null)
@@ -568,20 +688,19 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     try
                     {
-                        var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath));
+                        var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath), new JsonSerializerOptions { IncludeFields = true });
                          bake?.Normalize();
                         if (bake is not null && bake.Samples.Count > 0)
                         {
                             var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
                                 ? cameraObject.Transform.Free.Position
                                 : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
-                            var probePosition = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe))?.Transform.Mode == TransformMode.Free
-                                ? _sceneDocument.Objects.First(item => item.Components.Contains(probe)).Transform.Free.Position
-                                : new Double3(0D, 0D, 0D);
+                            var probeObject = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe));
+                            var probePosition = probeObject is null ? Vector3.Zero : GetObjectWorldPosition(probeObject);
                             var normalized = new Vector3(
-                                Math.Clamp((float)(cameraPosition.X - probePosition.X) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
-                                Math.Clamp((float)(cameraPosition.Y - probePosition.Y) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
-                                Math.Clamp((float)(cameraPosition.Z - probePosition.Z) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
+                                Math.Clamp((float)(cameraPosition.X - probePosition.X - probeData.OffsetX) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
+                                Math.Clamp((float)(cameraPosition.Y - probePosition.Y - probeData.OffsetY) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
+                                Math.Clamp((float)(cameraPosition.Z - probePosition.Z - probeData.OffsetZ) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
                             var weightedOcclusion = 0F;
                             var weightedRadiance = 0F;
                             var totalWeight = 0F;
@@ -1044,13 +1163,13 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
         bool showGrid = false, float gridStep = 0F, bool scenePreview = false,
-        VulkanVoxelRenderPipeline? sourcePipeline = null)
+        VulkanVoxelRenderPipeline? sourcePipeline = null, RenderSettings? frameSettings = null)
     {
         var framePipeline = sourcePipeline ?? _pipeline;
         NumVector3 Convert(Vector3 value) => new(value.X, value.Y, value.Z);
         var width = Math.Max(16, widthOverride);
         var height = Math.Max(16, heightOverride);
-        var effectiveSettings = ResolveRenderSettings(GetActiveRenderCameraObject());
+        var effectiveSettings = frameSettings ?? ResolveRenderSettings(GetActiveRenderCameraObject());
         return new VoxelRenderParameters.FrameState(
             Convert(camera.Position), Convert(camera.Forward), Convert(camera.Right), Convert(camera.Up),
             SceneProjection.FocalLength(viewLogical, camera) * deviceScale,
@@ -1094,7 +1213,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SkyTop.Z).Append(',').Append(settings.SkyHorizon.X).Append(',').Append(settings.SkyHorizon.Y)
             .Append(',').Append(settings.SkyHorizon.Z).Append(',').Append(settings.SkyAmbient).Append(',').Append(settings.AmbientTint)
             .Append(',').Append(settings.FogColor.X).Append(',').Append(settings.FogColor.Y).Append(',').Append(settings.FogColor.Z)
-            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.PathTracingEnabled)
+            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.PathTracingEnabled)
             .Append(',').Append(settings.UseHardwareRayTracing)
             .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
@@ -1104,11 +1223,16 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.EmissiveDirectSampling)
             .Append(',').Append(settings.EmissiveLightTree).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
+            .Append(',').Append(settings.VoxelIndirectLightStrength).Append(',').Append(settings.ProbeVolumeGiStrength)
             .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
             .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees)
             .Append(',').Append(settings.ColorContrast).Append(',').Append(settings.Brightness).Append(',').Append(settings.Tone)
             .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
-            .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither).Append(',').Append(settings.PathDenoising)
+            .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither)
+            .Append(',').Append(settings.FilmGrainIntensity).Append(',').Append(settings.FilmGrainSize)
+            .Append(',').Append(settings.PosterizeLevels).Append(',').Append(settings.PosterizeMix)
+            .Append(',').Append(settings.SplitToneShadows).Append(',').Append(settings.SplitToneHighlights)
+            .Append(',').Append(settings.SplitToneBalance).Append(',').Append(settings.SplitToneMix).Append(',').Append(settings.PathDenoising)
             .Append(',').Append(settings.PathDenoiseStrength)
             .Append(',').Append(settings.AutoPerformanceScaling)
             .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
@@ -2363,7 +2487,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
+        DrawRenderSettingsAccordion("environment", "世界环境", () => DrawEnvironmentSection(settings));
         DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
         DrawRenderSettingsAccordion("color", "色彩输出", () => DrawPostSection(settings));
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
@@ -2468,9 +2592,21 @@ internal sealed partial class ImGuiEditorWindow
         DrawColorSlider("地平线色", ref settings.SkyHorizon);
         SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
         SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
-        ImGui.SeparatorText("雾与景深提示");
+        ImGui.SeparatorText("水面");
+        ImGui.Checkbox("显示水面", ref settings.ShowWater);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪为静态法线波纹，不改变轮廓或产生透明折射。");
+        SliderFloat("水面高度", ref settings.WaterHeight, -1024F, 1024F, "%.1f 格");
+        DrawColorSlider("水面颜色", ref settings.WaterColor);
+        SliderFloat("波浪大小", ref settings.WaterWaveSize, 0F, 4F, "%.2f");
+        SliderFloat("波长", ref settings.WaterWaveLength, 0.1F, 256F, "%.1f 格");
+        SliderFloat("水面粗糙度", ref settings.WaterRoughness, 0.01F, 1F, "%.2f");
+        ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
         SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离雾目前作用于实时渲染；路径追踪不计算该雾效。");
+        SliderFloat("雾起始距离", ref settings.FogStart, 0F, 1024F, "%.0f 格");
+        SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
+        SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");
         SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
     }
 

@@ -48,6 +48,35 @@ internal static class TemplateScenes
         ? new VoxelValue(color)
         : new VoxelValue(color);
 
+    /// <summary>世界环境展示：小岛、灯塔和远处航标。</summary>
+    public static VoxelWorld BuildEnvironmentIsland(int variant)
+    {
+        var w = new VoxelWorld();
+        var sand = Paint(Sand);
+        var grass = Paint(GrassGreen);
+        var rock = Paint(RockDark);
+        TemplateKit.Ellipsoid(w, 0, 1, 0, 22, 4, 17, rock);
+        TemplateKit.Ellipsoid(w, 0, 3, 0, 20, 2, 15, sand);
+        TemplateKit.Ellipsoid(w, -2, 4, -1, 15, 1.5, 11, grass);
+        TemplateKit.Cylinder(w, -3, 5, -2, 5, 5, 1, Paint(Slate));
+        TemplateKit.Cylinder(w, -3, 14, -2, 4, 4, 8, Paint(Plaster));
+        TemplateKit.Cylinder(w, -3, 23, -2, 5, 5, 1, Paint(RoofRed));
+        TemplateKit.Cylinder(w, -3, 25, -2, 3, 3, 1, Glow(AccentGold));
+        TemplateKit.Cylinder(w, -3, 28, -2, 5, 5, 1, Paint(Slate));
+        TemplateKit.Box(w, -4, 7, 1, -2, 11, 2, Paint(Timber));
+        foreach (var (x, z) in new[] { (9, -3), (10, 6), (-13, 5) })
+        {
+            TemplateKit.Box(w, x, 5, z, x + 1, 11, z + 1, Paint(Bark));
+            TemplateKit.Ellipsoid(w, x, 13, z, 4, 3, 4, Paint(variant == 2 ? new Rgba32(180, 130, 72) : LeafGreen));
+        }
+        TemplateKit.Ellipsoid(w, 29, 1, -20, 8, 3, 6, rock);
+        TemplateKit.Box(w, 28, 3, -21, 30, 10, -19, Paint(Plaster));
+        TemplateKit.Box(w, 28, 11, -21, 30, 12, -19, Glow(AccentGold));
+        if (variant == 1)
+            TemplateKit.Ellipsoid(w, -28, 1, -24, 9, 4, 7, rock);
+        return w;
+    }
+
     /// <summary>开放的室内餐桌场景，保留前方视线和物件细节。</summary>
     public static VoxelWorld BuildDefaultRoom()
     {
@@ -392,6 +421,10 @@ internal static class TemplateScenes
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or ProjectTemplateId.GlassStudy or
                 ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy =>
                 BuildOpticalParts(id, source),
+            ProjectTemplateId.WorldOcean or ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset => SplitByRegions(source,
+                ("岛屿", "岛屿", c => c.Y <= 4),
+                ("远方航标", "航标", c => c.X >= 22),
+                ("灯塔与树木", "岛上景物", _ => true)),
             ProjectTemplateId.DefaultRoom => SplitByRegions(source,
                 ("地板与墙壁", "房间", c => c.Y <= 0 || c.X <= -36 || c.Z <= -30),
                 ("壁画", "壁画", c => c.X is >= -18 and <= -4 && c.Y is >= 19 and <= 29 && c.Z is >= -29 and <= -27),

@@ -580,12 +580,19 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("面板", "editor.layout.panels"))
             {
                 ImGui.TextDisabled("选择一个适合当前任务的工作区，之后仍可手动拖拽面板调整。");
-                var buttonWidth = Math.Max(120F, (ImGui.GetContentRegionAvail().X - 18F) / 3F);
-                if (ImGui.Button("应用默认布局", new Vector2(buttonWidth, 34F))) SelectLayout(LayoutPreset.Default);
-                ImGui.SameLine();
-                if (ImGui.Button("应用建模布局", new Vector2(buttonWidth, 34F))) SelectLayout(LayoutPreset.Modeling);
-                ImGui.SameLine();
-                if (ImGui.Button("应用渲染布局", new Vector2(buttonWidth, 34F))) SelectLayout(LayoutPreset.Rendering);
+                foreach (var (name, preset, hint) in new[]
+                {
+                    ("默认布局", LayoutPreset.Default, "保留标准场景、层级、检查器和资产工作区"),
+                    ("建模布局", LayoutPreset.Modeling, "突出场景和调色盘，适合体素编辑"),
+                    ("渲染布局", LayoutPreset.Rendering, "打开渲染视图和渲染配置"),
+                    ("资产布局", LayoutPreset.Assets, "扩大项目资产区域，方便浏览和管理资产"),
+                    ("生成器布局", LayoutPreset.Generator, "打开并停靠生成器，方便编辑脚本和参数"),
+                    ("分析布局", LayoutPreset.Analysis, "打开体素度量和性能分析器"),
+                })
+                {
+                    if (ImGui.Button(name, new Vector2(-1F, 0F))) SelectLayout(preset);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip(hint);
+                }
                 ImGui.EndTabItem();
             }
 
@@ -698,7 +705,7 @@ internal sealed partial class ImGuiEditorWindow
         });
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "环境与地面", () => DrawEnvironmentSection(settings));
+        DrawRenderSettingsAccordion("environment", "世界环境", () => DrawEnvironmentSection(settings));
 
         DrawRenderSettingsAccordion("color", "色彩输出", () =>
         {
