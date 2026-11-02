@@ -132,7 +132,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _accumulationInitialized;
     private bool _clearAccumulationPending = true;
     private float[]? _lastParameters;
-    private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
+    private long _realtimeHistorySignature;
+    private bool _realtimeHistoryInvalid = true;    private VoxelGpuWorkset _workset = VoxelGpuWorkset.Empty;
     private IReadOnlyList<VoxelGpuCell> _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
     private VoxelCoord64 _sceneOrderedOrigin;
     private VoxelWorld? _sceneSelection;
@@ -611,6 +612,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         AccumulatedSamples = 0;
         _lastParameters = null;
         _clearAccumulationPending = true;
+        _realtimeHistoryInvalid = true;
     }
 
     /// <summary>
@@ -1089,6 +1091,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
         parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
         parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
+        var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels);
+        if (_realtimeHistorySignature != realtimeSignature)
+        {
+            _realtimeHistorySignature = realtimeSignature;
+            _realtimeHistoryInvalid = true;
+        }
+        if (_realtimeHistoryInvalid) _realtimeHistoryInvalid = false;
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         if (!pathMode && ParametersEqualForDisplay(parameters))
@@ -1235,8 +1244,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _accumulationInitialized = true;
     }
 
-    /// <summary>
-    /// 判断当前参数是否与上一次显示结果相同
+    private static long ComputeRealtimeHistorySignature(float[] parameters, int width, int height)
+    {
+        unchecked
+        {
+            long hash = width * 397L + height;
+            for (var index = 0; index < parameters.Length; index++)
+            {
+                if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel) continue;
+                hash = hash * 31 + BitConverter.SingleToInt32Bits(parameters[index]);
+            }
+            return hash;
+        }
+    }
+
     /// </summary>
     /// <param name="parameters">待比较的参数块</param>
     /// <returns>参数相同时返回 true</returns>
