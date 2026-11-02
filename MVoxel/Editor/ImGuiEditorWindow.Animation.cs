@@ -42,8 +42,11 @@ internal sealed partial class ImGuiEditorWindow
         }
         var animation = SceneComponentTypes.ReadAnimation(animationComponent);
         ImGui.SeparatorText("动画片段");
-        var clip = animation.ClipAsset;
-        if (ImGui.InputText("片段资产", ref clip, 512)) animation.ClipAsset = clip;
+        ImGui.Text("动画组件引用：");
+        ImGui.SameLine();
+        ImGui.TextDisabled(string.IsNullOrWhiteSpace(animation.ClipAsset) ? "未保存动画片段" : animation.ClipAsset);
+        if (ImGui.Button("另存为动画片段…")) SaveAnimationClipAs(linked, animation);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前动画片段保存为项目Assets/Animations中的文件，并让动画组件引用它");
         var frame = animation.CurrentFrame;
         if (ImGui.DragInt("当前帧", ref frame, 1F, 0, 100000)) animation.CurrentFrame = frame;
         var recording = animation.Recording;
@@ -131,6 +134,34 @@ internal sealed partial class ImGuiEditorWindow
         var sinRoll = 2F * (q.W * q.Z + q.X * q.Y);
         var cosRoll = 1F - 2F * (q.Y * q.Y + q.Z * q.Z);
         return new System.Numerics.Vector3(pitch, yaw, MathF.Atan2(sinRoll, cosRoll));
+    }
+
+    private void SaveAnimationClipAs(SceneObject target, AnimationComponentData animation)
+    {
+        if (_project is null) return;
+        var sourcePath = string.IsNullOrWhiteSpace(animation.ClipAsset)
+            ? null
+            : Path.Combine(_project.RootPath, animation.ClipAsset.Replace('/', Path.DirectorySeparatorChar));
+        var clip = sourcePath is not null && File.Exists(sourcePath)
+            ? JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(sourcePath)) ?? new AnimationClip()
+            : new AnimationClip { Name = target.Name + "动画" };
+        var selected = NativeDialogs.SaveFile("保存动画片段", "动画片段\0*.mvanim.json\0全部文件\0*.*\0\0", ".mvanim.json", clip.Name);
+        if (string.IsNullOrWhiteSpace(selected)) return;
+        var animationsDirectory = Path.Combine(_project.AssetsPath, "Animations");
+        var fullPath = Path.GetFullPath(selected);
+        var root = Path.GetFullPath(animationsDirectory) + Path.DirectorySeparatorChar;
+        if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus("动画片段必须保存到项目Assets/Animations目录");
+            return;
+        }
+        clip.Name = Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(fullPath));
+        SaveAnimationAsset(fullPath, clip);
+        var relative = Path.GetRelativePath(_project.RootPath, fullPath).Replace(Path.DirectorySeparatorChar, '/');
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
+        if (component is not null) SceneComponentTypes.WriteAnimation(component, animation with { ClipAsset = relative });
+        MarkSceneDocumentDirty();
+        SetStatus($"已保存动画片段：{relative}");
     }
 
     private void InsertAnimationKey(SceneObject target, AnimationComponentData animation, int frame, string component, string parameter)
