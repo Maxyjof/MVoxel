@@ -567,6 +567,7 @@ internal sealed partial class ImGuiEditorWindow
                     try
                     {
                         var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath));
+                         bake?.Normalize();
                         if (bake is not null && bake.Samples.Count > 0)
                         {
                             var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
