@@ -3616,6 +3616,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             color = max(color, vec3(0.0));
              vec2 weatherUv = (vec2(pixel) + 0.5) / vec2(width, height);
              float weatherTime = float(values[P_FRAME]) * 0.0166667;
+              float heatStrength = clamp(values[P_WEATHER_HEAT_HAZE], 0.0, 1.0);
+              if (heatStrength > 0.001)
+              {
+                  float heatWave = sin(weatherUv.y * 90.0 + weatherTime * 3.0) + 0.5 * sin(weatherUv.y * 173.0 - weatherTime * 4.7);
+                  float heatOffset = heatWave * heatStrength * 2.2;
+                  ivec2 refractedPixel = clamp(pixel + ivec2(int(heatOffset), 0), ivec2(0), ivec2(width - 1, height - 1));
+                  vec3 refractedColor = imageLoad(outputImage, refractedPixel).rgb;
+                  color = mix(color, refractedColor, heatStrength * 0.24);
+              }
              float windPhase = dot(weatherUv, vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])))) * 48.0 - weatherTime * values[P_WEATHER_WIND_STRENGTH] * 8.0;
              float streaks = smoothstep(0.72, 0.98, fract(weatherUv.y * 42.0 + windPhase));
              float precipitation = values[P_WEATHER_RAIN] * streaks + values[P_WEATHER_SNOW] * smoothstep(0.78, 1.0, fract(weatherUv.y * 28.0 - windPhase * 0.4));
