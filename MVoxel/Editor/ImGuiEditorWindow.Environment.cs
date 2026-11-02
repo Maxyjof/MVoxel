@@ -13,10 +13,23 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (!_showEnvironmentWindow) return;
         var open = _showEnvironmentWindow;
-        ImGui.SetNextWindowSize(new Vector2(520F, 560F), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(520F, 620F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("环境##EnvironmentWindow", ref open, PanelWindowFlags))
         {
             ImGui.TextDisabled("当前场景唯一环境配置");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("恢复默认"))
+            {
+                _sceneDocument?.Environment = new SceneEnvironmentSettings();
+                _sceneDocument?.Environment.Normalize();
+                if (_sceneDocument is not null)
+                {
+                    _sceneDocument.Environment.ApplyTo(_renderSettings);
+                    MarkSceneDocumentDirty();
+                    _pipeline?.ResetAccumulation();
+                }
+            }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前场景环境恢复为默认值，保存场景后生效");
             ImGui.Separator();
             if (_sceneDocument is null)
             {
@@ -24,13 +37,14 @@ internal sealed partial class ImGuiEditorWindow
             }
             else
             {
-                var before = JsonSerializer.Serialize(_sceneDocument.Environment, EnvironmentJsonOptions);
-                var renderSettings = _renderSettings.CloneForExport();
-                _sceneDocument.Environment.ApplyTo(renderSettings);
-                DrawEnvironmentSection(renderSettings);
-                _sceneDocument.Environment.CaptureFrom(renderSettings);
-                _sceneDocument.Environment.ApplyTo(_renderSettings);
-                var after = JsonSerializer.Serialize(_sceneDocument.Environment, EnvironmentJsonOptions);
+                var environment = _sceneDocument.Environment;
+                var before = JsonSerializer.Serialize(environment, EnvironmentJsonOptions);
+                DrawSkyAndGround(environment);
+                DrawEnvironmentFog(environment);
+                DrawEnvironmentWater(environment);
+                environment.Normalize();
+                environment.ApplyTo(_renderSettings);
+                var after = JsonSerializer.Serialize(environment, EnvironmentJsonOptions);
                 if (!string.Equals(before, after, StringComparison.Ordinal))
                 {
                     MarkSceneDocumentDirty();
@@ -40,5 +54,49 @@ internal sealed partial class ImGuiEditorWindow
         }
         ImGui.End();
         _showEnvironmentWindow = open;
+    }
+
+    private static void DrawSkyAndGround(SceneEnvironmentSettings environment)
+    {
+        if (!ImGui.CollapsingHeader("天空与地面", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.Checkbox("显示地面平面", ref environment.ShowGround);
+        DrawColorSlider("背景颜色", ref environment.SceneBackgroundColor);
+        DrawColorSlider("地面颜色", ref environment.GroundColor);
+        SliderFloat("地面过渡", ref environment.GroundFade, 0F, 4096F, "%.0f 格");
+        DrawColorSlider("天顶色", ref environment.SkyTop);
+        DrawColorSlider("地平线色", ref environment.SkyHorizon);
+        SliderFloat("天空环境光", ref environment.SkyAmbient, 0F, 2F, "%.2f");
+        SliderFloat("暖色补光", ref environment.AmbientTint, 0F, 1F, "%.2f");
+        SliderFloat("近处淡入距离", ref environment.NearFade, 0F, 512F, "%.0f 格");
+    }
+
+    private static void DrawEnvironmentFog(SceneEnvironmentSettings environment)
+    {
+        if (!ImGui.CollapsingHeader("雾气", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        DrawColorSlider("雾颜色", ref environment.FogColor);
+        SliderFloat("雾浓度", ref environment.FogDensity, 0F, .05F, "%.4f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离雾目前作用于实时渲染；路径追踪不计算该雾效");
+        SliderFloat("雾起始距离", ref environment.FogStart, 0F, 100000F, "%.0f 格");
+        SliderFloat("天空混合", ref environment.FogSkyBlend, 0F, 1F, "%.2f");
+        SliderFloat("最大不透明度", ref environment.FogMaxOpacity, 0F, 1F, "%.2f");
+    }
+
+    private static void DrawEnvironmentWater(SceneEnvironmentSettings environment)
+    {
+        if (!ImGui.CollapsingHeader("水面", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.Checkbox("显示水面", ref environment.ShowWater);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪为静态法线波纹，不改变轮廓或产生透明折射");
+        SliderFloat("水面高度", ref environment.WaterHeight, -100000F, 100000F, "%.1f 格");
+        DrawColorSlider("水面颜色", ref environment.WaterColor);
+        SliderFloat("波浪大小", ref environment.WaterWaveSize, 0F, 4F, "%.2f");
+        SliderFloat("波长", ref environment.WaterWaveLength, .1F, 1024F, "%.1f 格");
+        SliderFloat("水面粗糙度", ref environment.WaterRoughness, .01F, 1F, "%.2f");
+        ImGui.Checkbox("水面动画", ref environment.WaterAnimationEnabled);
+        SliderFloat("动画速度", ref environment.WaterAnimationSpeed, -8F, 8F, "%.2f");
+        var flow = environment.WaterFlowDirection;
+        BeginInspectorField("流向", "水面细节纹理的二维流动方向");
+        if (ImGui.DragFloat2("##EnvironmentWaterFlow", ref flow, .01F, -1F, 1F, "%.2f")) environment.WaterFlowDirection = flow;
+        SliderFloat("细节强度", ref environment.WaterDetailStrength, 0F, 2F, "%.2f");
+        SliderFloat("高光强度", ref environment.WaterSpecularStrength, 0F, 4F, "%.2f");
     }
 }
