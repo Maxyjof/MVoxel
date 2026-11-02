@@ -374,14 +374,27 @@ public static class ProjectTemplateCatalog
                     break;
             }
 
-            var fileName = $"{safeName}_材质{slot:000}.material";
-            asset.Save(Path.Combine(directory, fileName));
+            var baseFileName = $"{safeName}_材质{slot:000}";
+            var fileName = UniqueMaterialFileName(directory, baseFileName);
+            var targetPath = Path.Combine(directory, fileName);
+            asset.Save(targetPath);
             bindings[slot] = "Materials/" + fileName;
         }
         return bindings;
     }
 
-    /// <summary>把 .vox 里的一个模型转成原生体素世界：MagicaVoxel 的 Z 轴映射到 MVoxel 的 Y 轴</summary>
+    /// <summary>
+    /// 生成不覆盖已有文件的材质资产名
+    /// </summary>
+    private static string UniqueMaterialFileName(string directory, string baseFileName)
+    {
+        var candidate = baseFileName + ".material";
+        for (var suffix = 2; File.Exists(Path.Combine(directory, candidate)); suffix++)
+            candidate = $"{baseFileName}_{suffix}.material";
+        return candidate;
+    }
+
+
     private static VoxelWorld BuildModelWorld(VoxModel model, IReadOnlyDictionary<int, string> materialSlots)
     {
         var world = new VoxelWorld();

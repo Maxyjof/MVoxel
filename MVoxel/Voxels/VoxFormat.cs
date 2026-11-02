@@ -89,7 +89,7 @@ public static class VoxFormat
                 foreach (var voxel in chunk.Voxels)
                 {
                     writer.Write(voxel.X); writer.Write(voxel.Y); writer.Write(voxel.Z);
-                    writer.Write(palette.Index[voxel.Color]);
+                    writer.Write(palette.Index[(voxel.Color, voxel.MaterialSlot)]);
                 }
             }
 
@@ -217,36 +217,47 @@ public static class VoxFormat
         }
     }
 
-    /// <summary>收集所有块用到的颜色；超过 255 时按出现频率保留并映射其余颜色</summary>
+    /// <summary>收集所有块用到的颜色与材质组合；超过255项时按出现频率保留并映射其余组合</summary>
     private static PaletteResult BuildPalette(List<Chunk> chunks)
     {
-        var counts = new Dictionary<Rgba32, int>();
+        var counts = new Dictionary<(Rgba32 Color, ushort MaterialSlot), int>();
         foreach (var chunk in chunks)
         foreach (var voxel in chunk.Voxels)
-            counts[voxel.Color] = counts.GetValueOrDefault(voxel.Color) + 1;
+            counts[(voxel.Color, voxel.MaterialSlot)] = counts.GetValueOrDefault((voxel.Color, voxel.MaterialSlot)) + 1;
 
-        var colors = counts.Count <= MaximumPaletteColors
+        var combinations = counts.Count <= MaximumPaletteColors
             ? counts.Keys.ToList()
             : counts.OrderByDescending(item => item.Value).Take(MaximumPaletteColors).Select(item => item.Key).ToList();
-        var index = new Dictionary<Rgba32, byte>(colors.Count);
-        for (var i = 0; i < colors.Count; i++) index[colors[i]] = (byte)(i + 1);
-        foreach (var color in counts.Keys)
+        var index = new Dictionary<(Rgba32 Color, ushort MaterialSlot), byte>(combinations.Count);
+        for (var i = 0; i < combinations.Count; i++) index[combinations[i]] = (byte)(i + 1);
+        foreach (var combination in counts.Keys)
         {
-            if (index.ContainsKey(color)) continue;
-            var nearest = colors[0];
+            if (index.ContainsKey(combination)) continue;
+            var nearest = combinations[0];
             var best = int.MaxValue;
-            foreach (var candidate in colors)
+            foreach (var candidate in combinations)
             {
-                var distance = Squared(color, candidate);
+                if (candidate.MaterialSlot != combination.MaterialSlot) continue;
+                var distance = Squared(combination.Color, candidate.Color);
                 if (distance >= best) continue;
                 best = distance;
                 nearest = candidate;
             }
-
-            index[color] = index[nearest];
+            if (best == int.MaxValue)
+            {
+                foreach (var candidate in combinations)
+                {
+                    var distance = Squared(combination.Color, candidate.Color);
+                    if (distance >= best) continue;
+                    best = distance;
+                    nearest = candidate;
+                }
+            }
+            index[combination] = index[nearest];
         }
 
-        return new PaletteResult(colors, index);
+        return new PaletteResult(combinations.Select(item => item.Color).ToList(), index,
+            combinations.ToDictionary(item => (byte)(index[item]), item => item));
     }
 
     private static int Squared(Rgba32 a, Rgba32 b)
@@ -265,20 +276,11 @@ public static class VoxFormat
         if (materials is not { Count: > 0 }) return;
         var bySlot = new Dictionary<int, VoxMaterial>();
         foreach (var material in materials) bySlot.TryAdd(material.Id, material);
-        var votes = new Dictionary<Rgba32, Dictionary<ushort, int>>();
-        foreach (var chunk in chunks)
-        foreach (var voxel in chunk.Voxels)
-        {
-            if (!votes.TryGetValue(voxel.Color, out var perSlot)) votes[voxel.Color] = perSlot = [];
-            perSlot[voxel.MaterialSlot] = perSlot.GetValueOrDefault(voxel.MaterialSlot) + 1;
-        }
-
         for (var index = 0; index < palette.Colors.Count; index++)
         {
-            var color = palette.Colors[index];
-            if (!votes.TryGetValue(color, out var perSlot) || perSlot.Count == 0) continue;
-            var slot = perSlot.OrderByDescending(item => item.Value).First().Key;
-            if (!bySlot.TryGetValue(slot, out var material)) continue;
+            var paletteIndex = (byte)(index + 1);
+            if (!palette.CombinationByIndex.TryGetValue(paletteIndex, out var combination) ||
+                !bySlot.TryGetValue(combination.MaterialSlot, out var material)) continue;
             var payload = new MemoryStream();
             using (var node = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
             {
@@ -435,5 +437,7 @@ public static class VoxFormat
 
     private sealed record Chunk(int SizeX, int SizeY, int SizeZ, List<ChunkVoxel> Voxels, VoxelCoord64 Origin);
 
-    private sealed record PaletteResult(List<Rgba32> Colors, Dictionary<Rgba32, byte> Index);
+    private sealed record PaletteResult(List<Rgba32> Colors,
+        Dictionary<(Rgba32 Color, ushort MaterialSlot), byte> Index,
+        Dictionary<byte, (Rgba32 Color, ushort MaterialSlot)> CombinationByIndex);
 }

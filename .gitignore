@@ -76,4 +76,5 @@ coverage-report/
 
 # Portable packages are generated deliverables, not source
 /MVoxel绿色版-*.zip
+/MVoxel-portable-*.zip
 /portable/

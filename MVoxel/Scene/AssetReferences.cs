@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using MVoxel.Core;
 
 namespace MVoxel.Scene;
 
@@ -92,7 +93,7 @@ public static class AssetReferences
             var content = File.ReadAllText(file);
             var updated = ReplaceQuotedPath(content, oldPath, newPath);
             if (updated == content) continue;
-            File.WriteAllText(file, updated);
+            AtomicFile.WriteText(file, updated, backupExtension: null);
             changed++;
         }
         return changed;
@@ -118,7 +119,7 @@ public static class AssetReferences
             var updated = ReplaceQuotedPath(content, oldPath, newPath);
             if (updated != content)
             {
-                File.WriteAllText(file, updated);
+                AtomicFile.WriteText(file, updated, backupExtension: null);
                 changed++;
             }
         }

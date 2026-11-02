@@ -13,6 +13,15 @@ internal sealed partial class ImGuiEditorWindow
     private Dictionary<StableId, Dictionary<int, int>> _runtimeMaterialSlotsByObject = [];
     private IReadOnlyDictionary<int, MaterialAsset> _runtimeMaterials = new Dictionary<int, MaterialAsset>();
     private string _runtimeMaterialSignature = string.Empty;
+    private static readonly MaterialAsset MissingMaterialDiagnostic = new()
+    {
+        Name = "材质缺失诊断",
+        Roughness = 0.35F,
+        Metallic = 0F,
+        EmissiveScale = 4F,
+        AbsorptionColor = new Rgba32(255, 0, 255, 255),
+        Opacity = 1F,
+    };
 
     private void RefreshRuntimeMaterialTable()
     {
@@ -31,7 +40,18 @@ internal sealed partial class ImGuiEditorWindow
                 if (_project is null) continue;
                 var assetPath = Path.GetFullPath(Path.Combine(_project.AssetsPath,
                     binding.MaterialAsset.Replace('/', Path.DirectorySeparatorChar)));
-                if (!byPath.TryGetValue(assetPath, out var material)) continue;
+                if (!byPath.TryGetValue(assetPath, out var material))
+                {
+                    const string missingKey = "__mv_missing_material__";
+                    if (!runtimeByPath.TryGetValue(missingKey, out var missingSlot))
+                    {
+                        missingSlot = runtimeByPath.Count + 1;
+                        runtimeByPath[missingKey] = missingSlot;
+                        runtimeMaterials[missingSlot] = MissingMaterialDiagnostic;
+                    }
+                    localSlots[binding.Slot] = missingSlot;
+                    continue;
+                }
                 if (!runtimeByPath.TryGetValue(assetPath, out var runtimeSlot))
                 {
                     runtimeSlot = runtimeByPath.Count + 1;
@@ -214,6 +234,39 @@ internal sealed partial class ImGuiEditorWindow
         SetStatus($"已更新“{modelObject.Name}”的材质槽位映射");
     }
 
+    private MaterialExchangeMetadata? BuildNativeMaterialMetadata(SceneObject? target, bool selectedOnly)
+    {
+        if (!selectedOnly || target is null || _project is null) return null;
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+        if (component is null) return null;
+        var bindings = SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [];
+        var metadata = new MaterialExchangeMetadata();
+        foreach (var binding in bindings)
+        {
+            var relative = binding.MaterialAsset.Replace('\\', '/');
+            var material = FindMaterialAsset(relative);
+            if (material is null) continue;
+            metadata.Bindings[(ushort)binding.Slot] = relative;
+            metadata.Definitions[relative] = material;
+        }
+        metadata.Validate();
+        return metadata;
+    }
+
+    private IReadOnlyDictionary<(int Part, ushort Slot), MaterialAsset> BuildVoxMaterialMap(SceneObject? target, bool selectedOnly)
+    {
+        var result = new Dictionary<(int Part, ushort Slot), MaterialAsset>();
+        if (!selectedOnly || target is null) return result;
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+        if (component is null) return result;
+        foreach (var binding in SceneComponentTypes.ReadVoxelModel(component).MaterialSlots ?? [])
+        {
+            if (binding.Slot <= 0 || FindMaterialAsset(binding.MaterialAsset) is not { } material) continue;
+            result[(0, (ushort)binding.Slot)] = material;
+        }
+        return result;
+    }
+
     private void ExportWorkingVoxels(bool selectedOnly, bool qubicle, bool native = false, bool obj = false)
     {
         if (_project is null) return;
@@ -223,8 +276,26 @@ internal sealed partial class ImGuiEditorWindow
             var target = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
             if (selectedOnly && target is null) { SetStatus("请先选择一个体素模型"); return; }
+            if (native && !selectedOnly)
+            {
+                SetStatus("全场景导出暂不支持组件本地材质映射，请选择单个模型导出");
+                return;
+            }
             source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
             var name = selectedOnly ? target!.Name : _project.Manifest.Name;
+            var nativeMetadata = BuildNativeMaterialMetadata(target, selectedOnly);
+            var voxParts = new[] { new VoxFormat.VoxScenePart(name, source, VoxelCoord64.Zero) };
+            VoxExportPlan? voxPlan = null;
+            if (!native && !obj && !qubicle)
+            {
+                var contextual = BuildVoxMaterialMap(target, selectedOnly);
+                voxPlan = VoxMaterialExchange.PrepareExport(voxParts, contextual);
+                if (voxPlan.LossSummary.HasLoss || voxPlan.LossSummary.RequiresMaterialDecision)
+                {
+                    SetStatus("VOX导出存在材质或颜色损失，请在确认导出流程中查看摘要");
+                    return;
+                }
+            }
             var objects = _sceneDocument?.Objects ?? [];
             var primary = GetVoxelWorldObject()?.Id;
             var directory = Path.Combine(_project.AssetsPath, "Exports");
@@ -253,11 +324,12 @@ internal sealed partial class ImGuiEditorWindow
                     if (native)
                     {
                         if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(path);
+                        else if (native && nativeMetadata is not null) LargeWorldFormat.Write(path, world, nativeMetadata);
                         else LargeWorldFormat.Write(path, world);
                     }
                     else if (obj) ObjVoxelExporter.Write(path, world, cancellation);
                     else if (qubicle) QubicleFormat.Write(path, world);
-                    else VoxFormat.Write(path, world);
+                    else voxPlan!.Write(path, confirmLoss: true);
                     return world.OccupiedVoxelCount;
                 }, count => SetStatus($"已导出 {extension} · {scope} · {count:N0} 体素：{path}"),
                 exception => { MVoxelLog.Error("导出工作模型失败", exception); SetStatus($"导出失败：{exception.Message}"); },

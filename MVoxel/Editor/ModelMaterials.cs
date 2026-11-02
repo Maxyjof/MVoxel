@@ -145,7 +145,8 @@ internal sealed partial class ImGuiEditorWindow
             ContinueMaterialControl(ImGui.CalcTextSize(countLabel).X);
             ImGui.TextDisabled(countLabel);
             ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-            if (ImGui.BeginCombo("##slot-asset", material?.Name ?? (bound ? "资产缺失" : "未绑定")))
+            var slotLabel = material is null && bound ? "资产缺失 · 诊断外观" : material?.Name ?? (bound ? "资产缺失" : "未绑定");
+            if (ImGui.BeginCombo("##slot-asset", slotLabel))
             {
                 DrawMaterialAssetChoices(candidate =>
                 {
