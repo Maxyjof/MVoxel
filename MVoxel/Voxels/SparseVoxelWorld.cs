@@ -243,6 +243,11 @@ public sealed class SparseVoxelChunk
     }
 }
 
+public readonly record struct VoxelWorldSnapshot(
+    int ContentVersion,
+    long StructureStamp,
+    IReadOnlyList<(VoxelCoord64 Coordinate, VoxelValue Value)> Voxels);
+
 /// <summary>
 /// 逻辑上无限延伸的稀疏体素世界，负坐标使用数学正确的向下取整除法
 /// 存储策略未来可以换成流送或压缩句柄而不改变这套对外 API
@@ -344,8 +349,21 @@ public sealed class VoxelWorld
         }
     }
 
-    /// <summary>
-    /// 遍历全部占用体素，输出世界坐标与值
+    public VoxelWorldSnapshot CaptureSnapshot(int maxRetries = 2)
+    {
+        maxRetries = Math.Clamp(maxRetries, 0, 8);
+        for (var attempt = 0; ; attempt++)
+        {
+            var contentVersion = ContentVersion;
+            var structureStamp = StructureStamp;
+            var voxels = EnumerateOccupied().ToArray();
+            if (contentVersion == ContentVersion && structureStamp == StructureStamp)
+                return new VoxelWorldSnapshot(contentVersion, structureStamp, voxels);
+            if (attempt >= maxRetries)
+                throw new InvalidOperationException("体素世界在快照期间发生编辑，请稍后重试保存或导出。");
+        }
+    }
+
     /// </summary>
     /// <returns>坐标与值的惰性序列</returns>
     public IEnumerable<(VoxelCoord64 Coordinate, VoxelValue Value)> EnumerateOccupied()
