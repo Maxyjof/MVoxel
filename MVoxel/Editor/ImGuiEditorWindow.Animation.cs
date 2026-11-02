@@ -50,6 +50,11 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Checkbox("录制模式", ref recording)) animation.Recording = recording;
         var playing = animation.Playing;
         if (ImGui.Checkbox("播放", ref playing)) animation.Playing = playing;
+        var loop = animation.Loop;
+        ImGui.SameLine();
+        if (ImGui.Checkbox("循环", ref loop)) animation.Loop = loop;
+        var speed = animation.Speed;
+        if (ImGui.DragFloat("播放速度", ref speed, 0.05F, -8F, 8F, "%.2fx")) animation.Speed = Math.Clamp(speed, -8F, 8F);
         if (ImGui.Button("插入当前帧")) InsertAnimationKey(linked, animation, animation.CurrentFrame, "Transform", "Position");
         ImGui.SameLine();
         ImGui.Text("参数默认隐藏，可在节点参数列表中点击显示");
@@ -75,9 +80,9 @@ internal sealed partial class ImGuiEditorWindow
                         var mode = (int)key.RightCurve.Mode;
                         if (ImGui.Combo("右侧过渡", ref mode, "阶梯\\0线性\\0平滑\\0贝塞尔\\0")) { key.RightCurve.Mode = (AnimationInterpolation)mode; SaveAnimationAsset(path, animationClip); }
                         var leftTangent = key.LeftCurve.RightTangent;
-                        if (ImGui.SliderFloat("左切线", ref leftTangent, -4F, 4F)) key.LeftCurve.RightTangent = leftTangent;
+                        if (ImGui.SliderFloat("左切线", ref leftTangent, -4F, 4F)) { key.LeftCurve.RightTangent = leftTangent; SaveAnimationAsset(path, animationClip); }
                         var rightTangent = key.RightCurve.LeftTangent;
-                        if (ImGui.SliderFloat("右切线", ref rightTangent, -4F, 4F)) key.RightCurve.LeftTangent = rightTangent;
+                        if (ImGui.SliderFloat("右切线", ref rightTangent, -4F, 4F)) { key.RightCurve.LeftTangent = rightTangent; SaveAnimationAsset(path, animationClip); }
                     }
                 }
                 catch (JsonException) { ImGui.TextDisabled("动画片段数据无效"); }
