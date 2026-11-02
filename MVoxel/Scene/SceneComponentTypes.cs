@@ -12,6 +12,7 @@ namespace MVoxel.Scene;
 public static class SceneComponentTypes
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions FieldJsonOptions = new(JsonSerializerDefaults.Web) { IncludeFields = true };
 
     /// <summary>
     /// 坐标组件的稳定类型标识
@@ -54,7 +55,7 @@ public static class SceneComponentTypes
     public static void WriteAnimation(ComponentRecord component, AnimationComponentData data)
     {
         if (!IsAnimation(component)) throw new ArgumentException("组件记录不是动画组件", nameof(component));
-        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions));
     }
 
     public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
@@ -65,18 +66,18 @@ public static class SceneComponentTypes
 
     public static ComponentRecord CreateVolume(VolumeComponentData data) => new()
     {
-        TypeId = Volume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
+        TypeId = Volume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
     };
 
     public static VolumeComponentData ReadVolume(ComponentRecord component) =>
         IsVolume(component) && component.Data.ValueKind == JsonValueKind.Object
-            ? component.Data.Deserialize<VolumeComponentData>()?.Normalize() ?? new VolumeComponentData()
+            ? component.Data.Deserialize<VolumeComponentData>(FieldJsonOptions)?.Normalize() ?? new VolumeComponentData()
             : new VolumeComponentData();
 
     public static void WriteVolume(ComponentRecord component, VolumeComponentData data)
     {
         if (!IsVolume(component)) throw new ArgumentException("组件记录不是Volume组件", nameof(component));
-        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
     }
 
     public static ComponentRecord CreateProbeVolume(ProbeVolumeComponentData data) => new()
@@ -98,7 +99,7 @@ public static class SceneComponentTypes
     public static void WriteProbeVolume(ComponentRecord component, ProbeVolumeComponentData data)
     {
         if (!IsProbeVolume(component)) throw new ArgumentException("组件记录不是探针组件", nameof(component));
-        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions));
     }
 
     /// <summary>
@@ -240,7 +241,7 @@ public static class SceneComponentTypes
     public static void WriteLight(ComponentRecord component, LightComponentData data)
     {
         if (!IsLight(component)) throw new ArgumentException("组件记录不是光照组件", nameof(component));
-        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions));
     }
 
     /// <summary>
@@ -263,7 +264,12 @@ public static class SceneComponentTypes
             iso = normalized.Iso,
             focusDistance = normalized.FocusDistance,
             postProcess = normalized.PostProcess,
-        }, JsonOptions);
+            realtimeAntiAliasingSamples = normalized.RealtimeAntiAliasingSamples,
+            realtimeAntiAliasingPattern = normalized.RealtimeAntiAliasingPattern,
+            realtimeAntiAliasingSpread = normalized.RealtimeAntiAliasingSpread,
+            fxaaThreshold = normalized.FxaaThreshold,
+            fxaaStrength = normalized.FxaaStrength,
+        }, FieldJsonOptions);
     }
 
     public static string GetDisplayName(ComponentRecord component) =>
@@ -305,12 +311,16 @@ public static class SceneComponentTypes
             ReadFloat(data, "nearClip", CameraComponentData.Default.NearClip),
             ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask,
             data.TryGetProperty("postProcess", out var postProcess)
-                ? postProcess.Deserialize<CameraPostProcessStack>()
+                ? postProcess.Deserialize<CameraPostProcessStack>(FieldJsonOptions)
                 : null,
             data.TryGetProperty("physicalCamera", out var physical) && physical.ValueKind == JsonValueKind.True,
             ReadFloat(data, "focalLengthMillimeters", 50F), ReadFloat(data, "sensorWidthMillimeters", 36F),
             ReadFloat(data, "apertureFStop", 5.6F), ReadFloat(data, "shutterSpeed", 1F / 60F),
-            ReadFloat(data, "iso", 100F), ReadFloat(data, "focusDistance", 10F)).Normalize();
+            ReadFloat(data, "iso", 100F), ReadFloat(data, "focusDistance", 10F),
+            (int)ReadFloat(data, "realtimeAntiAliasingSamples", 1F),
+            ReadInt(data, "realtimeAntiAliasingPattern", 0),
+            ReadFloat(data, "realtimeAntiAliasingSpread", 1F),
+            ReadFloat(data, "fxaaThreshold", .125F), ReadFloat(data, "fxaaStrength", .75F)).Normalize();
     }
 
     /// <summary>
@@ -321,7 +331,7 @@ public static class SceneComponentTypes
     {
         TypeId = Camera,
         SchemaVersion = 1,
-        Data = JsonSerializer.SerializeToElement(CameraComponentData.Default, JsonOptions),
+        Data = SerializeCameraData(CameraComponentData.Default),
     };
 
     /// <summary>
@@ -348,7 +358,47 @@ public static class SceneComponentTypes
             throw new ArgumentException("组件记录不是相机组件", nameof(component));
         }
 
-        component.Data = SerializeCameraData(data);
+        component.Data = MergeComponentData(component.Data, SerializeCameraData(data), mergeCameraEffects: true);
+    }
+
+    // 更新已知字段时保留未来版本写入的对象字段。数组以新值为准，
+    // 只有相机效果按类型保留每个仍存在的效果中的未知字段。
+    private static JsonElement MergeComponentData(JsonElement existing, JsonElement updated, bool mergeCameraEffects = false)
+    {
+        var original = existing.ValueKind == JsonValueKind.Object
+            ? JsonNode.Parse(existing.GetRawText()) as JsonObject : null;
+        var changes = JsonNode.Parse(updated.GetRawText())!.AsObject();
+        var merged = MergeObjects(original ?? new JsonObject(), changes, mergeCameraEffects, false);
+        return JsonSerializer.SerializeToElement(merged, FieldJsonOptions);
+    }
+
+    private static JsonObject MergeObjects(JsonObject original, JsonObject changes, bool camera, bool postProcess)
+    {
+        foreach (var property in changes)
+        {
+            if (property.Value is JsonObject child && original[property.Key] is JsonObject oldChild)
+            {
+                original[property.Key] = MergeObjects((JsonObject)oldChild.DeepClone(), child,
+                    camera, camera && property.Key == "postProcess");
+            }
+            else if (postProcess && property.Key == "effects" && property.Value is JsonArray effects && original[property.Key] is JsonArray oldEffects)
+            {
+                var mergedEffects = new JsonArray();
+                foreach (var effect in effects)
+                {
+                    if (effect is JsonObject newEffect && newEffect["type"] is JsonValue type && type.TryGetValue<int>(out var typeId))
+                    {
+                        var oldEffect = oldEffects.OfType<JsonObject>().LastOrDefault(item =>
+                            item["type"] is JsonValue oldType && oldType.TryGetValue<int>(out var oldId) && oldId == typeId);
+                        mergedEffects.Add(oldEffect is null ? newEffect.DeepClone() : MergeObjects((JsonObject)oldEffect.DeepClone(), newEffect, false, false));
+                    }
+                    else mergedEffects.Add(effect?.DeepClone());
+                }
+                original[property.Key] = mergedEffects;
+            }
+            else original[property.Key] = property.Value?.DeepClone();
+        }
+        return original;
     }
 
     /// <summary>
@@ -488,7 +538,12 @@ public readonly record struct CameraComponentData(
     float ApertureFStop = 5.6F,
     float ShutterSpeed = 1F / 60F,
     float Iso = 100F,
-    float FocusDistance = 10F)
+    float FocusDistance = 10F,
+    int RealtimeAntiAliasingSamples = 1,
+    int RealtimeAntiAliasingPattern = 0,
+    float RealtimeAntiAliasingSpread = 1F,
+    float FxaaThreshold = .125F,
+    float FxaaStrength = .75F)
 {
     /// <summary>
     /// 默认相机摄影参数：全图层遮罩
@@ -514,6 +569,11 @@ public readonly record struct CameraComponentData(
         var iso = Math.Clamp(float.IsFinite(Iso) ? Iso : 100F, 25F, 51200F);
         var focus = Math.Clamp(float.IsFinite(FocusDistance) ? FocusDistance : 10F, 0.01F, 1_000_000F);
         return new CameraComponentData(fov, near, far, CullingMask, normalizedPostProcess,
-            PhysicalCamera, focal, sensor, aperture, shutter, iso, focus);
+            PhysicalCamera, focal, sensor, aperture, shutter, iso, focus,
+            RealtimeAntiAliasingSamples switch { 2 => 2, 4 => 4, 8 => 8, 16 => 16, _ => 1 },
+            Math.Clamp(RealtimeAntiAliasingPattern, 0, 2),
+            float.IsFinite(RealtimeAntiAliasingSpread) ? Math.Clamp(RealtimeAntiAliasingSpread, .25F, 1F) : 1F,
+            float.IsFinite(FxaaThreshold) ? Math.Clamp(FxaaThreshold, .0312F, .333F) : .125F,
+            float.IsFinite(FxaaStrength) ? Math.Clamp(FxaaStrength, 0F, 1F) : .75F);
     }
 }

@@ -4,7 +4,7 @@
 export function activate(host) {
   host.registerAutomation("mvoxel.project", "项目自动化入口");
   host.registerCommand("mvoxel.project.status", "读取项目状态");
-  host.registerPanel("mvoxel.mcp", "MVoxel MCP");
+  host.registerPanel("mvoxel.mcp", "MVoxel MCP", "通过 MVoxel 自动化接口访问当前项目。插件命令可在插件菜单中执行。");
   host.registerComponent("mvoxel.mcp.annotation", "MCP 标注", "插件", "{\"标签\":\"MCP\",\"启用\":true}");
 }
 

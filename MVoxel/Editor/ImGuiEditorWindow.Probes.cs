@@ -20,7 +20,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
         _showProbeVolumeWindow = open;
-        ImGui.TextWrapped("自动探针体积：按对象组件中的偏移、尺寸和密度生成规则探针网格。首期采用手动烘焙，复杂实时增量更新列入后续升级。");
+        ImGui.TextWrapped("探针体积：手动生成规则网格及高度渐变环境数据。当前不采样场景光照或遮挡，自动烘焙尚未实现。");
         if (_sceneDocument is null)
         {
             ImGui.TextDisabled("请先打开场景");
@@ -53,11 +53,8 @@ internal sealed partial class ImGuiEditorWindow
         var data = SceneComponentTypes.ReadProbeVolume(selectedProbe.component);
         ImGui.SeparatorText(selectedProbe.item.Name);
         ImGui.Text($"尺寸 {data.SizeX:0.##} × {data.SizeY:0.##} × {data.SizeZ:0.##} · 密度 {data.Density:0.##}");
-        ImGui.Text(data.AutoBake ? "自动烘焙：开启" : "自动烘焙：关闭，使用手动烘焙");
-        ImGui.BeginDisabled(data.AutoBake);
-        if (ImGui.Button("烘焙##ProbeBake", new Vector2(-1F, 0F)))
+        if (ImGui.Button("生成探针数据##ProbeBake", new Vector2(-1F, 0F)))
             BakeProbeVolume(selectedProbe.item, selectedProbe.component, data);
-        ImGui.EndDisabled();
         ImGui.End();
     }
 
@@ -81,9 +78,9 @@ internal sealed partial class ImGuiEditorWindow
         var directory = Path.Combine(_project.AssetsPath, "Lighting");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"{sceneObject.Id}.probe.json");
-        AtomicFile.WriteText(path, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+        AtomicFile.WriteText(path, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true, IncludeFields = true }));
         SceneComponentTypes.WriteProbeVolume(component, data with { BakedAsset = "Lighting/" + Path.GetFileName(path) });
         MarkSceneDocumentDirty();
-        SetStatus($"已烘焙探针体积：{sceneObject.Name} · {result.Samples.Count:N0}个探针");
+        SetStatus($"已生成探针数据：{sceneObject.Name} · {result.Samples.Count:N0}个探针");
     }
 }

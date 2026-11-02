@@ -109,7 +109,7 @@ public static class PluginManager
         };
         if (Directory.Exists(AppPaths.PluginDirectory))
         {
-            foreach (var packagePath in Directory.EnumerateFiles(AppPaths.PluginDirectory, "package.json", SearchOption.AllDirectories))
+            foreach (var packagePath in EnumerateInstalledManifests(AppPaths.PluginDirectory))
             {
                 try
                 {
@@ -131,13 +131,58 @@ public static class PluginManager
                         });
                     }
                 }
-                catch (Exception exception) when (exception is JsonException or InvalidDataException)
+                catch (Exception exception) when (exception is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
                 {
                     MVoxelLog.Warn($"跳过无效插件清单：{packagePath}，原因：{exception.Message}");
                 }
             }
         }
         return packages.Values.OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
+    }
+
+    private static IEnumerable<string> EnumerateInstalledManifests(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var directory))
+        {
+            string[] entries;
+            try { entries = Directory.GetFileSystemEntries(directory); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MVoxelLog.Warn($"无法读取插件目录：{directory}，原因：{exception.Message}");
+                continue;
+            }
+            foreach (var entry in entries)
+            {
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(entry); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    MVoxelLog.Warn($"无法读取插件路径：{entry}，原因：{exception.Message}");
+                    continue;
+                }
+                if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    var name = Path.GetFileName(entry);
+                    if (directory == root && IsInstallWorkDirectory(name)) continue;
+                    pending.Push(entry);
+                }
+                else if (string.Equals(Path.GetFileName(entry), "package.json", StringComparison.OrdinalIgnoreCase))
+                    yield return entry;
+            }
+        }
+    }
+
+    private static bool IsInstallWorkDirectory(string name)
+    {
+        foreach (var marker in new[] { ".staging-", ".backup-" })
+        {
+            var index = name.LastIndexOf(marker, StringComparison.Ordinal);
+            if (index > 0 && Guid.TryParseExact(name[(index + marker.Length)..], "N", out _)) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -168,6 +213,8 @@ public static class PluginManager
         var package = JsonSerializer.Deserialize<EditorPluginPackage>(File.ReadAllText(packagePath), JsonOptions)
             ?? throw new InvalidDataException("插件清单为空");
         Validate(package);
+        if (package.Id is MvoxMcpPluginId or LuaSamplePluginId)
+            throw new InvalidDataException($"插件 ID 属于程序内置插件，不能安装同名插件：{package.Id}");
         var destination = Path.Combine(AppPaths.PluginDirectory, package.Id);
         var destinationFull = Path.GetFullPath(destination);
         if (string.Equals(destinationFull, source, StringComparison.OrdinalIgnoreCase))
@@ -180,7 +227,7 @@ public static class PluginManager
         try
         {
             Directory.CreateDirectory(staging);
-            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            foreach (var file in EnumeratePluginFiles(source))
             {
                 var relative = Path.GetRelativePath(source, file);
                 var target = Path.GetFullPath(Path.Combine(staging, relative));
@@ -192,13 +239,49 @@ public static class PluginManager
 
             var stagedPackage = CreateInstalledPackage(package, staging);
             ResolveEntryPath(stagedPackage);
-            if (Directory.Exists(destinationFull)) Directory.Delete(destinationFull, true);
-            Directory.Move(staging, destinationFull);
+            var backup = destinationFull + ".backup-" + Guid.NewGuid().ToString("N");
+            var hadPrevious = Directory.Exists(destinationFull);
+            if (hadPrevious) Directory.Move(destinationFull, backup);
+            try
+            {
+                Directory.Move(staging, destinationFull);
+            }
+            catch (Exception installException)
+            {
+                if (hadPrevious)
+                {
+                    try
+                    {
+                        if (Directory.Exists(destinationFull))
+                            throw new IOException("目标目录已存在，无法自动恢复旧版本");
+                        Directory.Move(backup, destinationFull);
+                    }
+                    catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException)
+                    {
+                        var message = $"插件更新失败且旧版本未能自动恢复；备份保留在：{backup}。恢复原因：{restoreException.Message}";
+                        MVoxelLog.Warn(message);
+                        throw new IOException(message, new AggregateException(installException, restoreException));
+                    }
+                }
+                throw;
+            }
+            if (hadPrevious)
+            {
+                try { Directory.Delete(backup, true); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    MVoxelLog.Warn($"插件已更新，但旧版本备份未能删除：{backup}，原因：{exception.Message}");
+                }
+            }
             return CreateInstalledPackage(package, destinationFull);
         }
         finally
         {
-            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MVoxelLog.Warn($"插件安装暂存目录未能清理：{staging}，原因：{exception.Message}");
+            }
         }
     }
 
@@ -206,6 +289,8 @@ public static class PluginManager
     /// 分发包内的逐文件校验清单名
     /// </summary>
     public const string ChecksumsFileName = "checksums.json";
+    private const int MaximumPackageEntries = 10000;
+    private const long MaximumPackageBytes = 1L << 30;
 
     /// <summary>
     /// 把插件目录打包为 .mvplugin 分发包：zip 内含全部插件文件与逐文件 sha256 清单
@@ -216,32 +301,93 @@ public static class PluginManager
     public static string PackPlugin(string sourceDirectory, string outputFile)
     {
         var source = Path.GetFullPath(sourceDirectory);
-        if (!File.Exists(Path.Combine(source, "package.json")))
+        var packagePath = Path.Combine(source, "package.json");
+        if (!File.Exists(packagePath))
             throw new FileNotFoundException("插件目录缺少 package.json", source);
         var output = Path.GetFullPath(outputFile);
+        if (output.StartsWith(Path.TrimEndingDirectorySeparator(source) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("插件分发包不能输出到插件源目录内");
+        var files = EnumeratePluginFiles(source).ToArray();
+        if (files.Length + 1 > MaximumPackageEntries)
+            throw new InvalidDataException($"插件文件数量不能超过 {MaximumPackageEntries - 1}");
+        long sourceBytes = 0;
+        foreach (var file in files)
+        {
+            if (string.Equals(Path.GetRelativePath(source, file), ChecksumsFileName, StringComparison.OrdinalIgnoreCase)) continue;
+            var size = new FileInfo(file).Length;
+            if (size > MaximumPackageBytes - sourceBytes)
+                throw new InvalidDataException("插件文件总大小超过 1 GiB");
+            sourceBytes += size;
+        }
+        var package = JsonSerializer.Deserialize<EditorPluginPackage>(File.ReadAllText(packagePath), JsonOptions)
+            ?? throw new InvalidDataException("插件清单为空");
+        Validate(package);
+        ResolveEntryPath(CreateInstalledPackage(package, source));
         var directory = Path.GetDirectoryName(output)
             ?? throw new ArgumentException("输出路径必须包含目录", nameof(outputFile));
         Directory.CreateDirectory(directory);
-        if (File.Exists(output)) File.Delete(output);
-
+        var temporary = output + ".tmp-" + Guid.NewGuid().ToString("N");
         var checksums = new SortedDictionary<string, string>(StringComparer.Ordinal);
-        using (var archive = System.IO.Compression.ZipFile.Open(output, System.IO.Compression.ZipArchiveMode.Create))
+        try
         {
-            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            using (var archive = System.IO.Compression.ZipFile.Open(temporary, System.IO.Compression.ZipArchiveMode.Create))
             {
-                if (Path.GetFileName(file) == ChecksumsFileName) continue;
-                var relative = Path.GetRelativePath(source, file).Replace('\\', '/');
-                archive.CreateEntryFromFile(file, relative);
-                checksums[relative] = ComputeSha256(file);
+                long writtenBytes = 0;
+                foreach (var file in files)
+                {
+                    var relative = Path.GetRelativePath(source, file).Replace('\\', '/');
+                    if (string.Equals(relative, ChecksumsFileName, StringComparison.OrdinalIgnoreCase)) continue;
+                    var entry = archive.CreateEntry(relative);
+                    using var input = File.OpenRead(file);
+                    using var outputStream = entry.Open();
+                    using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+                    var buffer = new byte[81920];
+                    int read;
+                    while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        if (read > MaximumPackageBytes - writtenBytes)
+                            throw new InvalidDataException("插件文件总大小超过 1 GiB");
+                        writtenBytes += read;
+                        hash.AppendData(buffer, 0, read);
+                        outputStream.Write(buffer, 0, read);
+                    }
+                    checksums[relative] = Convert.ToHexString(hash.GetHashAndReset());
+                }
+                var checksumJson = JsonSerializer.Serialize(checksums, JsonOptions);
+                if (System.Text.Encoding.UTF8.GetByteCount(checksumJson) + 3L > MaximumPackageBytes - writtenBytes)
+                    throw new InvalidDataException("插件文件及校验清单总大小超过 1 GiB");
+                var manifest = archive.CreateEntry(ChecksumsFileName);
+                using var stream = manifest.Open();
+                using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8);
+                writer.Write(checksumJson);
             }
-
-            var manifest = archive.CreateEntry(ChecksumsFileName);
-            using var stream = manifest.Open();
-            using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8);
-            writer.Write(JsonSerializer.Serialize(checksums, JsonOptions));
+            File.Move(temporary, output, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
         }
 
         return output;
+    }
+
+    private static IEnumerable<string> EnumeratePluginFiles(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var directory))
+        {
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"插件目录不能包含链接：{directory}");
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"插件目录不能包含链接：{entry}");
+                if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+                else yield return entry;
+            }
+        }
     }
 
     /// <summary>
@@ -257,26 +403,84 @@ public static class PluginManager
         var staging = Path.Combine(Path.GetTempPath(), "MVoxel", "plugin-install-" + Guid.NewGuid().ToString("N"));
         try
         {
-            System.IO.Compression.ZipFile.ExtractToDirectory(full, staging);
+            using (var archive = ZipFile.OpenRead(full))
+            {
+                if (archive.Entries.Count > MaximumPackageEntries)
+                    throw new InvalidDataException($"插件包条目数量不能超过 {MaximumPackageEntries}");
+                long total = 0;
+                foreach (var entry in archive.Entries)
+                {
+                    if (entry.Length > MaximumPackageBytes - total)
+                        throw new InvalidDataException("插件包解压大小超过 1 GiB");
+                    total += entry.Length;
+                }
+                Directory.CreateDirectory(staging);
+                long extracted = 0;
+                var buffer = new byte[81920];
+                foreach (var entry in archive.Entries)
+                {
+                    var relative = entry.FullName.Replace('\\', '/');
+                    if (string.IsNullOrWhiteSpace(relative) || relative.StartsWith('/') || relative.Contains(':'))
+                        throw new InvalidDataException($"插件包路径无效：{entry.FullName}");
+                    var target = Path.GetFullPath(Path.Combine(staging, relative.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!target.StartsWith(staging + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException($"插件包路径超出目录：{entry.FullName}");
+                    if (relative.EndsWith('/'))
+                    {
+                        if (entry.Length != 0) throw new InvalidDataException("插件包目录条目包含数据");
+                        Directory.CreateDirectory(target);
+                        continue;
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    using var input = entry.Open();
+                    using var outputStream = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    long entryBytes = 0;
+                    int read;
+                    while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        if (read > MaximumPackageBytes - extracted || read > entry.Length - entryBytes)
+                            throw new InvalidDataException("插件包实际解压大小超过限制或与声明不符");
+                        extracted += read;
+                        entryBytes += read;
+                        outputStream.Write(buffer, 0, read);
+                    }
+                    if (entryBytes != entry.Length) throw new InvalidDataException("插件包条目大小与声明不符");
+                }
+            }
             var checksumsPath = Path.Combine(staging, ChecksumsFileName);
             if (!File.Exists(checksumsPath)) throw new InvalidDataException("插件分发包缺少校验清单");
+            if (new FileInfo(checksumsPath).Length > 8 * 1024 * 1024)
+                throw new InvalidDataException("插件校验清单超过 8 MiB");
             var checksums = JsonSerializer.Deserialize<Dictionary<string, string>>(
                 File.ReadAllText(checksumsPath), JsonOptions)
                 ?? throw new InvalidDataException("插件校验清单为空");
+            var actualFiles = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
+                .Select(file => Path.GetRelativePath(staging, file).Replace('\\', '/'))
+                .Where(relative => !string.Equals(relative, ChecksumsFileName, StringComparison.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var listedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (relative, expected) in checksums)
             {
+                if (relative.Contains('\\') || !listedFiles.Add(relative) || !actualFiles.Contains(relative))
+                    throw new InvalidDataException($"插件校验清单包含无效或重复路径：{relative}");
                 var file = Path.GetFullPath(Path.Combine(staging, relative.Replace('/', Path.DirectorySeparatorChar)));
                 if (!file.StartsWith(staging + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("插件分发包包含越界路径");
                 if (!File.Exists(file) || !string.Equals(ComputeSha256(file), expected, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException($"插件文件校验失败：{relative}");
             }
+            if (!actualFiles.SetEquals(listedFiles))
+                throw new InvalidDataException("插件分发包包含未列入校验清单的文件");
 
             return InstallFromDirectory(staging);
         }
         finally
         {
-            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MVoxelLog.Warn($"插件包解压暂存目录未能清理：{staging}，原因：{exception.Message}");
+            }
         }
     }
 
@@ -297,20 +501,33 @@ public static class PluginManager
     public static IReadOnlyList<string> ListEnabled(ProjectHandle project)
     {
         ArgumentNullException.ThrowIfNull(project);
+        try { return ReadEnabled(project, strict: false); }
+        catch (InvalidDataException exception)
+        {
+            MVoxelLog.Warn($"插件启停清单不可用，跳过插件启动并保留原文件：{exception.Message}");
+            return [];
+        }
+    }
+
+    private static IReadOnlyList<string> ReadEnabled(ProjectHandle project, bool strict)
+    {
         var path = Path.Combine(project.PluginsPath, "manifest.json");
         if (!File.Exists(path)) return [];
         try
         {
             var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(path), JsonOptions);
-            return manifest?.Enabled?
+            if (manifest is null || manifest.Enabled is null || manifest.FormatVersion != 1)
+                throw new InvalidDataException($"插件启停清单为空、字段无效或版本不受支持：{path}");
+            if (strict && manifest.Enabled.Any(item => !IsValidPluginId(item)))
+                throw new InvalidDataException($"插件启停清单包含无效 ID，未修改原文件：{path}");
+            return manifest.Enabled
                 .Where(item => IsValidPluginId(item))
                 .Distinct(StringComparer.Ordinal)
-                .ToArray() ?? [];
+                .ToArray();
         }
         catch (JsonException exception)
         {
-            MVoxelLog.Warn($"插件启停清单损坏，按空集合恢复：{path}，原因：{exception.Message}");
-            return [];
+            throw new InvalidDataException($"插件启停清单格式无效，保留原文件：{path}，原因：{exception.Message}", exception);
         }
     }
 
@@ -324,6 +541,12 @@ public static class PluginManager
         ArgumentNullException.ThrowIfNull(project);
         var installed = ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
         var enabled = ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+        return Diagnose(installed, enabled);
+    }
+
+    internal static IReadOnlyList<ProjectPluginDiagnostic> Diagnose(
+        IReadOnlyDictionary<string, EditorPluginPackage> installed, IReadOnlySet<string> enabled)
+    {
         return enabled.Select(pluginId =>
         {
             installed.TryGetValue(pluginId, out var package);
@@ -431,22 +654,33 @@ public static class PluginManager
     }
 
     /// <summary>
-    /// 验证依赖版本范围的基础字符集
+    /// 验证依赖版本范围是否可由版本匹配器解析
     /// </summary>
     /// <param name="versionRange">版本范围</param>
     /// <returns>是否为可解析的基础版本范围</returns>
     private static bool IsValidVersionRange(string? versionRange)
     {
         if (string.IsNullOrWhiteSpace(versionRange)) return false;
-        var hasVersionCharacter = false;
-        foreach (var character in versionRange)
+        foreach (var alternative in versionRange.Replace("||", "|", StringComparison.Ordinal).Split('|'))
         {
-            if (char.IsAsciiDigit(character)) hasVersionCharacter = true;
-            if (char.IsAsciiLetterOrDigit(character) || character is '.' or '-' or '_' or '^' or '~' or '<' or '>' or '=' or '*' or '|' or ',' or ' ')
-                continue;
-            return false;
+            var parts = alternative.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0) return false;
+            foreach (var part in parts)
+            {
+                if (part == "*") continue;
+                if (part.EndsWith(".*", StringComparison.Ordinal))
+                {
+                    var components = part[..^2].Split('.');
+                    if (components.Length is < 1 or > 2 || components.Any(item =>
+                        item.Length == 0 || !item.All(char.IsAsciiDigit) || !int.TryParse(item, out _))) return false;
+                    continue;
+                }
+                var prefixLength = part.StartsWith(">=", StringComparison.Ordinal) || part.StartsWith("<=", StringComparison.Ordinal)
+                    ? 2 : part[0] is '^' or '~' or '>' or '<' or '=' ? 1 : 0;
+                if (!Version.TryParse(part[prefixLength..], out _)) return false;
+            }
         }
-        return hasVersionCharacter || versionRange.Trim() == "*";
+        return true;
     }
 
     /// <summary>
@@ -476,15 +710,15 @@ public static class PluginManager
     private static void Update(ProjectHandle project, string pluginId, bool enabled)
     {
         ArgumentNullException.ThrowIfNull(project);
-        if (string.IsNullOrWhiteSpace(pluginId)) throw new ArgumentException("插件 ID 不能为空", nameof(pluginId));
+        if (!IsValidPluginId(pluginId)) throw new ArgumentException("插件 ID 不合法", nameof(pluginId));
         var installed = ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
-        var packageInfo = installed.GetValueOrDefault(pluginId)
-            ?? throw new InvalidOperationException($"未找到编辑器级插件：{pluginId}");
-        Validate(packageInfo);
 
-        var current = ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+        var current = ReadEnabled(project, strict: true).ToHashSet(StringComparer.Ordinal);
         if (enabled)
         {
+            var packageInfo = installed.GetValueOrDefault(pluginId)
+                ?? throw new InvalidOperationException($"未找到编辑器级插件：{pluginId}");
+            Validate(packageInfo);
             AddDependencies(pluginId, installed, current, new HashSet<string>(StringComparer.Ordinal));
         }
         else
@@ -554,13 +788,15 @@ public static class PluginManager
     /// <returns>是否满足版本范围</returns>
     internal static bool IsVersionSatisfied(string versionText, string range)
     {
-        if (range.Trim() == "*") return Version.TryParse(versionText, out _);
-        if (!Version.TryParse(versionText, out var actual)) return false;
+        if (!IsValidVersionRange(range)) return false;
+        if (!Version.TryParse(versionText, out var parsedActual)) return false;
+        var actual = NormalizeVersion(parsedActual);
         foreach (var alternative in range.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var matches = true;
             foreach (var part in alternative.Split(',', ' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
+                if (part == "*") continue;
                 var prefix = part.Length > 0 && part[0] is '^' or '~' ? part[0] : '\0';
                 var value = prefix == '\0' ? part : part[1..];
                 if (value.EndsWith(".*", StringComparison.Ordinal))
@@ -574,10 +810,13 @@ public static class PluginManager
                     };
                     continue;
                 }
-                if (!Version.TryParse(value.TrimStart('>', '<', '='), out var expected)) { matches = false; continue; }
+                if (!Version.TryParse(value.TrimStart('>', '<', '='), out var parsedExpected)) { matches = false; continue; }
+                var expected = NormalizeVersion(parsedExpected);
                 matches &= prefix switch
                 {
-                    '^' => actual >= expected && actual < CaretUpperBound(expected),
+                    '^' => actual >= expected && actual.Major == expected.Major &&
+                           (expected.Major > 0 || actual.Minor == expected.Minor) &&
+                           (expected.Major > 0 || expected.Minor > 0 || parsedExpected.Build < 0 || actual.Build == expected.Build),
                     '~' => actual.Major == expected.Major && actual.Minor == expected.Minor && actual >= expected,
                     _ when part.StartsWith(">=", StringComparison.Ordinal) => actual >= expected,
                     _ when part.StartsWith(">", StringComparison.Ordinal) => actual > expected,
@@ -591,12 +830,6 @@ public static class PluginManager
         return false;
     }
 
-    private static Version CaretUpperBound(Version version)
-    {
-        return version.Major > 0
-            ? new Version(version.Major + 1, 0)
-            : version.Minor > 0
-                ? new Version(0, version.Minor + 1)
-                : new Version(0, 0, version.Build + 1);
-    }
+    private static Version NormalizeVersion(Version version) =>
+        new(version.Major, version.Minor, Math.Max(0, version.Build), Math.Max(0, version.Revision));
 }

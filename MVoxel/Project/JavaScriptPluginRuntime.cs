@@ -21,7 +21,7 @@ public sealed record PluginCommand(string Id, string Name, string PluginId);
 /// <summary>
 /// 插件向编辑器注册的面板
 /// </summary>
-public sealed record PluginPanel(string Id, string Name, string PluginId);
+public sealed record PluginPanel(string Id, string Name, string PluginId, string Content = "");
 
 public sealed record PluginComponent(string Id, string Name, string Category, string PluginId, JsonElement DefaultData);
 
@@ -37,6 +37,7 @@ public sealed class PluginScriptRuntime : IDisposable
     private readonly List<PluginPanel> _panels = new();
     private readonly List<PluginComponent> _components = new();
     private readonly Dictionary<string, EditorPluginPackage> _commandOwners = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _activationStatus = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 当前已注册的自动化入口
@@ -53,6 +54,8 @@ public sealed class PluginScriptRuntime : IDisposable
     /// </summary>
     public IReadOnlyList<PluginPanel> Panels => _panels;
     public IReadOnlyList<PluginComponent> Components => _components;
+    /// <summary>最近一次插件激活的运行时状态。</summary>
+    public IReadOnlyDictionary<string, string> ActivationStatus => _activationStatus;
 
     /// <summary>
     /// 激活项目中已启用的 JavaScript 或 Lua 插件
@@ -63,19 +66,49 @@ public sealed class PluginScriptRuntime : IDisposable
     public IReadOnlyList<EditorPluginPackage> Activate(ProjectHandle project, TimeSpan timeout, CancellationToken cancellation = default)
     {
         ArgumentNullException.ThrowIfNull(project);
-        foreach (var pluginId in PluginManager.ListEnabled(project))
+        var installed = PluginManager.ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal);
+        var enabled = PluginManager.ListEnabled(project).ToHashSet(StringComparer.Ordinal);
+        var diagnostics = PluginManager.Diagnose(installed, enabled).ToDictionary(item => item.PluginId, StringComparer.Ordinal);
+        var ordered = new List<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        void Visit(string id)
+        {
+            if (!visited.Add(id)) return;
+            if (installed.TryGetValue(id, out var candidate))
+                foreach (var dependency in candidate.Dependencies.Keys.Order(StringComparer.Ordinal)) Visit(dependency);
+            ordered.Add(id);
+        }
+        foreach (var id in enabled.Order(StringComparer.Ordinal)) Visit(id);
+        foreach (var pluginId in ordered)
         {
             cancellation.ThrowIfCancellationRequested();
             if (_active.Any(item => item.Id == pluginId)) continue;
-            var package = PluginManager.ListInstalled().FirstOrDefault(item => item.Id == pluginId);
+            if (!diagnostics.TryGetValue(pluginId, out var diagnostic) || diagnostic.Status != "正常")
+            {
+                if (diagnostic is not null) _activationStatus[pluginId] = diagnostic.Status;
+                MVoxelLog.Warn($"插件依赖诊断未通过，跳过激活：{pluginId}，原因：{diagnostic?.Status ?? "未启用"}");
+                continue;
+            }
+            var package = installed.GetValueOrDefault(pluginId);
             if (package is null)
             {
+                _activationStatus[pluginId] = "缺失插件";
                 MVoxelLog.Warn($"项目插件尚未安装，跳过激活：{pluginId}");
+                continue;
+            }
+            var inactiveDependency = package.Dependencies.Keys.FirstOrDefault(id => _active.All(item => item.Id != id));
+            if (inactiveDependency is not null)
+            {
+                _activationStatus[pluginId] = $"依赖启动失败：{inactiveDependency}";
+                MVoxelLog.Warn($"插件依赖未能激活，跳过激活：{pluginId}，依赖：{inactiveDependency}");
                 continue;
             }
             if (!HasRegistrationPermission(package))
             {
-                MVoxelLog.Warn($"插件没有声明任何扩展注册权限，跳过激活：{package.Id}");
+                var unknown = package.Permissions.FirstOrDefault(permission => !KnownPermissions.Contains(permission));
+                var reason = unknown is null ? "未声明扩展注册权限" : $"未知权限：{unknown}";
+                _activationStatus[pluginId] = reason;
+                MVoxelLog.Warn($"插件权限声明无效，跳过激活：{package.Id}，原因：{reason}");
                 continue;
             }
             try
@@ -84,6 +117,7 @@ public sealed class PluginScriptRuntime : IDisposable
                 foreach (var item in extensions.Automations)
                 {
                     if (!package.Permissions.Contains("automation.register", StringComparer.Ordinal)) continue;
+                    if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Name)) continue;
                     if (_automationOwners.ContainsKey(item.Id))
                     {
                         MVoxelLog.Warn($"插件自动化 ID 冲突，跳过重复注册：{item.Id}");
@@ -96,6 +130,7 @@ public sealed class PluginScriptRuntime : IDisposable
                 foreach (var item in extensions.Commands)
                 {
                     if (!package.Permissions.Contains("editor.command", StringComparer.Ordinal)) continue;
+                    if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Name)) continue;
                     if (_commandOwners.ContainsKey(item.Id))
                     {
                         MVoxelLog.Warn($"插件命令 ID 冲突，跳过重复注册：{item.Id}");
@@ -108,19 +143,21 @@ public sealed class PluginScriptRuntime : IDisposable
                 {
                     foreach (var item in extensions.Panels)
                     {
+                        if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Name)) continue;
                         if (_panels.Any(panel => panel.Id == item.Id))
                         {
                             MVoxelLog.Warn($"插件面板 ID 冲突，跳过重复注册：{item.Id}");
                             continue;
                         }
-                        _panels.Add(new PluginPanel(item.Id, item.Name, package.Id));
+                        _panels.Add(new PluginPanel(item.Id, item.Name, package.Id, item.Content));
                     }
                 }
                 if (package.Permissions.Contains("scene.component", StringComparer.Ordinal))
                 {
                     foreach (var item in extensions.Components)
                     {
-                        if (!IsValidComponentId(item.Id) || SceneComponentTypes.IsBuiltInTypeId(item.Id))
+                        if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Name) ||
+                            !IsValidComponentId(item.Id) || SceneComponentTypes.IsBuiltInTypeId(item.Id))
                         {
                             MVoxelLog.Warn($"插件组件 ID 无效或与内置组件冲突，跳过注册：{item.Id}");
                             continue;
@@ -131,10 +168,22 @@ public sealed class PluginScriptRuntime : IDisposable
                     }
                 }
                 _active.Add(package);
+                _activationStatus[pluginId] = "已启动";
                 MVoxelLog.Info($"{GetLanguageName(package)} 插件已激活：{package.Id}");
             }
             catch (Exception exception)
             {
+                // 注册过程中任一步失败都撤销该插件已写入的扩展，避免留下不可调用的入口。
+                foreach (var item in _automations.Where(item => item.PluginId == package.Id))
+                    _automationOwners.Remove(item.Id);
+                _automations.RemoveAll(item => item.PluginId == package.Id);
+                foreach (var item in _commands.Where(item => item.PluginId == package.Id))
+                    _commandOwners.Remove(item.Id);
+                _commands.RemoveAll(item => item.PluginId == package.Id);
+                _panels.RemoveAll(item => item.PluginId == package.Id);
+                _components.RemoveAll(item => item.PluginId == package.Id);
+                _active.RemoveAll(item => item.Id == package.Id);
+                _activationStatus[pluginId] = $"启动失败：{exception.Message}";
                 MVoxelLog.Warn($"{GetLanguageName(package)} 插件激活失败：{package.Id}，原因：{exception.Message}");
             }
         }
@@ -195,7 +244,24 @@ public sealed class PluginScriptRuntime : IDisposable
         var panels = new List<PluginExtensionItem>();
         var components = new List<PluginExtensionComponent>();
         var engine = CreateJavaScriptEngine(timeout);
-        engine.SetValue("host", new ScriptHost(automations, commands, panels, components));
+        engine.SetValue("__mvoxelRegistrationHost", new ScriptHost(automations, commands, panels, components));
+        engine.Execute("""
+var host = {
+    registerAutomation: function(id, name) { __mvoxelRegistrationHost.RegisterAutomation(id, name); },
+    registerCommand: function(id, name) { __mvoxelRegistrationHost.RegisterCommand(id, name); },
+    registerPanel: function(id, name, content) {
+        __mvoxelRegistrationHost.RegisterPanel(id, name, content === undefined ? "" : content);
+    },
+    registerComponent: function(id, name, category, data) {
+        __mvoxelRegistrationHost.RegisterComponent(id, name, category === undefined ? "插件" : category,
+            data === undefined ? "{}" : data);
+    }
+};
+host.RegisterAutomation = host.registerAutomation;
+host.RegisterCommand = host.registerCommand;
+host.RegisterPanel = host.registerPanel;
+host.RegisterComponent = host.registerComponent;
+""");
         engine.Execute(ToJavaScriptSource(File.ReadAllText(entry)));
         var activate = engine.GetValue("activate");
         if (!activate.IsUndefined() && !activate.IsNull()) engine.Invoke("activate", engine.GetValue("host"));
@@ -249,7 +315,8 @@ public sealed class PluginScriptRuntime : IDisposable
 
         public void RegisterAutomation(string id, string name) => _automations.Add(new(id, name));
         public void RegisterCommand(string id, string name) => _commands.Add(new(id, name));
-        public void RegisterPanel(string id, string name) => _panels.Add(new(id, name));
+        public void RegisterPanel(string id, string name, string content = "") =>
+            _panels.Add(new(id, name, LimitPanelContent(content)));
         public void RegisterComponent(string id, string name, string category = "插件", string defaultDataJson = "{}") =>
             _components.Add(new(id, name, category, defaultDataJson));
     }
@@ -313,20 +380,21 @@ public sealed class PluginScriptRuntime : IDisposable
         return table;
     }
 
-    private static object? LuaToObject(DynValue value)
+    private static object? LuaToObject(DynValue value, int depth = 0)
     {
+        if (depth > 32) throw new InvalidDataException("Lua 插件返回值嵌套过深或包含循环引用");
         return value.Type switch
         {
             DataType.Nil or DataType.Void => null,
             DataType.Boolean => value.Boolean,
             DataType.Number => value.Number,
             DataType.String => value.String,
-            DataType.Table => LuaTableToObject(value.Table),
+            DataType.Table => LuaTableToObject(value.Table, depth + 1),
             _ => value.ToObject(),
         };
     }
 
-    private static object LuaTableToObject(Table table)
+    private static object LuaTableToObject(Table table, int depth)
     {
         var pairs = table.Pairs.ToList();
         var isArray = pairs.Count > 0 && pairs.All(pair =>
@@ -336,11 +404,11 @@ public sealed class PluginScriptRuntime : IDisposable
         {
             var ordered = pairs.OrderBy(pair => pair.Key.Number).ToList();
             if (ordered.Select((pair, index) => (long)pair.Key.Number == index + 1).All(item => item))
-                return ordered.Select(pair => LuaToObject(pair.Value)).ToList();
+                return ordered.Select(pair => LuaToObject(pair.Value, depth)).ToList();
         }
         return pairs.ToDictionary(
             pair => pair.Key.String ?? pair.Key.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            pair => LuaToObject(pair.Value), StringComparer.Ordinal);
+            pair => LuaToObject(pair.Value, depth), StringComparer.Ordinal);
     }
 
     private static Table CreateLuaHost(Script script, List<PluginExtensionItem> automations,
@@ -360,7 +428,8 @@ public sealed class PluginScriptRuntime : IDisposable
         }));
         host.Set("registerPanel", DynValue.NewCallback((_, args) =>
         {
-            if (args.Count >= 2) panels.Add(new PluginExtensionItem(args[0].String ?? string.Empty, args[1].String ?? string.Empty));
+            if (args.Count >= 2) panels.Add(new PluginExtensionItem(args[0].String ?? string.Empty,
+                args[1].String ?? string.Empty, LimitPanelContent(args.Count >= 3 ? args[2].String : null)));
             return DynValue.Nil;
         }));
         host.Set("registerComponent", DynValue.NewCallback((_, args) =>
@@ -455,12 +524,13 @@ public sealed class PluginScriptRuntime : IDisposable
 
     private static readonly HashSet<string> KnownPermissions = new(StringComparer.Ordinal)
     {
-        "automation.register", "editor.command", "editor.panel", "scene.component"
+        "automation.register", "editor.command", "editor.panel", "scene.component",
+        "project.read", "project.write", "plugin.manage"
     };
 
     internal static bool HasRegistrationPermission(EditorPluginPackage package) =>
         package.Permissions.All(KnownPermissions.Contains) &&
-        package.Permissions.Any(permission => KnownPermissions.Contains(permission));
+        package.Permissions.Any(permission => permission is "automation.register" or "editor.command" or "editor.panel" or "scene.component");
 
     /// <summary>
     /// 停用当前运行时中的插件
@@ -475,12 +545,19 @@ public sealed class PluginScriptRuntime : IDisposable
         _panels.Clear();
         _components.Clear();
         _commandOwners.Clear();
+        _activationStatus.Clear();
     }
 
     /// <summary>
     /// 插件注册的单个扩展项
     /// </summary>
-    private sealed record PluginExtensionItem(string Id, string Name);
+    private static string LimitPanelContent(string? content)
+    {
+        if (content is { Length: > 4096 }) throw new InvalidDataException("插件面板文本不能超过 4096 个字符");
+        return content ?? string.Empty;
+    }
+
+    private sealed record PluginExtensionItem(string Id, string Name, string Content = "");
     private sealed record PluginExtensionComponent(string Id, string Name, string Category, string DefaultDataJson);
 
     /// <summary>
