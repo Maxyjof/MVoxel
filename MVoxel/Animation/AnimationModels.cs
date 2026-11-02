@@ -32,6 +32,7 @@ public sealed class AnimationKeyframe
     public string ComponentType { get; set; } = string.Empty;
     public string Parameter { get; set; } = string.Empty;
     public float[] Values { get; set; } = [];
+    public string SnapshotAsset { get; set; } = string.Empty;
     public AnimationCurve LeftCurve { get; set; } = new();
     public AnimationCurve RightCurve { get; set; } = new();
     public AnimationTransitionSide TransitionSide { get; set; } = AnimationTransitionSide.Both;

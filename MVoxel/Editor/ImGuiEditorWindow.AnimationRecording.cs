@@ -17,13 +17,19 @@ internal sealed partial class ImGuiEditorWindow
         var clip = File.Exists(path) ? JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(path)) ?? new AnimationClip() : new AnimationClip();
         clip.Normalize();
         clip.Keyframes.RemoveAll(key => key.Frame == animation.CurrentFrame && key.ObjectId == target.Id.ToString() && key.ComponentType == "VoxelModel");
+        var snapshot = _objectVoxels.GetOrCreate(target.Id).EnumerateOccupied().Select(item => new { x = item.Coordinate.X, y = item.Coordinate.Y, z = item.Coordinate.Z, color = item.Value.Color, material = item.Value.MaterialSlot, flags = item.Value.Flags }).ToArray();
+        var snapshotName = $"{target.Id}_{animation.CurrentFrame}.voxel.json";
+        var snapshotDirectory = Path.Combine(_project.AssetsPath, "Animations", "Snapshots");
+        Directory.CreateDirectory(snapshotDirectory);
+        File.WriteAllText(Path.Combine(snapshotDirectory, snapshotName), JsonSerializer.Serialize(snapshot));
         clip.Keyframes.Add(new AnimationKeyframe
         {
             Frame = animation.CurrentFrame,
             ObjectId = target.Id.ToString(),
             ComponentType = "VoxelModel",
             Parameter = "VoxelData",
-            Values = [changedCellCount],
+            Values = [snapshot.Length],
+            SnapshotAsset = "Animations/Snapshots/" + snapshotName,
             LeftCurve = new AnimationCurve(),
             RightCurve = new AnimationCurve()
         });
