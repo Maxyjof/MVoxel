@@ -35,6 +35,7 @@ internal partial class ImGuiEditorWindow
     private long _mcSelMinChunkZ;
     private long _mcSelMaxChunkX;
     private long _mcSelMaxChunkZ;
+    private int _mcImportGeneration;
     private volatile bool _mcImportBusy;
     private volatile bool _mcImportDone;
     private string _mcImportProgress = string.Empty;
@@ -509,6 +510,7 @@ internal partial class ImGuiEditorWindow
         _mcImportProgress = "准备导入…";
         _mcImportCancellation?.Dispose();
         _mcImportCancellation = new CancellationTokenSource();
+        var generation = ++_mcImportGeneration;
         var cancellationToken = _mcImportCancellation.Token;
         Task.Run(() =>
         {
@@ -581,7 +583,7 @@ internal partial class ImGuiEditorWindow
                 var files = history.Complete();
                 _pendingActions.Enqueue(() =>
                 {
-                    if (!ReferenceEquals(_project, project)) { (files as IDisposable)?.Dispose(); return; }
+                    if (generation != _mcImportGeneration || !ReferenceEquals(_project, project)) { (files as IDisposable)?.Dispose(); return; }
                     _mcImportFiles = files;
                     if (!_mcImportActive && files is not null)
                     {
@@ -693,6 +695,7 @@ internal partial class ImGuiEditorWindow
     /// </summary>
     private void CloseMcImport()
     {
+        ++_mcImportGeneration;
         if (_mcImportFiles is { } files)
         {
             _voxelHistory.RecordExecuted(files);
