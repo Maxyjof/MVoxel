@@ -70,6 +70,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private volatile bool _openWindowMenuRequested;
     private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
+    private bool _showProbeVolumeWindow;
+    private int _probeVolumeSelection;
     private int _centerTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
@@ -882,6 +884,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawPluginPanels();
         DrawGeneratorWindow();
         DrawAnalysisWindows();
+        DrawProbeVolumeWindow();
         DrawStatusBar();
         DrawProjectPathDialog();
         DrawLayoutNameDialog();
@@ -981,6 +984,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
+                if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
                 ImGui.EndMenu();
             }
             if (ImGui.BeginMenu("工具"))
@@ -3386,7 +3390,7 @@ DockId=0x6A3C3007,0
                     if (definition.TypeId == SceneComponentTypes.Transform) continue;
                     var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
                     if (!ImGui.Selectable($"{definition.DisplayName} · {definition.Category}")) continue;
-                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light))
+                    if (alreadyPresent && (definition.TypeId == SceneComponentTypes.Camera || definition.TypeId == SceneComponentTypes.Light || definition.TypeId == SceneComponentTypes.ProbeVolume))
                     {
                         _componentWarning = $"{definition.DisplayName}组件不可重复添加";
                         SetStatus(_componentWarning);
@@ -3421,6 +3425,7 @@ DockId=0x6A3C3007,0
                     {
                         SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
+                        SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     });
@@ -3520,6 +3525,10 @@ DockId=0x6A3C3007,0
         else if (SceneComponentTypes.IsLight(component))
         {
             SceneComponentTypes.WriteLight(component, LightComponentData.Default);
+        }
+        else if (SceneComponentTypes.IsProbeVolume(component))
+        {
+            SceneComponentTypes.WriteProbeVolume(component, ProbeVolumeComponentData.Default);
         }
         else if (SceneComponentTypes.IsVoxelModel(component))
         {
@@ -3713,6 +3722,42 @@ DockId=0x6A3C3007,0
             if (changed)
             {
                 ApplyVoxelModelReference(selectedObject, component, model);
+            }
+            return;
+        }
+
+        if (SceneComponentTypes.IsProbeVolume(component))
+        {
+            var data = SceneComponentTypes.ReadProbeVolume(component);
+            var editing = _selectedSceneObjectId == selectedObject.Id && data.Editing;
+            if (ImGui.Button(editing ? "退出探针编辑" : "编辑探针", new Vector2(-1F, 0F)))
+            {
+                data = data with { Editing = !editing };
+                SceneComponentTypes.WriteProbeVolume(component, data);
+                MarkSceneDocumentDirty();
+                SetStatus(editing ? "已退出探针编辑" : "已进入探针编辑，可在场景视图调整体积");
+            }
+            BeginInspectorField("自动烘焙", "开启后场景变化会标记探针需要更新；关闭后使用渲染窗口中的手动烘焙按钮。");
+            var autoBake = data.AutoBake;
+            if (ImGui.Checkbox("##ProbeAutoBake", ref autoBake)) data = data with { AutoBake = autoBake };
+            BeginInspectorField("偏移 X", "探针体积相对对象原点的偏移。视图Gizmo与此值同步。");
+            var offsetX = data.OffsetX; if (ImGui.DragFloat("##ProbeOffsetX", ref offsetX, 0.05F)) data = data with { OffsetX = offsetX };
+            BeginInspectorField("偏移 Y", null);
+            var offsetY = data.OffsetY; if (ImGui.DragFloat("##ProbeOffsetY", ref offsetY, 0.05F)) data = data with { OffsetY = offsetY };
+            BeginInspectorField("偏移 Z", null);
+            var offsetZ = data.OffsetZ; if (ImGui.DragFloat("##ProbeOffsetZ", ref offsetZ, 0.05F)) data = data with { OffsetZ = offsetZ };
+            BeginInspectorField("尺寸 X/Y/Z", "探针体积范围和自动采样网格尺寸。");
+            var probeSize = new System.Numerics.Vector3(data.SizeX, data.SizeY, data.SizeZ);
+            var sizeChanged = ImGui.DragFloat3("##ProbeSize", ref probeSize, 0.1F);
+            if (sizeChanged) data = data with { SizeX = probeSize.X, SizeY = probeSize.Y, SizeZ = probeSize.Z };
+            BeginInspectorField("探针密度", "每格体积内的探针密度，首期烘焙使用规则三维网格。");
+            var density = data.Density;
+            if (ImGui.DragFloat("##ProbeDensity", ref density, 0.05F, 0.05F, 32F)) data = data with { Density = density };
+            if (!data.Equals(SceneComponentTypes.ReadProbeVolume(component)))
+            {
+                SceneComponentTypes.WriteProbeVolume(component, data);
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
             }
             return;
         }

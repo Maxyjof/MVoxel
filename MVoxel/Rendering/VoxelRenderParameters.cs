@@ -98,7 +98,8 @@ public sealed class VoxelRenderParameters
     /// <summary>参数槽总数</summary>
     public const int EmissiveDirectSampling = 117;
     public const int EmissiveLightTree = 118;
-    public const int SlotCount = 119;
+    public const int VoxelIndirectStrength = 119, ProbeGiStrength = 120;
+    public const int SlotCount = 121;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -146,6 +147,8 @@ public sealed class VoxelRenderParameters
             ("P_BRICK_MODE", BrickMode),
             ("P_SCENE_PREVIEW", ScenePreview),
             ("P_SCENE_LIGHT_COUNT", SceneLightCount),
+            ("P_VOXEL_INDIRECT_STRENGTH", VoxelIndirectStrength),
+            ("P_PROBE_GI_STRENGTH", ProbeGiStrength),
         };
 
         var builder = new StringBuilder();
@@ -307,6 +310,8 @@ public sealed class VoxelRenderParameters
         parameters[EmissiveIntensity] = settings.EmissiveVoxels ? settings.EmissiveIntensity : 0F;
         parameters[EmissiveDirectSampling] = settings.EmissiveDirectSampling ? 1F : 0F;
         parameters[EmissiveLightTree] = settings.EmissiveLightTree ? 1F : 0F;
+        parameters[VoxelIndirectStrength] = settings.VoxelIndirectLightStrength;
+        parameters[ProbeGiStrength] = settings.ProbeVolumeGiStrength;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;

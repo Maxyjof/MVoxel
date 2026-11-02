@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MVoxel.Core;
+using MVoxel.Rendering;
 
 namespace MVoxel.Scene;
 
@@ -27,6 +28,8 @@ public static class SceneComponentTypes
     /// 光照组件的稳定类型标识
     /// </summary>
     public const string Light = "mvoxel.light";
+    /// <summary>体积光照探针组件的稳定类型标识</summary>
+    public const string ProbeVolume = "mvoxel.probevolume";
 
     public static readonly IReadOnlyList<SceneComponentDefinition> BuiltInDefinitions =
     [
@@ -34,11 +37,35 @@ public static class SceneComponentTypes
         new(VoxelModel, "模型", "体素", true),
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
+        new(ProbeVolume, "自动探针", "渲染", true),
     ];
 
     public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
     public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
     public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
+    public static bool IsProbeVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, ProbeVolume, StringComparison.Ordinal);
+
+    public static ComponentRecord CreateProbeVolume(ProbeVolumeComponentData data) => new()
+    {
+        TypeId = ProbeVolume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
+    };
+
+    public static ProbeVolumeComponentData ReadProbeVolume(ComponentRecord component)
+    {
+        if (!IsProbeVolume(component) || component.Data.ValueKind != JsonValueKind.Object) return ProbeVolumeComponentData.Default;
+        var data = component.Data;
+        return new ProbeVolumeComponentData(
+            ReadFloat(data, "offsetX", 0F), ReadFloat(data, "offsetY", 0F), ReadFloat(data, "offsetZ", 0F),
+            ReadFloat(data, "sizeX", 16F), ReadFloat(data, "sizeY", 16F), ReadFloat(data, "sizeZ", 16F),
+            ReadFloat(data, "density", 1F), ReadBool(data, "autoBake", true), ReadBool(data, "editing", false),
+            ReadString(data, "bakedAsset")).Normalize();
+    }
+
+    public static void WriteProbeVolume(ComponentRecord component, ProbeVolumeComponentData data)
+    {
+        if (!IsProbeVolume(component)) throw new ArgumentException("组件记录不是探针组件", nameof(component));
+        component.Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions);
+    }
 
     /// <summary>
     /// 判断类型 ID 是否属于宿主内置组件，供插件注册校验和检查器分类共用。
@@ -194,6 +221,7 @@ public static class SceneComponentTypes
             nearClip = normalized.NearClip,
             farClip = normalized.FarClip,
             cullingMask = normalized.CullingMask,
+            postProcess = normalized.PostProcess,
         }, JsonOptions);
     }
 
@@ -234,7 +262,10 @@ public static class SceneComponentTypes
         return new CameraComponentData(
             ReadFloat(data, "fieldOfViewDegrees", CameraComponentData.Default.FieldOfViewDegrees),
             ReadFloat(data, "nearClip", CameraComponentData.Default.NearClip),
-            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask).Normalize();
+            ReadFloat(data, "farClip", CameraComponentData.Default.FarClip), mask,
+            data.TryGetProperty("postProcess", out var postProcess)
+                ? postProcess.Deserialize<CameraPostProcessStack>()
+                : null).Normalize();
     }
 
     /// <summary>
@@ -295,6 +326,9 @@ public static class SceneComponentTypes
             ? property.GetString() ?? fallback
             : fallback;
 
+    private static bool ReadBool(JsonElement data, string name, bool fallback) =>
+        data.TryGetProperty(name, out var property) && property.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? property.GetBoolean() : fallback;
     private static int ReadInt(JsonElement data, string name, int fallback) =>
         data.TryGetProperty(name, out var property) && property.TryGetInt32(out var value) ? value : fallback;
 }
@@ -376,9 +410,24 @@ public readonly record struct LightComponentData(
     }
 }
 
-/// <summary>
-/// 相机组件保存的连续摄影参数
-/// </summary>
+/// <summary>自动探针体积组件数据</summary>
+public readonly record struct ProbeVolumeComponentData(
+    float OffsetX, float OffsetY, float OffsetZ, float SizeX, float SizeY, float SizeZ,
+    float Density, bool AutoBake, bool Editing, string BakedAsset)
+{
+    public static ProbeVolumeComponentData Default => new(0F, 0F, 0F, 16F, 16F, 16F, 1F, true, false, "");
+    public ProbeVolumeComponentData Normalize() => new(
+        float.IsFinite(OffsetX) ? Math.Clamp(OffsetX, -1_000_000F, 1_000_000F) : 0F,
+        float.IsFinite(OffsetY) ? Math.Clamp(OffsetY, -1_000_000F, 1_000_000F) : 0F,
+        float.IsFinite(OffsetZ) ? Math.Clamp(OffsetZ, -1_000_000F, 1_000_000F) : 0F,
+        float.IsFinite(SizeX) ? Math.Clamp(SizeX, 0.25F, 100000F) : 16F,
+        float.IsFinite(SizeY) ? Math.Clamp(SizeY, 0.25F, 100000F) : 16F,
+        float.IsFinite(SizeZ) ? Math.Clamp(SizeZ, 0.25F, 100000F) : 16F,
+        float.IsFinite(Density) ? Math.Clamp(Density, 0.05F, 32F) : 1F, AutoBake, Editing,
+        BakedAsset?.Replace('\\', '/') ?? "");
+}
+
+
 /// <param name="FieldOfViewDegrees">垂直视场角</param>
 /// <param name="NearClip">近平面距离</param>
 /// <param name="FarClip">远平面距离</param>
@@ -386,7 +435,8 @@ public readonly record struct CameraComponentData(
     float FieldOfViewDegrees,
     float NearClip,
     float FarClip,
-    uint CullingMask)
+    uint CullingMask,
+    CameraPostProcessStack? PostProcess = null)
 {
     /// <summary>
     /// 默认相机摄影参数：全图层遮罩
@@ -403,6 +453,8 @@ public readonly record struct CameraComponentData(
         var far = Math.Clamp(float.IsFinite(FarClip) ? FarClip : Default.FarClip, near + 0.001F, 100_000_000F);
         var fov = Math.Clamp(float.IsFinite(FieldOfViewDegrees) ? FieldOfViewDegrees : Default.FieldOfViewDegrees,
             20F, 120F);
-        return new CameraComponentData(fov, near, far, CullingMask);
+        var normalizedPostProcess = (PostProcess ?? CameraPostProcessStack.Default).Clone();
+        normalizedPostProcess.Normalize();
+        return new CameraComponentData(fov, near, far, CullingMask, normalizedPostProcess);
     }
 }

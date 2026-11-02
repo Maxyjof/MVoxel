@@ -140,6 +140,11 @@ public sealed class RenderSettings
     /// </summary>
     public int AoSamples = 16;
 
+    /// <summary>非光追体素间接光强度</summary>
+    public float VoxelIndirectLightStrength = 0.35F;
+    /// <summary>非光追探针体积GI环境光强度</summary>
+    public float ProbeVolumeGiStrength = 0.5F;
+
     /// <summary>
     /// 天顶颜色（sRGB 数值，着色时转线性）
     /// </summary>
@@ -522,6 +527,8 @@ public sealed class RenderSettings
         AoSamples = Math.Clamp(AoSamples, 4, 64);
         AoStrength = Math.Clamp(AoStrength, 0F, 1F);
         AoPower = Math.Clamp(AoPower, 0.2F, 4F);
+        VoxelIndirectLightStrength = Math.Clamp(float.IsFinite(VoxelIndirectLightStrength) ? VoxelIndirectLightStrength : 0.35F, 0F, 4F);
+        ProbeVolumeGiStrength = Math.Clamp(float.IsFinite(ProbeVolumeGiStrength) ? ProbeVolumeGiStrength : 0.5F, 0F, 4F);
         SkyAmbient = Math.Clamp(SkyAmbient, 0F, 2F);
         AmbientTint = Math.Clamp(AmbientTint, 0F, 1F);
         Saturation = Math.Clamp(Saturation, 0F, 2.5F);

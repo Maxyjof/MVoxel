@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Scene;
 using MVoxel.Voxels;
@@ -104,6 +104,21 @@ internal sealed partial class ImGuiEditorWindow
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = Math.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
+        var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
+        if (probeComponent is not null && SceneComponentTypes.ReadProbeVolume(probeComponent).Editing)
+        {
+            var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
+            var center = pivot + camera.Right * probe.OffsetX + camera.Up * probe.OffsetY;
+            if (SceneProjection.Project(center, origin, size, camera, out var probeScreen, out _))
+            {
+                var halfX = MathF.Max(8F, probe.SizeX / Math.Max(unitsPerPixel, .0001F) * .5F);
+                var halfY = MathF.Max(8F, probe.SizeY / Math.Max(unitsPerPixel, .0001F) * .5F);
+                var color = ToPackedColor(EditorPalette.Accent);
+                drawList.AddRect(probeScreen - new Vector2(halfX, halfY), probeScreen + new Vector2(halfX, halfY), color, 2F, ImDrawFlags.None, 1.5F);
+                drawList.AddText(probeScreen + new Vector2(halfX + 6F, -8F), color, "Probe Volume");
+            }
+        }
+
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:

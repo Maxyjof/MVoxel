@@ -2389,6 +2389,32 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return irradiance;
         }
 
+        vec3 RealtimeIndirectLight(vec3 hitPoint, vec3 hitNormal, inout uint state)
+        {
+            if (values[119] <= 0.0001) return vec3(0.0);
+            vec3 accumulated = vec3(0.0);
+            const int sampleCount = 2;
+            for (int index = 0; index < sampleCount; index++)
+            {
+                vec3 direction = CosineHemisphere(hitNormal, state);
+                float distance;
+                vec3 normal;
+                vec4 color;
+                uint flags;
+                uint slot;
+                ivec3 cell;
+                ivec3 extent;
+                if (TraceClosestWithin(hitPoint + hitNormal * 0.004, direction, distance, normal, color,
+                    flags, slot, cell, extent, true, 8.0, false))
+                {
+                    accumulated += SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0))) *
+                        max(dot(normal, -direction), 0.0) * (1.0 - distance / 8.0);
+                }
+                else accumulated += Sky(direction) * 0.35;
+            }
+            return accumulated / float(sampleCount) * values[119];
+        }
+
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
         // 环境补光、材质高光和自发光，不做随机反弹，也不依赖累积样本。
         vec3 RealtimeShade(vec3 hitPoint, vec3 hitNormal, vec3 rayDirection,
@@ -2409,6 +2435,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // AO 只衰减环境补光；太阳已经有可见度阴影，不能被重复压暗。
             float ao = AmbientOcclusion(hitPoint, hitNormal, state);
             vec3 diffuse = baseColor * ambientFill * mix(1.0, ao, 0.60);
+            diffuse += baseColor * RealtimeIndirectLight(hitPoint, hitNormal, state);
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
             // SunDirection 表示从表面指向太阳，正方向才是受光方向。
             vec3 lightDirection = sunDirection;

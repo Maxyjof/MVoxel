@@ -202,8 +202,10 @@ public sealed class ProjectSettingsDocument
     public RenderSettings SceneRenderSettings = new();
     public RenderSettings RenderSettings = new();
     public RenderSettings ExportRenderSettings = new();
+    /// <summary>新建相机和未覆盖相机使用的默认后处理栈</summary>
+    public CameraPostProcessStack DefaultCameraPostProcess = CameraPostProcessStack.Default;
 
-    /// <summary>渲染视图可选的画面比例预设；空 Id 表示自由比例（不限制）</summary>
+    /// <summary>
     public List<RenderFramePreset> RenderAspectPresets = CreateDefaultAspectPresets();
 
     /// <summary>渲染视图与导出可选的分辨率预设；空 Id 表示跟随视图尺寸</summary>
@@ -279,6 +281,8 @@ public sealed class ProjectSettingsDocument
         RenderSettings ??= new RenderSettings();
         SceneRenderSettings ??= new RenderSettings();
         ExportRenderSettings ??= new RenderSettings();
+        DefaultCameraPostProcess ??= CameraPostProcessStack.Default;
+        DefaultCameraPostProcess.Normalize();
         RenderAspectPresets ??= CreateDefaultAspectPresets();
         RenderResolutionPresets ??= CreateDefaultResolutionPresets();
         RenderAspectPresets.RemoveAll(preset => preset is null || preset.Width <= 0 || preset.Height <= 0);

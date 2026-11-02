@@ -2367,6 +2367,8 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
             SliderInt("AO 射线采样数", ref settings.AoSamples, 4, 64);
+            SliderFloat("体素间接光强度", ref settings.VoxelIndirectLightStrength, 0F, 4F, "%.2f");
+            SliderFloat("探针体积GI强度", ref settings.ProbeVolumeGiStrength, 0F, 4F, "%.2f");
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("每个可见表面像素发出的 AO 射线数；更多采样更平滑但更耗时。默认 16，优先保证性能。");
         }

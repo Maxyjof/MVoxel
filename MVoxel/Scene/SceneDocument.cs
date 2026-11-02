@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Numerics;
 using MVoxel.Core;
@@ -506,6 +506,8 @@ public static class SceneValidation
                 errors.Add($"对象“{sceneObject.Name}”包含重复的相机组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsLight) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的光照组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsProbeVolume) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的自动探针组件");
         }
 
         return errors;
