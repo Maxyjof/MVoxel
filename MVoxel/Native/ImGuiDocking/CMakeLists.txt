@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.15)
+project(MVoxelImGuiDocking LANGUAGES CXX)
+add_library(cimgui SHARED cimgui.cpp imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_widgets.cpp imgui/imgui_tables.cpp imgui/imgui_demo.cpp)
+target_compile_features(cimgui PRIVATE cxx_std_11)
+target_compile_definitions(cimgui PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS=1)
+target_link_libraries(cimgui PRIVATE imm32)

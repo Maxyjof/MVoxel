@@ -142,6 +142,11 @@ internal static class VoxDocumentReader
                 var id = new string(reader.ReadChars(4));
                 var contentSize = reader.ReadInt32();
                 var childrenSize = reader.ReadInt32();
+                // 部分 MagicaVoxel 文件（如 VOX 200）用 -1 表示 MAIN 子块延续到文件尾。
+                // 仅允许无内容的顶层 MAIN 使用该写法，内部块仍必须声明有效长度。
+                var mainToEnd = depth == 0 && cursor == 8 && id == "MAIN" &&
+                    contentSize == 0 && childrenSize == -1;
+                if (mainToEnd) childrenSize = checked((int)(end - cursor - 12L));
                 var contentEnd = cursor + 12L + contentSize;
                 var next = contentEnd + childrenSize;
                 // 少数VOX导出器会把MAIN的childrenSize按理论长度写入，实际文件却更短。
@@ -239,7 +244,7 @@ internal static class VoxDocumentReader
         foreach (var model in models) model.ApplyPalette(palette);
         var hasSceneGraph = transitions.Count > 0 || shapes.Count > 0;
         var instances = hasSceneGraph
-            ? BuildInstances(transitions, groups, shapes, layers, models.Count)
+            ? BuildInstances(transitions, groups, shapes, layers, models)
             : BuildLooseInstances(models);
         if (instances.Count == 0) throw new InvalidDataException("VOX 文件场景图没有引用任何模型。");
         return new VoxDocument(models, instances, [.. layers.Values.OrderBy(layer => layer.Id)],
@@ -265,7 +270,7 @@ internal static class VoxDocumentReader
     /// <summary>从场景图根节点递归展开实例，累积平移与旋转</summary>
     private static List<VoxInstance> BuildInstances(Dictionary<int, TransitionNode> transitions,
         Dictionary<int, GroupNode> groups, Dictionary<int, ShapeNode> shapes,
-        Dictionary<int, VoxLayer> layers, int modelCount)
+        Dictionary<int, VoxLayer> layers, IReadOnlyList<VoxModel> models)
     {
         var referenced = new HashSet<int>();
         foreach (var node in transitions.Values) referenced.Add(node.ChildId);
@@ -302,10 +307,16 @@ internal static class VoxDocumentReader
                     // 只取第 0 帧；全部导入会得到一叠互相重叠的模型。
                     if (shape.ModelIds.Count == 0) return;
                     var modelId = shape.ModelIds[0];
-                    if (modelId < 0 || modelId >= modelCount) return;
+                    if (modelId < 0 || modelId >= models.Count) return;
                     var name = branchName;
                     if (string.IsNullOrWhiteSpace(name)) name = $"模型 {modelId + 1}";
-                    instances.Add(new VoxInstance(modelId, name, layerId, hidden, offset, rotation));
+                    var model = models[modelId];
+                    var pivot = new VoxelCoord64(-(model.SizeX / 2), model.SizeZ / 2, model.SizeY / 2);
+                    // 实例以模型尺寸中心为枢轴；负轴旋转需从旋转后的格角回到格子的最小角。
+                    long CellShift(int row) => Math.Min(0, rotation[row, 0] + rotation[row, 1] + rotation[row, 2]);
+                    var cellShift = new VoxelCoord64(CellShift(0), CellShift(1), CellShift(2));
+                    instances.Add(new VoxInstance(modelId, name, layerId, hidden,
+                        offset - rotation.Apply(pivot) + cellShift, rotation));
                 }
             }
             finally
@@ -438,18 +449,29 @@ internal static class VoxDocumentReader
     /// <summary>_t 是三个 int32；坐标交换 Y/Z 以匹配 MVoxel 的 Y 轴向上</summary>
     private static VoxelCoord64 ReadTranslation(Dictionary<string, byte[]> attributes)
     {
-        if (!attributes.TryGetValue("_t", out var value) || value.Length != 12) return VoxelCoord64.Zero;
+        if (!attributes.TryGetValue("_t", out var value)) return VoxelCoord64.Zero;
+        var parts = Encoding.UTF8.GetString(value).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 3 && long.TryParse(parts[0], out var tx) &&
+            long.TryParse(parts[1], out var ty) && long.TryParse(parts[2], out var tz))
+            return new VoxelCoord64(-tx, tz, ty);
+        if (value.Length != 12) return VoxelCoord64.Zero;
         var x = BitConverter.ToInt32(value, 0);
         var y = BitConverter.ToInt32(value, 4);
         var z = BitConverter.ToInt32(value, 8);
-        return new VoxelCoord64(x, z, y);
+        return new VoxelCoord64(-(long)x, z, y);
     }
 
     /// <summary>_r 是一个字节编码的行主序置换矩阵，这里换算到交换 Y/Z 后的坐标系</summary>
     private static OrthogonalRotation ReadRotation(Dictionary<string, byte[]> attributes)
     {
-        if (!attributes.TryGetValue("_r", out var value) || value.Length != 1) return OrthogonalRotation.Identity;
-        var bits = value[0];
+        if (!attributes.TryGetValue("_r", out var value)) return OrthogonalRotation.Identity;
+        var text = Encoding.UTF8.GetString(value);
+        byte bits;
+        if (!byte.TryParse(text, out bits))
+        {
+            if (value.Length != 1) return OrthogonalRotation.Identity;
+            bits = value[0];
+        }
         var rows = new int[3];
         rows[0] = bits & 3;
         rows[1] = (bits >> 2) & 3;
@@ -463,7 +485,8 @@ internal static class VoxDocumentReader
         int[] swap = [0, 2, 1];
         for (var row = 0; row < 3; row++)
         for (var column = 0; column < 3; column++)
-            result[row, column] = matrix[swap[row], swap[column]];
+            result[row, column] = (sbyte)(matrix[swap[row], swap[column]] *
+                (row == 0 ? -1 : 1) * (column == 0 ? -1 : 1));
         for (var row = 0; row < 3; row++)
         for (var column = 0; column < 3; column++)
             if (result[row, column] != 0 && Math.Abs(result[row, column]) != 1) return OrthogonalRotation.Identity;

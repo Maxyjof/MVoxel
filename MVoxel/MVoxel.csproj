@@ -15,7 +15,8 @@
         <PackageReference Include="Silk.NET.Shaderc" />
         <PackageReference Include="MoonSharp" />
         <PackageReference Include="Jint" />
-        <Content Include="Editor\Guide\Docs\*.md" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Editor\Guide\Docs\**\*.md" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Editor\Guide\Images\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Brand\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Brand\*.ico" CopyToOutputDirectory="PreserveNewest" />
@@ -25,4 +26,16 @@
         <Content Include="Plugins\**\*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
+    <Target Name="BuildEditorDocking" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+        <Error Condition="'$(RuntimeIdentifier)' != '' and '$(RuntimeIdentifier)' != 'win-x64'" Text="定制停靠库目前仅支持 win-x64。" />
+        <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/Native/ImGuiDocking/build.ps1&quot; -Configuration $(Configuration)" />
+    </Target>
+    <Target Name="CopyEditorDocking" AfterTargets="Build">
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(TargetDir)cimgui.dll" />
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(TargetDir)runtimes/win-x64/native/cimgui.dll" />
+    </Target>
+    <Target Name="PublishEditorDocking" AfterTargets="Publish">
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(PublishDir)cimgui.dll" />
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(PublishDir)runtimes/win-x64/native/cimgui.dll" />
+    </Target>
 </Project>

@@ -242,8 +242,13 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="action">要执行的操作</param>
     /// <returns>操作返回值，没有返回值时返回 ok</returns>
+    private readonly int _automationUiThreadId = Environment.CurrentManagedThreadId;
+
     private object RunOnUi(Func<object?> action)
     {
+        // 控制服务器已在窗口线程 Pump；再次排队并阻塞会让窗口等待自己。
+        if (Environment.CurrentManagedThreadId == _automationUiThreadId)
+            return action() ?? new { ok = true };
         using var completed = new ManualResetEventSlim(false);
         object? result = null;
         Exception? failure = null;

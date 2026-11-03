@@ -158,19 +158,104 @@ internal sealed partial class ImGuiEditorWindow
             : new Vector3(0F, 0F, 1F);
     }
 
-    /// <summary>判断对象及其父级是否可见</summary>
+    /// <summary>
+    /// 判断对象及其父级是否可见
+    /// </summary>
+    /// <remarks>
+    /// 这个判断在每帧里会被调用成百上千次（逐个对象、逐条绘制分支）。
+    /// 之前每次调用都重建全场景字典和防环集合，对象越多分配越接近平方级，
+    /// 实测能顶到每秒近千兆字节的托管分配并触发频繁 GC。
+    /// 现在字典按场景结构指纹缓存，防环改用固定栈缓冲，单次调用不再分配
+    /// </remarks>
     private bool IsSceneObjectVisible(SceneObject sceneObject)
     {
         if (_sceneDocument is null) return sceneObject.Visible;
-        var byId = _sceneDocument.Objects.ToDictionary(item => item.Id);
-        var visited = new HashSet<StableId>();
+        var byId = VisibilityIndex();
+        if (byId is null) return sceneObject.Visible;
+        Span<StableId> visited = stackalloc StableId[MaxVisibilityChainDepth];
+        var depth = 0;
         for (var current = sceneObject; current is not null;)
         {
-            if (!current.Visible || !visited.Add(current.Id)) return false;
+            if (!current.Visible) return false;
+            // 父级链深度超过上限视为层级损坏，按不可见处理，避免无限循环
+            if (depth == visited.Length) return false;
+            for (var index = 0; index < depth; index++)
+            {
+                if (visited[index] == current.Id) return false;
+            }
+
+            visited[depth++] = current.Id;
             current = current.ParentId is { } parent && byId.TryGetValue(parent, out var found) ? found : null;
         }
 
         return true;
+    }
+
+    /// <summary>父级链允许的最大深度，超过即视为层级损坏</summary>
+    private const int MaxVisibilityChainDepth = 64;
+
+    private Dictionary<StableId, SceneObject>? _visibilityIndexCache;
+    private long _visibilityIndexSignature = long.MinValue;
+    private int _visibilityIndexFrame = -1;
+
+    /// <summary>
+    /// 取场景对象索引，按帧与结构指纹缓存，供可见性判断复用
+    /// </summary>
+    /// <returns>对象标识到对象的索引，没有场景时为 null</returns>
+    private Dictionary<StableId, SceneObject>? VisibilityIndex()
+    {
+        var objects = _sceneDocument?.Objects;
+        if (objects is null) return null;
+        var frame = ImGui.GetFrameCount();
+        if (_visibilityIndexCache is not null && _visibilityIndexFrame == frame)
+        {
+            return _visibilityIndexCache;
+        }
+
+        _visibilityIndexFrame = frame;
+        var signature = SceneStructureSignature(objects);
+        if (_visibilityIndexCache is not null && signature == _visibilityIndexSignature)
+        {
+            return _visibilityIndexCache;
+        }
+
+        _visibilityIndexSignature = signature;
+        var index = new Dictionary<StableId, SceneObject>(objects.Count);
+        foreach (var item in objects)
+        {
+            index[item.Id] = item;
+        }
+
+        _visibilityIndexCache = index;
+        return index;
+    }
+
+    /// <summary>
+    /// 计算场景结构指纹：标识、父级、可见性与相机启用状态，零分配
+    /// </summary>
+    /// <param name="objects">场景对象集合</param>
+    /// <returns>结构指纹</returns>
+    private static long SceneStructureSignature(List<SceneObject> objects)
+    {
+        unchecked
+        {
+            var hash = (long)objects.Count * 397;
+            foreach (var item in objects)
+            {
+                hash = hash * 31 + item.Id.GetHashCode();
+                hash = hash * 31 + (item.ParentId?.GetHashCode() ?? 0);
+                hash = hash * 31 + (item.Visible ? 7 : 3);
+                var components = item.Components;
+                for (var index = 0; index < components.Count; index++)
+                {
+                    var component = components[index];
+                    if (!SceneComponentTypes.IsCamera(component)) continue;
+                    hash = hash * 31 + (component.Enabled ? 11 : 5);
+                }
+            }
+
+            return hash;
+        }
     }
 
     /// <summary>

@@ -227,7 +227,6 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        FloatingWindowShadow.Draw();
         DrawGeneratorToolbar();
         ImGui.Separator();
         DrawGeneratorEditor();

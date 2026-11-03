@@ -50,7 +50,7 @@ internal sealed partial class ImGuiEditorWindow
     private readonly float[] _analysisStatBuffer = new float[AnalysisFrameCapacity];
     private AnalysisFrameSample _analysisLive;
     private long _analysisSerial;
-    private bool _analysisRecording, _analysisFrozen, _analysisStopWhenFull, _analysisFollowLatest = true;
+    private bool _analysisPaused, _analysisFollowLatest = true;
     private long _analysisSelectedSerial;
     private int _analysisFrameIndex;
     private int _analysisFrameCount;
@@ -87,9 +87,9 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 是否正在采样：窗口可见且未冻结，关闭窗口后不再产生新样本
+    /// 是否正在采样：窗口可见且未暂停，关闭窗口后不再产生新样本
     /// </summary>
-    private bool PerformanceProbeActive => IsPerformanceAnalyzerVisible && !_analysisFrozen;
+    private bool PerformanceProbeActive => IsPerformanceAnalyzerVisible && !_analysisPaused;
 
     /// <summary>
     /// 开始一帧采样，样本序号用于把异步回读的 GPU 结果写回对应帧
@@ -110,7 +110,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 记录一帧完整样本，冻结或窗口关闭时不再写入
+    /// 记录一帧完整样本，暂停或窗口关闭时不再写入
     /// </summary>
     private void RecordPerformanceFrame(double intervalSeconds, long start)
     {
@@ -130,11 +130,6 @@ internal sealed partial class ImGuiEditorWindow
         _analysisFrames[_analysisFrameIndex] = sample;
         _analysisFrameIndex = (_analysisFrameIndex + 1) % AnalysisFrameCapacity;
         _analysisFrameCount = Math.Min(_analysisFrameCount + 1, AnalysisFrameCapacity);
-        if (_analysisRecording && _analysisStopWhenFull && _analysisFrameCount == AnalysisFrameCapacity)
-        {
-            _analysisRecording = false;
-            _analysisFrozen = true;
-        }
     }
 
     /// <summary>
@@ -174,7 +169,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 每秒刷新一次进程内存与 GC 计数，冻结帧历史时也保持实时
+    /// 每秒刷新一次进程内存与 GC 计数，暂停帧历史时也保持实时
     /// </summary>
     private void UpdatePerformanceMemory(double deltaSeconds)
     {
@@ -213,26 +208,36 @@ internal sealed partial class ImGuiEditorWindow
         Array.Clear(_analysisFrames);
     }
 
-    private void StartAnalysisRecording()
+    /// <summary>
+    /// 暂停或继续录制，暂停时保留当前帧和已有历史，不清空
+    /// </summary>
+    private void SetAnalysisPaused(bool paused)
     {
-        ResetAnalysisFrames();
-        _analysisRecording = true;
-        _analysisFrozen = false;
-        _analysisFollowLatest = true;
+        _analysisPaused = paused;
+        if (paused)
+        {
+            _analysisFollowLatest = false;
+            if (_analysisFrameCount > 0) _analysisSelectedSerial = LatestAnalysisFrame.Serial;
+        }
+        else
+        {
+            _analysisFollowLatest = true;
+            _analysisSelectedSerial = 0;
+        }
     }
 
-    private void StopAnalysisRecording()
+    /// <summary>
+    /// 选中并保留某一帧，与 Unity 点击时间轴后停在所选帧的行为一致
+    /// </summary>
+    private void SelectAnalysisFrame(long serial)
     {
-        _analysisRecording = false;
-        _analysisFrozen = true;
+        _analysisSelectedSerial = serial;
         _analysisFollowLatest = false;
-        if (_analysisFrameCount > 0) _analysisSelectedSerial = LatestAnalysisFrame.Serial;
+        _analysisPaused = true;
     }
 
-    private void ResumeAnalysisLive()
+    private void SelectLatestAnalysisFrame()
     {
-        _analysisRecording = false;
-        _analysisFrozen = false;
         _analysisFollowLatest = true;
         _analysisSelectedSerial = 0;
     }
@@ -320,39 +325,31 @@ internal sealed partial class ImGuiEditorWindow
     {
         var unit = ImGui.GetFontSize();
 
-        if (ImGui.Button(_analysisRecording ? "结束录制" : "开始录制"))
-        {
-            if (_analysisRecording) StopAnalysisRecording();
-            else StartAnalysisRecording();
-        }
+        var recording = !_analysisPaused;
+        if (recording) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.72F, 0.18F, 0.18F, 1F));
+        if (ImGui.Button(recording ? "● 录制中" : "○ 已暂停")) SetAnalysisPaused(recording);
+        if (recording) ImGui.PopStyleColor();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("清空历史并开始记录，再次点击冻结当前记录。只在分析器打开时采样。" + Environment.NewLine +
-                "冻结后仍可点击柱状图逐帧查看，恢复实时不会清空历史。");
-
-        ImGui.SameLine();
-        if (ImGui.Button("恢复实时")) ResumeAnalysisLive();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("解除冻结并继续滚动采样；未开始录制时保留最近 240 帧");
+            ImGui.SetTooltip("打开分析器即开始记录；点击暂停会保留已有帧和当前所选帧，再次点击继续记录，不会清空历史。" + Environment.NewLine +
+                "关闭分析器窗口也会停止采样。");
 
         ImGui.SameLine();
         if (ImGui.Button("清空")) ResetAnalysisFrames();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只清除分析器的帧历史，不改变项目、渲染设置或系统计数");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("清空所有已记录帧，不改变当前的录制或暂停状态");
 
         ImGui.SameLine();
-        ImGui.Checkbox("录满自动停止", ref _analysisStopWhenFull);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("勾选后录满 240 帧自动冻结，便于得到一段完整记录；不勾选则持续滚动覆盖最旧帧");
+        if (ImGui.Button("最新帧")) SelectLatestAnalysisFrame();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("选中最新一帧并恢复跟随；对应 Unity 性能分析器的 Current 按钮");
 
         ImGui.SameLine();
-        if (!_analysisFollowLatest && ImGui.Button("跟随最新")) _analysisFollowLatest = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("重新显示最新帧，取消当前选中的历史帧");
-
-        ImGui.SameLine();
-        ImGui.TextDisabled(_analysisFrozen
-            ? $"已冻结 {_analysisFrameCount} 帧"
-            : _analysisRecording
-                ? $"录制中 {_analysisFrameCount}/{AnalysisFrameCapacity}"
-                : _analysisFrameCount > 0
-                    ? $"实时滚动 {_analysisFrameCount}/{AnalysisFrameCapacity}"
-                    : "等待采样");
+        ImGui.TextDisabled(recording
+            ? $"录制中 {_analysisFrameCount}/{AnalysisFrameCapacity}"
+            : $"已暂停 {_analysisFrameCount}/{AnalysisFrameCapacity}");
+        if (!_analysisFollowLatest && _analysisFrameCount > 0)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled($"· 已选第 {_analysisSelectedSerial} 帧");
+        }
 
         if (_analysisFrameCount > 0)
         {
@@ -363,7 +360,7 @@ internal sealed partial class ImGuiEditorWindow
         else
         {
             ImGui.SeparatorText("帧记录");
-            ImGui.TextDisabled("打开项目并保持本窗口可见后开始采样；开始录制会清空并重新记录。");
+            ImGui.TextDisabled("打开项目并保持本窗口可见即开始采样；暂停只停止记录，不会清空已有帧。");
         }
 
         ImGui.SeparatorText("进程内存与垃圾回收");
@@ -449,7 +446,7 @@ internal sealed partial class ImGuiEditorWindow
                 $"界面回调 {sample.CallbackMs:0.00} ms" + Environment.NewLine +
                 (sample.GpuValid ? $"GPU 计算 {sample.GpuMs:0.00} ms（异步回读）" : "GPU 计算 等待回读或不可用") + Environment.NewLine +
                 $"中央视口 {sample.ViewportCpuMs:0.00} ms · 提交 {sample.ViewportSubmits} 次" + Environment.NewLine +
-                "点击查看该帧的逐层耗时" + Environment.NewLine + Environment.NewLine +
+                "点击会暂停录制并查看该帧的逐层耗时" + Environment.NewLine + Environment.NewLine +
                 "颜色依次为更新、其他界面、中央视口其余部分、视口 GPU 提交、ImGui 合成、Vulkan 呈现、未归类。" + Environment.NewLine +
                 "黄色细线是 GPU Compute 耗时，不参与堆叠；帧间隔包含垂直同步等待。");
         }
@@ -457,8 +454,7 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.IsItemClicked())
         {
             var index = Math.Clamp((int)((ImGui.GetIO().MousePos.X - origin.X) / barWidth), 0, _analysisFrameCount - 1);
-            _analysisSelectedSerial = _analysisFrames[(offset + index) % AnalysisFrameCapacity].Serial;
-            _analysisFollowLatest = false;
+            SelectAnalysisFrame(_analysisFrames[(offset + index) % AnalysisFrameCapacity].Serial);
         }
     }
 

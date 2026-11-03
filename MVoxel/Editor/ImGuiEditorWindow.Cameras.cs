@@ -18,14 +18,48 @@ internal sealed partial class ImGuiEditorWindow
     /// 返回当前场景中挂载相机组件的对象
     /// </summary>
     /// <returns>按层级文档顺序排列的相机对象</returns>
+    /// <remarks>
+    /// 渲染窗口每帧会多次询问当前相机，每次全量扫描并分配数组属于重复劳动。
+    /// 这里按帧与结构指纹缓存结果，命中时直接复用同一个数组
+    /// </remarks>
     private IReadOnlyList<SceneObject> GetRenderCameraObjects()
     {
-        return _sceneDocument?.Objects
-                   .Where(item => IsSceneObjectVisible(item) && item.Components.Any(component =>
-                       SceneComponentTypes.IsCamera(component) && component.Enabled))
-                   .ToArray()
-               ?? Array.Empty<SceneObject>();
+        if (_sceneDocument is null) return Array.Empty<SceneObject>();
+        var frame = ImGui.GetFrameCount();
+        if (_renderCameraCache is not null && _renderCameraCacheFrame == frame)
+        {
+            return _renderCameraCache;
+        }
+
+        _renderCameraCacheFrame = frame;
+        var objects = _sceneDocument.Objects;
+        var signature = SceneStructureSignature(objects);
+        if (_renderCameraCache is null || signature != _renderCameraCacheSignature)
+        {
+            var cameras = new List<SceneObject>();
+            foreach (var item in objects)
+            {
+                if (!IsSceneObjectVisible(item)) continue;
+                var components = item.Components;
+                for (var index = 0; index < components.Count; index++)
+                {
+                    var component = components[index];
+                    if (!SceneComponentTypes.IsCamera(component) || !component.Enabled) continue;
+                    cameras.Add(item);
+                    break;
+                }
+            }
+
+            _renderCameraCacheSignature = signature;
+            _renderCameraCache = cameras.Count == 0 ? Array.Empty<SceneObject>() : cameras.ToArray();
+        }
+
+        return _renderCameraCache;
     }
+
+    private IReadOnlyList<SceneObject>? _renderCameraCache;
+    private long _renderCameraCacheSignature = long.MinValue;
+    private int _renderCameraCacheFrame = -1;
 
     /// <summary>
     /// 返回渲染窗口当前使用的相机对象，没有相机对象时返回空值

@@ -327,7 +327,7 @@ public static class ProjectTemplateCatalog
         {
             var name = document.Instances.Count == 1 ? modelName : instance.Name;
             parts.Add(new SceneModelPart(name, "MagicaVoxel 导入", assets[instance.ModelIndex],
-                voxelCounts[instance.ModelIndex], instance.Offset + worldOrigins[instance.ModelIndex],
+                voxelCounts[instance.ModelIndex], instance.Offset + instance.Rotation.Apply(worldOrigins[instance.ModelIndex]),
                 layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, instance.Rotation,
                 document.Models[instance.ModelIndex].Voxels.Select(voxel => (int)voxel.PaletteIndex)
                     .Distinct().Where(materialSlots.ContainsKey).Order()
@@ -414,7 +414,7 @@ public static class ProjectTemplateCatalog
     {
         var world = new VoxelWorld();
         foreach (var voxel in model.Voxels)
-            world.Set(new VoxelCoord64(voxel.X, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
+            world.Set(new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
                 materialSlots.ContainsKey(voxel.PaletteIndex) ? checked((ushort)voxel.PaletteIndex) : (ushort)0,
                 voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
         return world;

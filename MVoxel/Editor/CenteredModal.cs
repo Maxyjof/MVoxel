@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using ImGuiNET;
 
 namespace MVoxel.Editor;
@@ -16,7 +16,6 @@ internal static class CenteredModal
     {
         Center();
         var visible = ImGui.BeginPopupModal(name, flags | ImGuiWindowFlags.NoMove);
-        if (visible) FloatingWindowShadow.Draw();
         return visible;
     }
 
@@ -24,7 +23,6 @@ internal static class CenteredModal
     {
         Center();
         var visible = ImGui.BeginPopupModal(name, ref open, flags | ImGuiWindowFlags.NoMove);
-        if (visible) FloatingWindowShadow.Draw();
         return visible;
     }
 }

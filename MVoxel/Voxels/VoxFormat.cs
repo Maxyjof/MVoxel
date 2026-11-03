@@ -169,7 +169,7 @@ public static class VoxFormat
             foreach (var voxel in model.Voxels)
             {
                 // MagicaVoxel 的 Z 是重力方向，映射到 MVoxel 的 Y 轴向上
-                var local = new VoxelCoord64(voxel.X, voxel.Z, voxel.Y);
+                var local = new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y);
                 var coordinate = origin + instance.Offset + instance.Rotation.Apply(local);
                 // 调色板索引同时是材质槽：导入后材质面板与着色器都按它取参数
                 world.Set(coordinate, new VoxelValue(voxel.Color,
@@ -213,7 +213,8 @@ public static class VoxFormat
             var sizeX = (int)Math.Min(MaximumAxisExtent, maximum.X - chunkMinimum.X + 1);
             var sizeY = (int)Math.Min(MaximumAxisExtent, maximum.Z - chunkMinimum.Z + 1);
             var sizeZ = (int)Math.Min(MaximumAxisExtent, maximum.Y - chunkMinimum.Y + 1);
-            chunks.Add(new Chunk(sizeX, sizeY, sizeZ, voxels, chunkMinimum - minimum + origin));
+            var orientedVoxels = voxels.Select(voxel => voxel with { X = (byte)(sizeX - 1 - voxel.X) }).ToList();
+            chunks.Add(new Chunk(sizeX, sizeY, sizeZ, orientedVoxels, chunkMinimum - minimum + origin));
         }
     }
 
@@ -353,7 +354,8 @@ public static class VoxFormat
                 node.Write(0);
                 node.Write(1);
                 // MagicaVoxel 的平移是 Z 轴向上：MVoxel 的 Y 换到 vox 的 Z
-                WriteTransformFrame(node, ToInt32(chunk.Origin.X), ToInt32(chunk.Origin.Z), ToInt32(chunk.Origin.Y));
+                WriteTransformFrame(node, ToInt32(-chunk.Origin.X - chunk.SizeX + chunk.SizeX / 2),
+                    ToInt32(chunk.Origin.Z + chunk.SizeY / 2), ToInt32(chunk.Origin.Y + chunk.SizeZ / 2));
             }
 
             WriteChunk(writer, "nTRN", nodePayload.ToArray());
@@ -375,11 +377,8 @@ public static class VoxFormat
     /// <summary>写出一帧变换：恒等旋转加平移。_r 的 4 对应单位矩阵（各行非零列依次为 0、1、2，全为正）</summary>
     private static void WriteTransformFrame(BinaryWriter node, int x, int y, int z)
     {
-        node.Write(3);
-        node.Write(2); node.Write("_r"u8.ToArray()); node.Write(1); node.Write(PackIdentityRotation());
-        node.Write(2); node.Write("_t"u8.ToArray()); node.Write(12);
-        node.Write(x); node.Write(y); node.Write(z);
-        node.Write(2); node.Write("_f"u8.ToArray()); node.Write(4); node.Write(0);
+        WriteDictionary(node, ("_r", "4"),
+            ("_t", FormattableString.Invariant($"{x} {y} {z}")), ("_f", "0"));
     }
 
     /// <summary>场景图平移是 int32，超出范围直接报错，不做静默截断</summary>

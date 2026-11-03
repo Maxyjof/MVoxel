@@ -27,8 +27,27 @@ internal sealed partial class ImGuiEditorWindow
         Opacity = 1F,
     };
 
+    /// <summary>
+    /// 运行时材质表刷新的最小间隔
+    /// </summary>
+    /// <remarks>
+    /// 刷新材料表需要重建字典、反序列化每个对象的模型组件并查询材质文件时间，
+    /// 视口每帧都做一遍属于纯浪费。按固定间隔节流后，材质修改最多延迟一个间隔生效，
+    /// 相机导航期间不再把这份开销压进每一帧
+    /// </remarks>
+    private const long MaterialTableRefreshIntervalMs = 200;
+
+    private long _runtimeMaterialRefreshAt;
+
     private void RefreshRuntimeMaterialTable()
     {
+        var now = Environment.TickCount64;
+        if (now - _runtimeMaterialRefreshAt < MaterialTableRefreshIntervalMs)
+        {
+            return;
+        }
+
+        _runtimeMaterialRefreshAt = now;
         var byPath = _brushMaterials.ToDictionary(item => Path.GetFullPath(item.SourcePath), StringComparer.OrdinalIgnoreCase);
         var runtimeByPath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var objectSlots = new Dictionary<StableId, Dictionary<int, int>>();
