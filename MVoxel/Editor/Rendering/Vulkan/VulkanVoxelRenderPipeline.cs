@@ -1321,7 +1321,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         else
         {
-            DispatchPathFrame(api, parameters, bloomActive, selectionActive,
+            DispatchPathFrame(api, parameters,
                 widthPixels, heightPixels, Math.Max(1, settings.PathSamplesPerFrame));
         }
 
@@ -1432,13 +1432,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     /// <param name="api">Vulkan API</param>
     /// <param name="parameters">渲染参数块</param>
-    /// <param name="bloomActive">是否启用 Bloom 收尾通道</param>
-    /// <param name="selectionActive">是否启用场景选中描边通道</param>
     /// <param name="widthPixels">输出宽度</param>
     /// <param name="heightPixels">输出高度</param>
     /// <param name="samplesPerPixel">每个像素每帧写入的路径样本数</param>
     /// <returns>是否已经写入开始时间戳</returns>
-    private bool DispatchPathFrame(Vk api, float[] parameters, bool bloomActive, bool selectionActive,
+    private bool DispatchPathFrame(Vk api, float[] parameters,
         int widthPixels, int heightPixels, int samplesPerPixel)
     {
         // 每次 dispatch 控制在一百万像素样本左右：742x526 单样本时整帧一次 dispatch，
@@ -1461,11 +1459,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             TransitionOutputToGeneral(commandBuffer);
-            if (bloomActive || selectionActive)
-            {
-                TransitionAccumulationToGeneral(commandBuffer);
-                if (selectionActive) TransitionGuideToGeneral(commandBuffer);
-            }
+            // 采样阶段就要读写 HDR 累积与导引图，布局切换和上一轮的写后读依赖必须在采样前建立，
+            // 不能指望收尾通道补：只有降噪、没有 Bloom 时收尾通道仍是另一条命令缓冲
+            TransitionAccumulationToGeneral(commandBuffer);
+            TransitionGuideToGeneral(commandBuffer);
 
             for (var batch = 0; batch < stripsPerSubmit && stripIndex < totalStrips; batch++, stripIndex++)
             {
@@ -4035,6 +4032,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     ? (previous.rgb * float(accumulatedSamples) + sampleColor * float(samples)) / totalSamples
                     : sampleColor;
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
+                // 收尾通道会整张覆盖输出图像，采样阶段不用再算一遍色调映射与天气叠加；
+                // 两个收尾通道都关闭时输出图只能由这里写
+                bool denoiseAfter = values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0;
+                bool bloomAfter = values[P_BLOOM_ENABLED] > 0.5 && values[P_BLOOM_INTENSITY] > 0.0;
+                if (denoiseAfter || bloomAfter) return;
             }
             else if (bloomRequested)
             {
