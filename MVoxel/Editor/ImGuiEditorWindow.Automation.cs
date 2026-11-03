@@ -150,6 +150,9 @@ internal sealed partial class ImGuiEditorWindow
 
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
+        new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
+            [Param("enabled", "boolean", true, "是否开启")]),
+        new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
         new("ui.setCenterTab", "界面", "切换中央页面", "把中央区域切到场景或渲染页面，等同点击页签",
             [Param("tab", "string", true, "scene 或 render")]),
         new("ui.status", "界面", "读取状态栏", "读取编辑器状态栏文本", []),
@@ -240,8 +243,9 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.get" => GetTimelineAsset(payload),
             "timeline.create" => CreateTimelineAsset(payload),
 
-            "ui.setPanel" => SetPanel(payload),
-            "ui.setCenterTab" => SetCenterTab(payload),
+            "perf.profile" => SetForcedProfiling(payload),
+            "perf.stats" => DescribePerformanceStats(),
+            "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
             "ui.status" => new { status = _statusText },
             "project.info" => DescribeProject(),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{commandId}"),
@@ -1140,8 +1144,19 @@ internal sealed partial class ImGuiEditorWindow
         return new { centerTab = target };
     });
 
-    private object SetPanel(JsonElement arguments) => RunOnUi(() =>
+    /// <summary>
+    /// 开关强制性能采样：不打开分析器窗口也能取 GPU 时间戳
+    /// </summary>
+    /// <param name="arguments">参数，enabled</param>
+    /// <returns>当前强制采样状态</returns>
+    private object SetForcedProfiling(JsonElement arguments) => RunOnUi(() =>
     {
+        _forcedProfiling = ReadBoolean(arguments, "enabled") ?? throw new ArgumentException("缺少 enabled");
+        _analysisPaused = false;
+        return new { forcedProfiling = _forcedProfiling, active = PerformanceProbeActive };
+    });
+
+    private object SetPanel(JsonElement arguments) => RunOnUi(() =>    {
         var id = ReadString(arguments, "panel") ?? throw new ArgumentException("缺少 panel");
         var visible = ReadBoolean(arguments, "visible") ?? throw new ArgumentException("缺少 visible");
         SetPanelVisible(id, visible);

@@ -98,7 +98,15 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 是否正在采样：窗口可见且未暂停，关闭窗口后不再产生新样本
     /// </summary>
-    private bool PerformanceProbeActive => IsPerformanceAnalyzerVisible && !_analysisPaused;
+    /// <remarks>
+    /// 自动化可以用不受窗口可见性影响的强制采样开关，避免为了取 GPU 时间必须打开界面
+    /// </remarks>
+    private bool PerformanceProbeActive => (IsPerformanceAnalyzerVisible || _forcedProfiling) && !_analysisPaused;
+
+    /// <summary>
+    /// 强制开启性能采样，供命令行与自动化在不打开分析器窗口时取证
+    /// </summary>
+    private bool _forcedProfiling;
 
     /// <summary>
     /// 开始一帧采样，样本序号用于把异步回读的 GPU 结果写回对应帧
@@ -143,6 +151,61 @@ internal sealed partial class ImGuiEditorWindow
         _analysisFrames[_analysisFrameIndex] = sample;
         _analysisFrameIndex = (_analysisFrameIndex + 1) % AnalysisFrameCapacity;
         _analysisFrameCount = Math.Min(_analysisFrameCount + 1, AnalysisFrameCapacity);
+    }
+
+    /// <summary>
+    /// 汇总最近若干帧的 GPU 与视口耗时，供命令行一次读完，不必反复轮询状态
+    /// </summary>
+    /// <returns>均值、P95 与峰值</returns>
+    private object DescribePerformanceStats()
+    {
+        var sampling = new List<float>();
+        var finish = new List<float>();
+        var viewport = new List<float>();
+        var count = Math.Min(_analysisFrameCount, AnalysisFrameCapacity);
+        for (var index = 0; index < count; index++)
+        {
+            var frame = _analysisFrames[index];
+            if (frame.GpuValid)
+            {
+                sampling.Add(frame.GpuSamplingMs);
+                finish.Add(frame.GpuFinishMs);
+            }
+
+            if (frame.ViewportCpuMs > 0F) viewport.Add(frame.ViewportCpuMs);
+        }
+
+        static (float Mean, float P95, float Max) Summarize(List<float> values)
+        {
+            if (values.Count == 0) return (0F, 0F, 0F);
+            values.Sort();
+            var mean = 0F;
+            foreach (var value in values) mean += value;
+            mean /= values.Count;
+            var p95 = values[Math.Clamp((int)(values.Count * .95F), 0, values.Count - 1)];
+            return (mean, p95, values[^1]);
+        }
+
+        var samplingStats = Summarize(sampling);
+        var finishStats = Summarize(finish);
+        var viewportStats = Summarize(viewport);
+        return new
+        {
+            frames = count,
+            gpuSamples = sampling.Count,
+            gpuSamplingMeanMs = Math.Round(samplingStats.Mean, 2),
+            gpuSamplingP95Ms = Math.Round(samplingStats.P95, 2),
+            gpuSamplingMaxMs = Math.Round(samplingStats.Max, 2),
+            gpuFinishMeanMs = Math.Round(finishStats.Mean, 2),
+            gpuFinishP95Ms = Math.Round(finishStats.P95, 2),
+            viewportCpuMeanMs = Math.Round(viewportStats.Mean, 2),
+            viewportCpuP95Ms = Math.Round(viewportStats.P95, 2),
+            lastResolvedGpuSamplingMs = Math.Round(_lastResolvedGpuSamplingMs, 2),
+            lastResolvedGpuFinishMs = Math.Round(_lastResolvedGpuFinishMs, 2),
+            forcedProfiling = _forcedProfiling,
+            analyzerVisible = IsPerformanceAnalyzerVisible,
+            paused = _analysisPaused,
+        };
     }
 
     /// <summary>
