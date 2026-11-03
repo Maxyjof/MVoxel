@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using MVoxel.Core;
 using MVoxel.Project;
@@ -57,7 +58,9 @@ internal sealed partial class ImGuiEditorWindow
              Param("rotation", "number[3]", false, "欧拉角 x/y/z，单位为度")]),
         new("scene.select", "场景", "选中对象", "选中对象并打开检查器，等同在层级里点选",
             TargetIdOrName),
-        new("scene.selection", "场景", "读取选中", "读取当前选中对象的摘要", []),
+        new("scene.components.get", "环境交互", "读取环境交互组件", "读取对象上的局部后处理覆盖、局部风场和风力接收器参数", [.. TargetIdOrName]),
+        new("scene.components.set", "环境交互", "写入环境交互组件", "创建或更新对象上的局部后处理覆盖、局部风场和风力接收器参数", [.. TargetIdOrName,
+             Param("postProcessOverride", "object", false, "局部后处理覆盖字段"), Param("windField", "object", false, "局部风场字段"), Param("windReceiver", "object", false, "风力接收器字段")]),
         new("layer.list", "图层", "列出图层", "列出全部图层名称与显隐状态", []),
         new("layer.create", "图层", "新建图层", "追加一个新图层并返回索引",
             [Param("name", "string", true, "图层名称")]),
@@ -196,6 +199,8 @@ internal sealed partial class ImGuiEditorWindow
             "scene.setTransform" => SetSceneObjectTransform(payload),
             "scene.select" => QueueSelectObject(WrapArguments(payload)),
             "scene.selection" => DescribeSelection(),
+            "scene.components.get" => GetEnvironmentComponents(payload),
+            "scene.components.set" => SetEnvironmentComponents(payload),
             "layer.list" => ListLayers(),
             "layer.create" => CreateLayer(payload),
             "layer.setVisible" => SetLayerVisible(payload),
@@ -294,7 +299,72 @@ internal sealed partial class ImGuiEditorWindow
             $"找不到对象：{ReadString(arguments, "name") ?? ReadString(arguments, "id")}");
     }
 
-    /// <summary>对象的统一摘要，读写命令共用</summary>
+    private static readonly JsonSerializerOptions ComponentFieldJsonOptions = new(JsonSerializerDefaults.Web) { IncludeFields = true };
+
+    private object GetEnvironmentComponents(JsonElement arguments) => RunOnUi(() => DescribeEnvironmentComponents(RequireObject(arguments)));
+
+    private object DescribeEnvironmentComponents(SceneObject target) => new
+    {
+        objectId = target.Id.ToString(),
+        name = target.Name,
+        postProcessOverride = target.Components.FirstOrDefault(SceneComponentTypes.IsPostProcessOverride) is { } postProcess
+            ? SceneComponentTypes.ReadPostProcessOverride(postProcess) : null,
+        windField = target.Components.FirstOrDefault(SceneComponentTypes.IsWindField) is { } windField
+            ? SceneComponentTypes.ReadWindField(windField) : null,
+        windReceiver = target.Components.FirstOrDefault(SceneComponentTypes.IsWindReceiver) is { } windReceiver
+            ? SceneComponentTypes.ReadWindReceiver(windReceiver) : null,
+    };
+
+
+    private object SetEnvironmentComponents(JsonElement arguments) => RunOnUi(() =>
+    {
+        var target = RequireObject(arguments);
+        var changed = false;
+        if (arguments.TryGetProperty("postProcessOverride", out var postProcess) && postProcess.ValueKind == JsonValueKind.Object)
+        {
+            var component = target.Components.FirstOrDefault(SceneComponentTypes.IsPostProcessOverride);
+            if (component is null)
+            {
+                component = SceneComponentTypes.CreatePostProcessOverride(new PostProcessOverrideComponentData());
+                target.Components.Add(component);
+            }
+            SceneComponentTypes.WritePostProcessOverride(component, JsonSerializer.Deserialize<PostProcessOverrideComponentData>(MergeComponentFields(component.Data, postProcess).GetRawText(), ComponentFieldJsonOptions) ?? new PostProcessOverrideComponentData());
+            changed = true;
+        }
+        if (arguments.TryGetProperty("windField", out var windField) && windField.ValueKind == JsonValueKind.Object)
+        {
+            var component = target.Components.FirstOrDefault(SceneComponentTypes.IsWindField);
+            if (component is null)
+            {
+                component = SceneComponentTypes.CreateWindField(new WindFieldComponentData());
+                target.Components.Add(component);
+            }
+            SceneComponentTypes.WriteWindField(component, JsonSerializer.Deserialize<WindFieldComponentData>(MergeComponentFields(component.Data, windField).GetRawText(), ComponentFieldJsonOptions) ?? new WindFieldComponentData());
+            changed = true;
+        }
+        if (arguments.TryGetProperty("windReceiver", out var windReceiver) && windReceiver.ValueKind == JsonValueKind.Object)
+        {
+            var component = target.Components.FirstOrDefault(SceneComponentTypes.IsWindReceiver);
+            if (component is null)
+            {
+                component = SceneComponentTypes.CreateWindReceiver(new WindReceiverComponentData());
+                target.Components.Add(component);
+            }
+            SceneComponentTypes.WriteWindReceiver(component, JsonSerializer.Deserialize<WindReceiverComponentData>(MergeComponentFields(component.Data, windReceiver).GetRawText(), ComponentFieldJsonOptions) ?? new WindReceiverComponentData());
+            changed = true;
+        }
+        if (!changed) throw new ArgumentException("至少提供postProcessOverride、windField或windReceiver中的一个对象字段");
+        MarkSceneDocumentDirty();
+        return DescribeEnvironmentComponents(target);
+    });
+
+    private static JsonElement MergeComponentFields(JsonElement current, JsonElement patch)
+    {
+        var currentNode = current.ValueKind == JsonValueKind.Object ? JsonNode.Parse(current.GetRawText())!.AsObject() : new JsonObject();
+        foreach (var property in patch.EnumerateObject()) currentNode[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+        return JsonSerializer.SerializeToElement(currentNode, ComponentFieldJsonOptions);
+    }
+
     private object DescribeSceneObject(SceneObject item)
     {
         var model = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
