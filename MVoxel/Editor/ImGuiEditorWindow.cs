@@ -261,6 +261,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnLoad()
     {
         base.OnLoad();
+        using var startupPhase = StartupTimeline.Begin("编辑器启动");
         CenterOnCurrentMonitor();
         _vulkan = new VulkanWindowContext(this);
         _controller = new VulkanImGuiController(this);
@@ -290,6 +291,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             RequestWelcomeWindow();
             EnsureWelcomeWindow();
         }
+
+        StartupTimeline.Mark(StartupTimeline.MilestoneWindowReady);
     }
 
     protected override void OnResize(ResizeEventArgs args)
@@ -538,6 +541,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 panels = _pluginRuntime?.Panels ?? [],
                 pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
                 pluginActivationStatus = _pluginRuntime?.ActivationStatus,
+                startup = StartupTimeline.Snapshot(),
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
             "editor.saveProject" => QueueSaveProject(),
@@ -5006,16 +5010,30 @@ DockId=0x6A3C3007,0
                     "正在检查项目位置…",
                     (cancellation, report) =>
                     {
+                        using var createPhase = StartupTimeline.Begin("新建·后台准备");
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在建立标准资产目录…", .34F, CanCancel: true));
                         cancellation.ThrowIfCancellationRequested();
                         // 从这里开始由 ProjectLayout 使用原子文件写入
                         // 完成小规模提交比留下半成品项目更安全
                         report(new BlockingOperationProgress("正在写入项目文件…", .68F, CanCancel: false));
-                        var project = ProjectLayout.Create(absolutePath, name);
-                        ProjectTemplateCatalog.Populate(project, templateId,
-                            (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
-                        ApplyNewProjectEditorSettings(project, templateId == ProjectTemplateId.Empty);
+                        ProjectHandle project;
+                        using (StartupTimeline.Begin("新建·写入项目骨架"))
+                        {
+                            project = ProjectLayout.Create(absolutePath, name);
+                        }
+
+                        using (StartupTimeline.Begin("新建·生成模板内容"))
+                        {
+                            ProjectTemplateCatalog.Populate(project, templateId,
+                                (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                        }
+
+                        using (StartupTimeline.Begin("新建·写入编辑器设置"))
+                        {
+                            ApplyNewProjectEditorSettings(project, templateId == ProjectTemplateId.Empty);
+                        }
+
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return project;
                     },
@@ -5104,16 +5122,29 @@ DockId=0x6A3C3007,0
                     "正在检查 MagicaVoxel 文件…",
                     (cancellation, report) =>
                     {
+                        using var createPhase = StartupTimeline.Begin("新建·后台准备");
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在建立标准资产目录…", .34F, CanCancel: true));
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在写入项目文件…", .62F, CanCancel: false));
-                        var project = ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name);
+                        ProjectHandle project;
+                        using (StartupTimeline.Begin("新建·写入项目骨架"))
+                        {
+                            project = ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name);
+                        }
+
                         try
                         {
-                            ProjectTemplateCatalog.PopulateFromVox(project, absoluteVoxPath,
-                                (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
-                            ApplyNewProjectEditorSettings(project, useEmptyTemplateRenderDefaults: false);
+                            using (StartupTimeline.Begin("新建·生成模板内容"))
+                            {
+                                ProjectTemplateCatalog.PopulateFromVox(project, absoluteVoxPath,
+                                    (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                            }
+
+                            using (StartupTimeline.Begin("新建·写入编辑器设置"))
+                            {
+                                ApplyNewProjectEditorSettings(project, useEmptyTemplateRenderDefaults: false);
+                            }
                         }
                         catch
                         {
@@ -5169,9 +5200,15 @@ DockId=0x6A3C3007,0
                     "正在检查项目文件…",
                     (cancellation, report) =>
                     {
+                        using var openPhase = StartupTimeline.Begin("打开·后台准备");
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取项目清单…", .18F, CanCancel: true));
-                        var project = ProjectLayout.Open(absolutePath);
+                        ProjectHandle project;
+                        using (StartupTimeline.Begin("打开·读取清单"))
+                        {
+                            project = ProjectLayout.Open(absolutePath);
+                        }
+
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取体素资产…", .22F, CanCancel: true));
                         void ReportModels(BlockingOperationProgress progress) => report(progress with
@@ -5179,40 +5216,57 @@ DockId=0x6A3C3007,0
                             Fraction = .18F + (progress.Fraction - .18F) * .65F,
                         });
                         var modelCache = new Dictionary<ModelLoadKey, VoxelWorld>();
-                        var preload = PreloadProjectModels(project, cancellation, ReportModels, modelCache: modelCache);
+                        PreloadedModels preload;
+                        using (StartupTimeline.Begin("打开·预读场景与模型"))
+                        {
+                            preload = PreloadProjectModels(project, cancellation, ReportModels, modelCache: modelCache);
+                        }
+
                         PreloadedModels? recovery = null;
                         RecoverySnapshot? snapshot = null;
                         report(new BlockingOperationProgress("正在检查恢复数据…", .64F, true));
-                        if (RecoveryStore.TryLoad(project.RootPath, out snapshot) && snapshot is not null)
+                        using (StartupTimeline.Begin("打开·预读恢复数据"))
                         {
-                            try
+                            if (RecoveryStore.TryLoad(project.RootPath, out snapshot) && snapshot is not null)
                             {
-                                var scene = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
-                                recovery = PreloadProjectModels(project, cancellation,
-                                    progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene, modelCache);
-                            }
-                            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
-                            {
-                                MVoxelLog.Error("恢复区快照预读失败，将在应用时处理", exception);
+                                try
+                                {
+                                    var scene = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
+                                    recovery = PreloadProjectModels(project, cancellation,
+                                        progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene, modelCache);
+                                }
+                                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
+                                {
+                                    MVoxelLog.Error("恢复区快照预读失败，将在应用时处理", exception);
+                                }
                             }
                         }
+
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取材质表…", .82F, true));
                         IReadOnlyList<MaterialAsset>? materials = null;
-                        try
+                        using (StartupTimeline.Begin("打开·读取材质"))
                         {
-                            materials = MaterialAsset.LoadFromProject(project);
+                            try
+                            {
+                                materials = MaterialAsset.LoadFromProject(project);
+                            }
+                            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+                            {
+                                MVoxelLog.Error("材质表预读失败，将在应用时重试", exception);
+                            }
                         }
-                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
-                        {
-                            MVoxelLog.Error("材质表预读失败，将在应用时重试", exception);
-                        }
+
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在启动项目插件…", .88F, true));
                         var runtime = new PluginScriptRuntime();
                         try
                         {
-                            runtime.Activate(project, TimeSpan.FromSeconds(2), cancellation);
+                            using (StartupTimeline.Begin("打开·启动插件"))
+                            {
+                                runtime.Activate(project, TimeSpan.FromSeconds(2), cancellation);
+                            }
+
                             cancellation.ThrowIfCancellationRequested();
                             report(new BlockingOperationProgress("正在应用编辑器工作区…", .96F, false));
                             return new PreparedOpenProject(project, preload, recovery, snapshot, materials, runtime);
@@ -5274,6 +5328,7 @@ DockId=0x6A3C3007,0
 
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null, PreparedOpenProject? prepared = null)
     {
+        using var applyPhase = StartupTimeline.Begin("打开·应用项目状态");
         _worldLoadFailed = false;
         ResetGeneratorPanel();
         _pluginRuntime?.Dispose();
@@ -5337,6 +5392,7 @@ DockId=0x6A3C3007,0
             ? $"已打开项目：{project.Manifest.Name}"
             : $"已打开项目：{project.Manifest.Name}（主场景存在 {_sceneValidationErrors.Count} 个结构问题：{_sceneValidationErrors[0]}）";
         ProjectOpened?.Invoke(this, EventArgs.Empty);
+        StartupTimeline.Mark(StartupTimeline.MilestoneProjectReady);
     }
 
     private bool TryOpenProject(string path, bool showError)

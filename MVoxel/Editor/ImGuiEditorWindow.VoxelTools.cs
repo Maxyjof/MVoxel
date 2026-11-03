@@ -78,6 +78,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (_pipelineInitializationAttempted) return;
         _pipelineInitializationAttempted = true;
+        using var initPhase = StartupTimeline.Begin("首帧·创建渲染管线");
         _gpuRenderingDisabled = false;
         _pipelineStatus = "显卡体素管线正在初始化";
         try
@@ -210,6 +211,7 @@ internal sealed partial class ImGuiEditorWindow
         Scene.SceneDocument? scene = overrideScene;
         if (scene is null && File.Exists(path))
         {
+            using var scenePhase = StartupTimeline.Begin("预读·读取场景文档");
             try { scene = Scene.SceneSerializer.Load(path); }
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException) { }
         }
@@ -218,6 +220,7 @@ internal sealed partial class ImGuiEditorWindow
         var failed = false;
         if (scene is not null)
         {
+            using var decodePhase = StartupTimeline.Begin("预读·解码体素模型");
             var keys = GetObjectModelLoadKeys(project, scene).ToDictionary(item => item.ObjectId, item => item.Key);
             var objects = scene.Objects.Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel)).ToList();
             for (var i = 0; i < objects.Count; i++)
@@ -256,11 +259,20 @@ internal sealed partial class ImGuiEditorWindow
         report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));
         var store = new ObjectVoxelStore();
         store.RestoreReferences(worlds);
-        var composed = scene is null ? null : store.Compose(scene, uint.MaxValue, false, cancellation);
+        VoxelWorld? composed;
+        using (StartupTimeline.Begin("预读·合成世界"))
+        {
+            composed = scene is null ? null : store.Compose(scene, uint.MaxValue, false, cancellation);
+        }
+
         report(new BlockingOperationProgress("正在计算场景边界…", .88F, true));
         var minimum = default(VoxelCoord64);
         var maximum = default(VoxelCoord64);
-        var hasBounds = composed is not null && composed.TryGetBounds(out minimum, out maximum);
+        bool hasBounds;
+        using (StartupTimeline.Begin("预读·计算场景边界"))
+        {
+            hasBounds = composed is not null && composed.TryGetBounds(out minimum, out maximum);
+        }
         cancellation.ThrowIfCancellationRequested();
         return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum);
     }
@@ -277,6 +289,7 @@ internal sealed partial class ImGuiEditorWindow
     private void LoadWorldForProject(ProjectHandle project,
         PreloadedModels? preload = null)
     {
+        using var loadPhase = StartupTimeline.Begin("打开·装载工作世界");
         _voxelHistory.Clear();
         _layerOwnership.Clear();
         _selectedVoxel = null;
@@ -494,8 +507,12 @@ internal sealed partial class ImGuiEditorWindow
             return entry.World;
         }
 
-        var composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility,
-            remap: RemapRuntimeMaterial);
+        VoxelWorld composed;
+        using (StartupTimeline.Begin("组合世界"))
+        {
+            composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility,
+                remap: RemapRuntimeMaterial);
+        }
         if (_composedWorlds.Count >= ComposedWorldCacheCapacity)
         {
             _composedWorlds.RemoveAt(_composedWorlds.Count - 1);
@@ -1331,7 +1348,14 @@ internal sealed partial class ImGuiEditorWindow
         if (_project is null || _gpuRenderingDisabled) return false;
         try
         {
-            _scenePipeline ??= new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+            if (_scenePipeline is null)
+            {
+                using (StartupTimeline.Begin("首帧·创建预览管线"))
+                {
+                    _scenePipeline = new VulkanVoxelRenderPipeline(_vulkan, _imguiRenderer);
+                }
+            }
+
             var pipeline = _scenePipeline;
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
@@ -1356,6 +1380,7 @@ internal sealed partial class ImGuiEditorWindow
             var renderWatch = System.Diagnostics.Stopwatch.StartNew();
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
             renderWatch.Stop();
+            StartupTimeline.Mark(StartupTimeline.MilestonePreviewFrame);
             RecordViewportFrame(_sceneViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
                 submitsBefore, fenceBefore, allocatedBefore, width, height);
             RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
@@ -1483,6 +1508,7 @@ internal sealed partial class ImGuiEditorWindow
 
                 _lastRenderGpuSubmitMs = nowMs;
                 _renderViewNeedsInitialRender = false;
+                StartupTimeline.Mark(StartupTimeline.MilestoneRenderFrame);
                 DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
             }
@@ -1548,6 +1574,7 @@ internal sealed partial class ImGuiEditorWindow
                 _renderViewNeedsInitialRender = false;
             }
 
+            StartupTimeline.Mark(StartupTimeline.MilestoneRenderFrame);
             DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
             return true;
         }

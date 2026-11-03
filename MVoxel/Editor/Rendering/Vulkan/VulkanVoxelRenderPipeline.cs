@@ -354,6 +354,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭、体素在预算内
+        using var syncPhase = StartupTimeline.Begin("同步工作集");
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
             lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
