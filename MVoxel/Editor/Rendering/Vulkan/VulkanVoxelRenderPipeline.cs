@@ -3797,24 +3797,60 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height);
 
+        // 降噪的 5x5 邻域会与同工作组内相邻像素大量重叠，整组协作预取一次即可：
+        // 8x8 工作组需要 12x12 的环形边界，每像素从 50 次 imageLoad 降到约 2.3 次
+        const int DenoiseTileSize = 12;
+        shared vec3 denoiseColorTile[DenoiseTileSize * DenoiseTileSize];
+        shared vec4 denoiseGuideTile[DenoiseTileSize * DenoiseTileSize];
+
+        // 只有会执行降噪的收尾通道才预取：采样通道里不能出现 barrier，
+        // 否则图像边界外的线程提前 return 会让整个工作组卡在屏障上
+        bool DenoiseShadingRequested()
+        {
+            bool pathMode = values[P_MODE_PATH] > 0.5;
+            bool denoiseEnabled = values[P_DENOISE_ENABLED] > 0.5;
+            bool denoiseBranch = values[P_DISPLAY_PASS] > 0.5 || values[P_DENOISE_PASS] > 0.5 ||
+                int(values[P_BLOOM_PASS]) == 1;
+            return pathMode && denoiseEnabled && denoiseBranch;
+        }
+
+        void PrefetchDenoiseTile(ivec2 pixel, int width, int height)
+        {
+            ivec2 local = ivec2(gl_LocalInvocationID.xy);
+            // 组起点由当前像素反推，分块 push constant 偏移因此自动生效
+            ivec2 groupOrigin = pixel - local - ivec2(2, 2);
+            int threadIndex = local.y * 8 + local.x;
+            for (int index = threadIndex; index < DenoiseTileSize * DenoiseTileSize; index += 64)
+            {
+                ivec2 offset = groupOrigin + ivec2(index % DenoiseTileSize, index / DenoiseTileSize);
+                ivec2 clampedPixel = clamp(offset, ivec2(0), ivec2(width - 1, height - 1));
+                denoiseColorTile[index] = imageLoad(accumulationImage, clampedPixel).rgb;
+                denoiseGuideTile[index] = imageLoad(guideImage, clampedPixel);
+            }
+            barrier();
+        }
+
         vec3 DenoiseAt(ivec2 pixel, int width, int height)
         {
+            // pixel 与 width/height 只用于保持调用签名一致，邻域数据来自工作组共享缓冲，
+            // 越界坐标已在预取阶段夹紧到图像内
             float strength = clamp(values[93], 0.0, 1.0);
-            vec3 center = imageLoad(accumulationImage, pixel).rgb;
+            ivec2 local = ivec2(gl_LocalInvocationID.xy) + ivec2(2, 2);
+            vec3 center = denoiseColorTile[local.y * DenoiseTileSize + local.x];
             vec3 filtered = vec3(0.0);
             float weightSum = 0.0;
             float centerLuma = dot(center, vec3(0.2126, 0.7152, 0.0722));
-            vec4 centerGuide = imageLoad(guideImage, pixel);
+            vec4 centerGuide = denoiseGuideTile[local.y * DenoiseTileSize + local.x];
             for (int oy = -2; oy <= 2; oy++)
             {
                 for (int ox = -2; ox <= 2; ox++)
                 {
-                    ivec2 samplePixel = clamp(pixel + ivec2(ox, oy), ivec2(0), ivec2(width - 1, height - 1));
-                    vec3 neighbor = imageLoad(accumulationImage, samplePixel).rgb;
+                    int tileIndex = (local.y + oy) * DenoiseTileSize + (local.x + ox);
+                    vec3 neighbor = denoiseColorTile[tileIndex];
                     float spatial = exp(-float(ox * ox + oy * oy) / 3.5);
                     float neighborLuma = dot(neighbor, vec3(0.2126, 0.7152, 0.0722));
                     float edge = exp(-abs(neighborLuma - centerLuma) * 10.0);
-                    vec4 neighborGuide = imageLoad(guideImage, samplePixel);
+                    vec4 neighborGuide = denoiseGuideTile[tileIndex];
                     if ((centerGuide.w > 0.0) != (neighborGuide.w > 0.0)) continue;
                     if (centerGuide.w > 0.0)
                     {
@@ -3897,6 +3933,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) + tilePush.tileOffset;
             int width = int(values[11]);
             int height = int(values[15]);
+            // 降噪通道要整工作组协作预取邻域，barrier 之前不能让任何线程提前退出，
+            // 因此这一步必须排在图像边界判断之前，组内所有线程都会到达
+            if (DenoiseShadingRequested()) PrefetchDenoiseTile(pixel, width, height);
             if (pixel.x >= width || pixel.y >= height) return;
 
             // 先从完整显示图检测边缘并写入中间图，再复制回输出，避免同一通道读写竞争。

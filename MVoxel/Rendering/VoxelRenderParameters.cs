@@ -154,6 +154,7 @@ public sealed class VoxelRenderParameters
             ("P_DEPTH_OF_FIELD", DepthOfField), ("P_MIS", MisEnabled), ("P_MODE_PATH", ModePath), ("P_FOV_DEGREES", FovDegrees),
             ("P_PIXEL_SEED", Pixel), ("P_GRID_STEP", GridStep), ("P_GRID_SHOWN", GridShown),
             ("P_DENOISE_ENABLED", DenoiseEnabled), ("P_DENOISE_STRENGTH", DenoiseStrength),
+            ("P_DENOISE_PASS", DenoisePass),
             ("P_VOXEL_COUNT", VoxelCount), ("P_BVH_NODE_COUNT", BvhNodeCount),
             ("P_NEAR_CLIP", NearClip), ("P_FAR_CLIP", FarClip),
             ("P_SCENE_BACKGROUND_R", SceneBackgroundR), ("P_SCENE_BACKGROUND_G", SceneBackgroundG),
