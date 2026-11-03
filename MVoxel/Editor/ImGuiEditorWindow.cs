@@ -4499,6 +4499,8 @@ DockId=0x6A3C3007,0
     {
         _sceneDocumentDirty = true;
         _historySceneRevision++;
+        // 探针自动烘焙只看这里打出的脏标记，没有编辑就不会去算内容指纹
+        _probeSceneSignatureDirty = true;
     }
 
     /// <summary>

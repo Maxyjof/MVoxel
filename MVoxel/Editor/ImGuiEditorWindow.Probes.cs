@@ -32,6 +32,8 @@ internal sealed partial class ImGuiEditorWindow
     private long _probeBakedParameters = long.MinValue;
     private long _probeBakedSceneSignature = long.MinValue;
     private int _probeBakeCompletedCount;
+    /// <summary>场景内容自从上次烘焙后是否发生过改动，未改动时自动烘焙完全不做检查</summary>
+    private bool _probeSceneSignatureDirty = true;
     private long _probeAutoBakeCheckAt;
     private long _probeAutoBakeSeenAt;
     private long _probeAutoBakeSeenSignature = long.MinValue;
@@ -221,6 +223,9 @@ internal sealed partial class ImGuiEditorWindow
     /// </remarks>
     private void TryStartAutoProbeBake()
     {
+        // 没有任何改动时连指纹都不算：自动烘焙只在场景被编辑过之后才参与判断，
+        // 不是定时轮询
+        if (!_probeSceneSignatureDirty) return;
         var now = Environment.TickCount64;
         if (now - _probeAutoBakeCheckAt < ProbeAutoBakeCheckIntervalMs) return;
         _probeAutoBakeCheckAt = now;
@@ -238,7 +243,12 @@ internal sealed partial class ImGuiEditorWindow
         if (now - _probeAutoBakeSeenAt < ProbeAutoBakeSettleMs) return;
         // 只有世界内容真的变了才重烘；探针参数或烘焙质量改动不自动触发，
         // 一律由“生成探针数据”按钮应用，避免拖滑块时反复重烘
-        if (signature == _probeBakedSceneSignature) return;
+        if (signature == _probeBakedSceneSignature)
+        {
+            _probeSceneSignatureDirty = false;
+            return;
+        }
+
         foreach (var sceneObject in _sceneDocument!.Objects)
         foreach (var component in sceneObject.Components)
         {
@@ -248,6 +258,9 @@ internal sealed partial class ImGuiEditorWindow
             StartProbeBake(sceneObject, component, data, persist: false);
             return;
         }
+
+        // 场景里没有可自动烘焙的探针，这一段也不用再查
+        _probeSceneSignatureDirty = false;
     }
 
     /// <summary>
@@ -332,6 +345,7 @@ internal sealed partial class ImGuiEditorWindow
         _probeBakedVersion = world.ContentVersion;
         _probeBakedParameters = ProbeBakeParameters(_probeBakeData, _probeBakeLighting, _probeBakeQuality);
         _probeBakedSceneSignature = _probeBakeJob?.SceneSignature ?? ProbeContentSignature();
+        _probeSceneSignatureDirty = false;
         _probeBakeCompletedCount++;
         _liveProbeBake = result;
         _liveProbeBakeObjectId = _probeBakeObjectId;
