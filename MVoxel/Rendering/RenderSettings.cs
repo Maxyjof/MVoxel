@@ -143,7 +143,7 @@ public sealed class RenderSettings
     /// <summary>
     /// 实时环境光遮蔽射线数；每增加一次采样都会执行一次限距 BVH 查询
     /// </summary>
-    public int AoSamples = 24;
+    public int AoSamples = 8;
 
     /// <summary>非光追体素间接光强度</summary>
     public float VoxelIndirectLightStrength = 0.35F;
@@ -155,7 +155,7 @@ public sealed class RenderSettings
     /// 实时通道没有跨帧累积，这一项直接决定间接光的噪声水平：
     /// 4 个方向噪点明显，16 个方向基本可用，代价是每个像素的限距求交次数同步上升
     /// </remarks>
-    public int VoxelIndirectLightSamples = 16;
+    public int VoxelIndirectLightSamples = 4;
 
     /// <summary>
     /// 每个探针的烘焙采样方向数

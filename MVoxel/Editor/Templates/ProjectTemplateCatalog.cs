@@ -654,8 +654,8 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.AoStrength = .9F;
                 settings.RenderSettings.AoPower = 1.3F;
                 // 实时通道的 AO 与体素间接光都是每帧少量射线估计，采样数给足才不毛糙
-                settings.RenderSettings.AoSamples = 32;
-                settings.RenderSettings.VoxelIndirectLightSamples = 24;
+                settings.RenderSettings.AoSamples = 8;
+                settings.RenderSettings.VoxelIndirectLightSamples = 4;
                 settings.RenderSettings.ShadowSamples = 6;
                 settings.RenderSettings.RealtimeAntiAliasingSamples = 4;
                 // 探针按高画质烘焙：方向翻倍、探针更密、平滑两次
@@ -1237,7 +1237,7 @@ public static class ProjectTemplateCatalog
         stack.Effects.Clear();
         stack.Effects.Add(new CameraPostProcessEffect
         {
-            Type = CameraPostProcessEffectType.AmbientOcclusion, Intensity = .85F, Radius = 2F, Samples = 32,
+            Type = CameraPostProcessEffectType.AmbientOcclusion, Intensity = .85F, Radius = 2F, Samples = 8,
         });
         stack.Effects.Add(new CameraPostProcessEffect
         {
