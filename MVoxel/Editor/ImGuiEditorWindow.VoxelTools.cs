@@ -1600,6 +1600,7 @@ internal sealed partial class ImGuiEditorWindow
                 showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
             var submitsBefore = pipeline.SubmitCount;
             var fenceBefore = pipeline.FenceWaitTotalMs;
+            pipeline.FullWorksetCellLimit = _renderSettings.VoxelBufferBudgetCells;
             pipeline.GpuProfilingEnabled = PerformanceProbeActive;
             pipeline.GpuTimingToken = _analysisLive.Serial;
             var performanceMark = PerformanceMark();
@@ -1716,7 +1717,8 @@ internal sealed partial class ImGuiEditorWindow
                     pathMode: false, outlines: false);
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
-                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.FullWorksetCellLimit = _renderSettings.VoxelBufferBudgetCells;
+            pipeline.GpuProfilingEnabled = PerformanceProbeActive;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
                 var performanceMark = PerformanceMark();
                 var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
@@ -1773,7 +1775,8 @@ internal sealed partial class ImGuiEditorWindow
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.FullWorksetCellLimit = _renderSettings.VoxelBufferBudgetCells;
+            pipeline.GpuProfilingEnabled = PerformanceProbeActive;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
@@ -2932,6 +2935,17 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("体素工作集的显存预算，按 2 的幂量化到 16 到 1024 MB。实际能装的格数由预算除以单格字节与 BVH 余量算出，用来限制场景视图采样与砖路径资格。");
             ImGui.TextDisabled($"当前 {settings.VoxelBufferBudgetMb} MB · 约 {settings.VoxelBufferBudgetCells:N0} 格");
+            // 超出预算时不自动降精度，只提示：按项目约定不允许悄悄牺牲画面
+            var occupied = _world.OccupiedVoxelCount;
+            if (occupied > settings.VoxelBufferBudgetCells)
+            {
+                var suggestion = settings.VoxelBufferBudgetMb;
+                while ((long)suggestion * 1024L * 1024L / 60L < occupied && suggestion < 1024) suggestion <<= 1;
+                ImGui.TextColored(new System.Numerics.Vector4(1F, .72F, .3F, 1F),
+                    $"当前世界 {occupied:N0} 体素，已超出本档预算，建议提到 {suggestion} MB");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("超出预算不会自动降精度，只会关闭砖路径并退回打包可见体素；提高档位可以恢复砖路径资格。");
+            }
         }
 
     }
