@@ -270,6 +270,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取已累积的路径追踪样本数
     /// </summary>
+    /// <summary>非光追通道在参数不变后仍继续渲染的帧数上限</summary>
+    /// <remarks>
+    /// 时间累积需要连续多帧才有收敛效果，参数一相等就停会让斑点永远停在单帧方差上
+    /// </remarks>
+    private const int RealtimeConvergeFrameBudget = 96;
+
+    private int _realtimeConvergedFrames;
+
     internal int AccumulatedSamples { get; private set; }
 
     /// <summary>
@@ -1372,10 +1380,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
-            if (!historyCleared && ParametersEqualForDisplay(parameters))
+            // 参数没变也要继续画一段时间，否则实时通道的时间累积永远只跑一帧，
+            // 墙面斑点会一直停在单帧的方差上
+            if (!historyCleared && ParametersEqualForDisplay(parameters) &&
+                _realtimeConvergedFrames >= RealtimeConvergeFrameBudget)
             {
                 return true;
             }
+
+            if (ParametersEqualForDisplay(parameters)) _realtimeConvergedFrames++;
+            else _realtimeConvergedFrames = 0;
 
             if (historyUsed && !historyCleared)
             {
