@@ -29,6 +29,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private const int MaxPathSubmitsPerFrame = 6;
 
     /// <summary>
+    /// 单次路径追踪 dispatch 覆盖的最大像素样本数，控制单次 GPU 调度时长
+    /// </summary>
+    private const int PathDispatchPixelBudget = 1_000_000;
+
+    /// <summary>
     /// 分块起点 push constant 的字节数，对应着色器里的 ivec2
     /// </summary>
     private const int TilePushConstantBytes = 8;
@@ -1225,11 +1230,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ClearAccumulation();
         }
 
-        // 实时模式整帧一次调度：每个像素的计算量固定，与分块数量无关。
-        // 单次提交把每帧上百次队列提交和栅栏等待压缩成一次，避免在 AMD 驱动上
-        // 因为提交风暴和跨提交等待拖慢整个编辑器。
-        // 路径追踪仍按分块提交，保证单次 GPU 调度时长受控，不触发 Windows TDR。
-        const int tileSize = 128;
+        // 实时模式整帧一次调度；路径追踪按像素样本预算切成横条，
+        // 单样本的中等分辨率通常整帧一次 dispatch，高分辨率或高样本时仍受 TDR 预算约束。
         bool realtimePost = !pathMode && !frameState.ShowOutlines;
         bool bloomActive = settings.BloomEnabled && settings.BloomIntensity > 0F &&
                            (pathMode || realtimePost);
@@ -1241,7 +1243,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         else
         {
             DispatchPathFrame(api, parameters, bloomActive, selectionActive,
-                widthPixels, heightPixels, tileSize);
+                widthPixels, heightPixels, Math.Max(1, settings.PathSamplesPerFrame));
         }
 
         // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
@@ -1353,20 +1355,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="selectionActive">是否启用场景选中描边通道</param>
     /// <param name="widthPixels">输出宽度</param>
     /// <param name="heightPixels">输出高度</param>
-    /// <param name="tileSize">单个分块的边长</param>
+    /// <param name="samplesPerPixel">每个像素每帧写入的路径样本数</param>
     /// <returns>是否已经写入开始时间戳</returns>
     private bool DispatchPathFrame(Vk api, float[] parameters, bool bloomActive, bool selectionActive,
-        int widthPixels, int heightPixels, int tileSize)
+        int widthPixels, int heightPixels, int samplesPerPixel)
     {
-        var columns = Math.Max(1, (widthPixels + tileSize - 1) / tileSize);
-        var rows = Math.Max(1, (heightPixels + tileSize - 1) / tileSize);
-        var totalTiles = columns * rows;
-        // 单条命令缓冲里最多放六分之一帧的派发，既把提交次数压到个位数，
-        // 又让每次 GPU 调度的时长保持在整帧的六成以下，不触发 Windows TDR
-        var tilesPerSubmit = Math.Max(1, (totalTiles + MaxPathSubmitsPerFrame - 1) / MaxPathSubmitsPerFrame);
-        var tileIndex = 0;
+        // 每次 dispatch 控制在一百万像素样本左右：742x526 单样本时整帧一次 dispatch，
+        // 高分辨率或高样本时按横条拆分，单次 GPU 调度仍远低于 TDR 阈值
+        var pixelsPerDispatch = Math.Max(1, PathDispatchPixelBudget / Math.Max(1, samplesPerPixel));
+        var stripHeight = Math.Max(1, Math.Min(heightPixels, pixelsPerDispatch / Math.Max(1, widthPixels)));
+        var totalStrips = (heightPixels + stripHeight - 1) / stripHeight;
+        var stripsPerSubmit = Math.Max(1, (totalStrips + MaxPathSubmitsPerFrame - 1) / MaxPathSubmitsPerFrame);
+        var stripIndex = 0;
         var startedTiming = false;
-        while (tileIndex < totalTiles)
+        while (stripIndex < totalStrips)
         {
             var slot = AcquireRingSlot();
             UploadParameters(slot, parameters);
@@ -1384,17 +1386,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 if (selectionActive) TransitionGuideToGeneral(commandBuffer);
             }
 
-            for (var batch = 0; batch < tilesPerSubmit && tileIndex < totalTiles; batch++, tileIndex++)
+            for (var batch = 0; batch < stripsPerSubmit && stripIndex < totalStrips; batch++, stripIndex++)
             {
-                var tileX = tileIndex % columns * tileSize;
-                var tileY = tileIndex / columns * tileSize;
-                var tileWidth = Math.Min(tileSize, widthPixels - tileX);
-                var tileHeight = Math.Min(tileSize, heightPixels - tileY);
-                BindComputeTile(commandBuffer, _ringSets[slot], tileX, tileY);
-                api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
-                    ((uint)tileHeight + 7U) / 8U, 1);
+                var stripY = stripIndex * stripHeight;
+                var stripRows = Math.Min(stripHeight, heightPixels - stripY);
+                BindComputeTile(commandBuffer, _ringSets[slot], 0, stripY);
+                api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
+                    ((uint)stripRows + 7U) / 8U, 1);
                 LastDispatchCount++;
-                LastWorkgroupCount += ((tileWidth + 7L) / 8L) * ((tileHeight + 7L) / 8L);
+                LastWorkgroupCount += ((widthPixels + 7L) / 8L) * ((stripRows + 7L) / 8L);
             }
 
             TransitionOutputToShaderRead(commandBuffer);

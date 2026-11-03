@@ -478,10 +478,15 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (!TryGetAnalysisFrame(out var sample)) return;
         var total = Math.Max(sample.CallbackMs, 0.0001F);
+        var recentGpu = _pipeline?.LastGpuFrameMs ?? 0D;
         ImGui.SeparatorText($"第 {sample.Serial} 帧");
         ImGui.TextDisabled($"帧间隔 {sample.IntervalMs:0.00} ms  ·  " +
             $"界面回调 {sample.CallbackMs:0.00} ms  ·  " +
-            (sample.GpuValid ? $"GPU 计算 {sample.GpuMs:0.00} ms" : "GPU 计算 等待回读或不可用"));
+            (sample.GpuValid
+                ? $"GPU 计算 {sample.GpuMs:0.00} ms"
+                : recentGpu > 0D
+                    ? $"GPU 最近完成 {recentGpu:0.00} ms（本帧等待回读）"
+                    : "GPU 计算 等待回读或不可用"));
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("帧间隔是两次编辑器帧开始之间的墙钟，包含垂直同步与调度等待。" +
                 Environment.NewLine + "GPU 计算来自 Vulkan 时间戳，异步回读，可能晚一到三帧。" +
@@ -537,7 +542,11 @@ internal sealed partial class ImGuiEditorWindow
         Row("  未归类", Math.Max(0F, sample.CallbackMs - sample.UpdateMs - sample.UiMs -
             sample.ImGuiRenderMs - sample.PresentMs), "回调内的其他固定开销");
         Row("GPU 场景计算", sample.GpuValid ? sample.GpuMs : -1F,
-            sample.GpuValid ? "Vulkan 时间戳，异步回读" : "不可用或尚未回读");
+            sample.GpuValid
+                ? "Vulkan 时间戳，异步回读"
+                : recentGpu > 0D
+                    ? $"本帧尚未回读，最近完成 {recentGpu:0.00} ms"
+                    : "不可用或尚未回读");
 
         ImGui.EndTable();
 
@@ -621,6 +630,8 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Text($"发光面 {pipeline.EmissiveFaceCount:N0}  光源树节点 {pipeline.EmissiveTreeNodeCount:N0}  " +
             $"索引同步 {pipeline.EmissiveSyncMilliseconds:0.00} ms");
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("最近一次 CPU 发光面提取、排序、光源树构建或更新、打包与上传耗时，不是 GPU 采样耗时。反向 PDF 使用二分面查询和相同的光源树分支概率。");
+        ImGui.Text($"GPU 时间戳  {(pipeline.GpuTimingSupported ? "可用" : "不可用")}  " +
+            $"最近完成 {pipeline.LastGpuFrameMs:0.00} ms");
         ImGui.Text($"体素/BVH 缓冲容量 {ToMiB(capacity.VoxelBytes + (double)capacity.BvhBytes):0.0} MiB");
     }
 }

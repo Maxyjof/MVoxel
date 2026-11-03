@@ -1367,6 +1367,9 @@ internal sealed partial class ImGuiEditorWindow
             if (!pipeline.IsAvailable) return false;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
+            // 交互渲染每帧只追加一个路径样本：累加样本上限和最终画质不变，
+            // 但单帧 GPU 时间减半，转视角和进度刷新不再被整帧路径追踪拖住
+            previewSettings.PathSamplesPerFrame = 1;
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;

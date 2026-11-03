@@ -742,6 +742,8 @@ internal sealed partial class ImGuiEditorWindow
                 DrawSettingsSectionHeader("路径追踪质量", "只在启用路径追踪时产生明显影响");
                 ImGui.Checkbox("启用路径追踪", ref settings.PathTracingEnabled);
                 SliderInt("每帧样本数", ref settings.PathSamplesPerFrame, 1, 8);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("导出时每帧写入的路径样本数。渲染窗口的交互预览固定每帧 1 个样本，避免整帧路径追踪把编辑器拖到十几帧；累积样本上限和最终画质不变。");
                 SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192);
                 SliderFloat("内部渲染分辨率", ref settings.ResolutionScale, 0.25F, 1F, "%.2fx");
                 SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
