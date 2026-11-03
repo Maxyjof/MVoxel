@@ -155,6 +155,8 @@ internal sealed partial class ImGuiEditorWindow
         new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
             [Param("path", "string", true, "体素模型文件路径")]),
         new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
+        new("camera.setPostProcess", "相机", "设置相机后处理效果", "开关相机后处理栈里的效果并写入强度与采样数，用于非光追画质标定",
+            [Param("name", "string", false, "相机对象名"), Param("effect", "string", true, "效果类型，如 AmbientOcclusion 或 VoxelIndirectLight"), Param("enabled", "boolean", false, "是否启用"), Param("intensity", "number", false, "强度"), Param("samples", "integer", false, "采样数")]),
         new("render.captureDisplay", "渲染", "保存当前显示结果", "把当前最终显示图直接存成 PNG，不做重新渲染，用于核对非光追通道的画面",
             [Param("path", "string", true, "输出 PNG 路径")]),
         new("ui.setCenterTab", "界面", "切换中央页面", "把中央区域切到场景或渲染页面，等同点击页签",
@@ -248,6 +250,7 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.create" => CreateTimelineAsset(payload),
 
             "perf.profile" => SetForcedProfiling(payload),
+            "camera.setPostProcess" => SetCameraPostProcess(payload),
             "render.captureDisplay" => RunOnUi(() =>
             {
                 var path = Path.GetFullPath(ReadString(payload, "path") ?? throw new ArgumentException("missing path"));
@@ -1168,6 +1171,33 @@ internal sealed partial class ImGuiEditorWindow
         return new { forcedProfiling = _forcedProfiling, active = PerformanceProbeActive };
     });
 
+    /// <summary>
+    /// 设置相机后处理栈里某个效果
+    /// </summary>
+    /// <remarks>
+    /// 模板相机开着覆盖项目默认后处理，画质标定必须改相机栈上的字段才生效
+    /// </remarks>
+    /// <param name="arguments">参数，name、effect、enabled、intensity、samples</param>
+    /// <returns>写入后的效果状态</returns>
+    private object SetCameraPostProcess(JsonElement arguments) => RunOnUi(() =>
+    {
+        var target = RequireObject(arguments);
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsCamera)
+            ?? throw new InvalidOperationException("对象没有相机组件");
+        var data = SceneComponentTypes.ReadCamera(component);
+        var stack = data.PostProcess ?? throw new InvalidOperationException("相机没有后处理栈");
+        var effectName = ReadString(arguments, "effect") ?? throw new ArgumentException("缺少 effect");
+        if (!Enum.TryParse<CameraPostProcessEffectType>(effectName, true, out var type))
+            throw new ArgumentException($"未知后处理效果：{effectName}");
+        var effect = stack.Find(type) ?? throw new InvalidOperationException($"后处理栈里没有 {type}");
+        if (ReadBoolean(arguments, "enabled") is { } enabled) effect.Enabled = enabled;
+        if (ReadNumber(arguments, "intensity") is { } intensity) effect.Intensity = (float)intensity;
+        if (ReadNumber(arguments, "samples") is { } samples) effect.Samples = (int)samples;
+        SceneComponentTypes.WriteCamera(component, data);
+        MarkSceneDocumentDirty();
+        _pipeline?.ResetAccumulation();
+        return new { effect = type.ToString(), enabled = effect.Enabled, intensity = effect.Intensity, samples = effect.Samples };
+    });
     private object SetPanel(JsonElement arguments) => RunOnUi(() =>    {
         var id = ReadString(arguments, "panel") ?? throw new ArgumentException("缺少 panel");
         var visible = ReadBoolean(arguments, "visible") ?? throw new ArgumentException("缺少 visible");
