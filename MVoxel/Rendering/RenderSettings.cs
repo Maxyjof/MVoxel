@@ -198,7 +198,7 @@ public sealed class RenderSettings
     /// 0.8 到 0.95 之间会把历史帧混合进来，静止几帧后噪声基本收敛。
     /// 相机或设置变化时历史会自动作废，避免拖影
     /// </remarks>
-    public float RealtimeTemporalWeight = 0.92F;
+    public float RealtimeTemporalWeight = 0.97F;
 
     /// <summary>
     /// 强制使用 Compute 渲染路径，忽略硬件光追能力
