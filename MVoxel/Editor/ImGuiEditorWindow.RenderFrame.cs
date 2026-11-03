@@ -229,7 +229,21 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 settings.ExportDialogVideoFrameRate = timeline.FrameRate;
                 settings.ExportDialogVideoEndFrame = Math.Max(settings.ExportDialogVideoStartFrame, timeline.LengthFrames);
-                SetStatus("视频时间轴参数已保存；视频编码队列将在视频导出功能接入后启用");
+                var frameSettings = ResolveRenderSettings(GetActiveRenderCameraObject(), _projectSettings.ExportRenderSettings);
+                frameSettings.PathTracingEnabled = true;
+                frameSettings.PathSamplesPerFrame = 1;
+                frameSettings.PathMaxAccumulatedSamples = Math.Max(16, frameSettings.PathMaxAccumulatedSamples);
+                var outputDirectory = Path.Combine(_project!.RootPath, "Assets", "Exports", $"视频帧-{DateTime.Now:yyyyMMdd-HHmmss}");
+                for (var frame = settings.ExportDialogVideoStartFrame; frame <= settings.ExportDialogVideoEndFrame; frame++)
+                {
+                    var framePath = Path.Combine(outputDirectory, $"帧-{frame:000000}.png");
+                    EnqueueExport(new ExportJob(framePath, frameSettings)
+                    {
+                        Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask(),
+                        TimelineAsset = settings.ExportDialogTimelineAsset, TimelineFrame = frame
+                    });
+                }
+                SetStatus($"已加入视频帧序列导出：{settings.ExportDialogVideoEndFrame - settings.ExportDialogVideoStartFrame + 1}帧");
             }
             else
             {

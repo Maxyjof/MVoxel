@@ -2841,6 +2841,12 @@ DockId=0x6A3C3007,0
         try
         {
             var settings = _activeExport.Settings;
+            if (_activeExport.TimelineAsset is { } timelineAsset && !ApplyTimelineFrame(timelineAsset, _activeExport.TimelineFrame))
+            {
+                SetStatus($"时间轴帧采样失败：{Path.GetFileName(_activeExport.Path)}");
+                _activeExport = null;
+                return;
+            }
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
             var mask = _activeExport.CullingMask ?? uint.MaxValue;
@@ -3064,6 +3070,8 @@ DockId=0x6A3C3007,0
         internal float Scale { get; set; }
         internal float[]? Materials { get; set; }
         internal string? CameraName { get; set; }
+        internal string? TimelineAsset { get; init; }
+        internal int TimelineFrame { get; init; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
         internal SceneCamera? Camera { get; init; }
