@@ -117,7 +117,7 @@ internal static unsafe class VulkanHardwareRayTracing
     /// <summary>
     /// 读取 Vulkan 固定长度的 UTF8 设备名
     /// </summary>
-    private static string ReadFixedString(byte* value, int maxLength = 256)
+    internal static string ReadFixedString(byte* value, int maxLength = 256)
     {
         var length = 0;
         while (length < maxLength && value[length] != 0)

@@ -1309,7 +1309,20 @@ internal sealed partial class ImGuiEditorWindow
             var frame = BuildFrameState(camera, size, scale, width, height,
                 pathMode: false, outlines: _showVoxelOutlines, scenePreview: true,
                 showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
+            var submitsBefore = pipeline.SubmitCount;
+            var fenceBefore = pipeline.FenceWaitTotalMs;
+            pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+            pipeline.GpuTimingToken = _analysisLive.Serial;
+            var performanceMark = PerformanceMark();
+            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            var renderWatch = System.Diagnostics.Stopwatch.StartNew();
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
+            renderWatch.Stop();
+            RecordViewportFrame(_sceneViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
+                submitsBefore, fenceBefore, allocatedBefore, width, height);
+            RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
+                fenceBefore, width, height, pathTracing: false);
+            MeasureSince(performanceMark, ref _analysisLive.ViewportCpuMs);
 
             DrawPipelineImage(drawList, pipeline, origin, size);
             return true;
@@ -1397,10 +1410,24 @@ internal sealed partial class ImGuiEditorWindow
                 var realtimeSettings = settingsInteracting ? previewSettings.CreateInteractionPreview() : previewSettings;
                 var realtimeFrame = BuildFrameState(camera, frameSize, scale, width, height,
                     pathMode: false, outlines: false);
+                var submitsBefore = pipeline.SubmitCount;
+                var fenceBefore = pipeline.FenceWaitTotalMs;
+                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.GpuTimingToken = _analysisLive.Serial;
+                var performanceMark = PerformanceMark();
+                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                var renderWatch = System.Diagnostics.Stopwatch.StartNew();
                 if (!pipeline.RenderSceneView(realtimeSettings, realtimeFrame, width, height))
                 {
                     return false;
                 }
+
+                renderWatch.Stop();
+                RecordViewportFrame(_renderViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
+                    submitsBefore, fenceBefore, allocatedBefore, width, height);
+                RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
+                    fenceBefore, width, height, pathTracing: false);
+                MeasureSince(performanceMark, ref _analysisLive.ViewportCpuMs);
 
                 _lastRenderGpuSubmitMs = nowMs;
                 _renderViewNeedsInitialRender = false;
@@ -1439,11 +1466,22 @@ internal sealed partial class ImGuiEditorWindow
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
+                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.GpuTimingToken = _analysisLive.Serial;
+                var submitsBefore = pipeline.SubmitCount;
+                var fenceBefore = pipeline.FenceWaitTotalMs;
+                var performanceMark = PerformanceMark();
+                var renderWatch = System.Diagnostics.Stopwatch.StartNew();
                 var submitted = pipeline.RenderPathView(renderSettings, state, width, height);
+                renderWatch.Stop();
                 if (!submitted)
                 {
                     return false;
                 }
+
+                RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
+                    fenceBefore, width, height, pathTracing: true);
+                MeasureSince(performanceMark, ref _analysisLive.ViewportCpuMs);
             }
             else if (!pipeline.Present(renderSettings, state, width, height))
             {

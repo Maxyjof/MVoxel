@@ -355,27 +355,36 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnRenderFrame(FrameEventArgs args)
     {
-        var analysisStart = (_showPerformanceAnalyzer || _extraInspectors.Any(item => item.Open && item.Kind == "性能分析器")) ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+        var analysisStart = PerformanceProbeActive ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+        BeginPerformanceFrame();
         try
         {
             base.OnRenderFrame(args);
             //设备丢失后先重建 Vulkan 设备，否则整个窗口会因为无法呈现而冻结
             RecoverVulkanDeviceIfNeeded();
             ImGui.SetCurrentContext(_imguiContext);
+            var updateMark = PerformanceMark();
             _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
             _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
             _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
+            MeasureSince(updateMark, ref _analysisLive.UpdateMs);
             if (_controller is not null)
             {
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
+                var uiStart = PerformanceMark();
                 DrawEditorFrame();
+                MeasureSince(uiStart, ref _analysisLive.UiMs);
                 ProcessCaptureView();
                 if (_activeExport is not null || _exportQueue.Count > 0 || _exportSnapshot is not null)
                     ProcessExportQueue(GetRenderViewCamera(), _lastRenderViewportSize);
+                var imguiStart = PerformanceMark();
                 _controller.Render();
+                MeasureSince(imguiStart, ref _analysisLive.ImGuiRenderMs);
                 UiDiagnostics.Capture(this, "editor");
             }
 
+            PollPerformanceGpuTimings();
+            var submitStart = PerformanceMark();
             _vulkan?.RenderFrame(new System.Numerics.Vector4(0.05F, 0.07F, 0.10F, 1F), commandBuffer =>
             {
                 if (_imguiRenderer is not null && _controller is not null)
@@ -383,9 +392,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     _imguiRenderer.Record(commandBuffer, _controller);
                 }
             });
+            MeasureSince(submitStart, ref _analysisLive.PresentMs);
 
             ImGui.SetCurrentContext(_imguiContext);
             UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
+            UpdatePerformanceMemory(args.Time);
             if (analysisStart != 0L) RecordPerformanceFrame(args.Time, analysisStart);
         }
         catch (Exception exception)
@@ -465,6 +476,25 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 renderPathTracing = _renderSettings.PathTracingEnabled,
                 renderWorksetCells = _pipeline?.SyncTotalCells ?? 0,
                 renderWorksetBuildMs = _pipeline?.SyncWorksetBuildMs ?? 0,
+                performanceAnalyzerVisible = IsPerformanceAnalyzerVisible,
+                centerTab = _centerTab,
+                scenePipelineAvailable = _scenePipeline?.IsAvailable ?? false,
+                renderPipelineAvailable = _pipeline?.IsAvailable ?? false,
+                sceneWorksetCells = _scenePipeline?.SyncTotalCells ?? 0,
+                sceneDispatchCount = _scenePipeline?.LastDispatchCount ?? 0,
+                performanceAnalyzerRecording = _analysisRecording,
+                performanceAnalyzerFrozen = _analysisFrozen,
+                performanceFrameCount = _analysisFrameCount,
+                performanceFrameCapacity = AnalysisFrameCapacity,
+                frameIntervalMs = LatestAnalysisFrame.IntervalMs,
+                renderCallbackWallMs = LatestAnalysisFrame.CallbackMs,
+                frameCallbackMs = LatestAnalysisFrame.CallbackMs,
+                frameUiMs = LatestAnalysisFrame.UiMs,
+                frameViewportMs = LatestAnalysisFrame.ViewportCpuMs,
+                framePresentMs = LatestAnalysisFrame.PresentMs,
+                gpuFrameMs = LatestAnalysisFrame.GpuValid ? LatestAnalysisFrame.GpuMs : 0,
+                gpuTimingSupported = (_pipeline ?? _scenePipeline)?.GpuTimingSupported ?? false,
+                managedAllocationBytesPerSecond = _analysisAllocatedPerSecond,
                 renderBvhBuildMs = _pipeline?.SyncBvhBuildMs ?? 0,
                 renderPackMs = _pipeline?.SyncPackMs ?? 0,
                 renderUploadMs = _pipeline?.SyncUploadMs ?? 0,
@@ -950,16 +980,29 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         BeginEditorHistory();
         using var fileHistoryScope = _historyFiles.Activate();
         if (inputBlocked) ImGui.BeginDisabled();
+        var mark = PerformanceMark();
         DrawMenuBar();
         DrawDockspace();
+        MeasureSince(mark, ref _analysisLive.MenuDockMs);
+
+        mark = PerformanceMark();
         DrawHierarchy();
+        MeasureSince(mark, ref _analysisLive.HierarchyMs);
+
+        mark = PerformanceMark();
         DrawCenter();
-        DrawModelingTools();
-        DrawFloodConfirmModal();
-        DrawVoxExportConfirmation();
+        MeasureSince(mark, ref _analysisLive.CenterMs);
+
+        mark = PerformanceMark();
         DrawInspector();
         DrawExtraInspectors();
         DrawRenderConfig();
+        MeasureSince(mark, ref _analysisLive.InspectorMs);
+
+        mark = PerformanceMark();
+        DrawModelingTools();
+        DrawFloodConfirmModal();
+        DrawVoxExportConfirmation();
         DrawProjectAssets();
         DrawPluginPanels();
         DrawGeneratorWindow();
@@ -969,12 +1012,15 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawAnimationWindow();
         DrawTimelineWindow();
         DrawStatusBar();
+        DrawMinecraftImportWindow();
+        DrawMeshImportWindow();
+        MeasureSince(mark, ref _analysisLive.OtherPanelsMs);
+
+        mark = PerformanceMark();
+        if (inputBlocked) ImGui.EndDisabled();
         DrawProjectPathDialog();
         DrawLayoutNameDialog();
         DrawCloseProjectDialog();
-        DrawMinecraftImportWindow();
-        DrawMeshImportWindow();
-        if (inputBlocked) ImGui.EndDisabled();
         DrawHistoryConfirmationDialog();
         DrawExitConfirmationDialog();
         if (!inputBlocked) DrawSettingsWindow();
@@ -985,6 +1031,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             BlockingOperationDialog.Draw(snapshot, CancelProjectOperation);
         }
+        MeasureSince(mark, ref _analysisLive.DialogsMs);
         _applyPreset = false;
         EndEditorHistory();
     }
@@ -4664,7 +4711,7 @@ DockId=0x6A3C3007,0
         _requestedInspectorTab = preset == LayoutPreset.Modeling ? null : preset == LayoutPreset.Rendering ? 1 : 0;
     }
 
-    private void ApplyPresetPanels(LayoutPreset preset)
+    private void ApplyPresetPanels(LayoutPreset preset, bool openDiagnostics = true)
     {
         _showModelingTools = true;
         _showInspector = true;
@@ -4672,6 +4719,7 @@ DockId=0x6A3C3007,0
         _showHierarchy = true;
         _showProjectAssets = true;
         _showGeneratorPanel = preset == LayoutPreset.Generator;
+        if (!openDiagnostics) return;
         _showVoxelMeasurements = preset == LayoutPreset.Analysis;
         _showPerformanceAnalyzer = preset == LayoutPreset.Analysis;
     }

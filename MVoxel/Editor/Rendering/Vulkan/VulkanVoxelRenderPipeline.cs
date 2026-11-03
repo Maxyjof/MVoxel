@@ -23,6 +23,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 {
     internal const int PackedCellSize = 48;
 
+    /// <summary>
+    /// 单帧路径追踪最多的提交次数，用于在提交开销与 TDR 安全之间取平衡
+    /// </summary>
+    private const int MaxPathSubmitsPerFrame = 6;
+
+    /// <summary>
+    /// 分块起点 push constant 的字节数，对应着色器里的 ivec2
+    /// </summary>
+    private const int TilePushConstantBytes = 8;
+
     private readonly VulkanWindowContext? _context;
     private readonly Vk? _api;
     private readonly Device _device;
@@ -105,7 +115,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
     // 分块一提交就走，槽位复用时才等自己的栅栏，GPU 分块之间不再被 CPU 等待打断
-    private const int TileRingDepth = 3;
+    // 深度与单帧提交上限匹配：一帧内的提交都能落到空槽，帧与帧之间才可能等待
+    private const int TileRingDepth = 8;
     private readonly VkBuffer[] _ringParameterBuffers = new VkBuffer[TileRingDepth];
     private readonly DeviceMemory[] _ringParameterMemory = new DeviceMemory[TileRingDepth];
     private readonly DescriptorSet[] _ringSets = new DescriptorSet[TileRingDepth];
@@ -114,6 +125,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private readonly bool[] _ringInFlight = new bool[TileRingDepth];
     private CommandPool _ringCommandPool;
     private int _ringNext;
+
+    // GPU 时间戳采样：开始与结束各用一条极短命令缓冲，夹住整帧 Compute 提交。
+    // 只在性能分析器打开时启用，结束时间戳的栅栏由编辑器异步轮询，不阻塞渲染
+    private QueryPool _gpuTimestampPool;
+    private CommandBuffer _gpuTimestampEnd;
+    private Fence _gpuTimestampFence;
+    private bool _gpuTimestampFenceSignaled = true;
+    private bool _gpuTimingPending;
+    private bool _gpuTimingEndSubmitted;
+    private bool _gpuTimingBroken;
+    private long _gpuTimingToken;
+    private double _lastGpuFrameMs;
 
     private Image _outputImage;
     private DeviceMemory _outputMemory;
@@ -309,6 +332,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭、体素在预算内
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
             lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
+        // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
+        SyncCompletedCount++;
         if (brickEligible)
         {
             RefreshEmissiveCatalog(world, true);
@@ -613,6 +638,46 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 获取体素与 BVH 显存缓冲的容量字节数
     /// </summary>
     internal (ulong VoxelBytes, ulong BvhBytes) GpuBufferCapacity => (_voxelBufferCapacity, _bvhBufferCapacity);
+
+    /// <summary>
+    /// 获取队列异步提交累计次数，供视口性能采样换算每帧提交量
+    /// </summary>
+    internal long SubmitCount => _context?.AsyncSubmitCount ?? 0;
+
+    /// <summary>
+    /// 获取栅栏等待累计毫秒，供视口性能采样定位 CPU 等待 GPU 的耗时
+    /// </summary>
+    internal double FenceWaitTotalMs => _context?.FenceWaitMs ?? 0;
+
+    /// <summary>
+    /// 获取工作集同步的合计耗时（构建、BVH、打包与上传）
+    /// </summary>
+    internal double SyncTotalMs => SyncWorksetBuildMs + SyncBvhBuildMs + SyncPackMs + SyncUploadMs;
+
+    /// <summary>
+    /// 获取工作集累计重建次数，供视口性能采样判断某一帧是否真的重建过工作集
+    /// </summary>
+    internal int SyncCompletedCount { get; private set; }
+
+    /// <summary>
+    /// 是否启用 GPU 时间戳采样，由性能分析器在渲染前设置
+    /// </summary>
+    internal bool GpuProfilingEnabled { get; set; }
+
+    /// <summary>
+    /// 当前帧标识，GPU 结果回读后据此写回对应帧样本
+    /// </summary>
+    internal long GpuTimingToken { get; set; }
+
+    /// <summary>
+    /// 最近一次成功回读的 GPU 计算耗时毫秒
+    /// </summary>
+    internal double LastGpuFrameMs => _lastGpuFrameMs;
+
+    /// <summary>
+    /// 当前设备是否支持 GPU 时间戳采样
+    /// </summary>
+    internal bool GpuTimingSupported => _context?.SupportsTimestamps == true && !_gpuTimingBroken;
 
     /// <summary>
     /// 重置渐进渲染累积
@@ -947,6 +1012,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
+            if (_gpuTimestampPool.Handle != 0) api.DestroyQueryPool(_device, _gpuTimestampPool, null);
+            if (_gpuTimestampEnd.Handle != 0)
+            {
+                var timestampBuffer = _gpuTimestampEnd;
+                api.FreeCommandBuffers(_device, _ringCommandPool, 1, &timestampBuffer);
+            }
+
+            if (_gpuTimestampFence.Handle != 0) api.DestroyFence(_device, _gpuTimestampFence, null);
             if (_ringCommandPool.Handle != 0) api.DestroyCommandPool(_device, _ringCommandPool, null);
             if (_materialTableBuffer.Handle != 0)
             {
@@ -1106,30 +1179,45 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
-        var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels, _workset.SourceVersion);
-        if (_realtimeHistorySignature != realtimeSignature)
-        {
-            _realtimeHistorySignature = realtimeSignature;
-            _realtimeHistoryInvalid = true;
-        }
-        bool historyWasInvalid = !pathMode && _realtimeHistoryInvalid;
-        if (!pathMode && _realtimeHistoryInvalid)
-        {
-            ClearRealtimeHistory();
-        }
-        if (!pathMode && !historyWasInvalid && ParametersEqualForDisplay(parameters))
-        {
-            return true;
-        }
+        // 时间混合权重为零时历史读写对画面没有任何影响，整段历史机制都可以跳过：
+        // 不再每帧全图清零、不再交换读写角色，也不再每帧重写描述符
+        bool historyUsed = !pathMode && parameters[VoxelRenderParameters.RealtimeTemporalWeight] > 0F;
+        bool historyCleared = false;
         if (!pathMode)
         {
-            // 只有上一帧所有分块完成后才交换历史角色，避免槽位仍在使用旧描述符
-            WaitForComputeIdle();
-            if (!historyWasInvalid)
+            if (!historyUsed)
             {
-                _realtimeHistoryReadIsA = !_realtimeHistoryReadIsA;
+                // 历史长期未使用，下次真正启用前必须先清零，避免读到过期内容
+                _realtimeHistoryInvalid = true;
             }
-            UpdateComputeDescriptors();
+            else
+            {
+                var realtimeSignature = ComputeRealtimeHistorySignature(parameters, widthPixels, heightPixels, _workset.SourceVersion);
+                if (_realtimeHistorySignature != realtimeSignature)
+                {
+                    _realtimeHistorySignature = realtimeSignature;
+                    _realtimeHistoryInvalid = true;
+                }
+
+                if (_realtimeHistoryInvalid)
+                {
+                    ClearRealtimeHistory();
+                    historyCleared = true;
+                }
+            }
+
+            if (!historyCleared && ParametersEqualForDisplay(parameters))
+            {
+                return true;
+            }
+
+            if (historyUsed && !historyCleared)
+            {
+                // 描述符由整个环形队列共享，交换历史读写角色前必须确认没有命令缓冲仍在引用
+                WaitForComputeIdle();
+                _realtimeHistoryReadIsA = !_realtimeHistoryReadIsA;
+                UpdateComputeDescriptors();
+            }
         }
 
         if (pathMode && _clearAccumulationPending)
@@ -1137,44 +1225,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ClearAccumulation();
         }
 
-        // 将一整帧拆成有限尺寸的分块，避免路径追踪在单次 GPU 调度中触发 Windows TDR。
-        // 分块不会改变采样、反弹或输出分辨率，只改变命令提交粒度。
-        // 每个分块仍是独立一次提交，单块 GPU 时长不变；提交走环形队列，
-        // CPU 录完即走，只有环满需要复用槽位时才等待对应栅栏。
+        // 实时模式整帧一次调度：每个像素的计算量固定，与分块数量无关。
+        // 单次提交把每帧上百次队列提交和栅栏等待压缩成一次，避免在 AMD 驱动上
+        // 因为提交风暴和跨提交等待拖慢整个编辑器。
+        // 路径追踪仍按分块提交，保证单次 GPU 调度时长受控，不触发 Windows TDR。
         const int tileSize = 128;
         bool realtimePost = !pathMode && !frameState.ShowOutlines;
         bool bloomActive = settings.BloomEnabled && settings.BloomIntensity > 0F &&
                            (pathMode || realtimePost);
-        for (var tileY = 0; tileY < heightPixels; tileY += tileSize)
+        if (!pathMode)
         {
-            var tileHeight = Math.Min(tileSize, heightPixels - tileY);
-            for (var tileX = 0; tileX < widthPixels; tileX += tileSize)
-            {
-                var tileWidth = Math.Min(tileSize, widthPixels - tileX);
-                parameters[VoxelRenderParameters.TileOffsetX] = tileX;
-                parameters[VoxelRenderParameters.TileOffsetY] = tileY;
-                var slot = AcquireRingSlot();
-                UploadParameters(slot, parameters);
-                var commandBuffer = _ringCommands[slot];
-                TransitionOutputToGeneral(commandBuffer);
-                if (!pathMode) TransitionRealtimeHistoryToGeneral(commandBuffer);
-                if (pathMode || bloomActive || selectionActive)
-                {
-                    TransitionAccumulationToGeneral(commandBuffer);
-                    if (pathMode || selectionActive) TransitionGuideToGeneral(commandBuffer);
-                }
-
-                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                var descriptorSet = _ringSets[slot];
-                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                    0, 1, in descriptorSet, 0, null);
-                api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
-                    ((uint)tileHeight + 7U) / 8U, 1);
-                LastDispatchCount++;
-                LastWorkgroupCount += ((tileWidth + 7L) / 8L) * ((tileHeight + 7L) / 8L);
-                TransitionOutputToShaderRead(commandBuffer);
-                CommitRingSlot(slot);
-            }
+            DispatchRealtimeFrame(api, parameters, historyUsed, bloomActive, selectionActive,
+                widthPixels, heightPixels);
+        }
+        else
+        {
+            DispatchPathFrame(api, parameters, bloomActive, selectionActive,
+                widthPixels, heightPixels, tileSize);
         }
 
         // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
@@ -1199,10 +1266,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     TransitionAccumulationToGeneral(commandBuffer);
                     if (pathMode || selectionActive) TransitionGuideToGeneral(commandBuffer);
                 }
-                api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
-                var descriptorSet = _ringSets[slot];
-                api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
-                    0, 1, in descriptorSet, 0, null);
+                BindComputeTile(commandBuffer, _ringSets[slot], 0, 0);
                 api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
                     ((uint)heightPixels + 7U) / 8U, 1);
                 LastDispatchCount++;
@@ -1231,6 +1295,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DispatchFinalPass(VoxelRenderParameters.FxaaPass, 2F);
             }
         }
+        // 收尾通道和所有分块都已提交，结束时间戳排在队列最后
+        EndGpuTiming();
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
         parameters[VoxelRenderParameters.DenoisePass] = 0F;
@@ -1243,6 +1309,99 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         _lastParameters = parameters;
         return true;
+    }
+
+    /// <summary>
+    /// 实时模式整帧一次调度：所有像素共用同一份参数，一次提交完成
+    /// </summary>
+    /// <remarks>
+    /// 实时着色每个像素的计算量固定，不需要像路径追踪那样按分块拆分提交
+    /// 环形槽位一次只占用一个，连续多帧都能与 GPU 并行，不再出现每帧等待全部在途提交
+    /// </remarks>
+    private void DispatchRealtimeFrame(Vk api, float[] parameters, bool historyUsed, bool bloomActive,
+        bool selectionActive, int widthPixels, int heightPixels)
+    {
+        var slot = AcquireRingSlot();
+        UploadParameters(slot, parameters);
+        var commandBuffer = _ringCommands[slot];
+        BeginGpuTiming(commandBuffer);
+        TransitionOutputToGeneral(commandBuffer);
+        if (historyUsed) TransitionRealtimeHistoryToGeneral(commandBuffer);
+        if (bloomActive || selectionActive)
+        {
+            TransitionAccumulationToGeneral(commandBuffer);
+            if (selectionActive) TransitionGuideToGeneral(commandBuffer);
+        }
+
+        BindComputeTile(commandBuffer, _ringSets[slot], 0, 0);
+        var groupX = ((uint)widthPixels + 7U) / 8U;
+        var groupY = ((uint)heightPixels + 7U) / 8U;
+        api.CmdDispatch(commandBuffer, groupX, groupY, 1);
+        LastDispatchCount = 1;
+        LastWorkgroupCount = (long)groupX * (long)groupY;
+        TransitionOutputToShaderRead(commandBuffer);
+        CommitRingSlot(slot);
+    }
+
+    /// <summary>
+    /// 路径追踪分块提交：分块起点走 push constant，因此整帧参数只上传一次，
+    /// 若干分块合并到同一条命令缓冲里提交，避免每块一次队列提交与栅栏等待
+    /// </summary>
+    /// <param name="api">Vulkan API</param>
+    /// <param name="parameters">渲染参数块</param>
+    /// <param name="bloomActive">是否启用 Bloom 收尾通道</param>
+    /// <param name="selectionActive">是否启用场景选中描边通道</param>
+    /// <param name="widthPixels">输出宽度</param>
+    /// <param name="heightPixels">输出高度</param>
+    /// <param name="tileSize">单个分块的边长</param>
+    /// <returns>是否已经写入开始时间戳</returns>
+    private bool DispatchPathFrame(Vk api, float[] parameters, bool bloomActive, bool selectionActive,
+        int widthPixels, int heightPixels, int tileSize)
+    {
+        var columns = Math.Max(1, (widthPixels + tileSize - 1) / tileSize);
+        var rows = Math.Max(1, (heightPixels + tileSize - 1) / tileSize);
+        var totalTiles = columns * rows;
+        // 单条命令缓冲里最多放六分之一帧的派发，既把提交次数压到个位数，
+        // 又让每次 GPU 调度的时长保持在整帧的六成以下，不触发 Windows TDR
+        var tilesPerSubmit = Math.Max(1, (totalTiles + MaxPathSubmitsPerFrame - 1) / MaxPathSubmitsPerFrame);
+        var tileIndex = 0;
+        var startedTiming = false;
+        while (tileIndex < totalTiles)
+        {
+            var slot = AcquireRingSlot();
+            UploadParameters(slot, parameters);
+            var commandBuffer = _ringCommands[slot];
+            if (!startedTiming)
+            {
+                BeginGpuTiming(commandBuffer);
+                startedTiming = true;
+            }
+
+            TransitionOutputToGeneral(commandBuffer);
+            if (bloomActive || selectionActive)
+            {
+                TransitionAccumulationToGeneral(commandBuffer);
+                if (selectionActive) TransitionGuideToGeneral(commandBuffer);
+            }
+
+            for (var batch = 0; batch < tilesPerSubmit && tileIndex < totalTiles; batch++, tileIndex++)
+            {
+                var tileX = tileIndex % columns * tileSize;
+                var tileY = tileIndex / columns * tileSize;
+                var tileWidth = Math.Min(tileSize, widthPixels - tileX);
+                var tileHeight = Math.Min(tileSize, heightPixels - tileY);
+                BindComputeTile(commandBuffer, _ringSets[slot], tileX, tileY);
+                api.CmdDispatch(commandBuffer, ((uint)tileWidth + 7U) / 8U,
+                    ((uint)tileHeight + 7U) / 8U, 1);
+                LastDispatchCount++;
+                LastWorkgroupCount += ((tileWidth + 7L) / 8L) * ((tileHeight + 7L) / 8L);
+            }
+
+            TransitionOutputToShaderRead(commandBuffer);
+            CommitRingSlot(slot);
+        }
+
+        return startedTiming;
     }
 
     /// <summary>
@@ -1379,6 +1538,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         var api = _api!;
+        var recreateWatch = System.Diagnostics.Stopwatch.StartNew();
+        // 输出图像可能仍被上一帧的 ImGui 命令缓冲引用，重建前必须等设备空闲。
+        // 不能用帧栅栏代替：这里就在当前帧的录制过程中，帧栅栏已经为本帧复位过，
+        // 等它只会等一个尚未提交的信号，直接卡死
         api.DeviceWaitIdle(_device);
         if (_displayTextureId != IntPtr.Zero)
         {
@@ -1457,6 +1620,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _accumulationInitialized = false;
             _clearAccumulationPending = true;
             UpdateComputeDescriptors();
+            MVoxelLog.Info($"重建视口输出图像 {width}x{height}，用时 {recreateWatch.Elapsed.TotalMilliseconds:0.0}ms");
         }
         catch
         {
@@ -1645,6 +1809,188 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 按需创建 GPU 时间戳查询池、开始与结束命令缓冲和回读栅栏
+    /// </summary>
+    /// <returns>资源可用时返回 true，当前设备不支持时间戳时退化为不采样</returns>
+    private bool EnsureGpuTimingResources()
+    {
+        if (_gpuTimingBroken) return false;
+        if (_gpuTimestampPool.Handle != 0) return true;
+        if (_context is null || !_context.SupportsTimestamps)
+        {
+            _gpuTimingBroken = true;
+            return false;
+        }
+
+        try
+        {
+            var api = _api!;
+            QueryPoolCreateInfo poolInfo = new()
+            {
+                SType = StructureType.QueryPoolCreateInfo,
+                QueryType = QueryType.Timestamp,
+                QueryCount = 2
+            };
+            QueryPool pool = default;
+            Check(api.CreateQueryPool(_device, &poolInfo, null, &pool), "创建 GPU 时间戳查询池");
+            _gpuTimestampPool = pool;
+            CommandBufferAllocateInfo allocateInfo = new()
+            {
+                SType = StructureType.CommandBufferAllocateInfo,
+                CommandPool = _ringCommandPool,
+                Level = CommandBufferLevel.Primary,
+                CommandBufferCount = 1
+            };
+            CommandBuffer* buffers = stackalloc CommandBuffer[1];
+            Check(api.AllocateCommandBuffers(_device, &allocateInfo, buffers), "分配 GPU 时间戳命令缓冲");
+            _gpuTimestampEnd = buffers[0];
+            FenceCreateInfo fenceInfo = new()
+            {
+                SType = StructureType.FenceCreateInfo,
+                Flags = FenceCreateFlags.SignaledBit
+            };
+            Fence fence = default;
+            Check(api.CreateFence(_device, &fenceInfo, null, &fence), "创建 GPU 时间戳回读栅栏");
+            _gpuTimestampFence = fence;
+            _gpuTimestampFenceSignaled = true;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _gpuTimingBroken = true;
+            _gpuTimingPending = false;
+            MVoxelLog.Warn($"GPU 时间戳采样初始化失败，性能分析器将只显示 CPU 数据：{exception.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 在第一帧实际计算命令缓冲开头写入开始时间戳，避免把 CPU 等待算进 GPU 耗时
+    /// </summary>
+    /// <param name="commandBuffer">已开始录制的分块命令缓冲</param>
+    private void BeginGpuTiming(CommandBuffer commandBuffer)
+    {
+        if (!GpuProfilingEnabled || _gpuTimingPending || !EnsureGpuTimingResources()) return;
+        try
+        {
+            var api = _api!;
+            api.CmdResetQueryPool(commandBuffer, _gpuTimestampPool, 0, 2);
+            api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.TopOfPipeBit, _gpuTimestampPool, 0);
+            _gpuTimingPending = true;
+            _gpuTimingEndSubmitted = false;
+            _gpuTimingToken = GpuTimingToken;
+        }
+        catch (Exception exception)
+        {
+            _gpuTimingBroken = true;
+            _gpuTimingPending = false;
+            MVoxelLog.Warn($"GPU 开始时间戳写入失败，停止 GPU 计时：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 在整帧 Compute 提交之后写入结束时间戳并提交回读栅栏
+    /// </summary>
+    private void EndGpuTiming()
+    {
+        if (!_gpuTimingPending || _gpuTimingEndSubmitted || _gpuTimingBroken) return;
+        try
+        {
+            var api = _api!;
+            var commandBuffer = _gpuTimestampEnd;
+            Check(api.ResetCommandBuffer(commandBuffer, 0), "重置 GPU 结束时间戳命令缓冲");
+            CommandBufferBeginInfo begin = new() { SType = StructureType.CommandBufferBeginInfo };
+            Check(api.BeginCommandBuffer(commandBuffer, in begin), "录制 GPU 结束时间戳");
+            api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.BottomOfPipeBit, _gpuTimestampPool, 1);
+            Check(api.EndCommandBuffer(commandBuffer), "结束 GPU 结束时间戳");
+            Fence fence = _gpuTimestampFence;
+            if (_gpuTimestampFenceSignaled)
+            {
+                Check(api.ResetFences(_device, 1, in fence), "复位 GPU 时间戳回读栅栏");
+                _gpuTimestampFenceSignaled = false;
+            }
+
+            CommandBuffer local = commandBuffer;
+            SubmitInfo submit = new()
+            {
+                SType = StructureType.SubmitInfo,
+                CommandBufferCount = 1,
+                PCommandBuffers = &local
+            };
+            Check(api.QueueSubmit(_context!.GraphicsQueue, 1, in submit, fence), "提交 GPU 结束时间戳");
+            _gpuTimingEndSubmitted = true;
+        }
+        catch (Exception exception)
+        {
+            _gpuTimingBroken = true;
+            _gpuTimingPending = false;
+            MVoxelLog.Warn($"GPU 结束时间戳写入失败，停止 GPU 计时：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 异步尝试回读最近一帧的 GPU 时间戳，不等待 GPU
+    /// </summary>
+    /// <param name="token">开始采样时记录的帧标识</param>
+    /// <param name="milliseconds">GPU 计算耗时毫秒</param>
+    /// <returns>成功取得结果时返回 true</returns>
+    internal bool TryTakeGpuTiming(out long token, out double milliseconds)
+    {
+        token = 0;
+        milliseconds = 0;
+        if (!_gpuTimingPending || !_gpuTimingEndSubmitted) return false;
+        if (_gpuTimingBroken)
+        {
+            _gpuTimingPending = false;
+            return false;
+        }
+
+        try
+        {
+            var api = _api!;
+            var status = api.GetFenceStatus(_device, _gpuTimestampFence);
+            if (status == Result.NotReady) return false;
+            if (status != Result.Success)
+            {
+                _gpuTimingBroken = true;
+                _gpuTimingPending = false;
+                return false;
+            }
+
+            _gpuTimestampFenceSignaled = true;
+            ulong* timestamps = stackalloc ulong[2];
+            var result = api.GetQueryPoolResults(_device, _gpuTimestampPool, 0, 2,
+                (nuint)(2 * sizeof(ulong)), timestamps, sizeof(ulong), QueryResultFlags.Result64Bit);
+            if (result == Result.NotReady) return false;
+            if (result != Result.Success)
+            {
+                _gpuTimingBroken = true;
+                _gpuTimingPending = false;
+                MVoxelLog.Warn($"GPU 时间戳回读失败：{result}");
+                return false;
+            }
+
+            var validBits = _context!.TimestampValidBits;
+            var mask = validBits >= 64 ? ulong.MaxValue : (1UL << (int)validBits) - 1;
+            var start = timestamps[0] & mask;
+            var end = timestamps[1] & mask;
+            var ticks = (end - start) & mask;
+            milliseconds = ticks * _context.TimestampPeriodNanoseconds / 1_000_000D;
+            _lastGpuFrameMs = milliseconds;
+            token = _gpuTimingToken;
+            _gpuTimingPending = false;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _gpuTimingBroken = true;
+            _gpuTimingPending = false;
+            MVoxelLog.Warn($"GPU 时间戳回读异常，停止 GPU 计时：{exception.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 创建 Compute 描述符布局
     /// </summary>
     /// <returns>Compute 描述符布局</returns>
@@ -1763,15 +2109,42 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private PipelineLayout CreateComputePipelineLayout()
     {
         var descriptorLayout = _computeDescriptorLayout;
+        // 分块起点用 push constant 传递：8 字节足够，且不需要为每个分块准备独立参数缓冲
+        PushConstantRange pushRange = new()
+        {
+            StageFlags = ShaderStageFlags.ComputeBit,
+            Offset = 0,
+            Size = TilePushConstantBytes
+        };
         PipelineLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.PipelineLayoutCreateInfo,
             SetLayoutCount = 1,
-            PSetLayouts = &descriptorLayout
+            PSetLayouts = &descriptorLayout,
+            PushConstantRangeCount = 1,
+            PPushConstantRanges = &pushRange
         };
         PipelineLayout layout = default;
         Check(_api!.CreatePipelineLayout(_device, &createInfo, null, &layout), "创建体素 Compute 管线布局");
         return layout;
+    }
+
+    /// <summary>
+    /// 绑定 Compute 管线、描述符集与分块起点
+    /// </summary>
+    /// <param name="commandBuffer">正在录制的命令缓冲</param>
+    /// <param name="descriptorSet">该槽位的描述符集</param>
+    /// <param name="tileX">分块左上角 X</param>
+    /// <param name="tileY">分块左上角 Y</param>
+    private void BindComputeTile(CommandBuffer commandBuffer, DescriptorSet descriptorSet, int tileX, int tileY)
+    {
+        var api = _api!;
+        api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+        api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
+            0, 1, in descriptorSet, 0, null);
+        int* tileOffset = stackalloc int[2] { tileX, tileY };
+        api.CmdPushConstants(commandBuffer, _computePipelineLayout, ShaderStageFlags.ComputeBit, 0,
+            TilePushConstantBytes, tileOffset);
     }
 
     /// <summary>
@@ -2002,6 +2375,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
     private const string SceneShaderBody = """
         layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+        // 分块起点走 push constant，同一帧的多个分块共用同一份参数缓冲与描述符集，
+        // 因此整帧只需要一次参数上传，提交次数也不再受分块数量支配
+        layout(push_constant) uniform TilePushConstants
+        {
+            ivec2 tileOffset;
+        } tilePush;
 
         struct VoxelCell
         {
@@ -3348,12 +3728,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         void StoreSceneOutput(ivec2 pixel, vec4 value)
         {
             vec4 temporalValue = value;
-            if (values[86] < 0.5)
+            float temporalWeight = clamp(values[P_REALTIME_TEMPORAL_WEIGHT], 0.0, 0.98);
+            // 时间混合权重为零时不读写历史：结果与直接输出完全一致，
+            // 同时省掉整帧一次全图历史清零，也避免为历史图像切换描述符
+            if (values[86] < 0.5 && temporalWeight > 0.0)
             {
                 vec4 previousValue = imageLoad(realtimeHistoryRead, pixel);
-                float temporalWeight = clamp(values[P_REALTIME_TEMPORAL_WEIGHT], 0.0, 0.98);
                 // 清空后的历史透明度为0，首帧直接使用当前结果，避免黑帧污染
-                if (previousValue.a > 0.0 && temporalWeight > 0.0)
+                if (previousValue.a > 0.0)
                     temporalValue.rgb = mix(value.rgb, previousValue.rgb, temporalWeight);
                 imageStore(realtimeHistoryWrite, pixel, vec4(temporalValue.rgb, value.a));
             }
@@ -3361,26 +3743,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 imageStore(accumulationImage, pixel, temporalValue);
             else
                 imageStore(outputImage, pixel, temporalValue);
-        }
-
-        // Background reachable along a screen axis is outside the selection silhouette.
-        // Closed holes are rejected rather than receiving internal outlines.
-        bool SelectionExterior(ivec2 point, ivec2 size)
-        {
-            const ivec2 directions[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
-            for (int d = 0; d < 4; d++)
-            {
-                ivec2 cursor = point;
-                bool escaped = true;
-                for (int step = 0; step < max(size.x, size.y); step++)
-                {
-                    if (cursor.x < 0 || cursor.y < 0 || cursor.x >= size.x || cursor.y >= size.y) break;
-                    if (imageLoad(guideImage, cursor).x > 0.5) { escaped = false; break; }
-                    cursor += directions[d];
-                }
-                if (escaped) return true;
-            }
-            return false;
         }
 
         // Storage image 没有硬件线性采样，手动插值以保留 FXAA 的亚像素方向。
@@ -3397,8 +3759,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         void main()
         {
-            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) +
-                ivec2(int(values[101]), int(values[102]));
+            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) + tilePush.tileOffset;
             int width = int(values[11]);
             int height = int(values[15]);
             if (pixel.x >= width || pixel.y >= height) return;
@@ -3451,7 +3812,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         ivec2 neighbor = pixel + offsets[i];
                         if (neighbor.x < 0 || neighbor.y < 0 || neighbor.x >= width || neighbor.y >= height)
                         { edge = true; break; }
-                        if (imageLoad(guideImage, neighbor).x < 0.5 && SelectionExterior(neighbor, ivec2(width, height)))
+                        // Compare view-space depths: a surface behind the selected pixel is
+                        // a valid silhouette background; a foreground occluder is not.
+                        if (imageLoad(guideImage, neighbor).x < 0.5 &&
+                            (imageLoad(guideImage, neighbor).y <= 0.0 ||
+                             imageLoad(guideImage, neighbor).y >= imageLoad(guideImage, pixel).y))
                         { edge = true; break; }
                     }
                     if (edge) base = vec4(1.0, 0.784, 0.235, 1.0);
@@ -3561,7 +3926,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
             sampleColor /= float(samples);
             if (values[63] > 0.5 && values[63] < 1.5)
-                imageStore(guideImage, pixel, vec4(selectedPixel ? 1.0 : 0.0, 0.0, 0.0, 1.0));
+                imageStore(guideImage, pixel, vec4(selectedPixel ? 1.0 : 0.0, guide.w, 0.0, 1.0));
 
             vec3 color = sampleColor;
             if (pathMode)

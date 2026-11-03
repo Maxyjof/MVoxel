@@ -42,7 +42,8 @@ internal sealed partial class ImGuiEditorWindow
                 if (Enum.TryParse<LayoutPreset>(name[9..], out var preset) && preset != LayoutPreset.Custom)
                 {
                     _layoutPreset = preset;
-                    ApplyPresetPanels(preset);
+                    // 启动恢复布局只恢复停靠结构，诊断窗口仍需由用户主动打开
+                    ApplyPresetPanels(preset, openDiagnostics: false);
                 }
                 return;
             }

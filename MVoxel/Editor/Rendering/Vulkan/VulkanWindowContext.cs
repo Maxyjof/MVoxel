@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Numerics;
 using MVoxel.Core;
 using OpenTK.Windowing.Desktop;
@@ -55,6 +55,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private bool _resizePending;
     private bool _deviceLost;
     private bool _disposed;
+    private readonly bool _supportsTimestamps;
+    private readonly uint _timestampValidBits;
+    private readonly double _timestampPeriodNanoseconds;
 
     /// <summary>
     /// 创建 Windows Vulkan Surface 与可呈现的交换链
@@ -75,6 +78,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         MVoxelLog.Info(_rayTracingCapabilities.Diagnostic);
         _device = CreateDevice(_physicalDevice, _queueFamilyIndex);
         _api.GetDeviceQueue(_device, _queueFamilyIndex, 0, out _queue);
+        (_supportsTimestamps, _timestampValidBits, _timestampPeriodNanoseconds) = QueryTimestampCapabilities();
         _swapchain = CreateSwapchain(window.FramebufferSize.X, window.FramebufferSize.Y);
         _renderPass = CreateRenderPass();
         CreateSwapchainImages();
@@ -153,6 +157,46 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal bool SupportsRayQuery => _rayTracingCapabilities.SupportsRayQuery;
 
     /// <summary>
+    /// 当前图形队列是否支持 GPU 时间戳查询
+    /// </summary>
+    internal bool SupportsTimestamps => _supportsTimestamps;
+
+    /// <summary>
+    /// GPU 时间戳有效位数，不足 64 位时需要掩码
+    /// </summary>
+    internal uint TimestampValidBits => _timestampValidBits;
+
+    /// <summary>
+    /// 每个时间戳计数对应的纳秒数
+    /// </summary>
+    internal double TimestampPeriodNanoseconds => _timestampPeriodNanoseconds;
+
+    /// <summary>
+    /// 最近一帧获取交换链图像耗时毫秒
+    /// </summary>
+    internal double LastAcquireMs { get; private set; }
+
+    /// <summary>
+    /// 最近一帧等待上一帧栅栏耗时毫秒
+    /// </summary>
+    internal double LastFrameFenceWaitMs { get; private set; }
+
+    /// <summary>
+    /// 最近一帧录制命令缓冲耗时毫秒
+    /// </summary>
+    internal double LastRecordMs { get; private set; }
+
+    /// <summary>
+    /// 最近一帧提交命令耗时毫秒
+    /// </summary>
+    internal double LastSubmitMs { get; private set; }
+
+    /// <summary>
+    /// 最近一帧呈现耗时毫秒
+    /// </summary>
+    internal double LastPresentMs { get; private set; }
+
+    /// <summary>
     /// 标记窗口尺寸变化，下一帧按需重建交换链资源
     /// </summary>
     internal void RequestResize()
@@ -191,6 +235,19 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         Check(_api.ResetFences(_device, 1, in fence), "复位 Vulkan 立即提交栅栏");
         ImmediateSubmitCount += 1;
         ImmediateSubmitMs += submitWatch.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// 等待最近一帧窗口提交执行完毕，用于安全回收仍可能被帧命令缓冲引用的图像
+    /// </summary>
+    /// <remarks>
+    /// 只等待帧栅栏，不复位它：下一帧照常先等待再复位，复位留在这里会让下一帧永久阻塞
+    /// </remarks>
+    internal void WaitForFrameIdle()
+    {
+        if (_deviceLost || _disposed || _inFlight.Handle == 0) return;
+        Fence fence = _inFlight;
+        Check(_api.WaitForFences(_device, 1, in fence, true, ulong.MaxValue), "等待窗口帧栅栏");
     }
 
     /// <summary>
@@ -287,15 +344,22 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private void RenderFrameCore(Vector4 color, Action<CommandBuffer> recordCommands)
     {
         ArgumentNullException.ThrowIfNull(recordCommands);
+        LastAcquireMs = 0;
+        LastFrameFenceWaitMs = 0;
+        LastRecordMs = 0;
+        LastSubmitMs = 0;
+        LastPresentMs = 0;
         if (_deviceLost || _disposed) return;
         if (!TryRecreateSwapchain())
         {
             return;
         }
 
+        var mark = System.Diagnostics.Stopwatch.GetTimestamp();
         uint imageIndex = 0;
         Result result = _swapchainApi.AcquireNextImage(
             _device, _swapchain, ulong.MaxValue, _imageAvailable, default, ref imageIndex);
+        LastAcquireMs = System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalMilliseconds;
         if (result is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr)
         {
             _resizePending = true;
@@ -308,11 +372,14 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         }
 
         // 必须先等上一帧的命令缓冲执行完，才能重置并重新录制它
+        mark = System.Diagnostics.Stopwatch.GetTimestamp();
         Fence frameFence = _inFlight;
         Check(_api.WaitForFences(_device, 1, in frameFence, true, ulong.MaxValue), "等待 Vulkan 帧栅栏");
         Check(_api.ResetFences(_device, 1, in frameFence), "复位 Vulkan 帧栅栏");
         Check(_api.ResetCommandBuffer(_commandBuffer, 0), "重置 Vulkan 帧命令缓冲");
+        LastFrameFenceWaitMs = System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalMilliseconds;
 
+        mark = System.Diagnostics.Stopwatch.GetTimestamp();
         CommandBufferBeginInfo beginInfo = new()
         {
             SType = StructureType.CommandBufferBeginInfo
@@ -346,7 +413,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             catch (Exception exception) { captureComplete?.Invoke(exception.Message); capturePath = null; }
         }
         _api.EndCommandBuffer(_commandBuffer);
+        LastRecordMs = System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalMilliseconds;
 
+        mark = System.Diagnostics.Stopwatch.GetTimestamp();
         PipelineStageFlags waitStage = PipelineStageFlags.ColorAttachmentOutputBit;
         VkSemaphore imageAvailable = _imageAvailable;
         VkSemaphore renderFinished = _renderFinished;
@@ -364,6 +433,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             PSignalSemaphores = &renderFinished
         };
         Check(_api.QueueSubmit(_queue, 1, in submitInfo, _inFlight), "提交 Vulkan 帧命令");
+        LastSubmitMs = System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalMilliseconds;
 
         if (capturePath is not null)
         {
@@ -377,6 +447,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             finally { _api.DestroyBuffer(_device, captureBuffer, null); _api.FreeMemory(_device, captureMemory, null); }
         }
 
+        mark = System.Diagnostics.Stopwatch.GetTimestamp();
         PresentInfoKHR presentInfo = new()
         {
             SType = StructureType.PresentInfoKhr,
@@ -396,6 +467,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         {
             throw new InvalidOperationException($"Vulkan 呈现交换链图像失败：{result}");
         }
+
+        LastPresentMs = System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalMilliseconds;
     }
 
     internal void QueueWindowCapture(string path, Action<string> complete)
@@ -602,6 +675,10 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// <summary>
     /// 选择同时支持图形、计算与呈现的物理设备和队列
     /// </summary>
+    /// <remarks>
+    /// 按设备类型与显存评分后取最高分，避免在核显加独显的机器上按枚举顺序误选弱设备
+    /// 每个候选都会写进日志，便于对照实际使用的适配器和驱动版本排查驱动差异
+    /// </remarks>
     private (PhysicalDevice Device, uint QueueFamilyIndex) SelectPhysicalDevice()
     {
         uint deviceCount = 0;
@@ -617,6 +694,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             Check(_api.EnumeratePhysicalDevices(_instance, ref deviceCount, devicesPointer), "枚举 Vulkan 物理设备");
         }
 
+        PhysicalDevice bestDevice = default;
+        uint bestQueueFamily = 0;
+        long bestScore = long.MinValue;
         foreach (PhysicalDevice device in devices)
         {
             uint queueCount = 0;
@@ -633,14 +713,103 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
                 bool compute = (queueFamilies[index].QueueFlags & QueueFlags.ComputeBit) != 0;
                 Bool32 present = false;
                 _surfaceApi.GetPhysicalDeviceSurfaceSupport(device, index, _surface, out present);
-                if (graphics && compute && present.Value != 0)
+                if (!graphics || !compute || present.Value == 0)
                 {
-                    return (device, index);
+                    continue;
                 }
+
+                var score = ScorePhysicalDevice(device);
+                LogPhysicalDeviceCandidate(device, index, score);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestDevice = device;
+                    bestQueueFamily = index;
+                }
+
+                break;
             }
         }
 
-        throw new InvalidOperationException("没有支持图形与 Windows 呈现的 Vulkan 队列");
+        if (bestDevice.Handle == 0)
+        {
+            throw new InvalidOperationException("没有支持图形与 Windows 呈现的 Vulkan 队列");
+        }
+
+        return (bestDevice, bestQueueFamily);
+    }
+
+    /// <summary>
+    /// 计算物理设备评分：独立显卡优先，同档时容量更大的显存优先
+    /// </summary>
+    /// <param name="device">待评分物理设备</param>
+    /// <returns>评分，越大越优先</returns>
+    private long ScorePhysicalDevice(PhysicalDevice device)
+    {
+        PhysicalDeviceProperties properties = default;
+        _api.GetPhysicalDeviceProperties(device, &properties);
+        long score = properties.DeviceType switch
+        {
+            PhysicalDeviceType.DiscreteGpu => 4_000_000_000L,
+            PhysicalDeviceType.IntegratedGpu => 1_000_000_000L,
+            PhysicalDeviceType.VirtualGpu => 500_000_000L,
+            PhysicalDeviceType.Cpu => 10_000_000L,
+            _ => 100_000_000L,
+        };
+        PhysicalDeviceMemoryProperties memory = default;
+        _api.GetPhysicalDeviceMemoryProperties(device, &memory);
+        long deviceLocalBytes = 0;
+        for (var heap = 0; heap < memory.MemoryHeapCount; heap++)
+        {
+            if ((memory.MemoryHeaps[(int)heap].Flags & MemoryHeapFlags.DeviceLocalBit) != 0)
+            {
+                deviceLocalBytes += (long)memory.MemoryHeaps[(int)heap].Size;
+            }
+        }
+
+        return score + deviceLocalBytes / (1024L * 1024L);
+    }
+
+    /// <summary>
+    /// 读取当前图形队列的 GPU 时间戳能力与计数周期
+    /// </summary>
+    /// <returns>是否支持、有效位数与每个计数对应的纳秒数</returns>
+    private (bool Supported, uint ValidBits, double PeriodNanoseconds) QueryTimestampCapabilities()
+    {
+        PhysicalDeviceProperties properties = default;
+        _api.GetPhysicalDeviceProperties(_physicalDevice, &properties);
+        uint familyCount = 0;
+        _api.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, ref familyCount, null);
+        if (familyCount == 0 || _queueFamilyIndex >= familyCount)
+        {
+            return (false, 0, 0);
+        }
+
+        QueueFamilyProperties[] families = new QueueFamilyProperties[familyCount];
+        fixed (QueueFamilyProperties* familyPointer = families)
+        {
+            _api.GetPhysicalDeviceQueueFamilyProperties(_physicalDevice, ref familyCount, familyPointer);
+        }
+
+        var validBits = families[_queueFamilyIndex].TimestampValidBits;
+        var supported = validBits > 0 && properties.Limits.TimestampComputeAndGraphics.Value != 0;
+        return (supported, validBits, properties.Limits.TimestampPeriod);
+    }
+
+    /// <summary>
+    /// 输出一个物理设备候选的名称、类型、厂商、设备号与驱动版本
+    /// </summary>
+    private void LogPhysicalDeviceCandidate(PhysicalDevice device, uint queueFamilyIndex, long score)
+    {
+        PhysicalDeviceProperties properties = default;
+        _api.GetPhysicalDeviceProperties(device, &properties);
+        var name = VulkanHardwareRayTracing.ReadFixedString(properties.DeviceName);
+        // Vulkan 的驱动版本号按 22/10/12 位打包，同时保留原始值便于对照厂商自己的版本号
+        var driver = properties.DriverVersion;
+        var driverText = $"{driver >> 22}.{(driver >> 12) & 0x3FF}.{driver & 0xFFF}（0x{driver:X8}）";
+        MVoxelLog.Info($"Vulkan 设备候选：{name}，类型 {properties.DeviceType}，" +
+            $"厂商 0x{properties.VendorID:X4}，设备 0x{properties.DeviceID:X4}，" +
+            $"驱动 {driverText}，队列族 {queueFamilyIndex}，评分 {score}");
     }
 
     /// <summary>
