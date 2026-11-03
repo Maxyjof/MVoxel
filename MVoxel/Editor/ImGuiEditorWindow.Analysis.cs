@@ -58,6 +58,15 @@ internal sealed partial class ImGuiEditorWindow
     private long _analysisSelectedSerial;
     private int _analysisFrameIndex;
     private int _analysisFrameCount;
+    /// <summary>最近解析成功的 GPU 采样耗时环形窗口，与帧环形缓冲解耦</summary>
+    /// <remarks>
+    /// 帧缓冲按序号对齐，回读落后时容易出现一整段都没写回的情况，
+    /// 这里单独留一份最近值，保证 perf.stats 任何时候都有数可读
+    /// </remarks>
+    private readonly float[] _resolvedSamplingWindow = new float[120];
+    private readonly float[] _resolvedFinishWindow = new float[120];
+    private int _resolvedWindowCount;
+    private int _resolvedWindowNext;
     /// <summary>最近一次成功解析的 GPU 时间戳，供状态接口稳定读取</summary>
     private float _lastResolvedGpuFrameMs;
     private float _lastResolvedGpuSamplingMs;
@@ -189,6 +198,14 @@ internal sealed partial class ImGuiEditorWindow
         var samplingStats = Summarize(sampling);
         var finishStats = Summarize(finish);
         var viewportStats = Summarize(viewport);
+        // 帧缓冲里没有有效样本时回落到解析窗口，保证空闲状态下也能读到最近的真实耗时
+        if (sampling.Count == 0 && _resolvedWindowCount > 0)
+        {
+            sampling.AddRange(_resolvedSamplingWindow.Take(_resolvedWindowCount));
+            finish.AddRange(_resolvedFinishWindow.Take(_resolvedWindowCount));
+            samplingStats = Summarize((List<float>)sampling);
+            finishStats = Summarize((List<float>)finish);
+        }
         return new
         {
             frames = count,
@@ -229,6 +246,10 @@ internal sealed partial class ImGuiEditorWindow
         _lastResolvedGpuSamplingMs = (float)samplingMilliseconds;
         _lastResolvedGpuFinishMs = (float)finishMilliseconds;
         _lastResolvedGpuToken = token;
+        _resolvedSamplingWindow[_resolvedWindowNext] = (float)samplingMilliseconds;
+        _resolvedFinishWindow[_resolvedWindowNext] = (float)finishMilliseconds;
+        _resolvedWindowNext = (_resolvedWindowNext + 1) % _resolvedSamplingWindow.Length;
+        if (_resolvedWindowCount < _resolvedSamplingWindow.Length) _resolvedWindowCount++;
         var slot = (int)((token - 1) % AnalysisFrameCapacity);
         if (_analysisFrames[slot].Serial != token) return;
         _analysisFrames[slot].GpuMs = (float)milliseconds;
