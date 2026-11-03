@@ -217,12 +217,23 @@ public sealed class SparseVoxelChunk
     public bool Remove(LocalCoord coordinate) => _voxels.Remove(ToIndex(coordinate));
 
     /// <summary>
+    /// 按线性索引直接写入体素，供已经拿到索引的合成与复制路径省掉一次坐标还原
+    /// </summary>
+    /// <param name="index">区块内线性索引</param>
+    /// <param name="value">新的体素值</param>
+    internal void SetIndex(int index, VoxelValue value) => _voxels[index] = value;
+
+    /// <summary>
     /// 局部坐标压缩为单一字典索引（x 最快，z 最慢）
     /// </summary>
+    /// <remarks>
+    /// 区块边长是 2 的幂，索引与局部坐标之间用移位和掩码换算。
+    /// 这两步在遍历、合成与剔除里每个体素都要跑一遍，除法在这里是要花钱的
+    /// </remarks>
     /// <param name="coordinate">区块内局部坐标</param>
     /// <returns>线性索引</returns>
     public static int ToIndex(LocalCoord coordinate) =>
-        coordinate.X + VoxelWorld.ChunkSize * (coordinate.Y + VoxelWorld.ChunkSize * coordinate.Z);
+        coordinate.X | (coordinate.Y << ChunkShift) | (coordinate.Z << (ChunkShift * 2));
 
     /// <summary>
     /// 线性索引还原为局部坐标，是 ToIndex 的精确逆运算
@@ -236,10 +247,29 @@ public sealed class SparseVoxelChunk
             throw new ArgumentOutOfRangeException(nameof(index));
         }
 
-        var x = index % VoxelWorld.ChunkSize;
-        var y = index / VoxelWorld.ChunkSize % VoxelWorld.ChunkSize;
-        var z = index / (VoxelWorld.ChunkSize * VoxelWorld.ChunkSize);
-        return new LocalCoord(x, y, z);
+        return new LocalCoord(
+            index & ChunkMask,
+            (index >> ChunkShift) & ChunkMask,
+            index >> (ChunkShift * 2));
+    }
+
+    /// <summary>
+    /// 区块边长的二进制位数
+    /// </summary>
+    private const int ChunkShift = 5;
+
+    /// <summary>
+    /// 区块边长的低位掩码
+    /// </summary>
+    private const int ChunkMask = (1 << ChunkShift) - 1;
+
+    static SparseVoxelChunk()
+    {
+        // 索引换算是按 2 的幂写死的，改区块边长时必须同步这里的移位常量
+        if (VoxelWorld.ChunkSize != 1 << ChunkShift)
+        {
+            throw new InvalidOperationException("区块边长必须保持为 2 的幂，索引换算依赖这一点");
+        }
     }
 }
 

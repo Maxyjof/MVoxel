@@ -1,4 +1,4 @@
-﻿using MVoxel.Core;
+using MVoxel.Core;
 using MVoxel.Voxels;
 
 namespace MVoxel.Scene;
@@ -8,6 +8,11 @@ namespace MVoxel.Scene;
 /// </summary>
 internal sealed class ObjectVoxelStore
 {
+    /// <summary>
+    /// 低于该体素数的对象直接串行合成，避免为小对象付并行调度成本
+    /// </summary>
+    private const int ParallelComposeThreshold = 64 * 1024;
+
     private readonly Dictionary<StableId, VoxelWorld> _objects = new();
 
     /// <summary>
@@ -172,25 +177,59 @@ internal sealed class ObjectVoxelStore
     /// <summary>
     /// 按排序图层、排序顺序和调用方提供的层级顺序覆盖重叠坐标
     /// </summary>
+    /// <remarks>
+    /// 对象之间必须严格按优先级顺序写入，否则覆盖结果会变；但同一个对象内部的写入互不冲突，
+    /// 而对象的世界本来就是按区块组织的，因此拆成“对象串行、区块并行”。
+    /// 大型场景里对象常带几十万体素而重叠严重，这条并行把一个对象的全部区块同时铺开，
+    /// 结果与逐体素串行写入逐格相同
+    /// </remarks>
     internal VoxelWorld Compose(IEnumerable<ObjectVoxelRenderEntry> entries, CancellationToken cancellation = default,
         Func<StableId, VoxelValue, VoxelValue>? remap = null)
     {
-        var result = new VoxelWorld();
-        var writer = result.CreateBulkWriter();
-        var processed = 0;
+        var chunks = new System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, SparseVoxelChunk>();
         foreach (var entry in entries.Select((value, index) => (value, index))
                      .OrderBy(item => item.value.SortingLayer)
                      .ThenBy(item => item.value.SortingOrder)
                      .ThenBy(item => item.index))
         {
+            cancellation.ThrowIfCancellationRequested();
             if (!_objects.TryGetValue(entry.value.ObjectId, out var world)) continue;
-            foreach (var (coordinate, value) in world.EnumerateOccupied())
+            var objectId = entry.value.ObjectId;
+            var sourceChunks = world.SnapshotChunks();
+            if (world.OccupiedVoxelCount < ParallelComposeThreshold)
             {
-                if ((processed++ & 4095) == 0) cancellation.ThrowIfCancellationRequested();
-                writer.Set(coordinate, remap is null ? value : remap(entry.value.ObjectId, value));
+                foreach (var source in sourceChunks) ComposeChunk(chunks, source, objectId, remap, cancellation);
+                continue;
             }
+
+            Parallel.ForEach(sourceChunks, new ParallelOptions { CancellationToken = cancellation },
+                source => ComposeChunk(chunks, source, objectId, remap, cancellation));
         }
+
+        cancellation.ThrowIfCancellationRequested();
+        var result = new VoxelWorld();
+        foreach (var (coordinate, chunk) in chunks) result.AdoptChunk(coordinate, chunk);
         return result;
+    }
+
+    /// <summary>
+    /// 把一个源区块的全部体素写进合成结果的同一区块，源区块与目标区块坐标相同
+    /// </summary>
+    /// <param name="chunks">合成结果的分区块缓冲</param>
+    /// <param name="source">源区块坐标与数据</param>
+    /// <param name="objectId">体素所属对象</param>
+    /// <param name="remap">材质槽改写，可为空</param>
+    /// <param name="cancellation">取消令牌</param>
+    private static void ComposeChunk(
+        System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, SparseVoxelChunk> chunks,
+        (ChunkCoord64 Coordinate, SparseVoxelChunk Chunk) source, StableId objectId,
+        Func<StableId, VoxelValue, VoxelValue>? remap, CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if (source.Chunk.OccupiedCount == 0) return;
+        var target = chunks.GetOrAdd(source.Coordinate, _ => new SparseVoxelChunk());
+        foreach (var (index, value) in source.Chunk.Snapshot)
+            target.SetIndex(index, remap is null ? value : remap(objectId, value));
     }
 }
 

@@ -5210,6 +5210,23 @@ DockId=0x6A3C3007,0
                         }
 
                         cancellation.ThrowIfCancellationRequested();
+                        // 材质表先读：模型预读要用它构建运行时槽位映射，
+                        // 才能在后台把场景视图世界也一并合成好
+                        report(new BlockingOperationProgress("正在读取材质表…", .20F, true));
+                        IReadOnlyList<MaterialAsset>? materials = null;
+                        using (StartupTimeline.Begin("打开·读取材质"))
+                        {
+                            try
+                            {
+                                materials = MaterialAsset.LoadFromProject(project);
+                            }
+                            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+                            {
+                                MVoxelLog.Error("材质表预读失败，将在应用时重试", exception);
+                            }
+                        }
+
+                        cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在读取体素资产…", .22F, CanCancel: true));
                         void ReportModels(BlockingOperationProgress progress) => report(progress with
                         {
@@ -5219,7 +5236,8 @@ DockId=0x6A3C3007,0
                         PreloadedModels preload;
                         using (StartupTimeline.Begin("打开·预读场景与模型"))
                         {
-                            preload = PreloadProjectModels(project, cancellation, ReportModels, modelCache: modelCache);
+                            preload = PreloadProjectModels(project, cancellation, ReportModels,
+                                modelCache: modelCache, materials: materials);
                         }
 
                         PreloadedModels? recovery = null;
@@ -5239,21 +5257,6 @@ DockId=0x6A3C3007,0
                                 {
                                     MVoxelLog.Error("恢复区快照预读失败，将在应用时处理", exception);
                                 }
-                            }
-                        }
-
-                        cancellation.ThrowIfCancellationRequested();
-                        report(new BlockingOperationProgress("正在读取材质表…", .82F, true));
-                        IReadOnlyList<MaterialAsset>? materials = null;
-                        using (StartupTimeline.Begin("打开·读取材质"))
-                        {
-                            try
-                            {
-                                materials = MaterialAsset.LoadFromProject(project);
-                            }
-                            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
-                            {
-                                MVoxelLog.Error("材质表预读失败，将在应用时重试", exception);
                             }
                         }
 
@@ -5382,8 +5385,14 @@ DockId=0x6A3C3007,0
         {
             _brushMaterials = materials;
             _brushMaterialSlot = 0;
-            _runtimeMaterialSignature = string.Empty;
-            RefreshRuntimeMaterialTable();
+            // 预读已经构建并应用过同一份材质映射，此时再清空指纹会顺带作废
+            // 刚接管的组合世界缓存，首帧又白合一遍整份世界
+            if (prepared.Models.MaterialMap is null)
+            {
+                _runtimeMaterialSignature = string.Empty;
+                RefreshRuntimeMaterialTable();
+            }
+
             if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
         }
         else ReloadMaterialTable();

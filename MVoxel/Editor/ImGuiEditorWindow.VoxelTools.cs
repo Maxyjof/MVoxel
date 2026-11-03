@@ -200,7 +200,8 @@ internal sealed partial class ImGuiEditorWindow
 
     internal sealed record PreloadedModels(string ScenePath, Scene.SceneDocument? Scene,
         Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed,
-        bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum);
+        bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum,
+        RuntimeMaterialMap? MaterialMap = null, VoxelWorld? ViewComposed = null);
 
     /// <summary>
     /// 一个场景对象对模型资产的读取请求
@@ -328,7 +329,7 @@ internal sealed partial class ImGuiEditorWindow
 
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
         CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null,
-        Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null)
+        Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null, IReadOnlyList<MaterialAsset>? materials = null)
     {
         var relative = FindStartupSceneRelativePath(project);
         var path = Path.Combine(project.AssetsPath, relative.Replace('/', Path.DirectorySeparatorChar));
@@ -381,10 +382,38 @@ internal sealed partial class ImGuiEditorWindow
         report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));
         var store = new ObjectVoxelStore();
         store.RestoreReferences(worlds);
-        VoxelWorld? composed;
+        VoxelWorld? composed = null;
+        RuntimeMaterialMap? materialMap = null;
+        VoxelWorld? viewComposed = null;
         using (StartupTimeline.Begin("预读·合成世界"))
         {
-            composed = scene is null ? null : store.Compose(scene, uint.MaxValue, false, cancellation);
+            // 编辑用世界与场景视图世界都要，两者互不依赖：前者含图层隐藏的对象供编辑，
+            // 后者按场景视图的最终语义（全遮罩、编辑可见性、运行时材质重映射）合成。
+            // 预读阶段一次并行做完，界面线程就不必在首帧再合一遍整份世界
+            if (scene is not null && materials is not null && overrideScene is null)
+            {
+                try
+                {
+                    materialMap = BuildRuntimeMaterialMap(scene, materials, project.AssetsPath);
+                }
+                catch (Exception exception) when (exception is IOException or InvalidOperationException)
+                {
+                    materialMap = null;
+                    MVoxelLog.Error("运行时材质映射构建失败，场景视图将在首帧按需合成", exception);
+                }
+            }
+
+            var map = materialMap;
+            if (scene is not null)
+            {
+                composed = store.Compose(scene, uint.MaxValue, false, cancellation);
+                if (map is not null)
+                {
+                    using var viewPhase = StartupTimeline.Begin("预读·合成视图世界");
+                    viewComposed = store.Compose(scene, uint.MaxValue, true, cancellation,
+                        (objectId, value) => RemapRuntimeMaterial(map.SlotsByObject, objectId, value));
+                }
+            }
         }
 
         report(new BlockingOperationProgress("正在计算场景边界…", .88F, true));
@@ -396,7 +425,8 @@ internal sealed partial class ImGuiEditorWindow
             hasBounds = composed is not null && composed.TryGetBounds(out minimum, out maximum);
         }
         cancellation.ThrowIfCancellationRequested();
-        return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum);
+        return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum,
+            materialMap, viewComposed);
     }
 
     private void ApplyPreloadedBounds(PreloadedModels preload)
@@ -458,6 +488,14 @@ internal sealed partial class ImGuiEditorWindow
             ApplyPreloadedBounds(preload);
             _worldLoadFailed = preload.LoadFailed;
             _pickVersion++;
+            // 预读已经按场景视图的最终语义合成过一份世界，这里连同运行时材质映射一起接管，
+            // 避免界面线程在第一帧重新合成整份世界再触发一次工作集重建
+            if (preload.MaterialMap is { } materialMap) ApplyRuntimeMaterialMap(materialMap);
+            if (preload.ViewComposed is { } viewComposed)
+            {
+                _composedWorlds.Insert(0,
+                    new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed));
+            }
         }
         else LoadObjectVoxelWorlds(project);
         _activeTool = EditorTool.Pick;

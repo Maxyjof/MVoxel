@@ -28,6 +28,15 @@ internal sealed partial class ImGuiEditorWindow
     };
 
     /// <summary>
+    /// 运行时材质映射：场景对象的局部材质槽到 16 位运行时槽位的对应关系
+    /// </summary>
+    /// <param name="SlotsByObject">每个对象的局部槽到运行时槽映射</param>
+    /// <param name="Materials">运行时槽位对应的材质资产</param>
+    /// <param name="Signature">材质内容指纹，材质文件或绑定变化时改变</param>
+    internal sealed record RuntimeMaterialMap(Dictionary<StableId, Dictionary<int, int>> SlotsByObject,
+        Dictionary<int, MaterialAsset> Materials, string Signature);
+
+    /// <summary>
     /// 运行时材质表刷新的最小间隔
     /// </summary>
     /// <remarks>
@@ -48,11 +57,25 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _runtimeMaterialRefreshAt = now;
-        var byPath = _brushMaterials.ToDictionary(item => Path.GetFullPath(item.SourcePath), StringComparer.OrdinalIgnoreCase);
+        ApplyRuntimeMaterialMap(BuildRuntimeMaterialMap(_sceneDocument, _brushMaterials,
+            _project?.AssetsPath ?? string.Empty));
+    }
+
+    /// <summary>
+    /// 从场景与材质资产构建运行时材质映射，不读写编辑器状态，可在后台线程调用
+    /// </summary>
+    /// <param name="scene">场景文档，可为空</param>
+    /// <param name="materials">项目材质资产</param>
+    /// <param name="assetsPath">项目资产根目录</param>
+    /// <returns>槽位映射、运行时材质表与内容指纹</returns>
+    private static RuntimeMaterialMap BuildRuntimeMaterialMap(SceneDocument? scene,
+        IReadOnlyList<MaterialAsset> materials, string assetsPath)
+    {
+        var byPath = materials.ToDictionary(item => Path.GetFullPath(item.SourcePath), StringComparer.OrdinalIgnoreCase);
         var runtimeByPath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var objectSlots = new Dictionary<StableId, Dictionary<int, int>>();
         var runtimeMaterials = new Dictionary<int, MaterialAsset>();
-        foreach (var sceneObject in _sceneDocument?.Objects ?? [])
+        foreach (var sceneObject in scene?.Objects ?? [])
         {
             var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
             if (component is null) continue;
@@ -60,8 +83,8 @@ internal sealed partial class ImGuiEditorWindow
             var localSlots = new Dictionary<int, int>();
             foreach (var binding in data.MaterialSlots ?? [])
             {
-                if (_project is null) continue;
-                var assetPath = Path.GetFullPath(Path.Combine(_project.AssetsPath,
+                if (string.IsNullOrEmpty(assetsPath)) continue;
+                var assetPath = Path.GetFullPath(Path.Combine(assetsPath,
                     binding.MaterialAsset.Replace('/', Path.DirectorySeparatorChar)));
                 if (!byPath.TryGetValue(assetPath, out var material))
                 {
@@ -93,20 +116,40 @@ internal sealed partial class ImGuiEditorWindow
             ";" + string.Join("|", objectSlots.OrderBy(item => item.Key.Value)
                 .SelectMany(item => item.Value.OrderBy(slot => slot.Key)
                     .Select(slot => $"{item.Key}:{slot.Key}>{slot.Value}")));
-        _runtimeMaterialSlotsByObject = objectSlots;
-        _runtimeMaterials = runtimeMaterials;
-        if (signature == _runtimeMaterialSignature) return;
-        _runtimeMaterialSignature = signature;
+        return new RuntimeMaterialMap(objectSlots, runtimeMaterials, signature);
+    }
+
+    /// <summary>
+    /// 把运行时材质映射写入编辑器状态，内容指纹变化时让组合世界与累积样本失效
+    /// </summary>
+    /// <param name="map">构建好的运行时材质映射</param>
+    private void ApplyRuntimeMaterialMap(RuntimeMaterialMap map)
+    {
+        _runtimeMaterialSlotsByObject = map.SlotsByObject;
+        _runtimeMaterials = map.Materials;
+        if (map.Signature == _runtimeMaterialSignature) return;
+        _runtimeMaterialSignature = map.Signature;
         InvalidateComposedWorldCache();
-        _pipeline?.SetMaterialTable(MaterialAsset.PackTable(runtimeMaterials));
+        _pipeline?.SetMaterialTable(MaterialAsset.PackTable(map.Materials));
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
     }
 
-    private VoxelValue RemapRuntimeMaterial(StableId objectId, VoxelValue value)
+    private VoxelValue RemapRuntimeMaterial(StableId objectId, VoxelValue value) =>
+        RemapRuntimeMaterial(_runtimeMaterialSlotsByObject, objectId, value);
+
+    /// <summary>
+    /// 按运行时材质映射改写体素的材质槽，槽位未知时退化为无材质
+    /// </summary>
+    /// <param name="slotsByObject">每个对象的局部槽到运行时槽映射</param>
+    /// <param name="objectId">体素所属对象</param>
+    /// <param name="value">原始体素值</param>
+    /// <returns>改写后的体素值</returns>
+    private static VoxelValue RemapRuntimeMaterial(Dictionary<StableId, Dictionary<int, int>> slotsByObject,
+        StableId objectId, VoxelValue value)
     {
         if (value.MaterialSlot == 0) return value;
-        var runtimeSlot = _runtimeMaterialSlotsByObject.TryGetValue(objectId, out var slots) &&
+        var runtimeSlot = slotsByObject.TryGetValue(objectId, out var slots) &&
             slots.TryGetValue(value.MaterialSlot, out var mapped) ? mapped : (ushort)0;
         return value with { MaterialSlot = (ushort)runtimeSlot };
     }

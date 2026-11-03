@@ -179,8 +179,11 @@ public sealed class VoxelGpuWorkset
         var collectMs = phaseWatch.Elapsed.TotalMilliseconds;
         phaseWatch.Restart();
 
+        // 局部索引天然落在 0 到 ChunkVolume 之间，用桶填充代替比较排序：
+        // 结果只取决于索引本身，与字典枚举顺序无关，也不会在近乎有序的输入上退化。
+        // 大场景里一个区块上万体素，比较排序在十几亿次比较上要花几百毫秒
         System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions,
-            chunkIndex => Array.Sort(visiblePairs[chunkIndex], static (a, b) => a.Key.CompareTo(b.Key)));
+            chunkIndex => SortPairsByLocalIndex(visiblePairs[chunkIndex]));
         var sortMs = phaseWatch.Elapsed.TotalMilliseconds;
         phaseWatch.Restart();
 
@@ -349,8 +352,50 @@ public sealed class VoxelGpuWorkset
     [ThreadStatic]
     private static VoxelValue[]? _threadLocalCells;
 
+    /// <summary>按线程复用的排序桶，记录每个局部索引当前属于第几代填充</summary>
+    [ThreadStatic]
+    private static VoxelValue[]? _sortBuckets;
+
+    [ThreadStatic]
+    private static int[]? _sortStamps;
+
+    [ThreadStatic]
+    private static int _sortGeneration;
+
     private static VoxelValue[] RentLocalCells() =>
         _threadLocalCells ??= new VoxelValue[VoxelWorld.ChunkVolume];
+
+    /// <summary>
+    /// 按局部索引升序排列区块内体素，使用有界索引的桶填充
+    /// </summary>
+    /// <param name="pairs">区块内的体素与局部索引</param>
+    private static void SortPairsByLocalIndex((int Key, VoxelValue Value)[] pairs)
+    {
+        if (pairs.Length <= 1) return;
+        var values = _sortBuckets ??= new VoxelValue[VoxelWorld.ChunkVolume];
+        var stamps = _sortStamps ??= new int[VoxelWorld.ChunkVolume];
+        // 用代次标记代替每次清空三万个槽位，连续排序时不产生多余写
+        if (++_sortGeneration == int.MaxValue)
+        {
+            Array.Clear(stamps);
+            _sortGeneration = 1;
+        }
+
+        var generation = _sortGeneration;
+        for (var index = 0; index < pairs.Length; index++)
+        {
+            var key = pairs[index].Key;
+            values[key] = pairs[index].Value;
+            stamps[key] = generation;
+        }
+
+        var write = 0;
+        for (var key = 0; key < VoxelWorld.ChunkVolume && write < pairs.Length; key++)
+        {
+            if (stamps[key] != generation) continue;
+            pairs[write++] = (key, values[key]);
+        }
+    }
 
     /// <summary>
     /// 从已排序的区块体素中移除完全不可见的内部不透明格。该方法也由砖块工作集调用，
@@ -426,11 +471,10 @@ public sealed class VoxelGpuWorkset
         }
         finally
         {
-            // 缓冲由线程复用，离开时必须还原为空值
-            foreach (var pair in pairs)
-            {
-                localCells[pair.Key] = default;
-            }
+            // 缓冲由线程复用，离开时必须还原为空值。
+            // 整块顺序清零比按占用下标逐个回写便宜一个数量级：
+            // 一个区块上万个零散随机写入，折成一次连续的内存清零
+            Array.Clear(localCells);
         }
     }
 
