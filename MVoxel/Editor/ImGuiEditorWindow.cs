@@ -5304,33 +5304,10 @@ DockId=0x6A3C3007,0
                         {
                             Fraction = .18F + (progress.Fraction - .18F) * .65F,
                         });
-                        var modelCache = new Dictionary<ModelLoadKey, VoxelWorld>();
-                        PreloadedModels preload;
-                        using (StartupTimeline.Begin("打开·预读场景与模型"))
-                        {
-                            preload = PreloadProjectModels(project, cancellation, ReportModels,
-                                modelCache: modelCache, materials: materials);
-                        }
-
-                        PreloadedModels? recovery = null;
-                        RecoverySnapshot? snapshot = null;
-                        report(new BlockingOperationProgress("正在检查恢复数据…", .64F, true));
-                        using (StartupTimeline.Begin("打开·预读恢复数据"))
-                        {
-                            if (RecoveryStore.TryLoad(project.RootPath, out snapshot) && snapshot is not null)
-                            {
-                                try
-                                {
-                                    var scene = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
-                                    recovery = PreloadProjectModels(project, cancellation,
-                                        progress => report(progress with { Fraction = .64F + (progress.Fraction - .18F) * .20F }), scene, modelCache);
-                                }
-                                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException)
-                                {
-                                    MVoxelLog.Error("恢复区快照预读失败，将在应用时处理", exception);
-                                }
-                            }
-                        }
+                        // 恢复快照优先：有可用的恢复数据时只准备恢复场景。
+                        // 先完整准备正式场景再准备恢复场景，会白算一套最终不进画面的世界
+                        report(new BlockingOperationProgress("正在检查恢复数据…", .63F, true));
+                        var preload = PreloadForOpen(project, cancellation, ReportModels, materials, out var snapshot);
 
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在启动项目插件…", .88F, true));
@@ -5344,7 +5321,7 @@ DockId=0x6A3C3007,0
 
                             cancellation.ThrowIfCancellationRequested();
                             report(new BlockingOperationProgress("正在应用编辑器工作区…", .96F, false));
-                            return new PreparedOpenProject(project, preload, recovery, snapshot, materials, runtime);
+                            return new PreparedOpenProject(project, preload, snapshot, materials, runtime);
                         }
                         catch { runtime.Dispose(); throw; }
                     },
@@ -5401,6 +5378,50 @@ DockId=0x6A3C3007,0
         return found is null ? main : Path.GetRelativePath(project.AssetsPath, found).Replace('\\', '/');
     }
 
+    /// <summary>
+    /// 打开项目时的体素预读：优先用恢复区快照，读不出来再退回正式场景
+    /// </summary>
+    /// <remarks>
+    /// 恢复快照存在时最终画面用的是恢复场景，先准备正式场景等于白算一整套世界。
+    /// 恢复数据损坏或引用的资产已经不在了，才退回正式场景，回退语义保持不变
+    /// </remarks>
+    /// <param name="project">目标项目</param>
+    /// <param name="cancellation">取消令牌</param>
+    /// <param name="report">进度回调</param>
+    /// <param name="materials">项目材质资产，可为空</param>
+    /// <param name="snapshot">实际采用的恢复快照，没有恢复数据时为空</param>
+    /// <returns>要显示的那个场景的预读结果</returns>
+    private static PreloadedModels PreloadForOpen(ProjectHandle project, CancellationToken cancellation,
+        Action<BlockingOperationProgress> report, IReadOnlyList<MaterialAsset>? materials,
+        out RecoverySnapshot? snapshot)
+    {
+        snapshot = null;
+        if (RecoveryStore.TryLoad(project.RootPath, out var loaded) && loaded is not null)
+        {
+            try
+            {
+                using (StartupTimeline.Begin("打开·预读恢复数据"))
+                {
+                    var scene = Scene.SceneSerializer.LoadFromJson(loaded.SceneJson);
+                    var recovered = PreloadProjectModels(project, cancellation, report, scene, materials: materials);
+                    snapshot = loaded;
+                    return recovered;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                InvalidOperationException or InvalidDataException or JsonException)
+            {
+                snapshot = null;
+                MVoxelLog.Error("恢复区快照预读失败，改用正式场景", exception);
+            }
+        }
+
+        using (StartupTimeline.Begin("打开·预读场景与模型"))
+        {
+            return PreloadProjectModels(project, cancellation, report, materials: materials);
+        }
+    }
+
     private void OpenProject(ProjectHandle project, PreloadedModels? preloadedModels = null, PreparedOpenProject? prepared = null)
     {
         using var applyPhase = StartupTimeline.Begin("打开·应用项目状态");
@@ -5434,15 +5455,9 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
-        if (prepared?.Recovery is { Scene: not null, Composed: not null } recovery && prepared.Snapshot is { } snapshot)
+        if (prepared?.Snapshot is { } snapshot && preloadedModels?.Scene is not null)
         {
-            _sceneDocument = recovery.Scene;
-            _objectVoxels.RestoreReferences(recovery.ObjectWorlds);
-            _world = recovery.Composed;
-            ApplyPreloadedBounds(recovery);
-            _worldLoadFailed |= recovery.LoadFailed;
-            InvalidateComposedWorldCache();
-            _pickVersion++;
+            // 恢复场景已经是预读时选好的那一份，这里只补上“未保存工作”的语义
             _voxelHistory.Clear();
             MarkSceneDocumentDirty();
             FrameCameraOnWorld();
