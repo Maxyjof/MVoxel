@@ -142,6 +142,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _gpuTimingBroken;
     private long _gpuTimingToken;
     private double _lastGpuFrameMs;
+    private double _lastGpuSamplingMs;
+    private double _lastGpuFinishMs;
+    // 采样段结束时间戳是否已经写入本帧的采样命令缓冲；
+    // 没写时由结束时间戳缓冲补一条，保证三段查询始终有值
+    private bool _gpuSampleEndWritten;
 
     private Image _outputImage;
     private DeviceMemory _outputMemory;
@@ -681,6 +686,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 最近一次成功回读的 GPU 计算耗时毫秒
     /// </summary>
     internal double LastGpuFrameMs => _lastGpuFrameMs;
+
+    /// <summary>
+    /// 最近一次成功回读的采样段耗时毫秒：路径求交与着色，不含收尾通道
+    /// </summary>
+    internal double LastGpuSamplingMs => _lastGpuSamplingMs;
+
+    /// <summary>
+    /// 最近一次成功回读的收尾段耗时毫秒：降噪、Bloom、选中描边与 FXAA
+    /// </summary>
+    internal double LastGpuFinishMs => _lastGpuFinishMs;
 
     /// <summary>
     /// 当前设备是否支持 GPU 时间戳采样
@@ -1422,6 +1437,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         api.CmdDispatch(commandBuffer, groupX, groupY, 1);
         LastDispatchCount = 1;
         LastWorkgroupCount = (long)groupX * (long)groupY;
+        MarkGpuSamplingEnd(commandBuffer);
         TransitionOutputToShaderRead(commandBuffer);
         CommitRingSlot(slot);
     }
@@ -1475,6 +1491,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 LastWorkgroupCount += ((widthPixels + 7L) / 8L) * ((stripRows + 7L) / 8L);
             }
 
+            // 最后一条采样命令缓冲写采样段结束时间戳，收尾通道的耗时单独统计
+            if (stripIndex >= totalStrips) MarkGpuSamplingEnd(commandBuffer);
             TransitionOutputToShaderRead(commandBuffer);
             CommitRingSlot(slot);
         }
@@ -1907,7 +1925,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             {
                 SType = StructureType.QueryPoolCreateInfo,
                 QueryType = QueryType.Timestamp,
-                QueryCount = 2
+                // 0 采样开始，1 采样结束，2 整帧结束
+                QueryCount = 4
             };
             QueryPool pool = default;
             Check(api.CreateQueryPool(_device, &poolInfo, null, &pool), "创建 GPU 时间戳查询池");
@@ -1952,10 +1971,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         try
         {
             var api = _api!;
-            api.CmdResetQueryPool(commandBuffer, _gpuTimestampPool, 0, 2);
+            api.CmdResetQueryPool(commandBuffer, _gpuTimestampPool, 0, 3);
             api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.TopOfPipeBit, _gpuTimestampPool, 0);
             _gpuTimingPending = true;
             _gpuTimingEndSubmitted = false;
+            _gpuSampleEndWritten = false;
             _gpuTimingToken = GpuTimingToken;
         }
         catch (Exception exception)
@@ -1963,6 +1983,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _gpuTimingBroken = true;
             _gpuTimingPending = false;
             MVoxelLog.Warn($"GPU 开始时间戳写入失败，停止 GPU 计时：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 在最后一条采样命令缓冲末尾写入采样段结束时间戳，用于把路径求交与收尾通道分开计时
+    /// </summary>
+    /// <param name="commandBuffer">仍在录制中的采样命令缓冲</param>
+    private void MarkGpuSamplingEnd(CommandBuffer commandBuffer)
+    {
+        if (!_gpuTimingPending || _gpuTimingEndSubmitted || _gpuTimingBroken || _gpuSampleEndWritten) return;
+        try
+        {
+            // BottomOfPipe 保证时间戳落在此前所有采样派发之后
+            _api!.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.BottomOfPipeBit, _gpuTimestampPool, 1);
+            _gpuSampleEndWritten = true;
+        }
+        catch (Exception exception)
+        {
+            _gpuTimingBroken = true;
+            _gpuTimingPending = false;
+            MVoxelLog.Warn($"GPU 采样段结束时间戳写入失败，停止 GPU 计时：{exception.Message}");
         }
     }
 
@@ -1979,7 +2020,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             Check(api.ResetCommandBuffer(commandBuffer, 0), "重置 GPU 结束时间戳命令缓冲");
             CommandBufferBeginInfo begin = new() { SType = StructureType.CommandBufferBeginInfo };
             Check(api.BeginCommandBuffer(commandBuffer, in begin), "录制 GPU 结束时间戳");
-            api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.BottomOfPipeBit, _gpuTimestampPool, 1);
+            // 采样段没有独立收尾时在这里补一条，让三段查询都有有效值
+            if (!_gpuSampleEndWritten)
+            {
+                api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.BottomOfPipeBit, _gpuTimestampPool, 1);
+                _gpuSampleEndWritten = true;
+            }
+
+            api.CmdWriteTimestamp(commandBuffer, PipelineStageFlags.BottomOfPipeBit, _gpuTimestampPool, 2);
             Check(api.EndCommandBuffer(commandBuffer), "结束 GPU 结束时间戳");
             Fence fence = _gpuTimestampFence;
             if (_gpuTimestampFenceSignaled)
@@ -2010,12 +2058,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 异步尝试回读最近一帧的 GPU 时间戳，不等待 GPU
     /// </summary>
     /// <param name="token">开始采样时记录的帧标识</param>
-    /// <param name="milliseconds">GPU 计算耗时毫秒</param>
+    /// <param name="milliseconds">GPU 计算总耗时毫秒</param>
+    /// <param name="samplingMilliseconds">采样段耗时毫秒</param>
+    /// <param name="finishMilliseconds">收尾段耗时毫秒</param>
     /// <returns>成功取得结果时返回 true</returns>
-    internal bool TryTakeGpuTiming(out long token, out double milliseconds)
+    internal bool TryTakeGpuTiming(out long token, out double milliseconds,
+        out double samplingMilliseconds, out double finishMilliseconds)
     {
         token = 0;
         milliseconds = 0;
+        samplingMilliseconds = 0;
+        finishMilliseconds = 0;
         if (!_gpuTimingPending || !_gpuTimingEndSubmitted) return false;
         if (_gpuTimingBroken)
         {
@@ -2036,9 +2089,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             _gpuTimestampFenceSignaled = true;
-            ulong* timestamps = stackalloc ulong[2];
-            var result = api.GetQueryPoolResults(_device, _gpuTimestampPool, 0, 2,
-                (nuint)(2 * sizeof(ulong)), timestamps, sizeof(ulong), QueryResultFlags.Result64Bit);
+            ulong* timestamps = stackalloc ulong[3];
+            var result = api.GetQueryPoolResults(_device, _gpuTimestampPool, 0, 3,
+                (nuint)(3 * sizeof(ulong)), timestamps, sizeof(ulong), QueryResultFlags.Result64Bit);
             if (result == Result.NotReady) return false;
             if (result != Result.Success)
             {
@@ -2051,10 +2104,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             var validBits = _context!.TimestampValidBits;
             var mask = validBits >= 64 ? ulong.MaxValue : (1UL << (int)validBits) - 1;
             var start = timestamps[0] & mask;
-            var end = timestamps[1] & mask;
-            var ticks = (end - start) & mask;
-            milliseconds = ticks * _context.TimestampPeriodNanoseconds / 1_000_000D;
+            var sampleEnd = timestamps[1] & mask;
+            var end = timestamps[2] & mask;
+            var nanosecondPerTick = _context.TimestampPeriodNanoseconds;
+            samplingMilliseconds = ((sampleEnd - start) & mask) * nanosecondPerTick / 1_000_000D;
+            finishMilliseconds = ((end - sampleEnd) & mask) * nanosecondPerTick / 1_000_000D;
+            milliseconds = ((end - start) & mask) * nanosecondPerTick / 1_000_000D;
             _lastGpuFrameMs = milliseconds;
+            _lastGpuSamplingMs = samplingMilliseconds;
+            _lastGpuFinishMs = finishMilliseconds;
             token = _gpuTimingToken;
             _gpuTimingPending = false;
             return true;

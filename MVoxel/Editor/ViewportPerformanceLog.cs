@@ -40,6 +40,8 @@ internal sealed class ViewportPerformanceLog
     private double _gpuSum;
     private double _gpuMax;
     private int _gpuSamples;
+    private double _gpuSamplingSum;
+    private double _gpuFinishSum;
     private double _allocSum;
 
     /// <summary>
@@ -61,9 +63,13 @@ internal sealed class ViewportPerformanceLog
     /// <param name="width">输出宽度</param>
     /// <param name="height">输出高度</param>
     /// <param name="cells">工作集体素数</param>
+    /// <param name="gpuMs">最近一次回读的 GPU 计算总耗时，未采样时为 0</param>
+    /// <param name="gpuSamplingMs">最近一次回读的采样段耗时</param>
+    /// <param name="gpuFinishMs">最近一次回读的收尾段耗时</param>
+    /// <param name="allocatedKb">本帧线程分配字节数换算的 KB</param>
     internal void Record(double frameMs, double cpuMs, long submits, double fenceWaitMs,
         int syncCount, double syncMs, int dispatches, int width, int height, int cells,
-        double gpuMs, double allocatedKb)
+        double gpuMs, double gpuSamplingMs, double gpuFinishMs, double allocatedKb)
     {
         var now = Environment.TickCount64;
         if (_windowStartMs == 0)
@@ -86,6 +92,8 @@ internal sealed class ViewportPerformanceLog
         _gpuSum += Math.Max(0, gpuMs);
         _gpuSamples += gpuMs > 0 ? 1 : 0;
         _gpuMax = Math.Max(_gpuMax, gpuMs);
+        _gpuSamplingSum += Math.Max(0, gpuSamplingMs);
+        _gpuFinishSum += Math.Max(0, gpuFinishMs);
         _allocSum += Math.Max(0, allocatedKb);
         _lastWidth = width;
         _lastHeight = height;
@@ -113,7 +121,7 @@ internal sealed class ViewportPerformanceLog
             $"队列提交 均值 {_submitSum / frames:0.00} 次/帧 峰值 {_submitMax} 次，" +
             $"栅栏等待 {_fenceWaitSum / frames:0.0}ms/帧，CPU 提交 {_cpuSum / frames:0.0}ms/帧，" +
             $"派发峰值 {_dispatchMax} 次，同步峰值 {_syncMax:0.0}ms，" +
-            $"GPU {(_gpuSamples > 0 ? $"{_gpuSum / _gpuSamples:0.0}ms 均值 峰值 {_gpuMax:0.0}ms" : "未采样")}，" +
+            $"GPU {(_gpuSamples > 0 ? $"{_gpuSum / _gpuSamples:0.0}ms 均值（采样 {_gpuSamplingSum / _gpuSamples:0.0} + 收尾 {_gpuFinishSum / _gpuSamples:0.0}） 峰值 {_gpuMax:0.0}ms" : "未采样")}，" +
             $"分配 {_allocSum / frames:0}KB/帧，输出 {_lastWidth}x{_lastHeight}，体素 {_lastCells:N0}");
         Reset(now);
     }
@@ -136,6 +144,8 @@ internal sealed class ViewportPerformanceLog
         _gpuSum = 0;
         _gpuMax = 0;
         _gpuSamples = 0;
+        _gpuSamplingSum = 0;
+        _gpuFinishSum = 0;
         _allocSum = 0;
     }
 }

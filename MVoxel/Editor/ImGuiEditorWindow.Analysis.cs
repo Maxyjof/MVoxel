@@ -35,6 +35,8 @@ internal sealed partial class ImGuiEditorWindow
         public float PresentQueueMs;
         public float ViewportFenceWaitMs;
         public float GpuMs;
+        public float GpuSamplingMs;
+        public float GpuFinishMs;
         public bool GpuValid;
         public bool ViewportRendered;
         public bool PathTracing;
@@ -143,11 +145,15 @@ internal sealed partial class ImGuiEditorWindow
 
     private void StoreGpuTiming(VulkanVoxelRenderPipeline? pipeline)
     {
-        if (pipeline is null || !pipeline.TryTakeGpuTiming(out var token, out var milliseconds)) return;
+        if (pipeline is null ||
+            !pipeline.TryTakeGpuTiming(out var token, out var milliseconds,
+                out var samplingMilliseconds, out var finishMilliseconds)) return;
         if (token <= 0) return;
         var slot = (int)((token - 1) % AnalysisFrameCapacity);
         if (_analysisFrames[slot].Serial != token) return;
         _analysisFrames[slot].GpuMs = (float)milliseconds;
+        _analysisFrames[slot].GpuSamplingMs = (float)samplingMilliseconds;
+        _analysisFrames[slot].GpuFinishMs = (float)finishMilliseconds;
         _analysisFrames[slot].GpuValid = true;
     }
 
@@ -444,7 +450,9 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SetTooltip($"第 {sample.Serial} 帧" + Environment.NewLine +
                 $"帧间隔 {sample.IntervalMs:0.00} ms" + Environment.NewLine +
                 $"界面回调 {sample.CallbackMs:0.00} ms" + Environment.NewLine +
-                (sample.GpuValid ? $"GPU 计算 {sample.GpuMs:0.00} ms（异步回读）" : "GPU 计算 等待回读或不可用") + Environment.NewLine +
+                (sample.GpuValid
+                    ? $"GPU 计算 {sample.GpuMs:0.00} ms（采样 {sample.GpuSamplingMs:0.00} + 收尾 {sample.GpuFinishMs:0.00}，异步回读）"
+                    : "GPU 计算 等待回读或不可用") + Environment.NewLine +
                 $"中央视口 {sample.ViewportCpuMs:0.00} ms · 提交 {sample.ViewportSubmits} 次" + Environment.NewLine +
                 "点击会暂停录制并查看该帧的逐层耗时" + Environment.NewLine + Environment.NewLine +
                 "颜色依次为更新、其他界面、中央视口其余部分、视口 GPU 提交、ImGui 合成、Vulkan 呈现、未归类。" + Environment.NewLine +
@@ -547,6 +555,10 @@ internal sealed partial class ImGuiEditorWindow
                 : recentGpu > 0D
                     ? $"本帧尚未回读，最近完成 {recentGpu:0.00} ms"
                     : "不可用或尚未回读");
+        Row("  路径采样", sample.GpuValid ? sample.GpuSamplingMs : -1F,
+            sample.GpuValid ? "求交、弹射与直接光，不含收尾" : "不可用或尚未回读");
+        Row("  收尾通道", sample.GpuValid ? sample.GpuFinishMs : -1F,
+            sample.GpuValid ? "降噪、Bloom、描边与 FXAA" : "不可用或尚未回读");
 
         ImGui.EndTable();
 
@@ -576,6 +588,8 @@ internal sealed partial class ImGuiEditorWindow
         var callbackMax = 0F;
         var gpuSum = 0D;
         var gpuMax = 0F;
+        var gpuSamplingSum = 0D;
+        var gpuFinishSum = 0D;
         var gpuCount = 0;
         var slowFrames = 0;
         var buffer = _analysisStatBuffer;
@@ -591,6 +605,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 gpuSum += sample.GpuMs;
                 gpuMax = Math.Max(gpuMax, sample.GpuMs);
+                gpuSamplingSum += sample.GpuSamplingMs;
+                gpuFinishSum += sample.GpuFinishMs;
                 gpuCount++;
             }
 
@@ -607,6 +623,13 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Text(gpuCount > 0
             ? $"GPU 计算  平均 {gpuSum / gpuCount:0.00} ms  ·  峰值 {gpuMax:0.00} ms  ·  {gpuCount}/{count} 帧有效"
             : "GPU 计算  暂无有效时间戳");
+        if (gpuCount > 0)
+        {
+            ImGui.Text($"  ├ 采样  平均 {gpuSamplingSum / gpuCount:0.00} ms  ·  收尾  平均 {gpuFinishSum / gpuCount:0.00} ms");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("采样段是路径求交、弹射与直接光，收尾段是降噪、Bloom、描边与 FXAA。" +
+                    Environment.NewLine + "两者之间的间隔是队列提交与调度开销，合计不等于简单相加。");
+        }
         ImGui.TextDisabled($"超过 33.3 ms 的帧 {slowFrames} 帧  ·  最近一帧 {latest.CallbackMs:0.00} ms");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("P95 表示 95% 的采样帧不超过该值，比平均值更容易暴露偶发卡顿。" +
@@ -631,7 +654,7 @@ internal sealed partial class ImGuiEditorWindow
             $"索引同步 {pipeline.EmissiveSyncMilliseconds:0.00} ms");
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("最近一次 CPU 发光面提取、排序、光源树构建或更新、打包与上传耗时，不是 GPU 采样耗时。反向 PDF 使用二分面查询和相同的光源树分支概率。");
         ImGui.Text($"GPU 时间戳  {(pipeline.GpuTimingSupported ? "可用" : "不可用")}  " +
-            $"最近完成 {pipeline.LastGpuFrameMs:0.00} ms");
+            $"最近完成 {pipeline.LastGpuFrameMs:0.00} ms（采样 {pipeline.LastGpuSamplingMs:0.00} + 收尾 {pipeline.LastGpuFinishMs:0.00}）");
         ImGui.Text($"体素/BVH 缓冲容量 {ToMiB(capacity.VoxelBytes + (double)capacity.BvhBytes):0.0} MiB");
     }
 }

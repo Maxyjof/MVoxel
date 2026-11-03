@@ -26,9 +26,13 @@ internal sealed partial class ImGuiEditorWindow
         double cpuMs, long submitsBefore, double fenceBefore, long allocatedBytesBefore, int width, int height)
     {
         var allocatedKb = (GC.GetAllocatedBytesForCurrentThread() - allocatedBytesBefore) / 1024.0;
+        var gpuProfiling = pipeline.GpuProfilingEnabled;
         log.Record(ImGui.GetIO().DeltaTime * 1000.0, cpuMs, pipeline.SubmitCount - submitsBefore,
             pipeline.FenceWaitTotalMs - fenceBefore, pipeline.SyncCompletedCount, pipeline.SyncTotalMs,
             pipeline.LastDispatchCount, width, height, pipeline.SyncTotalCells,
-            pipeline.GpuProfilingEnabled ? pipeline.LastGpuFrameMs : 0, allocatedKb);
+            gpuProfiling ? pipeline.LastGpuFrameMs : 0,
+            gpuProfiling ? pipeline.LastGpuSamplingMs : 0,
+            gpuProfiling ? pipeline.LastGpuFinishMs : 0,
+            allocatedKb);
     }
 }
