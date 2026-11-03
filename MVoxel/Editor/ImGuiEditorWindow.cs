@@ -2841,11 +2841,15 @@ DockId=0x6A3C3007,0
         try
         {
             var settings = _activeExport.Settings;
-            if (_activeExport.TimelineAsset is { } timelineAsset && !ApplyTimelineFrame(timelineAsset, _activeExport.TimelineFrame))
+            if (_activeExport.TimelineAsset is { } timelineAsset)
             {
-                SetStatus($"时间轴帧采样失败：{Path.GetFileName(_activeExport.Path)}");
-                _activeExport = null;
-                return;
+                if (!ApplyTimelineFrame(timelineAsset, _activeExport.TimelineFrame))
+                {
+                    SetStatus($"时间轴帧采样失败：{Path.GetFileName(_activeExport.Path)}");
+                    _activeExport = null;
+                    return;
+                }
+                _activeExport.World = GetRenderWorld(_activeExport.CullingMask ?? uint.MaxValue);
             }
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
