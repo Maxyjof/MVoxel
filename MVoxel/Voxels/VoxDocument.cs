@@ -144,8 +144,15 @@ internal static class VoxDocumentReader
                 var childrenSize = reader.ReadInt32();
                 var contentEnd = cursor + 12L + contentSize;
                 var next = contentEnd + childrenSize;
-                if (contentSize < 0 || childrenSize < 0 || next > end)
-                    throw new InvalidDataException("VOX 块越过父块边界。");
+                // 少数VOX导出器会把MAIN的childrenSize按理论长度写入，实际文件却更短。
+                // MAIN没有内容，实际文件尾就是它唯一可信的子块边界；普通块仍严格拒绝越界。
+                var mainLengthMismatch = depth == 0 && cursor == 8 && id == "MAIN" && contentSize == 0 && next > end;
+                if (contentSize < 0 || childrenSize < 0 || contentEnd < cursor || next < contentEnd ||
+                    (!mainLengthMismatch && next > end))
+                {
+                    throw new InvalidDataException($"VOX块{id}越过父块边界：偏移{cursor}，内容{contentSize}字节，子块{childrenSize}字节，父边界{end}。文件可能被截断或使用了不兼容的块长度声明。");
+                }
+                if (mainLengthMismatch) next = end;
                 var contentStart = cursor + 12L;
                 switch (id)
                 {
