@@ -688,9 +688,11 @@ internal sealed partial class ImGuiEditorWindow
     private int GetSceneGpuCellBudget()
     {
         // 场景视图只按显存安全上限采样，不再按相机距离做隐式降采样；
-        // 距离粗化统一交给"场景窗口 LOD"（RenderSettings.SceneLod）的勾选与分档控制
+        // 距离粗化统一交给"场景窗口 LOD"（RenderSettings.SceneLod）的勾选与分档控制。
+        // 上限取项目预算换算出的格数与交互阈值中较小的那个
         var count = _world.OccupiedVoxelCount;
-        return count <= 250_000 ? 0 : 250_000;
+        var interactive = _renderSettings.VoxelBufferBudgetCells;
+        return count <= 250_000 ? 0 : Math.Min(250_000, interactive);
     }
 
     /// <summary>
@@ -2917,6 +2919,19 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("实时时间累积", ref settings.RealtimeTemporalWeight, 0F, 0.98F, "%.2f");
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("非光追通道的时间累积权重。0 表示不累积，每帧独立采样、画面一直发毛；0.85 左右静止几帧后噪声基本收敛。相机或设置变化时历史自动作废。");
+        }
+        if (ImGui.CollapsingHeader("体素显存预算"))
+        {
+            // 档位按 2 的幂量化，滑条给的是幂次，避免出现 300MB 这种没有语义的中间值
+            var exponent = 4;
+            while ((1 << exponent) < settings.VoxelBufferBudgetMb) exponent++;
+            var before = settings.VoxelBufferBudgetMb;
+            SliderInt("预算档位", ref exponent, 4, 10);
+            var after = 1 << exponent;
+            if (after != before) settings.VoxelBufferBudget = after;
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("体素工作集的显存预算，按 2 的幂量化到 16 到 1024 MB。实际能装的格数由预算除以单格字节与 BVH 余量算出，用来限制场景视图采样与砖路径资格。");
+            ImGui.TextDisabled($"当前 {settings.VoxelBufferBudgetMb} MB · 约 {settings.VoxelBufferBudgetCells:N0} 格");
         }
 
     }
