@@ -5034,10 +5034,14 @@ DockId=0x6A3C3007,0
                             ApplyNewProjectEditorSettings(project, templateId == ProjectTemplateId.Empty);
                         }
 
+                        // 模板刚写出的内容就在磁盘上，接着在这里读回来：
+                        // 交付给界面的已经是解好码、合好世界的完整结果，
+                        // 完成回调里不再同步读模型，进度条消失之后也不再卡一下
+                        var prepared = PrepareFreshProject(project, cancellation, report);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
-                        return project;
+                        return prepared;
                     },
-                    project => OpenProject(project),
+                    prepared => OpenProject(prepared.Project, prepared.Models),
                     exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, path),
                     () => SetStatus("已取消创建项目")))
             {
@@ -5053,6 +5057,73 @@ DockId=0x6A3C3007,0
         {
             ShowProjectOperationError("创建项目失败", exception, fromWelcome, editorDialogMode: 1, path);
         }
+    }
+
+    /// <summary>
+    /// 在后台把刚创建好的项目读一遍，交出可直接进编辑器的完整结果
+    /// </summary>
+    /// <remarks>
+    /// 新建后如果不在这里读，界面回调里就要同步读一遍刚写出的模型并合成世界，
+    /// 大模板会在进度条消失之后再卡两秒；打开已有项目本来就走这条后台准备流程
+    /// </remarks>
+    /// <param name="project">刚创建的项目</param>
+    /// <param name="cancellation">取消令牌</param>
+    /// <param name="report">进度回调</param>
+    /// <returns>项目句柄与预读结果</returns>
+    private static PreparedProjectLoad PrepareFreshProject(ProjectHandle project,
+        CancellationToken cancellation, Action<BlockingOperationProgress> report)
+    {
+        try
+        {
+            return ReadFreshProject(project, cancellation, report);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+        {
+            // 预读失败不该挡住新建：退回应用阶段按需读取，行为与改造前一致
+            MVoxelLog.Error("新建项目的体素预读失败，将在应用时重新读取", exception);
+            return new PreparedProjectLoad(project, null);
+        }
+    }
+
+    /// <summary>
+    /// 新建项目的后台预读主体
+    /// </summary>
+    /// <param name="project">刚创建的项目</param>
+    /// <param name="cancellation">取消令牌</param>
+    /// <param name="report">进度回调</param>
+    /// <returns>项目句柄与预读结果</returns>
+    private static PreparedProjectLoad ReadFreshProject(ProjectHandle project,
+        CancellationToken cancellation, Action<BlockingOperationProgress> report)
+    {
+        report(new BlockingOperationProgress("正在读取材质表…", .90F, true));
+        IReadOnlyList<MaterialAsset>? materials = null;
+        using (StartupTimeline.Begin("新建·读取材质"))
+        {
+            try
+            {
+                materials = MaterialAsset.LoadFromProject(project);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                MVoxelLog.Error("新建项目的材质表预读失败，将在应用时重试", exception);
+            }
+        }
+
+        report(new BlockingOperationProgress("正在读取体素资产…", .92F, true));
+        PreloadedModels models;
+        using (StartupTimeline.Begin("新建·预读场景与模型"))
+        {
+            models = PreloadProjectModels(project, cancellation,
+                progress => report(new BlockingOperationProgress(progress.Detail,
+                    .92F + progress.Fraction * .06F, progress.CanCancel)),
+                materials: materials);
+        }
+
+        return new PreparedProjectLoad(project, models);
     }
 
     /// <summary>
@@ -5152,10 +5223,11 @@ DockId=0x6A3C3007,0
                             throw;
                         }
 
+                        var prepared = PrepareFreshProject(project, cancellation, report);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
-                        return project;
+                        return prepared;
                     },
-                    project => OpenProject(project),
+                    prepared => OpenProject(prepared.Project, prepared.Models),
                     exception => ShowProjectOperationError("创建项目失败", exception, fromWelcome, 1, absolutePath),
                     () => SetStatus("已取消创建项目")))
             {
@@ -5381,19 +5453,13 @@ DockId=0x6A3C3007,0
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _inspectorLockedObjectId = null;
-        if (prepared?.Materials is { } materials)
+        if (prepared?.Materials is { } openMaterials)
         {
-            _brushMaterials = materials;
-            _brushMaterialSlot = 0;
-            // 预读已经构建并应用过同一份材质映射，此时再清空指纹会顺带作废
-            // 刚接管的组合世界缓存，首帧又白合一遍整份世界
-            if (prepared.Models.MaterialMap is null)
-            {
-                _runtimeMaterialSignature = string.Empty;
-                RefreshRuntimeMaterialTable();
-            }
-
-            if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
+            ApplyPreloadedMaterials(openMaterials, prepared.Models.MaterialMap);
+        }
+        else if (preloadedModels?.Materials is { } freshMaterials)
+        {
+            ApplyPreloadedMaterials(freshMaterials, preloadedModels.MaterialMap);
         }
         else ReloadMaterialTable();
         if (prepared is null) _pluginRuntime.Activate(project, TimeSpan.FromSeconds(2));

@@ -189,7 +189,7 @@ internal sealed partial class ImGuiEditorWindow
 
     internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin);
 
-    private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels Models);
+    private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels? Models);
 
     private sealed record PreparedOpenProject(ProjectHandle Project, PreloadedModels Models,
         PreloadedModels? Recovery, RecoverySnapshot? Snapshot, IReadOnlyList<MaterialAsset>? Materials,
@@ -201,7 +201,8 @@ internal sealed partial class ImGuiEditorWindow
     internal sealed record PreloadedModels(string ScenePath, Scene.SceneDocument? Scene,
         Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed,
         bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum,
-        RuntimeMaterialMap? MaterialMap = null, VoxelWorld? ViewComposed = null);
+        RuntimeMaterialMap? MaterialMap = null, VoxelWorld? ViewComposed = null,
+        IReadOnlyList<MaterialAsset>? Materials = null);
 
     /// <summary>
     /// 一个场景对象对模型资产的读取请求
@@ -426,11 +427,36 @@ internal sealed partial class ImGuiEditorWindow
         }
         cancellation.ThrowIfCancellationRequested();
         return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum,
-            materialMap, viewComposed);
+            materialMap, viewComposed, materials);
     }
 
-    private void ApplyPreloadedBounds(PreloadedModels preload)
+    /// <summary>
+    /// 接管后台预读已经读好的材质表与运行时材质映射
+    /// </summary>
+    /// <remarks>
+    /// 预读阶段用的是同一套纯函数，指纹相同；这里再清空指纹会顺带作废
+    /// 刚接管的组合世界缓存，首帧又要白合一遍整份世界
+    /// </remarks>
+    /// <param name="materials">项目材质资产</param>
+    /// <param name="map">预读阶段构建的运行时材质映射，可为空</param>
+    private void ApplyPreloadedMaterials(IReadOnlyList<MaterialAsset> materials, RuntimeMaterialMap? map)
     {
+        _brushMaterials = materials;
+        _brushMaterialSlot = 0;
+        if (map is not null)
+        {
+            ApplyRuntimeMaterialMap(map);
+        }
+        else
+        {
+            _runtimeMaterialSignature = string.Empty;
+            RefreshRuntimeMaterialTable();
+        }
+
+        if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
+    }
+
+    private void ApplyPreloadedBounds(PreloadedModels preload)    {
         _axisOcclusionBoundsWorld = preload.Composed;
         _axisOcclusionBoundsVersion = preload.Composed!.ContentVersion;
         _axisOcclusionHasBounds = preload.HasBounds;
