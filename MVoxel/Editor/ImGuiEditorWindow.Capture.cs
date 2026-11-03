@@ -71,7 +71,9 @@ internal sealed partial class ImGuiEditorWindow
                 _accumulationSignature = string.Empty;
             }
             _capturePath = path;
-            _captureRenderSettings = _renderSettings.CloneForExport();
+            // 截图必须使用真正参与渲染的有效设置：项目配置与场景环境合并后的结果，
+            // 直接用 _renderSettings 会漏掉场景环境对天空、雾、地面等字段的覆盖
+            _captureRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject()).CloneForExport();
             _captureRenderSettings.PathTracingEnabled = true;
             _captureRenderSettings.PathSamplesPerFrame = 1;
             _captureRenderSettings.PathMaxAccumulatedSamples = Math.Max(16, samples);
@@ -121,6 +123,10 @@ internal sealed partial class ImGuiEditorWindow
                 directSampling = _captureRenderSettings!.EmissiveDirectSampling,
                 lightTree = _captureRenderSettings.EmissiveLightTree,
                 denoise = _captureRenderSettings.PathDenoising,
+                exposure = _captureRenderSettings.Exposure,
+                skyAmbient = _captureRenderSettings.SkyAmbient,
+                emissiveIntensity = _captureRenderSettings.EmissiveIntensity,
+                sunEnabled = _captureRenderSettings.SunEnabled,
                 emissiveFaces = _pipeline.EmissiveFaceCount,
                 lightTreeNodes = _pipeline.EmissiveTreeNodeCount,
                 indexSyncCpuMs = _pipeline.EmissiveSyncMilliseconds };

@@ -22,7 +22,7 @@ public static class RenderQualityPresets
         {
             var expected = settings.CloneForExport();
             Apply(expected, quality);
-            if (settings.Backend == expected.Backend && settings.UseHardwareRayTracing == expected.UseHardwareRayTracing &&
+            if (settings.Backend == expected.Backend &&
                 settings.ResolutionScale == expected.ResolutionScale && settings.AutoPerformanceScaling == expected.AutoPerformanceScaling &&
                 settings.PathTracingEnabled == expected.PathTracingEnabled && settings.PathSamplesPerFrame == expected.PathSamplesPerFrame &&
                 settings.PathMaxAccumulatedSamples == expected.PathMaxAccumulatedSamples && settings.MaxBounces == expected.MaxBounces &&
@@ -45,7 +45,7 @@ public static class RenderQualityPresets
         ArgumentNullException.ThrowIfNull(settings);
         if (!Enum.IsDefined(quality)) throw new ArgumentOutOfRangeException(nameof(quality));
         settings.Backend = RenderBackend.Gpu;
-        settings.UseHardwareRayTracing = false;
+        // 硬件加速由设备能力与项目偏好独立决定，质量方案不覆盖它
         settings.ResolutionScale = 1F;
         settings.AutoPerformanceScaling = false;
         settings.PathTracingEnabled = quality is RenderQualityPreset.High or RenderQualityPreset.Ultra;

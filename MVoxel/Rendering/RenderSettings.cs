@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -49,8 +49,11 @@ public enum RenderBackend
 /// <summary>实时与路径追踪共用的太阳阴影策略。</summary>
 public enum SunShadowMethod
 {
+    /// <summary>随机分层采样，路径追踪按样本、实时按帧累积收敛，最终画质最好</summary>
     Progressive = 0,
+    /// <summary>高密度确定性圆盘面积积分，单帧平滑且静止逐帧一致</summary>
     Reconstructed = 1,
+    // ShadowMap 是上一版预留的旧名称，现为低采样确定性面积积分（快速预览）；保留名称只为兼容已保存的项目
     ShadowMap = 2,
 }
 
@@ -128,7 +131,7 @@ public sealed class RenderSettings
     public int ShadowSamples = 8;
     /// <summary>实时模式出片优先的静止累积帧数。</summary>
     public int SunAccumulationFrames = 128;
-    /// <summary>PCSS 太阳深度图边长，不改变视口或模型精度。</summary>
+    /// <summary>旧版阴影贴图精度字段，只为兼容已保存项目保留，当前方案不再使用</summary>
     public int SunShadowMapResolution = 1024;
 
     /// <summary>
@@ -362,9 +365,23 @@ public sealed class RenderSettings
     public bool PathTracingEnabled;
 
     /// <summary>
-    /// 是否使用 Vulkan 硬件光追管线
+    /// 是否使用 Vulkan 硬件光追加速（显式选择）
     /// </summary>
+    /// <remarks>
+    /// 只有 <see cref="HardwareRayTracingAuto"/> 为 false 时才是权威值；
+    /// 自动模式下由设备能力决定，见渲染管线与设置面板
+    /// </remarks>
     public bool UseHardwareRayTracing;
+
+    /// <summary>
+    /// 自动采用设备支持的硬件光追加速，默认开启
+    /// </summary>
+    /// <remarks>
+    /// 用户手动关闭后会把它置为 false 并记住 <see cref="UseHardwareRayTracing"/>，
+    /// 因此“默认开启、允许关闭、关闭后记住”由项目设置本身承载；
+    /// 设备不支持时面板灰显，但不会抹掉项目里保存的选择
+    /// </remarks>
+    public bool HardwareRayTracingAuto = true;
 
     /// <summary>
     /// 渲染计算后端，默认使用 Vulkan GPU

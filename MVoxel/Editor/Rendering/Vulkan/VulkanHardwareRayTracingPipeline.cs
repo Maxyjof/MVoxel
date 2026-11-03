@@ -103,6 +103,16 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     internal bool IsReady => _pipeline.Handle != 0 && _tlas.Handle != 0 && _sbtBuffer.Handle != 0;
 
     /// <summary>
+    /// 当前加速结构是否可用于 Ray Query
+    /// </summary>
+    internal bool HasAccelerationStructure => _tlas.Handle != 0;
+
+    /// <summary>
+    /// 顶层加速结构句柄，供 Ray Query 的 Compute 着色器绑定
+    /// </summary>
+    internal AccelerationStructureKHR AccelerationStructure => _tlas;
+
+    /// <summary>
     /// 获取最近一次硬件 RT 错误
     /// </summary>
     internal string? LastError => _lastError;
@@ -268,6 +278,41 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     }
 
     /// <summary>
+    /// 为 Ray Query 阴影准备加速结构：只建 BLAS 与 TLAS，不创建光追管线与 SBT
+    /// </summary>
+    /// <param name="cells">与 Compute 着色器 binding 0 顺序一致的体素列表</param>
+    /// <param name="sourceVersion">工作集内容版本，版本不变时直接复用</param>
+    /// <returns>加速结构可用时返回 true</returns>
+    internal bool EnsureShadowAcceleration(IReadOnlyList<VoxelGpuCell> cells, int sourceVersion)
+    {
+        if (_disposed || cells.Count == 0 || cells.Count > MaxHardwareRayTracingVoxels)
+        {
+            return false;
+        }
+
+        if (_sourceVersion == sourceVersion && _tlas.Handle != 0) return true;
+        try
+        {
+            _lastError = null;
+            // 几何顺序必须与 Compute 的 binding 0 完全一致，否则命中图元换算出的
+            // 半透明标记会错位，阴影就会错误地穿过水面或玻璃
+            _api.DeviceWaitIdle(_device);
+            DestroyAccelerationResources();
+            CreateGeometryBuffers(cells);
+            CreateBlas(cells.Count);
+            CreateTlas();
+            _sourceVersion = sourceVersion;
+            return _tlas.Handle != 0;
+        }
+        catch (Exception exception)
+        {
+            _lastError = exception.ToString();
+            MVoxelLog.Error("创建硬件光追加速结构失败，阴影回退 Compute", exception);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 创建加速结构与几何输入资源
     /// </summary>
     /// <param name="workset">当前体素工作集</param>
@@ -276,7 +321,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         if (_sourceVersion == workset.SourceVersion && IsReady) return;
         _api.DeviceWaitIdle(_device);
         DestroyAccelerationResources();
-        CreateGeometryBuffers(workset);
+        CreateGeometryBuffers(workset.Cells);
         CreateBlas(workset.Cells.Count);
         CreateTlas();
         _sourceVersion = workset.SourceVersion;
@@ -285,17 +330,17 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// <summary>
     /// 创建每个体素的立方体三角形和颜色缓冲
     /// </summary>
-    /// <param name="workset">当前体素工作集</param>
-    private void CreateGeometryBuffers(VoxelGpuWorkset workset)
+    /// <param name="cells">与 Compute 着色器同序的体素列表</param>
+    private void CreateGeometryBuffers(IReadOnlyList<VoxelGpuCell> cells)
     {
-        var vertices = new float[checked(workset.Cells.Count * VerticesPerVoxel * 3)];
-        var indices = new uint[checked(workset.Cells.Count * IndicesPerVoxel)];
-        var cells = new byte[checked(workset.Cells.Count * CellStride)];
+        var vertices = new float[checked(cells.Count * VerticesPerVoxel * 3)];
+        var indices = new uint[checked(cells.Count * IndicesPerVoxel)];
+        var packed = new byte[checked(cells.Count * CellStride)];
         var vertexOffset = 0;
         var indexOffset = 0;
-        for (var cellIndex = 0; cellIndex < workset.Cells.Count; cellIndex++)
+        for (var cellIndex = 0; cellIndex < cells.Count; cellIndex++)
         {
-            var cell = workset.Cells[cellIndex];
+            var cell = cells[cellIndex];
             var x = (float)cell.X;
             var y = (float)cell.Y;
             var z = (float)cell.Z;
@@ -316,7 +361,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
             };
             for (var index = 0; index < localIndices.Length; index++) indices[indexOffset++] = baseVertex + localIndices[index];
-            WritePackedCell(cells.AsSpan(cellIndex * CellStride, CellStride), cell);
+            WritePackedCell(packed.AsSpan(cellIndex * CellStride, CellStride), cell);
         }
 
         _vertexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(vertices.AsSpan()),
@@ -325,7 +370,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _indexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(indices.AsSpan()),
             (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
             out _indexMemory);
-        _cellBuffer = CreateHostBuffer(cells,
+        _cellBuffer = CreateHostBuffer(packed,
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
             out _cellMemory);
     }

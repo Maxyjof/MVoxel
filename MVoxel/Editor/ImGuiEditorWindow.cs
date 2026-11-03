@@ -504,6 +504,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 realtimeHistoryActive = _pipeline?.RealtimeHistoryActive ?? false,
                 realtimeConvergedFrames = _pipeline?.RealtimeConvergedFrames ?? 0,
                 usingHardwareRayTracing = _pipeline?.UsingHardwareRayTracing ?? false,
+                hardwareRayQuerySupported = _pipeline?.SupportsHardwareRayQuery ?? false,
+                hardwareShadowsActive = _pipeline?.HardwareShadowsActive ?? false,
+                hardwareShadowStatus = _pipeline?.HardwareShadowStatus ?? "渲染管线未初始化",
                 forceComputePath = _renderSettings.ForceComputePath,
                 renderWorksetBuildMs = _pipeline?.SyncWorksetBuildMs ?? 0,
                 renderWorksetSyncCount = _pipeline?.SyncCompletedCount ?? 0,
@@ -5183,8 +5186,9 @@ DockId=0x6A3C3007,0
             projectSettings.RenderSettings.PathTracingEnabled = false;
         }
         projectSettings.ExportRenderSettings = _editorSettings.ExportRenderSettings;
-        projectSettings.RenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
-        projectSettings.ExportRenderSettings.UseHardwareRayTracing = _editorSettings.UseHardwareRayTracing;
+        // 硬件加速是项目级设置：新项目默认自动跟随设备能力，用户之后关掉会记在本项目
+        projectSettings.RenderSettings.HardwareRayTracingAuto = true;
+        projectSettings.ExportRenderSettings.HardwareRayTracingAuto = true;
         SettingsStore.SaveProject(project, projectSettings);
     }
 

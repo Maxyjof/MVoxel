@@ -46,6 +46,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private readonly Device _device;
     private readonly VulkanImGuiRenderer? _imguiRenderer;
     private VulkanHardwareRayTracingPipeline? _hardwareRayTracingPipeline;
+    // Ray Query 阴影加速：加速结构只服务 TraceShadow，完整着色、后处理与
+    // A/B/C 三种太阳方案仍走同一份 Compute 着色器，因此所有效果都保持一致
+    private VulkanHardwareRayTracingPipeline? _shadowAcceleration;
+    private Pipeline _hardwareShadowPipeline;
+    private bool _hardwareShadowsActive;
+    private bool _hardwareShadowPipelineFailed;
+    private int _shadowAccelerationSeenVersion = -1;
+    private int _shadowAccelerationBuiltVersion = -1;
+    private long _shadowAccelerationSeenAtMs;
+    private bool _shadowAccelerationUnsupportedLogged;
+    /// <summary>工作集停止变化后等待多久再建 BLAS，避免连续编辑时反复重建</summary>
+    private const int ShadowAccelerationStableMs = 320;
     private VkBuffer _voxelBuffer;
     private DeviceMemory _voxelMemory;
     private ulong _voxelBufferCapacity;
@@ -209,7 +221,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _sceneSelectionActive;
     private bool _disposed;
     private bool _usingHardwareRayTracing;
-    private int _hardwareLightFallbackCount = -1;
     private int _worksetMaximumCells;
 
     /// <summary>
@@ -268,6 +279,21 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 获取硬件 RT 最近一次错误
     /// </summary>
     internal string? HardwareRayTracingError => _hardwareRayTracingPipeline?.LastError;
+
+    /// <summary>当前设备是否支持 ray query 阴影加速</summary>
+    internal bool SupportsHardwareRayQuery => _context?.SupportsHardwareRayQuery == true;
+
+    /// <summary>当前帧的太阳阴影是否真的由硬件光追加速</summary>
+    internal bool HardwareShadowsActive => _hardwareShadowsActive;
+
+    /// <summary>硬件阴影加速的状态说明，供自动化与状态栏显示</summary>
+    internal string HardwareShadowStatus => _context is null ? "无 Vulkan 设备"
+        : !_context.SupportsHardwareRayQuery ? "设备不支持 ray query"
+        : _hardwareShadowsActive ? "ray query 阴影已启用"
+        : _shadowAcceleration?.LastError is { Length: > 0 } error ? $"加速结构不可用：{error}"
+        : _workset.Cells.Count > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels
+            ? $"工作集 {_workset.Cells.Count:N0} 格超过硬件加速上限 {VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels:N0}"
+            : "等待工作集稳定后建立加速结构";
 
     /// <summary>
     /// 获取显示纹理有效区域
@@ -916,41 +942,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     {
         _usingHardwareRayTracing = false;
         if (_context?.IsDeviceLost == true) return false;
-        // 硬件 RT 目前只输出体素基础颜色，不执行太阳、自发光和场景光源着色；
-        // 存在场景光源时改用 Compute 路径，保证本地光照与阴影可见，避免切到硬件 RT 后变暗
-        bool emissiveLighting = settings.EmissiveVoxels && settings.EmissiveIntensity > 0F && _workset.EmissiveCount > 0;
-        if (settings.UseHardwareRayTracing && (_sceneLightCount > 0 || emissiveLighting))
-        {
-            if (_hardwareLightFallbackCount != _sceneLightCount)
-            {
-                _hardwareLightFallbackCount = _sceneLightCount;
-                MVoxelLog.Info($"本地光源 {_sceneLightCount}，发光照明 {emissiveLighting}；使用支持光照的 Compute 路径");
-            }
-        }
-        else
-        {
-            _hardwareLightFallbackCount = -1;
-        }
-
-        // 硬件 RT 尚无这些后处理，启用时走完整 Compute 路径，避免静默忽略相机效果。
-        bool needsCameraEffects = settings.ShowWater || settings.FogDensity > 0F || settings.WeatherRainIntensity > 0F || settings.WeatherSnowIntensity > 0F || settings.WeatherStormIntensity > 0F || settings.WeatherHeatHaze > 0F || settings.FilmGrainIntensity > 0F || settings.PosterizeMix > 0F || settings.SplitToneMix > 0F;
-        if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && !emissiveLighting && !needsCameraEffects && _context is not null && _imguiRenderer is not null &&
-            _context.SupportsHardwareRayTracing)
-        {
-            _hardwareRayTracingPipeline ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
-            if (_hardwareRayTracingPipeline.TryRender(_workset, settings, frameState, widthPixels, heightPixels))
-            {
-                _usingHardwareRayTracing = true;
-                // 当前硬件 RT 输出是单帧结果，保持到相机、场景或渲染设置变化后再重算
-                AccumulatedSamples = Math.Max(1, settings.PathMaxAccumulatedSamples);
-                return true;
-            }
-
-            // 硬件光追失败后不能对已经丢失的设备继续提交 Compute 命令，
-            // 否则会把一次设备丢失扩大成连续的原生驱动调用异常。
-            if (_context.IsDeviceLost) return false;
-        }
-
+        // 硬件加速只替换 TraceShadow 的求交后端，完整着色、光源、自发光、
+        // 相机效果与三种太阳方案都走同一份 Compute 着色器，因此这里不再有
+        // “基础颜色专用”分支，也就不会因为切到硬件而漏掉任何效果
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: true);
     }
 
@@ -1268,6 +1262,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (_context?.IsDeviceLost == true)
             {
                 _hardwareRayTracingPipeline = null;
+                _shadowAcceleration = null;
+                _hardwareShadowPipeline = default;
                 // 只清理纯托管的句柄记录，不再调用故障设备上的描述符释放
                 _displayTextureId = IntPtr.Zero;
                 return;
@@ -1276,6 +1272,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             api.DeviceWaitIdle(_device);
             _hardwareRayTracingPipeline?.Dispose();
             _hardwareRayTracingPipeline = null;
+            _shadowAcceleration?.Dispose();
+            _shadowAcceleration = null;
+            if (_hardwareShadowPipeline.Handle != 0)
+            {
+                api.DestroyPipeline(_device, _hardwareShadowPipeline, null);
+                _hardwareShadowPipeline = default;
+            }
             if (_displayTextureId != IntPtr.Zero)
             {
                 _imguiRenderer?.UnregisterTexture(_displayTextureId);
@@ -1425,6 +1428,57 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// 创建 Ray Query 阴影加速使用 Compute 管线变体
+    /// </summary>
+    /// <remarks>
+    /// 和软件管线共用同一份着色器源码与管线布局，只在编译期打开 P_HW_RT，
+    /// 让 TraceShadow 改走 rayQueryEXT；其余着色、后处理与 A/B/C 阴影方案完全一致
+    /// </remarks>
+    private void EnsureHardwareShadowPipeline()
+    {
+        if (_hardwareShadowPipeline.Handle != 0 || _hardwareShadowPipelineFailed) return;
+        if (_context?.SupportsHardwareRayQuery != true || _computePipelineLayout.Handle == 0 || _api is null) return;
+        try
+        {
+            var words = VulkanShaderCompiler.Compile(HardwareSceneComputeShader,
+                ShaderKind.ComputeShader, "MVoxel.Scene.rt.comp", rayTracing: true);
+            var shaderModule = CreateShaderModule(words);
+            nint entryPoint = SilkMarshal.StringToPtr("main");
+            try
+            {
+                PipelineShaderStageCreateInfo stage = new()
+                {
+                    SType = StructureType.PipelineShaderStageCreateInfo,
+                    Stage = ShaderStageFlags.ComputeBit,
+                    Module = shaderModule,
+                    PName = (byte*)entryPoint
+                };
+                ComputePipelineCreateInfo createInfo = new()
+                {
+                    SType = StructureType.ComputePipelineCreateInfo,
+                    Stage = stage,
+                    Layout = _computePipelineLayout,
+                    BasePipelineIndex = -1
+                };
+                Check(_api.CreateComputePipelines(_device, default, 1, in createInfo, null, out _hardwareShadowPipeline),
+                    "创建 Ray Query 阴影加速管线");
+                MVoxelLog.Info("硬件光追阴影加速已就绪，太阳阴影改由 ray query 求交");
+            }
+            finally
+            {
+                SilkMarshal.Free(entryPoint);
+                _api.DestroyShaderModule(_device, shaderModule, null);
+            }
+        }
+        catch (Exception exception)
+        {
+            _hardwareShadowPipelineFailed = true;
+            _hardwareShadowPipeline = default;
+            MVoxelLog.Warn($"硬件光追阴影管线创建失败，保持 Compute 路径：{exception.Message}");
+        }
+    }
+
     /// <summary>检查当前 Vulkan 设备的存储图像格式能力，不按显卡厂商推断支持情况。</summary>
     private void ValidateComputeImageFormats()
     {
@@ -1441,6 +1495,62 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if ((properties.OptimalTilingFeatures & required) != required)
                 throw new InvalidOperationException($"Vulkan 设备 {_context.DeviceName} 不支持所需图像格式 {format}（需要 {required}）");
         }
+    }
+
+    /// <summary>
+    /// 决定本帧太阳阴影是否走硬件 Ray Query，并在工作集稳定后建立加速结构
+    /// </summary>
+    /// <remarks>
+    /// 加速结构要整份重建，不能在每次笔刷提交时都做：只有工作集版本停下
+    /// 约 320 毫秒才动手，连续编辑期间继续用 Compute 的软件 BVH，
+    /// 因此默认开启不会把编辑手感拖慢。工作集超过硬件上限时同样自动回退
+    /// </remarks>
+    private void UpdateShadowAcceleration(RenderSettings settings)
+    {
+        _hardwareShadowsActive = false;
+        if (_context is null || !_context.SupportsHardwareRayQuery) return;
+        // 自动模式下设备能力就是答案；用户手动关闭后 UseHardwareRayTracing 才是权威值
+        if (!settings.HardwareRayTracingAuto && !settings.UseHardwareRayTracing) return;
+        if (_usingBrickPath || _sceneOrderedCells.Count == 0 ||
+            _sceneOrderedCells.Count > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels)
+        {
+            return;
+        }
+
+        var version = _workset.SourceVersion;
+        var now = Environment.TickCount64;
+        if (_shadowAccelerationSeenVersion != version)
+        {
+            _shadowAccelerationSeenVersion = version;
+            _shadowAccelerationSeenAtMs = now;
+            return;
+        }
+
+        if (_shadowAccelerationBuiltVersion != version)
+        {
+            if (now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs) return;
+            if (_imguiRenderer is null) return;
+            WaitForComputeIdle();
+            _shadowAcceleration ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
+            if (!_shadowAcceleration.EnsureShadowAcceleration(_sceneOrderedCells, version))
+            {
+                // 失败也记版本，避免每帧重试同一次重建；下一次编辑会重新尝试
+                _shadowAccelerationBuiltVersion = version;
+                if (!_shadowAccelerationUnsupportedLogged)
+                {
+                    _shadowAccelerationUnsupportedLogged = true;
+                    MVoxelLog.Warn($"硬件阴影加速不可用：{_shadowAcceleration.LastError ?? "未知原因"}");
+                }
+                return;
+            }
+            _shadowAccelerationBuiltVersion = version;
+            // 加速结构句柄变了，binding 13 必须重写
+            UpdateComputeDescriptors();
+        }
+
+        EnsureHardwareShadowPipeline();
+        _hardwareShadowsActive = _hardwareShadowPipeline.Handle != 0 &&
+            _shadowAcceleration?.HasAccelerationStructure == true;
     }
 
     /// <summary>
@@ -1462,6 +1572,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
+        UpdateShadowAcceleration(settings);
         var parameters = BuildParameters(settings, frameState);
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
@@ -1492,16 +1603,25 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
-            // 参数不变后再画两帧让历史图与描述符交换稳定下来；实时着色本身
-            // 是确定性的，静止时逐帧结果相同，不需要靠多帧平均去噪
+            // 参数不变时继续重绘的帧数：确定性方案只需两帧稳定描述符与历史图；
+            // 渐进太阳阴影则要跑满用户设定的累积帧数，静止后才能收敛半影
+            var convergeBudget = RealtimeConvergeFrameBudget;
+            if (!frameState.ScenePreview && settings.SunEnabled &&
+                settings.SunShadowMethod == SunShadowMethod.Progressive && settings.ShadowSoftness > 0F)
+            {
+                convergeBudget = Math.Max(convergeBudget, settings.SunAccumulationFrames);
+            }
+
             if (!historyCleared && ParametersEqualForDisplay(parameters) &&
-                _realtimeConvergedFrames >= RealtimeConvergeFrameBudget)
+                _realtimeConvergedFrames >= convergeBudget)
             {
                 return true;
             }
 
             if (ParametersEqualForDisplay(parameters)) _realtimeConvergedFrames++;
             else _realtimeConvergedFrames = 0;
+            // 已累积帧数（不含本帧），着色器按 1/(n+1) 混合上一帧结果
+            parameters[VoxelRenderParameters.SunRealtimeFrames] = _realtimeConvergedFrames;
 
             if (historyUsed && !historyCleared)
             {
@@ -1819,7 +1939,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             hash = hash * 31 + sourceVersion;
             for (var index = 0; index < parameters.Length; index++)
             {
-                if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel) continue;
+                if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel or
+                    VoxelRenderParameters.SunRealtimeFrames) continue;
                 hash = hash * 31 + BitConverter.SingleToInt32Bits(parameters[index]);
             }
             return hash;
@@ -1838,7 +1959,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         for (var index = 0; index < parameters.Length; index++)
         {
-            if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel)
+            if (index is VoxelRenderParameters.Frame or VoxelRenderParameters.Pixel or
+                VoxelRenderParameters.SunRealtimeFrames)
             {
                 continue;
             }
@@ -2360,10 +2482,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 创建 Compute 描述符布局
     /// </summary>
+    /// <remarks>
+    /// 设备支持 Ray Query 时多出 binding 13 的顶层加速结构。软件着色器不声明
+    /// 该绑定，因此同一条布局可以同时服务软件与硬件两个管线变体
+    /// </remarks>
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[13];
+        var bindingCount = _context?.SupportsHardwareRayQuery == true ? 14 : 13;
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[14];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -2377,10 +2504,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bindings[10] = new(10, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[11] = new(11, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[12] = new(12, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
+        if (bindingCount > 13)
+            bindings[13] = new(13, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.ComputeBit);
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
-            BindingCount = 13,
+            BindingCount = (uint)bindingCount,
             PBindings = bindings
         };
         DescriptorSetLayout layout = default;
@@ -2394,16 +2523,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符池</returns>
     private DescriptorPool CreateComputeDescriptorPool()
     {
-        DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[2]
+        var hardwareRayQuery = _context?.SupportsHardwareRayQuery == true;
+        DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[3]
         {
             new(DescriptorType.StorageBuffer, 8 * TileRingDepth),
-            new(DescriptorType.StorageImage, 5 * TileRingDepth)
+            new(DescriptorType.StorageImage, 5 * TileRingDepth),
+            new(DescriptorType.AccelerationStructureKhr, hardwareRayQuery ? (uint)TileRingDepth : 0U)
         };
         DescriptorPoolCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorPoolCreateInfo,
             MaxSets = TileRingDepth,
-            PoolSizeCount = 2,
+            PoolSizeCount = hardwareRayQuery ? 3U : 2U,
             PPoolSizes = sizes
         };
         DescriptorPool pool = default;
@@ -2506,7 +2637,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private void BindComputeTile(CommandBuffer commandBuffer, DescriptorSet descriptorSet, int tileX, int tileY)
     {
         var api = _api!;
-        api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, _computePipeline);
+        // 两个变体共用管线布局与描述符集，只有 TraceShadow 的求交后端不同
+        var pipeline = _hardwareShadowsActive && _hardwareShadowPipeline.Handle != 0
+            ? _hardwareShadowPipeline : _computePipeline;
+        api.CmdBindPipeline(commandBuffer, PipelineBindPoint.Compute, pipeline);
         api.CmdBindDescriptorSets(commandBuffer, PipelineBindPoint.Compute, _computePipelineLayout,
             0, 1, in descriptorSet, 0, null);
         int* tileOffset = stackalloc int[2] { tileX, tileY };
@@ -2531,7 +2665,29 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[13];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[14];
+        // binding 13 只有设备支持 Ray Query 时才出现在布局里；加速结构尚未建好时
+        // 不写该绑定，软件管线本来也不读取它
+        AccelerationStructureKHR accelerationStructure = _shadowAcceleration?.AccelerationStructure ?? default;
+        WriteDescriptorSetAccelerationStructureKHR accelerationWrite = new()
+        {
+            SType = StructureType.WriteDescriptorSetAccelerationStructureKhr,
+            AccelerationStructureCount = 1,
+            PAccelerationStructures = &accelerationStructure
+        };
+        var writeAcceleration = _context?.SupportsHardwareRayQuery == true;
+        if (writeAcceleration)
+        {
+            writes[13] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = default,
+                DstBinding = 13,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.AccelerationStructureKhr,
+                PNext = &accelerationWrite
+            };
+        }
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
             if (_ringSets[slot].Handle == 0) return;
@@ -2642,7 +2798,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             writes[12] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 12, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage,
                 PImageInfo = &historyWriteInfo };
-            _api!.UpdateDescriptorSets(_device, 13, writes, 0, null);
+            var withAcceleration = writeAcceleration && accelerationStructure.Handle != 0;
+            if (withAcceleration) writes[13].DstSet = _ringSets[slot];
+            _api!.UpdateDescriptorSets(_device, withAcceleration ? 14U : 13U, writes, 0, null);
         }
     }
 
@@ -2743,6 +2901,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         "#version 450\n\n" + VoxelRenderParameters.Defines() + "\n" +
         SceneShaderBody.Replace("/* EMISSIVE_SAMPLING */", EmissiveSamplingShader);
 
+    // 与软件变体共用同一份着色器正文，只多一个扩展与编译期开关：
+    // 硬件光追只替换 TraceShadow 的求交后端，所有光照、阴影方案与后处理保持一致
+    private static readonly string HardwareSceneComputeShader =
+        "#version 450\n#extension GL_EXT_ray_query : require\n\n" +
+        VoxelRenderParameters.Defines() + "\n#define P_HW_RT 1\n" +
+        SceneShaderBody.Replace("/* EMISSIVE_SAMPLING */", EmissiveSamplingShader);
+
     private const string SceneShaderBody = """
         layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -2788,6 +2953,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         layout(set = 0, binding = 8, rgba32f) uniform coherent image2D guideImage;
         layout(set = 0, binding = 11, rgba8) uniform readonly image2D realtimeHistoryRead;
         layout(set = 0, binding = 12, rgba8) uniform writeonly image2D realtimeHistoryWrite;
+        #ifdef P_HW_RT
+        // 只有硬件光追变体声明该绑定；软件变体的描述符布局里它是未使用的槽位
+        layout(set = 0, binding = 13) uniform accelerationStructureEXT shadowTopLevel;
+        #endif
 
         struct MaterialSlotData
         {
@@ -3061,6 +3230,26 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
+            #ifdef P_HW_RT
+            // 阴影只需要“是否有不透明遮挡”。硬件光追的加速结构用工作集相对坐标，
+            // 因此射线起点先减去区域原点；命中图元号除以 12 得到体素索引，
+            // 再按与 Compute 路径相同的规则跳过半透明格
+            vec3 relativeOrigin = rayOrigin - vec3(values[16], values[17], values[18]);
+            rayQueryEXT query;
+            rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsOpaqueEXT, 0xFF,
+                relativeOrigin, 0.001, rayDirection, maxDistance);
+            int voxelCount = int(values[94]);
+            while (rayQueryProceedEXT(query))
+            {
+                if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT)
+                    continue;
+                int cellIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, false) / 12;
+                if (cellIndex < 0 || cellIndex >= voxelCount) continue;
+                if ((cells[cellIndex].metadata.x >> 16 & 1u) != 0u) continue;
+                return true;
+            }
+            return false;
+            #else
             float distance;
             vec3 normal;
             vec4 color;
@@ -3070,6 +3259,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ivec3 cellExtent;
             return TraceClosestWithin(rayOrigin, rayDirection, distance, normal, color, flags,
                 slot, cell, cellExtent, true, maxDistance, true);
+            #endif
         }
 
         float Random(inout uint state);
@@ -3078,26 +3268,82 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         vec3 SrgbToLinear(vec3 color);
         vec3 Sky(vec3 rayDirection);
 
+        // 太阳圆盘的切平面基。方向固定后基也固定，采样盘不会逐帧漂移；
+        // 需要的随机/蓝噪声相位由调用方传入，三种阴影方案共用同一套几何。
+        void SunDiskBasis(vec3 rayDirection, out vec3 tangent, out vec3 bitangent)
+        {
+            tangent = normalize(abs(rayDirection.y) < 0.9 ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
+                : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
+            bitangent = cross(rayDirection, tangent);
+        }
+
+        // 方案 A 出片优先：在太阳圆盘上做分层随机采样。半径按面积均匀分层，
+        // 方位由 RNG 给出。路径追踪按样本累积、实时通道按帧累积，单帧允许
+        // 噪点，静止后收敛到正确半影；不追求单帧确定性。
+        float SunVisibilityProgressive(vec3 rayOrigin, vec3 tangent, vec3 bitangent,
+            vec3 rayDirection, float softness, int sampleCount, inout uint state)
+        {
+            float visible = 0.0;
+            float rotation = 6.28318530718 * Random(state);
+            for (int index = 0; index < 16; index++)
+            {
+                if (index >= sampleCount) break;
+                float radius = sqrt((float(index) + Random(state)) / float(sampleCount));
+                float angle = rotation + 6.28318530718 * Random(state);
+                vec3 sampleDirection = normalize(rayDirection + softness *
+                    (tangent * (cos(angle) * radius) + bitangent * (sin(angle) * radius)));
+                visible += TraceShadow(rayOrigin, sampleDirection, 10000.0) ? 0.0 : 1.0;
+            }
+            return visible / float(sampleCount);
+        }
+
+        // 方案 B/C 的确定性圆盘面积积分：Vogel 螺旋在单位圆内近似均匀铺开，
+        // 每像素相位由蓝噪声旋转，相邻像素的残余量化被打散成细颗粒，
+        // 由收尾通道的联合双边降噪抹平；相位不含帧号，静止画面逐帧一致。
+        float SunVisibilityArea(vec3 rayOrigin, vec3 tangent, vec3 bitangent,
+            vec3 rayDirection, float softness, int sampleCount, float phase)
+        {
+            float visible = 0.0;
+            for (int index = 0; index < 64; index++)
+            {
+                if (index >= sampleCount) break;
+                float radius = sqrt((float(index) + 0.5) / float(sampleCount));
+                float angle = phase + float(index) * 2.39996322973;
+                vec3 sampleDirection = normalize(rayDirection + softness *
+                    (tangent * (cos(angle) * radius) + bitangent * (sin(angle) * radius)));
+                visible += TraceShadow(rayOrigin, sampleDirection, 10000.0) ? 0.0 : 1.0;
+            }
+            return visible / float(sampleCount);
+        }
+
+        // 实时通道与路径追踪共用的太阳软阴影入口。方案：
+        // 0 渐进采样（随机 + 累积）、1 半影重建（高密度确定性面积积分）、
+        // 2 快速预览（低采样确定性面积积分，依赖画面 AA 与收尾降噪）。
+        // 质量档位 1~8 在参数层展开成 2~16 条射线的预算。
         float TraceSoftShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
         {
-            int sampleCount = clamp(int(values[32]), 1, 8);
-            if (values[31] <= 0.0001 || sampleCount == 1)
+            int budget = clamp(int(values[32]), 2, 16);
+            // 路径追踪每个着色点都要做直接光，保留旧上限避免反弹成本翻倍
+            bool pathMode = values[86] > 0.5;
+            if (pathMode) budget = min(budget, 8);
+            float softness = max(values[31], 0.0);
+            if (softness <= 0.0001 || budget <= 1)
                 return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
-            vec3 tangent = normalize(abs(rayDirection.y) < 0.9 ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
-                : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
-            vec3 bitangent = cross(rayDirection, tangent);
-            float visible = 0.0;
-            for (int index = 0; index < sampleCount; index++)
-            {
-                float angle = 6.28318530718 * (float(index) + Random(state)) / float(sampleCount);
-                float radius = values[31] * sqrt(Random(state));
-                vec3 sampleDirection = normalize(rayDirection + tangent * cos(angle) * radius
-                    + bitangent * sin(angle) * radius);
-                visible += TraceShadow(rayOrigin, sampleDirection, maxDistance) ? 0.0 : 1.0;
-            }
-            // 面光源的半影是可见方向的比例；“任一采样被挡就全黑”会把软阴影
-            // 系统性加深成块状脏色，并且采样数越高偏差越严重。
-            return visible / float(sampleCount);
+
+            vec3 tangent;
+            vec3 bitangent;
+            SunDiskBasis(rayDirection, tangent, bitangent);
+            int method = int(values[P_SUN_METHOD] + 0.5);
+            if (method == 0)
+                return SunVisibilityProgressive(rayOrigin, tangent, bitangent, rayDirection, softness,
+                    budget, state);
+
+            float phase = 6.28318530718 * Random(state);
+            if (method == 1)
+                return SunVisibilityArea(rayOrigin, tangent, bitangent, rayDirection, softness,
+                    clamp(budget * 4, 12, 64), phase);
+            return SunVisibilityArea(rayOrigin, tangent, bitangent, rayDirection, softness,
+                clamp(budget, 3, 12), phase);
         }
 
         // 确定性点查询：沿 BVH 只下降包含该点的节点，叶子内做盒包含测试。
@@ -3209,70 +3455,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 : vec3(0.0);
         }
 
-        float TraceSoftShadowVisibility(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
-        {
-            // 参数层保留旧档位映射；实时太阳阴影将其转换为积分横条数量。
-            int sampleCount = clamp(int(values[32]), 1, 16);
-            if (values[31] <= 0.0001 || sampleCount == 1)
-                return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
-
-            vec3 tangent = normalize(abs(rayDirection.y) < 0.9
-                ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
-                : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
-            vec3 bitangent = cross(rayDirection, tangent);
-            // 在太阳圆盘上按等面积横条积分。每条弦检测遮挡转换，再二分
-            // 定位边界；贡献来自可见区间长度，不再是少数二值射线投票。
-            // 固定采样保持静止稳定，不引入逐像素随机噪点。
-            int chordCount = clamp(sampleCount / 2, 2, 8);
-            int segmentCount = 8;
-            float visibleArea = 0.0;
-            float totalArea = 0.0;
-            for (int chord = 0; chord < 8; chord++)
-            {
-                if (chord >= chordCount) break;
-                float y = (float(chord) + 0.5) / float(chordCount) * 2.0 - 1.0;
-                float halfWidth = sqrt(max(1.0 - y * y, 0.0));
-                float stepWidth = 2.0 * halfWidth / float(segmentCount);
-                float left = -halfWidth;
-                vec3 direction = normalize(rayDirection + values[31] *
-                    (tangent * left + bitangent * y));
-                bool leftBlocked = TraceShadow(rayOrigin, direction, maxDistance);
-                float visibleLength = 0.0;
-                for (int segment = 0; segment < 8; segment++)
-                {
-                    float right = -halfWidth + float(segment + 1) * stepWidth;
-                    direction = normalize(rayDirection + values[31] *
-                        (tangent * right + bitangent * y));
-                    bool rightBlocked = TraceShadow(rayOrigin, direction, maxDistance);
-                    if (leftBlocked == rightBlocked)
-                    {
-                        if (!leftBlocked) visibleLength += stepWidth;
-                    }
-                    else
-                    {
-                        float low = left;
-                        float high = right;
-                        for (int refine = 0; refine < 6; refine++)
-                        {
-                            float middle = (low + high) * 0.5;
-                            direction = normalize(rayDirection + values[31] *
-                                (tangent * middle + bitangent * y));
-                            bool blocked = TraceShadow(rayOrigin, direction, maxDistance);
-                            if (blocked == leftBlocked) low = middle;
-                            else high = middle;
-                        }
-                        float boundary = (low + high) * 0.5;
-                        visibleLength += leftBlocked ? right - boundary : boundary - left;
-                    }
-                    left = right;
-                    leftBlocked = rightBlocked;
-                }
-                visibleArea += visibleLength;
-                totalArea += 2.0 * halfWidth;
-            }
-            return clamp(visibleArea / max(totalArea, 0.0001), 0.0, 1.0);
-        }
-
         uint Hash(uint value)
         {
             value ^= value >> 16;
@@ -3339,6 +3521,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 vec3(0.0), vec3(1.0)));
             vec3 sky = mix(skyHorizon, skyTop, clamp(rayDirection.y * 0.5 + 0.5, 0.0, 1.0));
             return sky * max(values[43], 0.0) + vec3(values[47] * 0.08, values[47] * 0.06, values[47] * 0.03);
+        }
+
+        // MagicaVoxel 的成片着色器把背景色 Lb 加在曝光之后再做色调映射，
+        // 因此背景亮度不随曝光变化。这里等量折算回辐射空间，让主射线未命中时的
+        // 背景与后续 PostProcess 的曝光相乘正好抵消；背景不参与间接照明，
+        // 二次射线打空时继续使用 Sky 计算环境光。
+        vec3 BackgroundRadiance()
+        {
+            float exposureScale = exp2(clamp(values[65], -20.0, 20.0));
+            vec3 background = max(vec3(values[98], values[99], values[100]), vec3(0.0));
+            return background / max(exposureScale, 1e-6);
         }
 
         vec3 Ground(vec3 rayOrigin, vec3 rayDirection, float hitDistance, bool pathMode)
@@ -3591,8 +3784,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             float directAmount = max(dot(hitNormal, lightDirection), 0.0);
             if (values[33] > 0.5 && directAmount > 0.0)
             {
-                float shadowVisibility = TraceSoftShadowVisibility(
-                    hitPoint + hitNormal * 0.002, lightDirection, 10000.0);
+                // 每个 AA 子样本继续消耗同一个 RNG：方案 A 因此每帧拿到
+                // 多个独立太阳样本，方案 B/C 则得到不同相位的确定性采样盘
+                float shadowVisibility = TraceSoftShadow(
+                    hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state);
                 diffuse += baseColor * vec3(values[28], values[29], values[30]) *
                     values[27] * directAmount * shadowVisibility;
             }
@@ -3774,9 +3969,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     }
                     else
                     {
-                        radiance += pathMode || values[115] < 0.5
-                            ? throughput * Sky(rayDirection)
-                            : vec3(values[98], values[99], values[100]);
+                        radiance += pathMode
+                            ? throughput * BackgroundRadiance()
+                            : values[115] < 0.5
+                                ? throughput * Sky(rayDirection)
+                                : vec3(values[98], values[99], values[100]);
                         break;
                     }
                 }
@@ -3786,6 +3983,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (!pathMode && values[115] > 0.5)
                     {
                         radiance += vec3(values[98], values[99], values[100]);
+                    }
+                    else if (pathMode)
+                    {
+                        radiance += throughput * BackgroundRadiance();
                     }
                     else
                     {
@@ -3963,12 +4164,22 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 if ((hitFlags & 2u) != 0u)
                 {
-                    // 发光辐射保留真实强度与色比，路径最终统一执行辐射钳制。
-                    float lampPdf = previousBsdfPdf > 0.0
-                        ? EmissiveHitPdf(previousVertex, hitPoint, hitNormal) : 0.0;
-                    float hitWeight = previousBsdfPdf > 0.0
-                        ? previousBsdfPdf / (previousBsdfPdf + lampPdf) : 1.0;
-                    radiance += throughput * hitLinearColor * values[80] * emissiveScale * hitWeight;
+                    // 仿 MagicaVoxel 的材质语义：相机直接看到的发光面用显示亮度，
+                    // 间接照明才使用完整辐射强度。灯体因此不会被 48×倍率冲成白块，
+                    // 而它照亮房间的能量保持不变。
+                    if (bounce == 0)
+                    {
+                        radiance += throughput * hitLinearColor * min(values[80] * emissiveScale, 2.0);
+                    }
+                    else
+                    {
+                        // 发光辐射保留真实强度与色比，路径最终统一执行辐射钳制。
+                        float lampPdf = previousBsdfPdf > 0.0
+                            ? EmissiveHitPdf(previousVertex, hitPoint, hitNormal) : 0.0;
+                        float hitWeight = previousBsdfPdf > 0.0
+                            ? previousBsdfPdf / (previousBsdfPdf + lampPdf) : 1.0;
+                        radiance += throughput * hitLinearColor * values[80] * emissiveScale * hitWeight;
+                    }
                 }
 
                 // 路径追踪的随机半球反弹已经通过实际几何自然积分间接遮挡；
@@ -4474,10 +4685,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
             int samples = pathMode ? max(int(values[78]), 1) : clamp(int(values[P_REALTIME_AA_SAMPLES]), 1, 16);
             int accumulatedSamples = max(int(values[79]), 0);
-            // 实时通道已改为确定性解析着色，不消费任何随机数；只有路径追踪
-            // 才把帧号混入种子做时间去相关并交给累积缓冲收敛。
+            // 渐进太阳阴影需要逐帧变化的采样盘：把帧号混入实时通道的种子；
+            // 半影重建与快速预览是确定性的，种子不含帧号，静止画面逐帧一致。
+            // 路径追踪始终混入帧号，配合累积缓冲收敛。
+            int sunMethod = int(values[P_SUN_METHOD] + 0.5);
+            bool progressiveRealtime = !pathMode && sunMethod == 0 && values[115] < 0.5;
             uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
-                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u));
+                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) :
+                    progressiveRealtime ? uint(values[7]) * 26699u : 0u));
             vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
             vec3 forward = vec3(values[4], values[5], values[6]);
@@ -4576,6 +4791,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             bool realtimeRenderView = values[115] < 0.5 && values[63] < 0.5;
             if (realtimeRenderView)
             {
+                // 方案 A 在渲染窗口把逐帧样本累加进 HDR 累积图，权重 1/(n+1)；
+                // 参数或相机一变，CPU 侧计数归零，这里自然跳过混合，不会拖影。
+                if (sunMethod == 0)
+                {
+                    float previousFrames = values[P_SUN_REALTIME_FRAMES];
+                    if (previousFrames >= 1.0)
+                    {
+                        vec3 previousColor = imageLoad(accumulationImage, pixel).rgb;
+                        color = mix(previousColor, color, 1.0 / (previousFrames + 1.0));
+                    }
+                }
                 imageStore(guideImage, pixel, guide);
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
                 return;

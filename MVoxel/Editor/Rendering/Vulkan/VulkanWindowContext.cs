@@ -157,6 +157,16 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     internal bool SupportsRayQuery => _rayTracingCapabilities.SupportsRayQuery;
 
     /// <summary>
+    /// 当前物理设备能否用 Ray Query 做硬件阴影加速
+    /// </summary>
+    /// <remarks>
+    /// 需要加速结构、Buffer Device Address 与 Ray Query 同时可用；
+    /// 不按显卡品牌判断，AMD 与 NVIDIA 走同一套能力探测
+    /// </remarks>
+    internal bool SupportsHardwareRayQuery => _rayTracingCapabilities.SupportsHardwarePipeline &&
+        _rayTracingCapabilities.SupportsRayQuery;
+
+    /// <summary>
     /// 当前图形队列是否支持 GPU 时间戳查询
     /// </summary>
     internal bool SupportsTimestamps => _supportsTimestamps;

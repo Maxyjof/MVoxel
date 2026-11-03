@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -1595,8 +1595,9 @@ internal sealed partial class ImGuiEditorWindow
 
     /// <summary>
     /// 按输出图像的真实宽高比绘制渲染纹理。
-    /// 视图尺寸与渲染尺寸不一致时（截图指定分辨率、复用上一帧纹理）等比居中，
-    /// 不把任意比例的图像拉伸铺满视图，否则画面会横向变形。
+    /// 纹理比例与视图不一致时居中裁切铺满（cover）而不是留黑边：
+    /// 截图指定分辨率或复用上一帧纹理只持续很短时间，留黑边会让画面
+    /// 先“变窄”再恢复，裁切则始终保持几何不变形、也不会突然出现黑框。
     /// </summary>
     private static void DrawPipelineImage(ImDrawListPtr drawList, VulkanVoxelRenderPipeline pipeline,
         Vector2 origin, Vector2 size)
@@ -1607,14 +1608,28 @@ internal sealed partial class ImGuiEditorWindow
         if (textureWidth <= 0F || textureHeight <= 0F || size.X <= 0F || size.Y <= 0F) return;
         var textureAspect = textureWidth / textureHeight;
         var viewAspect = size.X / size.Y;
-        // 常规帧只差像素取整的千分之一以内，直接铺满；比例明显不同才等比留边
-        var target = MathF.Abs(textureAspect / viewAspect - 1F) > 0.01F
-            ? textureAspect > viewAspect
-                ? new Vector2(size.X, size.X / textureAspect)
-                : new Vector2(size.Y * textureAspect, size.Y)
-            : size;
-        var position = origin + (size - target) * 0.5F;
-        drawList.AddImage(pipeline.DisplayTextureId, position, position + target, Vector2.Zero, uvMax);
+        var uvMin = Vector2.Zero;
+        // 常规帧只差像素取整的千分之一以内，直接铺满；比例明显不同才裁切多余方向
+        if (MathF.Abs(textureAspect / viewAspect - 1F) > 0.01F)
+        {
+            if (textureAspect > viewAspect)
+            {
+                // 纹理更宽：裁掉左右两侧，保留中间
+                var visible = viewAspect / textureAspect;
+                var inset = uvMax.X * (1F - visible) * 0.5F;
+                uvMin = new Vector2(inset, 0F);
+                uvMax = new Vector2(uvMax.X - inset, uvMax.Y);
+            }
+            else
+            {
+                // 纹理更高：裁掉上下两端，保留中间
+                var visible = textureAspect / viewAspect;
+                var inset = uvMax.Y * (1F - visible) * 0.5F;
+                uvMin = new Vector2(0F, inset);
+                uvMax = new Vector2(uvMax.X, uvMax.Y - inset);
+            }
+        }
+        drawList.AddImage(pipeline.DisplayTextureId, origin, origin + size, uvMin, uvMax);
     }
 
     /// <summary>
@@ -2959,13 +2974,13 @@ internal sealed partial class ImGuiEditorWindow
         DrawColorSlider("颜色##sun", ref settings.SunColor);
         SliderFloat("阴影柔和度（半影锥）##sun", ref settings.ShadowSoftness, 0F, 0.3F, "%.3f");
         int sunMethod = (int)settings.SunShadowMethod;
-        if (ImGui.Combo("太阳阴影方案", ref sunMethod, "出片优先：渐进采样\0实时平衡：半影重建\0稳定预览：PCSS 阴影贴图\0"))
+        if (ImGui.Combo("太阳阴影方案", ref sunMethod, "出片优先：渐进采样\0实时平衡：半影重建\0快速预览：低采样稳定\0"))
             settings.SunShadowMethod = (SunShadowMethod)sunMethod;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("实时与路径追踪共用。出片优先会在静止后逐步收敛；半影重建以少量射线和独立阴影过滤改善单帧预览；PCSS 缓存太阳深度图，适合稳定预览，但细小阴影受贴图精度限制。太阳开启时使用完整 Compute 着色管线，避免基础硬件 RT 分支忽略光照。");
+            ImGui.SetTooltip("实时与路径追踪共用同一档位。渐进采样在太阳圆盘上随机分层采样，静止后累积收敛，最终画质最好但移动时有细噪点；半影重建用高密度确定性圆盘积分，单帧就平滑且静止逐帧一致；低采样稳定只取较少射线，靠抗锯齿与收尾降噪抹平，最省显卡。三种方案都不改变视口分辨率或模型精度。");
         SliderInt("太阳阴影质量##sun", ref settings.ShadowSamples, 1, 8);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("提高太阳采样或过滤预算；三种方案均生效，增加质量会提高 GPU 成本，不改变视口分辨率或模型精度。");
+            ImGui.SetTooltip("控制太阳圆盘采样预算：档位越高半影越平滑，GPU 成本越高。渐进方案把它换成每帧样本数，半影重建换成确定性圆盘采样数，低采样稳定换成的基数最小。");
         if (settings.SunShadowMethod == SunShadowMethod.Progressive)
         {
             SliderInt("实时太阳累积帧数", ref settings.SunAccumulationFrames, 1, 512);
@@ -2973,10 +2988,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (settings.SunShadowMethod == SunShadowMethod.ShadowMap)
         {
-            int mapSize = settings.SunShadowMapResolution <= 512 ? 0 : settings.SunShadowMapResolution <= 1024 ? 1 : 2;
-            if (ImGui.Combo("太阳阴影贴图", ref mapSize, "512\01024\02048\0"))
-                settings.SunShadowMapResolution = 512 << mapSize;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只改变阴影深度图精度。覆盖整个体素工作集；大场景中可提高此值保留细小阴影。太阳或几何变化时重新生成。");
+            ImGui.TextWrapped("低采样稳定使用少量射线加画面抗锯齿，不需要阴影贴图；想进一步压平半影请提高太阳阴影质量或改用半影重建。");
         }
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {

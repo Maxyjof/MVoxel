@@ -275,7 +275,8 @@ public sealed class ProjectSettingsDocument
     {
         var settings = new ProjectSettingsDocument();
         RenderQualityPresets.Apply(settings.RenderSettings, RenderQualityPreset.Ultra);
-        settings.RenderSettings.UseHardwareRayTracing = false;
+        // 新项目默认自动跟随设备能力启用硬件光追加速
+        settings.RenderSettings.HardwareRayTracingAuto = true;
         // 预览默认 128 采样；导出仍使用独立的质量设置。
         settings.RenderSettings.PathMaxAccumulatedSamples = 128;
         return settings;

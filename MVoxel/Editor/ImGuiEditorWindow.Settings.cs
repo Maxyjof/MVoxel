@@ -13,7 +13,6 @@ internal sealed partial class ImGuiEditorWindow
 {
     private EditorSettingsDocument _editorSettings = EditorSettingsDocument.CreateDefault();
     private ProjectSettingsDocument _projectSettings = ProjectSettingsDocument.CreateDefault();
-    private bool _useHardwareRayTracing;
     private bool _showSettingsWindow;
     private bool _editorSettingsTabOpen;
     private bool _projectSettingsTabOpen;
@@ -80,7 +79,6 @@ internal sealed partial class ImGuiEditorWindow
         _showGrid = _projectSettings.ShowGrid;
         _showVoxelOutlines = _projectSettings.ShowVoxelOutlines;
         _renderSettings = _projectSettings.RenderSettings;
-        _useHardwareRayTracing = _projectSettings.RenderSettings.UseHardwareRayTracing;
         _sceneMoveSpeed = _projectSettings.SceneMoveSpeed;
         _sceneNearClip = _projectSettings.SceneNearClip;
         _sceneFarClip = _projectSettings.SceneFarClip;
@@ -111,7 +109,6 @@ internal sealed partial class ImGuiEditorWindow
         _projectSettings.SceneFarClip = _sceneFarClip;
         _projectSettings.SceneFieldOfView = _sceneFieldOfView;
         _projectSettings.RenderSettings = _renderSettings;
-        _projectSettings.RenderSettings.UseHardwareRayTracing = _useHardwareRayTracing;
         _projectSettings.Normalize();
     }
 
@@ -282,7 +279,6 @@ internal sealed partial class ImGuiEditorWindow
             _sceneDocument.Environment.CaptureFrom(settings);
             MarkSceneDocumentDirty();
         }
-        _useHardwareRayTracing = settings.UseHardwareRayTracing;
         SyncSettingsToggles();
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
@@ -525,8 +521,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.SameLine();
                 ImGui.TextDisabled(EditorSettingsDocument.DefaultProjectRootPath);
                 ImGui.Checkbox("启用显卡诊断输出", ref _editorSettings.EnableGpuDiagnostics);
-                ImGui.Checkbox("新项目优先使用硬件 RT", ref _editorSettings.UseHardwareRayTracing);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("只作为新项目渲染设置的初始值，默认关闭");
+                ImGui.TextWrapped("硬件光追加速属于项目级设置：新项目默认跟随设备能力自动开启，用户关闭后记在当前项目里，不影响其他项目。");
                 ImGui.EndTabItem();
             }
 
@@ -680,7 +675,6 @@ internal sealed partial class ImGuiEditorWindow
                     RenderQualityPresets.Apply(settings, quality);
                     if (ReferenceEquals(settings, _renderSettings))
                     {
-                        _useHardwareRayTracing = settings.UseHardwareRayTracing;
                         SyncSettingsToggles(settings);
                         _pipeline?.ResetAccumulation();
                         _accumulationSignature = string.Empty;
@@ -700,13 +694,26 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip(settings.Backend == RenderBackend.Gpu
                     ? "优先使用显卡计算"
                     : "使用 CPU 计算，适合调试或没有可用显卡时使用");
-                var hardwareRayTracing = settings.UseHardwareRayTracing;
-                if (settings.Backend == RenderBackend.Cpu) hardwareRayTracing = false;
-                ImGui.BeginDisabled(settings.Backend == RenderBackend.Cpu);
-                ImGui.Checkbox("启用硬件 RT", ref hardwareRayTracing);
+                // 硬件加速默认跟随设备能力；用户手动关闭后本项目记住“关闭”，
+                // 设备不支持时整项灰显并且不能被误点成开启
+                var hardwareAvailable = _vulkan?.SupportsHardwareRayQuery == true;
+                var hardwareRayTracing = settings.HardwareRayTracingAuto
+                    ? hardwareAvailable : settings.UseHardwareRayTracing;
+                var hardwareDisabled = settings.Backend == RenderBackend.Cpu || !hardwareAvailable;
+                ImGui.BeginDisabled(hardwareDisabled);
+                if (ImGui.Checkbox("启用硬件光追加速", ref hardwareRayTracing))
+                {
+                    // 只要用户动过开关，就退出自动模式并把这个项目里的选择记下来
+                    settings.HardwareRayTracingAuto = false;
+                    settings.UseHardwareRayTracing = hardwareRayTracing;
+                }
                 ImGui.EndDisabled();
-                settings.UseHardwareRayTracing = hardwareRayTracing;
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("默认关闭，需要设备支持；存在场景光照时自动改用 Compute 路径以保留本地光源和阴影");
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                {
+                    ImGui.SetTooltip(hardwareAvailable
+                        ? "默认自动开启：检测到设备支持 ray query 时，太阳阴影的求交交给硬件光追，光照、后处理和三种太阳方案与 Compute 路径完全一致；关闭后只把这项选择记在本项目，不影响其他项目"
+                        : "当前显卡或驱动没有 ray query 硬件光追能力，这项会灰显；渲染自动使用 Compute 路径，所有效果仍完整保留");
+                }
         });
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));

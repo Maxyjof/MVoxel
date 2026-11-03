@@ -107,6 +107,9 @@ internal sealed partial class ImGuiEditorWindow
              Param("sunElevation", "number", false, "太阳高度角（度）"),
              Param("sunIntensity", "number", false, "太阳强度"),
              Param("skyAmbient", "number", false, "天空环境光强度"),
+             Param("skyTop", "color", false, "天空顶部颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
+             Param("skyHorizon", "color", false, "天空地平线颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
+             Param("sceneBackgroundColor", "color", false, "渲染背景色，[r,g,b] 或 \"r,g,b\"，路径追踪按 MagicaVoxel 的 Lb 语义画在曝光之后"),
              Param("ambientOcclusion", "boolean", false, "是否启用环境光遮蔽"),
              Param("aoStrength", "number", false, "环境光遮蔽强度"),
              Param("aoSamples", "integer", false, "AO 解析邻域精度档位，4 到 64，不发射射线"),
@@ -141,6 +144,8 @@ internal sealed partial class ImGuiEditorWindow
               Param("weatherStorm", "number", false, "雷暴强度"), Param("weatherHeatHaze", "number", false, "热浪折射散射"),
               Param("weatherLightning", "number", false, "雷电频率"),
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
+             Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
+             Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",
@@ -244,6 +249,7 @@ internal sealed partial class ImGuiEditorWindow
             "model.materials.get" => GetModelMaterials(payload),
             "model.materials.bind" => BindModelMaterial(payload),
             "render.settings.get" => DescribeRenderSettings(),
+            "render.effectiveSettings" => DescribeEffectiveRenderSettings(),
             "render.settings.set" => ApplyRenderSettings(payload),
             "render.resetAccumulation" => ResetRenderAccumulation(),
             "model.scale" => SetModelScale(payload),
@@ -328,6 +334,28 @@ internal sealed partial class ImGuiEditorWindow
             value.ValueKind != JsonValueKind.Array || value.GetArrayLength() != 3)
             return null;
         return [value[0].GetDouble(), value[1].GetDouble(), value[2].GetDouble()];
+    }
+
+    /// <summary>
+    /// 读取颜色参数，同时接受 "r,g,b" 文本与 [r,g,b] 数组两种写法
+    /// </summary>
+    private static System.Numerics.Vector3? ReadColor(JsonElement arguments, string name)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty(name, out var value)) return null;
+        if (value.ValueKind == JsonValueKind.Array && value.GetArrayLength() == 3)
+            return new System.Numerics.Vector3((float)value[0].GetDouble(),
+                (float)value[1].GetDouble(), (float)value[2].GetDouble());
+        if (value.ValueKind != JsonValueKind.String) return null;
+        var parts = (value.GetString() ?? string.Empty).Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 3 ||
+            !float.TryParse(parts[0], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var red) ||
+            !float.TryParse(parts[1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var green) ||
+            !float.TryParse(parts[2], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var blue))
+            return null;
+        return new System.Numerics.Vector3(red, green, blue);
     }
 
     private SceneDocument RequireScene() =>
@@ -951,13 +979,26 @@ internal sealed partial class ImGuiEditorWindow
                 throw new ArgumentException($"不支持参数：{property.Name}；材质参数只能在材质检查器中编辑");
     }
 
-    private object DescribeRenderSettings()
+    private object DescribeRenderSettings() => DescribeRenderSettings(_renderSettings);
+
+    /// <summary>
+    /// 输出实际参与渲染的设置：项目配置与场景环境合并后的结果
+    /// </summary>
+    private object DescribeEffectiveRenderSettings() => RunOnUi(() =>
+        DescribeRenderSettings(ResolveRenderSettings(GetActiveRenderCameraObject())));
+
+    private object DescribeRenderSettings(RenderSettings settings)
     {
-        var settings = _renderSettings;
         return new
         {
             pathTracing = settings.PathTracingEnabled,
-            hardwareRayTracing = settings.UseHardwareRayTracing,
+            hardwareRayTracing = settings.HardwareRayTracingAuto
+                ? (_vulkan?.SupportsHardwareRayQuery == true)
+                : settings.UseHardwareRayTracing,
+            hardwareRayTracingAuto = settings.HardwareRayTracingAuto,
+            hardwareRayTracingAvailable = _vulkan?.SupportsHardwareRayQuery == true,
+            hardwareRayTracingActive = _pipeline?.HardwareShadowsActive ?? false,
+            sunShadowMethod = settings.SunShadowMethod.ToString(),
             backend = settings.Backend.ToString(),
             maxSamples = settings.PathMaxAccumulatedSamples,
             maxBounces = settings.MaxBounces,
@@ -973,6 +1014,9 @@ internal sealed partial class ImGuiEditorWindow
             sunElevation = settings.SunElevationDegrees,
             sunIntensity = settings.SunIntensity,
             skyAmbient = settings.SkyAmbient,
+            skyTop = settings.SkyTop,
+            skyHorizon = settings.SkyHorizon,
+            sceneBackgroundColor = settings.SceneBackgroundColor,
             ambientOcclusion = settings.AmbientOcclusionEnabled,
             aoStrength = settings.AoStrength,
             fogDensity = settings.FogDensity,
@@ -1000,6 +1044,8 @@ internal sealed partial class ImGuiEditorWindow
              weatherLightning = settings.WeatherLightningFrequency,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
+            emissiveIntensity = settings.EmissiveIntensity,
+            emissiveVoxels = settings.EmissiveVoxels,
             denoise = settings.PathDenoising,
         };
     }
@@ -1022,6 +1068,10 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "sunElevation") is { } elevation) settings.SunElevationDegrees = (float)elevation;
         if (ReadNumber(arguments, "sunIntensity") is { } intensity) settings.SunIntensity = (float)intensity;
         if (ReadNumber(arguments, "skyAmbient") is { } ambient) settings.SkyAmbient = (float)ambient;
+        if (ReadColor(arguments, "skyTop") is { } skyTop) settings.SkyTop = skyTop;
+        if (ReadColor(arguments, "skyHorizon") is { } skyHorizon) settings.SkyHorizon = skyHorizon;
+        if (ReadColor(arguments, "sceneBackgroundColor") is { } backgroundColor)
+            settings.SceneBackgroundColor = backgroundColor;
         if (ReadBoolean(arguments, "ambientOcclusion") is { } ao) settings.AmbientOcclusionEnabled = ao;
         if (ReadNumber(arguments, "aoStrength") is { } aoStrength) settings.AoStrength = (float)aoStrength;
         if (ReadNumber(arguments, "aoSamples") is { } aoSamples) settings.AoSamples = (int)aoSamples;
@@ -1064,7 +1114,16 @@ internal sealed partial class ImGuiEditorWindow
          if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;
+        if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
+        if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
         if (ReadBoolean(arguments, "denoise") is { } denoise) settings.PathDenoising = denoise;
+        // 天空、雾、水、天气、地面属于场景环境资产：渲染前会用场景环境覆盖这些字段，
+        // 只改 _renderSettings 会在下一帧被冲掉，因此同时回写到场景文档
+        if (_sceneDocument is not null)
+        {
+            _sceneDocument.Environment.CaptureFrom(settings);
+            MarkSceneDocumentDirty();
+        }
         ApplyRenderPresetSettings(settings, null);
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;

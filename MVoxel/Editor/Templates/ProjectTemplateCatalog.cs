@@ -400,11 +400,22 @@ public static class ProjectTemplateCatalog
         if (document.Materials.Count == 0) return bindings;
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
+        // MagicaVoxel 导出的 .vox 常把整张调色板逐格写成 MATL，其中大量条目参数完全相同；
+        // 按定义内容去重，相同定义共用一个资产，避免一个房间生成两百多个一样的材质文件
+        var sharedByDefinition = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var source in document.Materials)
         {
             var slot = source.Id;
             if (slot is <= 0 or > ushort.MaxValue)
                 throw new InvalidDataException($"导入材质槽超出1到65535范围：{slot}");
+            var signature = string.Join('|', source.Type, source.Weight, source.Roughness,
+                source.Specular, source.Ior, source.Absorption, source.Flux);
+            if (sharedByDefinition.TryGetValue(signature, out var sharedPath))
+            {
+                bindings[slot] = sharedPath;
+                continue;
+            }
+
             var asset = MaterialAsset.CreateDefault($"{modelName} 材质 {slot}");
             if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
             if (source.Specular >= 0F) asset.Specular = Math.Clamp(source.Specular, 0F, 1F);
@@ -431,7 +442,9 @@ public static class ProjectTemplateCatalog
             var fileName = UniqueMaterialFileName(directory, baseFileName);
             var targetPath = Path.Combine(directory, fileName);
             asset.Save(targetPath);
-            bindings[slot] = "Materials/" + fileName;
+            var relative = "Materials/" + fileName;
+            sharedByDefinition[signature] = relative;
+            bindings[slot] = relative;
         }
         return bindings;
     }
@@ -642,6 +655,8 @@ public static class ProjectTemplateCatalog
             case ProjectTemplateId.ProbeGiCave:
                 settings.DefaultRenderPreset = Get(id).Name;
                 settings.RenderSettings.PathTracingEnabled = false;
+                // 模板要展示纯 Compute 的非光追链路，显式退出自动硬件加速
+                settings.RenderSettings.HardwareRayTracingAuto = false;
                 settings.RenderSettings.UseHardwareRayTracing = false;
                 settings.RenderSettings.SunDirectLighting = true;
                 settings.RenderSettings.SunEnabled = true;
