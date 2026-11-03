@@ -736,6 +736,20 @@ internal partial class ImGuiEditorWindow
             return;
         }
 
+        ImportVoxFromPath(path);
+    }
+
+    /// <summary>
+    /// 按具体路径导入一个兼容体素模型到当前项目并打开
+    /// </summary>
+    /// <remarks>
+    /// 从导入菜单抽出，让自动化与命令行能不经文件对话框直接导入
+    /// </remarks>
+    /// <param name="path">体素模型路径</param>
+    /// <returns>导入结果，失败时带 error</returns>
+    private object? ImportVoxFromPath(string path)
+    {
+        if (_project is null) return new { error = "没有打开项目" };
         var extension = Path.GetExtension(path).ToLowerInvariant();
         try
         {
@@ -756,10 +770,20 @@ internal partial class ImGuiEditorWindow
             else LargeWorldFormat.Write(worldPath, world);
             AssetMetaStore.EnsureMeta(worldPath);
             OpenWorldAsset("Worlds/" + fileName);
+            SetStatus($"已导入 {Path.GetFileName(path)}：{world.OccupiedVoxelCount:N0} 个体素");
+            return new
+            {
+                asset = "Worlds/" + fileName,
+                voxels = world.OccupiedVoxelCount,
+                bounds = world.TryGetBounds(out var minimum, out var maximum)
+                    ? new[] { maximum.X - minimum.X + 1, maximum.Y - minimum.Y + 1, maximum.Z - minimum.Z + 1 }
+                    : new long[] { 0, 0, 0 },
+            };
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
         {
             SetStatus($"导入 {extension} 失败：{exception.Message}");
+            return new { error = exception.Message };
         }
     }
 

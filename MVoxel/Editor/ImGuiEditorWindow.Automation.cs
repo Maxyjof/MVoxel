@@ -152,6 +152,8 @@ internal sealed partial class ImGuiEditorWindow
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
         new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
             [Param("enabled", "boolean", true, "是否开启")]),
+        new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
+            [Param("path", "string", true, "体素模型文件路径")]),
         new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
         new("ui.setCenterTab", "界面", "切换中央页面", "把中央区域切到场景或渲染页面，等同点击页签",
             [Param("tab", "string", true, "scene 或 render")]),
@@ -244,6 +246,8 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.create" => CreateTimelineAsset(payload),
 
             "perf.profile" => SetForcedProfiling(payload),
+            "project.importVox" => RunOnUi(() =>
+                ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
             "perf.stats" => DescribePerformanceStats(),
             "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
             "ui.status" => new { status = _statusText },
