@@ -24,14 +24,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal const int PackedCellSize = 48;
 
     /// <summary>
-    /// 单帧路径追踪最多的提交次数，用于在提交开销与 TDR 安全之间取平衡
-    /// </summary>
-    private const int MaxPathSubmitsPerFrame = 6;
-
-    /// <summary>
     /// 单次路径追踪 dispatch 覆盖的最大像素样本数，控制单次 GPU 调度时长
     /// </summary>
     private const int PathDispatchPixelBudget = 1_000_000;
+
+    /// <summary>
+    /// 单个界面帧最多提交的路径像素样本数：一轮采样会被切成多条横条跨帧推进，
+    /// 数值越小界面帧越轻、单位时间的样本吞吐略低
+    /// </summary>
+    private const int PathStripPixelBudget = 200_000;
 
     /// <summary>
     /// 分块起点 push constant 的字节数，对应着色器里的 ivec2
@@ -176,6 +177,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     // 采样已完成但后处理参数变化时的显示刷新请求：只重跑收尾通道，
     // 复用已有 HDR 累积和引导图，不再重新求交
     private bool _displayRefreshPending;
+    // 跨帧推进中的采样轮：固定参数快照、横条进度与每像素样本数，
+    // 只有整轮跑完才推进样本计数并刷新显示图
+    private bool _pathRoundOpen;
+    private int _pathRoundNextStrip;
+    private int _pathRoundStripHeight;
+    private int _pathRoundTotalStrips;
+    private int _pathRoundSamplesPerPixel;
+    private float[]? _pathRoundParameters;
+    private int _pathRoundWidth;
+    private int _pathRoundHeight;
     private float[]? _lastParameters;
     private long _realtimeHistorySignature;
     private bool _realtimeHistoryInvalid = true;
@@ -712,6 +723,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _clearAccumulationPending = true;
         _realtimeHistoryInvalid = true;
         _displayRefreshPending = false;
+        ClosePathRound();
+    }
+
+    /// <summary>
+    /// 结束进行中的采样轮，下一次采样会从新一轮的横条零重新开始
+    /// </summary>
+    private void ClosePathRound()
+    {
+        _pathRoundOpen = false;
+        _pathRoundNextStrip = 0;
+        _pathRoundTotalStrips = 0;
+        _pathRoundParameters = null;
     }
 
     /// <summary>
@@ -741,6 +764,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     {
         _usingHardwareRayTracing = false;
         if (_context?.IsDeviceLost == true) return false;
+        // 实时模式会把累积图当作 Bloom 的 HDR 输入整张改写，
+        // 进行中的采样轮必须先作废，否则下次继续采样会读到被覆盖的旧样本
+        if (_pathRoundOpen)
+        {
+            ClosePathRound();
+            _clearAccumulationPending = true;
+            AccumulatedSamples = 0;
+        }
+
         return DispatchCompute(settings, frameState, widthPixels, heightPixels, pathMode: false);
     }
 
@@ -848,7 +880,21 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         if (!_accumulationInitialized || AccumulatedSamples <= 0) return true;
-        var parameters = BuildParameters(settings, frameState);
+        // 一轮采样还没跑完时累积图里是新旧样本混在一起的，不能拿来刷新显示
+        if (_pathRoundOpen) return true;
+        DispatchDisplayPass(api, BuildParameters(settings, frameState), widthPixels, heightPixels);
+        return true;
+    }
+
+    /// <summary>
+    /// 提交一次纯显示刷新通道：读取现有 HDR 累积与引导图，按当前后处理参数写回输出图像
+    /// </summary>
+    /// <param name="api">Vulkan API</param>
+    /// <param name="parameters">渲染参数块</param>
+    /// <param name="widthPixels">输出宽度</param>
+    /// <param name="heightPixels">输出高度</param>
+    private void DispatchDisplayPass(Vk api, float[] parameters, int widthPixels, int heightPixels)
+    {
         parameters[VoxelRenderParameters.DisplayPass] = 1F;
         var slot = AcquireRingSlot();
         UploadParameters(slot, parameters);
@@ -860,11 +906,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         var groupX = ((uint)widthPixels + 7U) / 8U;
         var groupY = ((uint)heightPixels + 7U) / 8U;
         api.CmdDispatch(commandBuffer, groupX, groupY, 1);
-        LastDispatchCount = 1;
-        LastWorkgroupCount = (long)groupX * (long)groupY;
+        LastDispatchCount++;
+        LastWorkgroupCount += (long)groupX * (long)groupY;
         TransitionOutputToShaderRead(commandBuffer);
         CommitRingSlot(slot);
-        return true;
+        parameters[VoxelRenderParameters.DisplayPass] = 0F;
     }
 
     /// <summary>
@@ -1319,16 +1365,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
         }
 
-        if (pathMode && _clearAccumulationPending)
-        {
-            ClearAccumulation();
-        }
-
-        // 实时模式整帧一次调度；路径追踪按像素样本预算切成横条，
-        // 单样本的中等分辨率通常整帧一次 dispatch，高分辨率或高样本时仍受 TDR 预算约束。
+        // 实时模式整帧一次调度；路径追踪按像素样本预算切成横条跨帧推进
         bool realtimePost = !pathMode && !frameState.ShowOutlines;
         bool bloomActive = settings.BloomEnabled && settings.BloomIntensity > 0F &&
                            (pathMode || realtimePost);
+        bool roundComplete = true;
         if (!pathMode)
         {
             DispatchRealtimeFrame(api, parameters, historyUsed, bloomActive, selectionActive,
@@ -1336,15 +1377,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         else
         {
-            DispatchPathFrame(api, parameters,
-                widthPixels, heightPixels, Math.Max(1, settings.PathSamplesPerFrame));
+            roundComplete = DispatchPathRoundStrips(api, parameters, widthPixels, heightPixels,
+                Math.Max(1, settings.PathSamplesPerFrame));
         }
 
-        // 收尾通道必须在整帧采样完成后执行。路径追踪先降噪再参与 Bloom；
+        // 收尾通道必须在整轮采样完成后执行。路径追踪先降噪再参与 Bloom；
         // 实时模式也可以使用 Bloom，但不执行路径专用降噪。
         bool denoiseActive = pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F;
         bool fxaaActive = !pathMode && !frameState.ScenePreview && settings.RealtimeAntiAliasingPattern == 2 && settings.FxaaStrength > 0F;
-        if (bloomActive || denoiseActive || selectionActive || fxaaActive)
+        var finishPassDispatched = false;
+        if (roundComplete && (bloomActive || denoiseActive || selectionActive || fxaaActive))
         {
             void DispatchFinalPass(int modeSlot, float modeValue)
             {
@@ -1390,21 +1432,33 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DispatchFinalPass(VoxelRenderParameters.FxaaPass, 1F);
                 DispatchFinalPass(VoxelRenderParameters.FxaaPass, 2F);
             }
+
+            finishPassDispatched = true;
         }
+
+        // 路径轮完成但没有启用的收尾通道时补一次纯显示刷新：采样阶段已经不写显示图，
+        // 这一轮新增的样本必须经过色调映射才能看到，否则画面会停在上一条完整轮的结果上
+        if (pathMode && roundComplete && !finishPassDispatched)
+        {
+            DispatchDisplayPass(api, parameters, widthPixels, heightPixels);
+        }
+
         // 收尾通道和所有分块都已提交，结束时间戳排在队列最后
         EndGpuTiming();
         parameters[VoxelRenderParameters.TileOffsetX] = 0F;
         parameters[VoxelRenderParameters.TileOffsetY] = 0F;
         parameters[VoxelRenderParameters.DenoisePass] = 0F;
-        if (pathMode)
+        if (pathMode && roundComplete)
         {
+            // 样本计数按本轮实际写入的每像素样本数推进，跨帧分块期间保持不变
             AccumulatedSamples = Math.Min(settings.PathMaxAccumulatedSamples,
-                AccumulatedSamples + Math.Max(1, settings.PathSamplesPerFrame));
+                AccumulatedSamples + _pathRoundSamplesPerPixel);
             _accumulationInitialized = true;
             _clearAccumulationPending = false;
-            // 本次采样已经带上了当前后处理参数，挂起的显示刷新不再需要
+            // 本轮结束后的显示图已经带上当前后处理参数，挂起的显示刷新不再需要
             _displayRefreshPending = false;
         }
+
         _lastParameters = parameters;
         return true;
     }
@@ -1443,61 +1497,83 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 路径追踪分块提交：分块起点走 push constant，因此整帧参数只上传一次，
-    /// 若干分块合并到同一条命令缓冲里提交，避免每块一次队列提交与栅栏等待
+    /// 推进一轮路径采样的分块提交：一轮会被切成若干横条，通常每帧只提交其中一条，
+    /// 让界面帧在收敛过程中也能刷新；清空或换相机后的第一轮一次性提交全部横条，
+    /// 保证新画面立刻出现而不是等好几帧
     /// </summary>
     /// <param name="api">Vulkan API</param>
-    /// <param name="parameters">渲染参数块</param>
+    /// <param name="currentParameters">本帧按当前设置构造的参数块</param>
     /// <param name="widthPixels">输出宽度</param>
     /// <param name="heightPixels">输出高度</param>
-    /// <param name="samplesPerPixel">每个像素每帧写入的路径样本数</param>
-    /// <returns>是否已经写入开始时间戳</returns>
-    private bool DispatchPathFrame(Vk api, float[] parameters,
+    /// <param name="samplesPerPixel">新一轮每像素样本数</param>
+    /// <returns>本轮是否已经在这一帧跑完</returns>
+    private bool DispatchPathRoundStrips(Vk api, float[] currentParameters,
         int widthPixels, int heightPixels, int samplesPerPixel)
     {
-        // 每次 dispatch 控制在一百万像素样本左右：742x526 单样本时整帧一次 dispatch，
-        // 高分辨率或高样本时按横条拆分，单次 GPU 调度仍远低于 TDR 阈值
-        var pixelsPerDispatch = Math.Max(1, PathDispatchPixelBudget / Math.Max(1, samplesPerPixel));
-        var stripHeight = Math.Max(1, Math.Min(heightPixels, pixelsPerDispatch / Math.Max(1, widthPixels)));
-        var totalStrips = (heightPixels + stripHeight - 1) / stripHeight;
-        var stripsPerSubmit = Math.Max(1, (totalStrips + MaxPathSubmitsPerFrame - 1) / MaxPathSubmitsPerFrame);
-        var stripIndex = 0;
-        var startedTiming = false;
-        while (stripIndex < totalStrips)
+        if (!_pathRoundOpen)
         {
-            var slot = AcquireRingSlot();
-            UploadParameters(slot, parameters);
-            var commandBuffer = _ringCommands[slot];
-            if (!startedTiming)
+            // 新一轮必须从干净的累积开始：重置后残留的部分写入不能带进新参数
+            if (_clearAccumulationPending)
             {
-                BeginGpuTiming(commandBuffer);
-                startedTiming = true;
+                ClearAccumulation();
+                _clearAccumulationPending = false;
             }
 
-            TransitionOutputToGeneral(commandBuffer);
+            _pathRoundParameters = (float[])currentParameters.Clone();
+            _pathRoundWidth = widthPixels;
+            _pathRoundHeight = heightPixels;
+            _pathRoundSamplesPerPixel = Math.Max(1, samplesPerPixel);
+            var pixelsPerStrip = Math.Clamp(PathStripPixelBudget / _pathRoundSamplesPerPixel,
+                1, PathDispatchPixelBudget);
+            _pathRoundStripHeight = Math.Max(1, Math.Min(heightPixels,
+                pixelsPerStrip / Math.Max(1, widthPixels)));
+            _pathRoundTotalStrips = (heightPixels + _pathRoundStripHeight - 1) / _pathRoundStripHeight;
+            _pathRoundNextStrip = 0;
+            _pathRoundOpen = true;
+        }
+
+        // 新一轮（样本计数为零）一次跑完整轮：换相机或清空后先给出一张完整画面
+        var wholeRoundInOneFrame = AccumulatedSamples <= 0;
+        var roundParameters = _pathRoundParameters!;
+        var submittedThisFrame = 0;
+        while (_pathRoundNextStrip < _pathRoundTotalStrips)
+        {
+            var slot = AcquireRingSlot();
+            UploadParameters(slot, roundParameters);
+            var commandBuffer = _ringCommands[slot];
+            if (submittedThisFrame == 0)
+            {
+                BeginGpuTiming(commandBuffer);
+            }
+
+            // 采样阶段不写输出图像，输出布局保持上一次显示通道留下的 ShaderReadOnly，
+            // 横条之间因此不需要切换输出图布局
             // 采样阶段就要读写 HDR 累积与导引图，布局切换和上一轮的写后读依赖必须在采样前建立，
-            // 不能指望收尾通道补：只有降噪、没有 Bloom 时收尾通道仍是另一条命令缓冲
+            // 不能指望收尾通道补：收尾通道在另一条命令缓冲里
             TransitionAccumulationToGeneral(commandBuffer);
             TransitionGuideToGeneral(commandBuffer);
 
-            for (var batch = 0; batch < stripsPerSubmit && stripIndex < totalStrips; batch++, stripIndex++)
-            {
-                var stripY = stripIndex * stripHeight;
-                var stripRows = Math.Min(stripHeight, heightPixels - stripY);
-                BindComputeTile(commandBuffer, _ringSets[slot], 0, stripY);
-                api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
-                    ((uint)stripRows + 7U) / 8U, 1);
-                LastDispatchCount++;
-                LastWorkgroupCount += ((widthPixels + 7L) / 8L) * ((stripRows + 7L) / 8L);
-            }
+            var stripY = _pathRoundNextStrip * _pathRoundStripHeight;
+            var stripRows = Math.Min(_pathRoundStripHeight, _pathRoundHeight - stripY);
+            BindComputeTile(commandBuffer, _ringSets[slot], 0, stripY);
+            api.CmdDispatch(commandBuffer, ((uint)_pathRoundWidth + 7U) / 8U,
+                ((uint)stripRows + 7U) / 8U, 1);
+            LastDispatchCount++;
+            LastWorkgroupCount += ((_pathRoundWidth + 7L) / 8L) * ((stripRows + 7L) / 8L);
+            _pathRoundNextStrip++;
+            submittedThisFrame++;
 
             // 最后一条采样命令缓冲写采样段结束时间戳，收尾通道的耗时单独统计
-            if (stripIndex >= totalStrips) MarkGpuSamplingEnd(commandBuffer);
-            TransitionOutputToShaderRead(commandBuffer);
+            if (_pathRoundNextStrip >= _pathRoundTotalStrips) MarkGpuSamplingEnd(commandBuffer);
             CommitRingSlot(slot);
+
+            if (_pathRoundNextStrip < _pathRoundTotalStrips && !wholeRoundInOneFrame) break;
         }
 
-        return startedTiming;
+        if (_pathRoundNextStrip < _pathRoundTotalStrips) return false;
+        _pathRoundOpen = false;
+        _pathRoundParameters = null;
+        return true;
     }
 
     /// <summary>
@@ -2500,6 +2576,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _accumulationInitialized = false;
         _lastParameters = null;
         _displayRefreshPending = false;
+        ClosePathRound();
     }
 
     // #version 必须是第一条有效指令，因此参数槽位与光源容量的 #define 放在版本行之后注入，
@@ -4139,11 +4216,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     ? (previous.rgb * float(accumulatedSamples) + sampleColor * float(samples)) / totalSamples
                     : sampleColor;
                 imageStore(accumulationImage, pixel, vec4(color, 1.0));
-                // 收尾通道会整张覆盖输出图像，采样阶段不用再算一遍色调映射与天气叠加；
-                // 两个收尾通道都关闭时输出图只能由这里写
-                bool denoiseAfter = values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0;
-                bool bloomAfter = values[P_BLOOM_ENABLED] > 0.5 && values[P_BLOOM_INTENSITY] > 0.0;
-                if (denoiseAfter || bloomAfter) return;
+                // 采样阶段只写累积图与导引图：显示图由每轮结束后的显示通道统一写。
+                // 跨帧分块时一轮会分几帧提交，若这里顺手写显示图，
+                // 已处理横条会和上一轮残留的横条混在同一张图上，收敛过程中出现横向色带
+                return;
             }
             else if (bloomRequested)
             {
