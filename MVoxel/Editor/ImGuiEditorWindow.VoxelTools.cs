@@ -1512,6 +1512,10 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
+            .Append(',').Append(settings.AreaFillEnabled).Append(',').Append(settings.AreaFillIntensity)
+            .Append(',').Append(settings.AreaFillColor.X).Append(',').Append(settings.AreaFillColor.Y)
+            .Append(',').Append(settings.AreaFillColor.Z).Append(',').Append(settings.AreaFillSize)
+            .Append(',').Append(settings.AreaFillDistance)
             .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.EmissiveDirectSampling)
             .Append(',').Append(settings.EmissiveLightTree).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
@@ -2989,6 +2993,22 @@ internal sealed partial class ImGuiEditorWindow
         if (settings.SunShadowMethod == SunShadowMethod.ShadowMap)
         {
             ImGui.TextWrapped("低采样稳定使用少量射线加画面抗锯齿，不需要阴影贴图；想进一步压平半影请提高太阳阴影质量或改用半影重建。");
+        }
+        if (ImGui.CollapsingHeader("面积补光（Area 灯）"))
+        {
+            ImGui.Checkbox("启用面积补光", ref settings.AreaFillEnabled);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("对应 MagicaVoxel Render 面板的 Area 灯。一块跟随相机朝向的大面积柔光板，用来照亮只有开口采光的室内中段；灯笼仍负责局部高光。");
+            SliderFloat("补光强度", ref settings.AreaFillIntensity, 0F, 32F, "%.2f");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("补光板的辐射强度，数值越大室内越亮；MagicaVoxel 参考画面里的 Area 是 7。");
+            DrawColorSlider("补光颜色", ref settings.AreaFillColor);
+            SliderFloat("补光板尺寸", ref settings.AreaFillSize, 0.1F, 3F, "%.2f");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("补光板半边长相对场景包围盒的倍率，越大阴影越柔、越接近整体环境光。");
+            SliderFloat("补光板距离", ref settings.AreaFillDistance, 0.1F, 4F, "%.2f");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("补光板到相机的距离相对场景包围盒的倍率，越大越像远距离柔光。");
         }
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {

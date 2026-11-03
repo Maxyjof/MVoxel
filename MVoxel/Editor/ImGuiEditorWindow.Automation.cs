@@ -146,6 +146,11 @@ internal sealed partial class ImGuiEditorWindow
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
              Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
+             Param("areaFillEnabled", "boolean", false, "是否启用面积补光（对应 MagicaVoxel 的 Area 灯）"),
+             Param("areaFillIntensity", "number", false, "面积补光强度"),
+             Param("areaFillColor", "color", false, "面积补光颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
+             Param("areaFillSize", "number", false, "补光板半边长相对场景包围盒的倍率"),
+             Param("areaFillDistance", "number", false, "补光板到相机的距离相对包围盒的倍率"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",
@@ -1046,6 +1051,10 @@ internal sealed partial class ImGuiEditorWindow
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             emissiveIntensity = settings.EmissiveIntensity,
             emissiveVoxels = settings.EmissiveVoxels,
+            areaFillEnabled = settings.AreaFillEnabled,
+            areaFillIntensity = settings.AreaFillIntensity,
+            areaFillSize = settings.AreaFillSize,
+            areaFillDistance = settings.AreaFillDistance,
             denoise = settings.PathDenoising,
         };
     }
@@ -1116,6 +1125,13 @@ internal sealed partial class ImGuiEditorWindow
             settings.TransmissiveAbsorption = (float)absorption;
         if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
         if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
+        if (ReadBoolean(arguments, "areaFillEnabled") is { } areaFill) settings.AreaFillEnabled = areaFill;
+        if (ReadNumber(arguments, "areaFillIntensity") is { } areaIntensity)
+            settings.AreaFillIntensity = (float)areaIntensity;
+        if (ReadColor(arguments, "areaFillColor") is { } areaColor) settings.AreaFillColor = areaColor;
+        if (ReadNumber(arguments, "areaFillSize") is { } areaSize) settings.AreaFillSize = (float)areaSize;
+        if (ReadNumber(arguments, "areaFillDistance") is { } areaDistance)
+            settings.AreaFillDistance = (float)areaDistance;
         if (ReadBoolean(arguments, "denoise") is { } denoise) settings.PathDenoising = denoise;
         // 天空、雾、水、天气、地面属于场景环境资产：渲染前会用场景环境覆盖这些字段，
         // 只改 _renderSettings 会在下一帧被冲掉，因此同时回写到场景文档

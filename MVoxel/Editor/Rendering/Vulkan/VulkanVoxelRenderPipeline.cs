@@ -3877,6 +3877,47 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return response;
         }
 
+        // 面积补光的直接光采样：矩形均匀采样一条阴影射线，
+        // 对应 MagicaVoxel Render 面板的 Area 灯；补光板是虚拟光源，
+        // 不参与几何求交，因此不会和 BSDF 采样重复计能
+        vec3 AreaFillResponse(vec3 hitPoint, vec3 hitNormal, vec3 viewDirection,
+            vec3 baseColor, float metalness, float roughness, inout uint state)
+        {
+            if (values[P_AREA_ENABLED] < 0.5 || values[P_AREA_INTENSITY] <= 0.0) return vec3(0.0);
+            vec3 center = vec3(values[P_AREA_CX], values[P_AREA_CY], values[P_AREA_CZ]);
+            vec3 halfU = vec3(values[P_AREA_UX], values[P_AREA_UY], values[P_AREA_UZ]);
+            vec3 halfV = vec3(values[P_AREA_VX], values[P_AREA_VY], values[P_AREA_VZ]);
+            vec3 lightNormal = cross(halfU, halfV);
+            float area = length(lightNormal) * 4.0;
+            if (area <= 1e-6) return vec3(0.0);
+            lightNormal = normalize(lightNormal);
+            vec3 samplePoint = center + (Random(state) * 2.0 - 1.0) * halfU
+                + (Random(state) * 2.0 - 1.0) * halfV;
+            vec3 offset = samplePoint - hitPoint;
+            float distanceSquared = dot(offset, offset);
+            if (distanceSquared <= 1e-6) return vec3(0.0);
+            float distance = sqrt(distanceSquared);
+            vec3 direction = offset / distance;
+            float surfaceCosine = dot(hitNormal, direction);
+            float lightCosine = dot(lightNormal, -direction);
+            if (surfaceCosine <= 0.0 || lightCosine <= 0.0) return vec3(0.0);
+            float pdf = distanceSquared / max(lightCosine * area, 1e-6);
+            float shadowDistance;
+            vec3 shadowNormal;
+            vec4 shadowColor;
+            uint shadowFlags;
+            uint shadowSlot;
+            ivec3 shadowCell;
+            ivec3 shadowExtent;
+            if (TraceClosestWithin(hitPoint + hitNormal * 0.002, direction, shadowDistance,
+                shadowNormal, shadowColor, shadowFlags, shadowSlot, shadowCell, shadowExtent,
+                false, max(distance - 0.002, 0.0), true)) return vec3(0.0);
+            vec3 emission = SrgbToLinear(clamp(vec3(values[P_AREA_R], values[P_AREA_G],
+                values[P_AREA_B]), vec3(0.0), vec3(1.0))) * values[P_AREA_INTENSITY];
+            return emission * SunSurfaceResponse(baseColor, metalness, roughness,
+                hitNormal, viewDirection, direction) / (3.14159265 * pdf);
+        }
+
         /* EMISSIVE_SAMPLING */
 
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
@@ -4372,6 +4413,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 // 本地光源目前只做硬阴影，太阳继续使用软阴影
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
                     -rayDirection, hitLinearColor, metalness, roughness);
+
+                // 面积补光只做直接光采样：补光板是虚拟光源，路径不会命中它，
+                // 因此不存在与 BSDF 采样重复计能的问题
+                radiance += throughput * AreaFillResponse(hitPoint, hitNormal, -rayDirection,
+                    hitLinearColor, metalness, roughness, state);
 
                 vec3 samplingOrigin = hitPoint + hitNormal * 0.002;
                 radiance += throughput * EmissiveNextEvent(samplingOrigin, hitNormal, -rayDirection,

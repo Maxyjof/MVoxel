@@ -135,6 +135,23 @@ public sealed class RenderSettings
     public int SunShadowMapResolution = 1024;
 
     /// <summary>
+    /// 面积补光开关，对应 MagicaVoxel Render 面板的 Area 灯
+    /// </summary>
+    /// <remarks>
+    /// 房间这类只有开口采光的场景，天空光很难进入室内中段；MagicaVoxel 的
+    /// 参考画面靠一块大面积柔光把室内照亮，灯笼只负责局部高光
+    /// </remarks>
+    public bool AreaFillEnabled = false;
+    /// <summary>面积补光强度，对应 MagicaVoxel Area 灯数值</summary>
+    public float AreaFillIntensity = 7F;
+    /// <summary>面积补光颜色（sRGB）</summary>
+    public Vector3 AreaFillColor = new(1.00F, 0.86F, 0.68F);
+    /// <summary>补光板半边长相对场景包围盒的倍率</summary>
+    public float AreaFillSize = 0.6F;
+    /// <summary>补光板到相机的距离相对场景包围盒的倍率</summary>
+    public float AreaFillDistance = 1.2F;
+
+    /// <summary>
     /// 角点环境光遮蔽开关（MagicaVoxel 顶点 AO）
     /// </summary>
     public bool AmbientOcclusionEnabled = true;
@@ -648,6 +665,10 @@ public sealed class RenderSettings
         SunAzimuthDegrees = Wrap(SunAzimuthDegrees, 360F);
         SunElevationDegrees = Math.Clamp(SunElevationDegrees, 2F, 90F);
         SunIntensity = Math.Clamp(SunIntensity, 0F, 8F);
+        AreaFillColor = ClampChannel(AreaFillColor);
+        AreaFillIntensity = Math.Clamp(AreaFillIntensity, 0F, 64F);
+        AreaFillSize = Math.Clamp(AreaFillSize, 0.1F, 8F);
+        AreaFillDistance = Math.Clamp(AreaFillDistance, 0.1F, 8F);
         ShadowSoftness = Math.Clamp(ShadowSoftness, 0F, 0.5F);
         ShadowSamples = Math.Clamp(ShadowSamples, 1, 8);
         if (!Enum.IsDefined(SunShadowMethod)) SunShadowMethod = SunShadowMethod.Progressive;
