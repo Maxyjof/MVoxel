@@ -107,6 +107,16 @@ public enum ProjectTemplateId
     /// 展示 1024×1024 的完整仙域大陆：六大地形分区、宗门、坊市、浮空仙岛与古迹
     /// </summary>
     XianxiaContinent,
+
+    /// <summary>
+    /// 展示不开路径追踪时的探针体积 GI：两层回廊中庭、深壁龛与天窗
+    /// </summary>
+    ProbeGiAtrium,
+
+    /// <summary>
+    /// 展示不开路径追踪时的实时体素间接光：只有洞口进光的洞穴
+    /// </summary>
+    ProbeGiCave,
 }
 
 /// <summary>
@@ -144,6 +154,8 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.WeatherSnow, "雪原微光", "低温雪原与冷色天空，展示降雪和微风效果。", "天气 · 降雪 · 冷光", "小型", "调整降雪强度和风向"),
         new(ProjectTemplateId.WeatherStorm, "雷暴海湾", "雷云压境的海湾灯塔，展示风暴、闪电和海面动画。", "天气 · 雷暴 · 闪电", "小型", "调整雷暴强度与闪电频率"),
         new(ProjectTemplateId.WeatherHeatHaze, "灼热荒岸", "高温荒岸与远方热浪，展示热浪扰动和稀薄雾气。", "天气 · 高温 · 热浪", "小型", "调整热浪折射散射强度"),
+        new(ProjectTemplateId.ProbeGiAtrium, "探针 GI 中庭", "两层回廊围出天井，顶层只留一个方形天窗，室内不点灯：先靠实时体素间接光补光，场景里已放好自动探针，在探针体积窗口点一次烘焙即可切到探针 GI。", "非光追 · 体素间接光 · 探针体积 GI", "中型", "对比实时体素间接光与探针 GI 在室内的差别"),
+        new(ProjectTemplateId.ProbeGiCave, "间接光洞穴", "只有洞口进光的洞穴，主洞室、连接隧道与内室层层加深，不点灯也不用路径追踪，靠实时体素间接光显示明暗衰减；洞内已放好自动探针供烘焙对比。", "非光追 · 体素间接光 · 遮蔽衰减", "中型", "观察体素间接光在深洞与洞口附近的衰减差异"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -176,6 +188,7 @@ public static class ProjectTemplateCatalog
     public static string CategoryFor(ProjectTemplateId id) => id switch
     {
         ProjectTemplateId.Empty or ProjectTemplateId.DefaultRoom => "入门",
+        ProjectTemplateId.ProbeGiAtrium or ProjectTemplateId.ProbeGiCave => "非光追 GI",
         ProjectTemplateId.MaterialLab or ProjectTemplateId.PaletteWorkshop or ProjectTemplateId.GlassStudy or
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or
             ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy or ProjectTemplateId.WorldOcean or
@@ -189,8 +202,8 @@ public static class ProjectTemplateCatalog
 
     private static int CategoryRank(string category) => category switch
     {
-        "入门" => 0, "建模与场景" => 1, "材质与渲染" => 2,
-        "地形与大世界" => 3, "相机与性能" => 4, _ => 5,
+        "入门" => 0, "非光追 GI" => 1, "建模与场景" => 2, "材质与渲染" => 3,
+        "地形与大世界" => 4, "相机与性能" => 5, _ => 6,
     };
 
     /// <summary>
@@ -499,6 +512,8 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.MoonbaseOutpost => TemplateScenes.BuildMoonbaseOutpost(),
             ProjectTemplateId.ClockworkConservatory => TemplateScenes.BuildClockworkConservatory(),
             ProjectTemplateId.DesertCaravanserai => TemplateScenes.BuildDesertCaravanserai(),
+            ProjectTemplateId.ProbeGiAtrium => TemplateScenes.BuildProbeAtrium(),
+            ProjectTemplateId.ProbeGiCave => TemplateScenes.BuildProbeCave(),
             ProjectTemplateId.XianxiaContinent => Xianxia.XianxiaTerrain.Build().Worlds[Xianxia.XianxiaRegion.Summit],
             _ => new VoxelWorld(),
         };
@@ -621,6 +636,36 @@ public static class ProjectTemplateCatalog
         settings.TemplateId = id.ToString();
         switch (id)
         {
+            // 两个非光追 GI 模板共用一套配置：不开路径追踪与硬件光追，
+            // 照明完全交给天光、实时体素间接光与探针体积 GI
+            case ProjectTemplateId.ProbeGiAtrium:
+            case ProjectTemplateId.ProbeGiCave:
+                settings.DefaultRenderPreset = Get(id).Name;
+                settings.RenderSettings.PathTracingEnabled = false;
+                settings.RenderSettings.UseHardwareRayTracing = false;
+                settings.RenderSettings.SunDirectLighting = true;
+                settings.RenderSettings.SunEnabled = true;
+                settings.RenderSettings.SunElevationDegrees = id == ProjectTemplateId.ProbeGiCave ? 46F : 62F;
+                settings.RenderSettings.SunAzimuthDegrees = 210F;
+                settings.RenderSettings.SunIntensity = 1.35F;
+                // 环境光压低一些，实时体素间接光与探针 GI 的补光才有可比的差别
+                settings.RenderSettings.SkyAmbient = id == ProjectTemplateId.ProbeGiCave ? .34F : .4F;
+                settings.RenderSettings.AmbientOcclusionEnabled = true;
+                settings.RenderSettings.AoStrength = .9F;
+                settings.RenderSettings.AoPower = 1.3F;
+                settings.RenderSettings.EmissiveVoxels = false;
+                settings.RenderSettings.ShowWater = false;
+                settings.RenderSettings.ShowGround = false;
+                settings.RenderSettings.FogDensity = 0F;
+                settings.RenderSettings.SceneBackgroundColor = new Vector3(.03F, .035F, .042F);
+                settings.RenderSettings.Tone = ToneCurve.AcesNarkowicz;
+                settings.RenderSettings.Exposure = .15F;
+                settings.RenderSettings.Brightness = 1.02F;
+                settings.RenderSettings.ColorContrast = 1.06F;
+                settings.RenderSettings.Dither = true;
+                settings.RenderSettings.CameraFovDegrees = 62F;
+                settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
+                break;
             case ProjectTemplateId.WorldOcean:
             case ProjectTemplateId.WorldMist:
             case ProjectTemplateId.WorldSunset:
@@ -1111,6 +1156,18 @@ public static class ProjectTemplateCatalog
         if (template.Id == ProjectTemplateId.CornellBox)
             positions[0] = new Double3(center.X, center.Y, center.Z + distance * 1.25D);
         var target = new Vector3((float)center.X, (float)center.Y, (float)center.Z);
+        // 两个非光追 GI 模板要站在室内看间接光，不能像其他模板那样从外部俯视
+        if (template.Id == ProjectTemplateId.ProbeGiAtrium)
+        {
+            positions[0] = new Double3(20D, 15D, 20D);
+            target = new Vector3(-8F, 8F, -12F);
+        }
+        else if (template.Id == ProjectTemplateId.ProbeGiCave)
+        {
+            // 站在主洞室后壁朝洞口看：竖井与洞口两处光源，地面亮度离它们越远越暗
+            positions[0] = new Double3(center.X - 2D, 11D, 32D);
+            target = new Vector3((float)center.X, 9F, (float)(center.Z + 24D));
+        }
         for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
         {
             var position = positions[index];
@@ -1123,9 +1180,72 @@ public static class ProjectTemplateCatalog
             var cameraObject = graph.Add(index == 0 ? "主相机" : $"相机 {index + 1}",
                 transform: TransformComponent.FromFree(new FreeTransform(
                     position, CreateCameraRotation(forward, Vector3.UnitY))));
-            cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
+            cameraObject.Components.Add(template.Id is ProjectTemplateId.ProbeGiAtrium or ProjectTemplateId.ProbeGiCave
+                ? SceneComponentTypes.CreateCamera(CameraComponentData.Default with
+                {
+                    FieldOfViewDegrees = 62F,
+                    PostProcess = CreateProbeGiPostProcess(),
+                })
+                : SceneComponentTypes.CreateCamera());
+        }
+        if (template.Id is ProjectTemplateId.ProbeGiAtrium or ProjectTemplateId.ProbeGiCave)
+        {
+            // 探针体积盖住整个可游览范围并打开自动烘焙，进入项目后即可直接烘焙
+            var probeCenter = center;
+            var spanX = 32D;
+            var spanY = 32D;
+            var spanZ = 32D;
+            if (framingWorld is not null && framingWorld.TryGetBounds(out var probeMin, out var probeMax))
+            {
+                spanX = Math.Max(8D, probeMax.X - probeMin.X + 1D);
+                spanY = Math.Max(8D, probeMax.Y - probeMin.Y + 1D);
+                spanZ = Math.Max(8D, probeMax.Z - probeMin.Z + 1D);
+                probeCenter = new Double3(
+                    (probeMin.X + probeMax.X + 1) * .5D,
+                    (probeMin.Y + probeMax.Y + 1) * .5D,
+                    (probeMin.Z + probeMax.Z + 1) * .5D);
+            }
+
+            var probeObject = graph.Add("自动探针",
+                transform: TransformComponent.FromFree(new FreeTransform(probeCenter, Quaternion.Identity)));
+            probeObject.Components.Add(SceneComponentTypes.CreateProbeVolume(new ProbeVolumeComponentData(
+                0F, 0F, 0F, (float)spanX, (float)spanY, (float)spanZ, 1F, AutoBake: true, Editing: false, "")));
         }
         SceneSerializer.Save(Path.Combine(project.AssetsPath, "Scenes", "主场景.mvox"), scene);
+    }
+
+    /// <summary>
+    /// 非光追 GI 模板的相机后处理栈：把体素间接光与探针 GI 调到一眼可见的强度
+    /// </summary>
+    /// <remarks>
+    /// 覆盖项目默认值，只保留与本主题相关的效果；景深等会干扰观察的项一律关闭
+    /// </remarks>
+    /// <returns>带 GI 强化的后处理栈</returns>
+    private static CameraPostProcessStack CreateProbeGiPostProcess()
+    {
+        var stack = new CameraPostProcessStack { OverrideProjectDefaults = true };
+        stack.Effects.Clear();
+        stack.Effects.Add(new CameraPostProcessEffect
+        {
+            Type = CameraPostProcessEffectType.AmbientOcclusion, Intensity = .85F, Radius = 2F, Samples = 12,
+        });
+        stack.Effects.Add(new CameraPostProcessEffect
+        {
+            Type = CameraPostProcessEffectType.VoxelIndirectLight, Intensity = 1.15F, Radius = 9F, Samples = 6,
+        });
+        stack.Effects.Add(new CameraPostProcessEffect
+        {
+            Type = CameraPostProcessEffectType.ProbeVolumeGi, Intensity = 1.25F, Radius = 12F, Samples = 1,
+        });
+        stack.Effects.Add(new CameraPostProcessEffect
+        {
+            Type = CameraPostProcessEffectType.Vignette, Enabled = true, Intensity = .1F, Radius = .8F,
+        });
+        stack.Effects.Add(new CameraPostProcessEffect
+        {
+            Type = CameraPostProcessEffectType.DepthOfField, Enabled = false,
+        });
+        return stack;
     }
 
     private readonly record struct SceneModelPart(

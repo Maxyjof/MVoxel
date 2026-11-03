@@ -83,6 +83,8 @@ internal static class TemplateLearningPreview
         ProjectTemplateId.MoonbaseOutpost => ["隐藏穹舱，观察内部与太阳能阵列", "锁定月面车或阵列，取色后局部搭建", "恢复显隐，保存并导出相机画面"],
         ProjectTemplateId.ClockworkConservatory => ["用切面查看玻璃穹顶与机械骨架", "选择花床，取样颜色并修改局部植物", "退出切面，比较玻璃与黄铜的渲染并导出"],
         ProjectTemplateId.DesertCaravanserai => ["选择拱廊、棕榈与织棚并逐一隐藏", "锁定建筑，用相同材质增添一个模块", "调整渲染构图，保存并导出绿洲场景"],
+        ProjectTemplateId.ProbeGiAtrium => ["切到渲染视图，观察室内不受直射的部位如何被补亮", "打开窗口 → 渲染 → 探针体积，选择自动探针并烘焙", "对比烘焙前后的回廊底部亮度"],
+        ProjectTemplateId.ProbeGiCave => ["沿着洞穴向深处移动，比较地面亮度衰减", "在渲染配置中调整体素间接光强度与半径", "给自动探针烘焙一次，比较探针 GI 的补光效果"],
         _ => ["选择小屋并观察场景部件", "锁定目标，取色并添加门口或屋顶方块", "Ctrl+S 保存，导出模型或相机画面"],
     };
 

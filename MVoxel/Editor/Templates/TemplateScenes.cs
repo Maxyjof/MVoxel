@@ -508,6 +508,16 @@ internal static class TemplateScenes
                 ("驿站围墙与角楼", "主体建筑", c => Math.Abs(c.X) >= 16 || Math.Abs(c.Z) >= 16),
                 ("织棚与驼队", "市集", c => c.Z <= -24),
                 ("庭院绿洲", "庭院", _ => true)),
+            ProjectTemplateId.ProbeGiAtrium => SplitByRegions(source,
+                ("地面与花园", "地面", c => c.Y <= 1),
+                ("二层回廊与楼梯", "回廊", c => c.Y is >= 16 and <= 19),
+                ("天窗与屋顶", "屋顶", c => c.Y >= 34),
+                ("外墙与柱列", "墙体", _ => true)),
+            ProjectTemplateId.ProbeGiCave => SplitByRegions(source,
+                ("洞口岩壁", "洞口", c => c.Z >= 64),
+                ("主洞室与石柱", "主洞室", c => c.Z is >= 12 and <= 51),
+                ("内室与连接隧道", "内室", c => c.Z is >= 52 and <= 63),
+                ("山体岩层", "岩体", _ => true)),
             _ => [("模型", "模型", source)],
         };
     }
@@ -1416,5 +1426,195 @@ internal static class TemplateScenes
         TemplateKit.Box(world, x + 3, groundY + 3, z + 5, x + 4, groundY + 5, z + 6, Paint(Timber));
         TemplateKit.Box(world, x + 1, groundY + 4, z + 3, x + 2, groundY + 6, z + 3, Glass());
         TemplateKit.Box(world, x + 6, groundY + 4, z + 2, x + 6, groundY + 6, z + 4, Glass());
+    }
+
+    /// <summary>
+    /// 探针 GI 中庭：两层回廊围出天井，顶层只留一个方形天窗，
+    /// 室内不放任何发光体素，间接光只能靠探针体积与体素间接光补上
+    /// </summary>
+    public static VoxelWorld BuildProbeAtrium()
+    {
+        var w = new VoxelWorld();
+        var wall = Paint(Plaster);
+        var trim = Paint(Limestone);
+        var floor = Paint(Slate);
+        var rail = Paint(Copper);
+        var bench = Paint(Timber);
+        // 地面：石板为主，四边走一圈浅色收边
+        TemplateKit.Box(w, -30, 0, -30, 30, 0, 30, floor, 17);
+        TemplateKit.Box(w, -30, 0, -30, 30, 0, -28, trim);
+        TemplateKit.Box(w, -30, 0, 28, 30, 0, 30, trim);
+        TemplateKit.Box(w, -30, 0, -30, -28, 0, 30, trim);
+        TemplateKit.Box(w, 28, 0, -30, 30, 0, 30, trim);
+        // 外墙：厚两格，四面高度到 34；窗洞随后统一挖出
+        TemplateKit.Box(w, -30, 1, -30, 30, 34, -29, wall, 23);
+        TemplateKit.Box(w, -30, 1, 29, 30, 34, 30, wall, 23);
+        TemplateKit.Box(w, -30, 1, -28, -29, 34, 28, wall, 23);
+        TemplateKit.Box(w, 29, 1, -28, 30, 34, 28, wall, 23);
+        // 顶层：中间留 18×18 天窗，其余封顶
+        TemplateKit.Box(w, -30, 35, -30, 30, 35, -9, trim);
+        TemplateKit.Box(w, -30, 35, 9, 30, 35, 30, trim);
+        TemplateKit.Box(w, -30, 35, -8, -9, 35, 8, trim);
+        TemplateKit.Box(w, 9, 35, -8, 30, 35, 8, trim);
+        // 二层回廊：中间留 26×26 的井口，靠墙一圈承台
+        TemplateKit.Box(w, -28, 16, -28, 28, 17, -13, trim, 11);
+        TemplateKit.Box(w, -28, 16, 13, 28, 17, 28, trim, 11);
+        TemplateKit.Box(w, -28, 16, -12, -13, 17, 12, trim, 11);
+        TemplateKit.Box(w, 13, 16, -12, 28, 17, 12, trim, 11);
+        // 回廊栏杆：沿井口一圈一格高一格栏杆，中间隔出通行口
+        foreach (var coordinate in new[]
+                 {
+                     (-13, 17), (13, 17), (-13, -17), (13, -17),
+                 })
+        {
+            TemplateKit.Box(w, coordinate.Item1, 18, coordinate.Item2, coordinate.Item1, 19, coordinate.Item2, rail);
+        }
+        for (var t = -12; t <= 12; t++)
+        {
+            if (Math.Abs(t) <= 3) continue;
+            TemplateKit.Box(w, t, 18, -13, t, 19, -13, rail);
+            TemplateKit.Box(w, t, 18, 13, t, 19, 13, rail);
+            TemplateKit.Box(w, -13, 18, t, -13, 19, t, rail);
+            TemplateKit.Box(w, 13, 18, t, 13, 19, t, rail);
+        }
+        // 四角柱与中柱：从地面直通二层承台
+        foreach (var (x, z) in new[] { (-26, -26), (26, -26), (-26, 26), (26, 26), (-26, 0), (26, 0), (0, -26), (0, 26) })
+        {
+            TemplateKit.Box(w, x - 1, 1, z - 1, x + 1, 15, z + 1, trim, 31);
+        }
+        // 折返楼梯：二层西侧上到回廊
+        for (var step = 0; step < 8; step++)
+        {
+            var y = 1 + step * 2;
+            TemplateKit.Box(w, 18, y, -4, 22, y, 4, trim);
+            TemplateKit.Box(w, 18, y, -4, 18, y + 1, 4, wall);
+        }
+        // 底层与二层共用高窗：三面墙各开四个，天光从侧面进到回廊底部
+        foreach (var (centerX, centerZ) in new[]
+                 {
+                     (-18, -29), (-6, -29), (6, -29), (18, -29),
+                     (-18, 29), (-6, 29), (6, 29), (18, 29),
+                 })
+        {
+            for (var depth = 0; depth <= 1; depth++)
+            for (var y = 3; y <= 26; y++)
+            for (var side = -3; side <= 3; side++)
+            {
+                var offset = centerZ < 0 ? -30 + depth : 30 - depth;
+                w.Remove(new VoxelCoord64(centerX + side, y, offset));
+            }
+        }
+        foreach (var centerZ in new[] { -12, 0, 12 })
+        {
+            for (var depth = 0; depth <= 1; depth++)
+            for (var y = 3; y <= 26; y++)
+            for (var side = -3; side <= 3; side++)
+            {
+                w.Remove(new VoxelCoord64(-30 + depth, y, centerZ + side));
+                w.Remove(new VoxelCoord64(30 - depth, y, centerZ + side));
+            }
+        }
+        // 天井下挂四组浅色吊板，让落下的天光在回廊上分层
+        foreach (var (x, z) in new[] { (-14, -14), (14, -14), (-14, 14), (14, 14) })
+        {
+            TemplateKit.Box(w, x, 26, z, x + 1, 26, z + 1, trim);
+            TemplateKit.Box(w, x, 27, z, x + 1, 34, z + 1, wall);
+        }
+        // 底层长凳与花池，作为间接光的深浅参照
+        TemplateKit.Box(w, -6, 1, -6, 6, 1, 6, bench, 13);
+        TemplateKit.Box(w, -5, 2, -5, 5, 2, 5, Paint(Soil));
+        TemplateKit.Ellipsoid(w, 0, 4, 0, 4, 3, 4, Paint(LeafGreen));
+        return w;
+    }
+
+    /// <summary>
+    /// 间接光洞穴：只有洞口进光，主洞室、连接隧道与内室层层加深，
+    /// 全程不点灯，靠实时体素间接光显示明暗衰减
+    /// </summary>
+    public static VoxelWorld BuildProbeCave()
+    {
+        var w = new VoxelWorld();
+        var rock = Paint(Rock);
+        var rockDark = Paint(RockDark);
+        var sand = Paint(Sand);
+        // 先堆出整块山体
+        TemplateKit.Box(w, -20, 0, 0, 20, 24, 72, rock, 41);
+        TemplateKit.Box(w, -20, 24, 0, 20, 26, 20, rockDark, 43);
+        // 主洞室：大椭球掏空
+        CarveEllipsoid(w, 0, 11, 26, 15, 8, 18);
+        // 内室：更小的椭球
+        CarveEllipsoid(w, 0, 9, 56, 9, 7, 9);
+        // 连接主洞室与内室的隧道
+        for (var z = 30; z <= 50; z++)
+        for (var y = 3; y <= 17; y++)
+        for (var x = -6; x <= 6; x++)
+        {
+            if (x * x + (y - 9) * (y - 9) <= 30) w.Remove(new VoxelCoord64(x, y, z));
+        }
+        // 洞口：向外扩成喇叭口
+        CarveEllipsoid(w, 0, 9, 72, 8, 7, 6);
+        CarveEllipsoid(w, 0, 10, 76, 10, 8, 5);
+        // 洞底铺沙，与岩石形成明暗参照
+        for (var z = 12; z <= 68; z++)
+        for (var x = -14; x <= 14; x++)
+        {
+            if (w.TryGet(new VoxelCoord64(x, 3, z), out _) || !w.TryGet(new VoxelCoord64(x, 2, z), out _)) continue;
+            w.Set(new VoxelCoord64(x, 2, z), sand);
+        }
+        // 石笋与钟乳：高度随机，制造竖直方向的遮蔽层次
+        foreach (var (x, z, height, up) in new[]
+                 {
+                     (-9, 20, 6, true), (7, 24, 8, false), (-4, 33, 5, true),
+                     (10, 40, 7, true), (-11, 45, 6, false), (3, 51, 4, true),
+                 })
+        {
+            var baseY = up ? 3 : 18;
+            for (var step = 0; step <= height; step++)
+            {
+                var y = up ? baseY + step : baseY - step;
+                TemplateKit.Box(w, x, y, z, x + 1, y, z + 1, up ? rock : rockDark);
+            }
+        }
+        // 洞顶开一个通到山脊的竖井，主洞室深处因此有一束天光，
+        // 周围的间接光衰减才有参照
+        for (var y = 6; y <= 30; y++)
+        for (var z = 52; z <= 58; z++)
+        for (var x = 2; x <= 8; x++)
+        {
+            if ((x - 5) * (x - 5) + (z - 55) * (z - 55) > 9) continue;
+            w.Remove(new VoxelCoord64(x, y, z));
+        }
+        // 洞顶垂下两根石柱，让主洞室的光线被切出明显的明暗边界
+        TemplateKit.Box(w, -2, 12, 22, 0, 19, 22, rockDark, 47);
+        TemplateKit.Box(w, -2, 8, 46, 0, 16, 46, rockDark, 53);
+        return w;
+    }
+
+    /// <summary>
+    /// 掏空一个椭球区域，用于把实心山体挖成洞穴
+    /// </summary>
+    /// <param name="world">目标世界</param>
+    /// <param name="centerX">中心 X</param>
+    /// <param name="centerY">中心 Y</param>
+    /// <param name="centerZ">中心 Z</param>
+    /// <param name="radiusX">X 半径</param>
+    /// <param name="radiusY">Y 半径</param>
+    /// <param name="radiusZ">Z 半径</param>
+    private static void CarveEllipsoid(VoxelWorld world, double centerX, double centerY, double centerZ,
+        double radiusX, double radiusY, double radiusZ)
+    {
+        var minX = (long)Math.Floor(centerX - radiusX); var maxX = (long)Math.Ceiling(centerX + radiusX);
+        var minY = (long)Math.Floor(centerY - radiusY); var maxY = (long)Math.Ceiling(centerY + radiusY);
+        var minZ = (long)Math.Floor(centerZ - radiusZ); var maxZ = (long)Math.Ceiling(centerZ + radiusZ);
+        for (var z = minZ; z <= maxZ; z++)
+        for (var y = minY; y <= maxY; y++)
+        for (var x = minX; x <= maxX; x++)
+        {
+            var distance = Math.Pow((x + .5 - centerX) / Math.Max(radiusX, .5), 2)
+                + Math.Pow((y + .5 - centerY) / Math.Max(radiusY, .5), 2)
+                + Math.Pow((z + .5 - centerZ) / Math.Max(radiusZ, .5), 2);
+            if (distance > 1) continue;
+            world.Remove(new VoxelCoord64(x, y, z));
+        }
     }
 }
