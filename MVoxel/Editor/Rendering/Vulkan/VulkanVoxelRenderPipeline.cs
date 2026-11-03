@@ -288,6 +288,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </remarks>
     internal bool RealtimeHistoryActive => _realtimeHistoryAInitialized && !_realtimeHistoryInvalid;
 
+    /// <summary>参数不变后已连续渲染的帧数，达到预算即停止重绘</summary>
+    internal int RealtimeConvergedFrames => _realtimeConvergedFrames;
+
     /// <summary>
     /// 获取体素工作集的最小坐标
     /// </summary>
