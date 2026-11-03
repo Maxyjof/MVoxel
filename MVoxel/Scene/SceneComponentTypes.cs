@@ -32,8 +32,12 @@ public static class SceneComponentTypes
     public const string Light = "mvoxel.light";
     /// <summary>体积光照探针组件的稳定类型标识</summary>
     public const string ProbeVolume = "mvoxel.probevolume";
-    /// <summary>全局环境Volume组件</summary>
-    public const string Volume = "mvoxel.volume";
+    /// <summary>局部后处理覆盖组件的稳定类型标识</summary>
+    public const string PostProcessOverride = "mvoxel.postprocessoverride";
+    /// <summary>局部风场组件的稳定类型标识</summary>
+    public const string WindField = "mvoxel.windfield";
+    /// <summary>风力接收器组件的稳定类型标识</summary>
+    public const string WindReceiver = "mvoxel.windreceiver";
 
     /// <summary>动画组件的稳定类型标识</summary>
     public const string Animation = "mvoxel.animation";
@@ -45,7 +49,9 @@ public static class SceneComponentTypes
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
-        new(Volume, "Volume", "渲染", true),
+        new(PostProcessOverride, "局部后处理覆盖", "环境交互", true),
+        new(WindField, "局部风场", "环境交互", true),
+        new(WindReceiver, "风力接收器", "环境交互", true),
         new(Animation, "动画", "动画", true),
     ];
 
@@ -62,21 +68,56 @@ public static class SceneComponentTypes
     public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
     public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
     public static bool IsProbeVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, ProbeVolume, StringComparison.Ordinal);
-    public static bool IsVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Volume, StringComparison.Ordinal);
+    public static bool IsPostProcessOverride(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, PostProcessOverride, StringComparison.Ordinal);
 
-    public static ComponentRecord CreateVolume(VolumeComponentData data) => new()
+    public static ComponentRecord CreatePostProcessOverride(PostProcessOverrideComponentData data) => new()
     {
-        TypeId = Volume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
+        TypeId = PostProcessOverride, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
     };
 
-    public static VolumeComponentData ReadVolume(ComponentRecord component) =>
-        IsVolume(component) && component.Data.ValueKind == JsonValueKind.Object
-            ? component.Data.Deserialize<VolumeComponentData>(FieldJsonOptions)?.Normalize() ?? new VolumeComponentData()
-            : new VolumeComponentData();
+    public static PostProcessOverrideComponentData ReadPostProcessOverride(ComponentRecord component) =>
+        IsPostProcessOverride(component) && component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<PostProcessOverrideComponentData>(FieldJsonOptions)?.Normalize() ?? new PostProcessOverrideComponentData()
+            : new PostProcessOverrideComponentData();
 
-    public static void WriteVolume(ComponentRecord component, VolumeComponentData data)
+    public static void WritePostProcessOverride(ComponentRecord component, PostProcessOverrideComponentData data)
     {
-        if (!IsVolume(component)) throw new ArgumentException("组件记录不是Volume组件", nameof(component));
+        if (!IsPostProcessOverride(component)) throw new ArgumentException("组件记录不是局部后处理覆盖组件", nameof(component));
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
+    }
+
+    public static bool IsWindField(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, WindField, StringComparison.Ordinal);
+    public static bool IsWindReceiver(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, WindReceiver, StringComparison.Ordinal);
+
+    public static ComponentRecord CreateWindField(WindFieldComponentData data) => new()
+    {
+        TypeId = WindField, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
+    };
+
+    public static WindFieldComponentData ReadWindField(ComponentRecord component) =>
+        IsWindField(component) && component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<WindFieldComponentData>(FieldJsonOptions)?.Normalize() ?? new WindFieldComponentData()
+            : new WindFieldComponentData();
+
+    public static void WriteWindField(ComponentRecord component, WindFieldComponentData data)
+    {
+        if (!IsWindField(component)) throw new ArgumentException("组件记录不是局部风场组件", nameof(component));
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
+    }
+
+    public static ComponentRecord CreateWindReceiver(WindReceiverComponentData data) => new()
+    {
+        TypeId = WindReceiver, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
+    };
+
+    public static WindReceiverComponentData ReadWindReceiver(ComponentRecord component) =>
+        IsWindReceiver(component) && component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<WindReceiverComponentData>(FieldJsonOptions)?.Normalize() ?? new WindReceiverComponentData()
+            : new WindReceiverComponentData();
+
+    public static void WriteWindReceiver(ComponentRecord component, WindReceiverComponentData data)
+    {
+        if (!IsWindReceiver(component)) throw new ArgumentException("组件记录不是风力接收器组件", nameof(component));
         component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
     }
 

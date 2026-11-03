@@ -2508,6 +2508,7 @@ DockId=0x6A3C3007,0
 
         const int maximumPreviewFaces = 250_000;
         _cpuPreviewSurfaceFaces.Clear();
+        _cpuPreviewWorld = previewWorld;
         // 场景窗口不使用渲染窗口的光照或路径追踪，且在关闭场景 LOD 时必须保持
         // 一体素一格的几何语义。这里不能使用渲染/导出路径的贪心盒合并，否则相邻
         // 体素会变成长方体，靠近模型时尤其明显。仅绘制外露面，仍能控制 ImGui 面片量。
@@ -3570,7 +3571,9 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
                         SceneComponentTypes.ProbeVolume => SceneComponentTypes.CreateProbeVolume(ProbeVolumeComponentData.Default),
-                        SceneComponentTypes.Volume => SceneComponentTypes.CreateVolume(new VolumeComponentData()),
+                        SceneComponentTypes.PostProcessOverride => SceneComponentTypes.CreatePostProcessOverride(new PostProcessOverrideComponentData()),
+                        SceneComponentTypes.WindField => SceneComponentTypes.CreateWindField(new WindFieldComponentData()),
+                        SceneComponentTypes.WindReceiver => SceneComponentTypes.CreateWindReceiver(new WindReceiverComponentData()),
                         SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
@@ -3688,9 +3691,17 @@ DockId=0x6A3C3007,0
         {
             SceneComponentTypes.WriteLight(component, LightComponentData.Default);
         }
-        else if (SceneComponentTypes.IsVolume(component))
+        else if (SceneComponentTypes.IsPostProcessOverride(component))
         {
-            SceneComponentTypes.WriteVolume(component, new VolumeComponentData());
+            SceneComponentTypes.WritePostProcessOverride(component, new PostProcessOverrideComponentData());
+        }
+        else if (SceneComponentTypes.IsWindField(component))
+        {
+            SceneComponentTypes.WriteWindField(component, new WindFieldComponentData());
+        }
+        else if (SceneComponentTypes.IsWindReceiver(component))
+        {
+            SceneComponentTypes.WriteWindReceiver(component, new WindReceiverComponentData());
         }
         else if (SceneComponentTypes.IsProbeVolume(component))
         {
@@ -3969,39 +3980,75 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (SceneComponentTypes.IsVolume(component))
+        if (SceneComponentTypes.IsPostProcessOverride(component))
         {
-            var volume = SceneComponentTypes.ReadVolume(component);
-            var changed = ImGui.Checkbox("启用Volume", ref volume.Enabled);
-            changed |= ImGui.Checkbox("全局Volume", ref volume.IsGlobal);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只有全局 Volume 参与渲染；局部范围尚未实现。");
-            BeginInspectorField("权重", "Volume覆盖强度。");
-            changed |= ImGui.DragFloat("##VolumeWeight", ref volume.Weight, .01F, 0F, 1F);
-            ImGui.BeginDisabled();
-            BeginInspectorField("环境颜色", "尚未接入渲染。已有数据会保留。");
-            var environment = volume.EnvironmentColor;
-            changed |= ImGui.ColorEdit3("##VolumeEnvironment", ref environment);
-            volume.EnvironmentColor = environment;
-            ImGui.EndDisabled();
-            BeginInspectorField("雾密度", "体积雾密度。");
-            changed |= ImGui.DragFloat("##VolumeFogDensity", ref volume.FogDensity, .001F, 0F, 1F);
-            ImGui.BeginDisabled();
-            BeginInspectorField("雾高度", "尚未接入渲染。已有数据会保留。");
-            changed |= ImGui.DragFloat("##VolumeFogHeight", ref volume.FogHeight, .1F, .01F, 100000F);
-            BeginInspectorField("雾各向异性", "尚未接入渲染。已有数据会保留。");
-            changed |= ImGui.DragFloat("##VolumeFogAnisotropy", ref volume.FogAnisotropy, .01F, -.9F, .9F);
-            ImGui.EndDisabled();
-            BeginInspectorField("Bloom强度", "体积后处理Bloom强度。");
-            changed |= ImGui.DragFloat("##VolumeBloom", ref volume.BloomIntensity, .01F, 0F, 8F);
-            BeginInspectorField("Bloom阈值", "控制产生辉光所需的亮度，按权重叠加到渲染设置。");
-            changed |= ImGui.DragFloat("##VolumeBloomThreshold", ref volume.BloomThreshold, .01F, 0F, 8F);
-            BeginInspectorField("曝光", "全局曝光偏移。");
-            changed |= ImGui.DragFloat("##VolumeExposure", ref volume.Exposure, .01F, -16F, 16F);
+            var data = SceneComponentTypes.ReadPostProcessOverride(component);
+            var changed = ImGui.Checkbox("启用局部后处理", ref data.Enabled);
+            BeginInspectorField("覆盖权重", "按局部范围影响后处理参数的强度。");
+            changed |= ImGui.DragFloat("##PostProcessWeight", ref data.Weight, .01F, 0F, 1F);
+            BeginInspectorField("曝光偏移", "局部曝光覆盖，环境雾和天气不在此组件中配置。");
+            changed |= ImGui.DragFloat("##PostProcessExposure", ref data.Exposure, .01F, -16F, 16F);
+            BeginInspectorField("Bloom强度", "局部辉光强度覆盖。");
+            changed |= ImGui.DragFloat("##PostProcessBloom", ref data.BloomIntensity, .01F, 0F, 8F);
+            BeginInspectorField("Bloom阈值", "局部辉光亮度阈值。");
+            changed |= ImGui.DragFloat("##PostProcessBloomThreshold", ref data.BloomThreshold, .01F, 0F, 8F);
+            BeginInspectorField("Bloom半径", "局部辉光扩散半径。");
+            changed |= ImGui.DragFloat("##PostProcessBloomRadius", ref data.BloomRadius, .05F, .1F, 64F);
+            BeginInspectorField("暗角", "局部暗角强度。");
+            changed |= ImGui.DragFloat("##PostProcessVignette", ref data.Vignette, .01F, 0F, 1F);
             if (changed)
             {
-                SceneComponentTypes.WriteVolume(component, volume);
+                SceneComponentTypes.WritePostProcessOverride(component, data);
                 MarkSceneDocumentDirty();
                 _pipeline?.ResetAccumulation();
+            }
+            return;
+        }
+
+        if (SceneComponentTypes.IsWindField(component))
+        {
+            var data = SceneComponentTypes.ReadWindField(component);
+            var changed = ImGui.Checkbox("启用局部风场", ref data.Enabled);
+            BeginInspectorField("风向 X/Y/Z", "局部风力方向，会自动归一化。");
+            changed |= ImGui.DragFloat3("##WindDirection", ref data.Direction, .01F);
+            BeginInspectorField("风力强度", "局部风场基础强度。");
+            changed |= ImGui.DragFloat("##WindStrength", ref data.Strength, .05F, 0F, 1000F);
+            BeginInspectorField("影响范围", "从风场对象原点开始的球形影响半径。");
+            changed |= ImGui.DragFloat("##WindRange", ref data.Range, .1F, .01F, 100000F);
+            BeginInspectorField("衰减", "距离越远风力按此指数衰减。");
+            changed |= ImGui.DragFloat("##WindFalloff", ref data.Falloff, .05F, 0F, 8F);
+            changed |= ImGui.Checkbox("启用湍流", ref data.Turbulence);
+            if (data.Turbulence)
+            {
+                BeginInspectorField("湍流强度", "局部风场的动态扰动幅度。");
+                changed |= ImGui.DragFloat("##WindTurbulence", ref data.TurbulenceStrength, .05F, 0F, 1000F);
+            }
+            if (changed)
+            {
+                SceneComponentTypes.WriteWindField(component, data);
+                MarkSceneDocumentDirty();
+            }
+            return;
+        }
+
+        if (SceneComponentTypes.IsWindReceiver(component))
+        {
+            var data = SceneComponentTypes.ReadWindReceiver(component);
+            var changed = ImGui.Checkbox("启用风力接收", ref data.Enabled);
+            changed |= ImGui.Checkbox("接收全局风", ref data.ReceiveGlobalWind);
+            changed |= ImGui.Checkbox("接收局部风场", ref data.ReceiveLocalWind);
+            changed |= ImGui.Checkbox("子对象一并接收", ref data.IncludeChildren);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("启用后会将风力接收规则传播到当前对象层级下的子对象。");
+            BeginInspectorField("受力倍率", "体素模型对风场响应的强度。");
+            changed |= ImGui.DragFloat("##WindForceScale", ref data.ForceScale, .05F, 0F, 1000F);
+            BeginInspectorField("阻尼", "风力响应的速度阻尼。");
+            changed |= ImGui.DragFloat("##WindDrag", ref data.Drag, .01F, 0F, 1F);
+            BeginInspectorField("柔韧度", "体素模型受风形变的响应程度。");
+            changed |= ImGui.DragFloat("##WindFlexibility", ref data.Flexibility, .01F, 0F, 1F);
+            if (changed)
+            {
+                SceneComponentTypes.WriteWindReceiver(component, data);
+                MarkSceneDocumentDirty();
             }
             return;
         }

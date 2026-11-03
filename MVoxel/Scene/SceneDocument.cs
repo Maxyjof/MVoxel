@@ -29,7 +29,13 @@ public sealed class SceneDocument
     /// <summary>
     /// 场景唯一环境配置；旧场景缺失时使用默认环境
     /// </summary>
-    public SceneEnvironmentSettings Environment { get; set; } = new();
+    private SceneEnvironmentSettings _environment = new();
+    [JsonIgnore] public bool HasSerializedEnvironment { get; private set; }
+    public SceneEnvironmentSettings Environment
+    {
+        get => _environment;
+        set { _environment = value; HasSerializedEnvironment = true; }
+    }
 
     /// <summary>
     /// 场景内全部对象，父子关系由每个对象的 ParentId 表达
@@ -513,8 +519,12 @@ public static class SceneValidation
                 errors.Add($"对象“{sceneObject.Name}”包含重复的光照组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsProbeVolume) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的自动探针组件");
-            if (sceneObject.Components.Count(SceneComponentTypes.IsVolume) > 1)
-                errors.Add($"对象“{sceneObject.Name}”包含重复的Volume组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsPostProcessOverride) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的局部后处理覆盖组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsWindField) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的局部风场组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsWindReceiver) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的风力接收器组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsAnimation) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的动画组件");
         }

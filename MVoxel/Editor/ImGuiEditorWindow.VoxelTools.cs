@@ -283,6 +283,15 @@ internal sealed partial class ImGuiEditorWindow
         _selectedSceneObjectId = null;
         _pinnedVoxelModelId = null;
         _sceneDocument = preload?.Scene ?? LoadSceneDocument(project);
+        if (!_sceneDocument.HasSerializedEnvironment)
+        {
+            // 旧版打开场景时可能已将默认环境写回渲染配置；导出配置仍保留模板环境。
+            // 仅在当前环境呈默认状态且导出配置明确包含雾或水时恢复，避免覆盖已有场景环境。
+            var legacyEnvironment = _renderSettings.FogDensity == 0F && !_renderSettings.ShowWater && _renderSettings.ShowGround &&
+                                    (_projectSettings.ExportRenderSettings.FogDensity > 0F || _projectSettings.ExportRenderSettings.ShowWater)
+                ? _projectSettings.ExportRenderSettings : _renderSettings;
+            _sceneDocument.Environment.CaptureFrom(legacyEnvironment);
+        }
         _sceneDocument.Environment.ApplyTo(_renderSettings);
         if (preload?.Scene is not null)
         {
@@ -637,24 +646,6 @@ internal sealed partial class ImGuiEditorWindow
             var vignette = stack.Find(CameraPostProcessEffectType.Vignette);
             settings.Vignette = vignette?.Enabled == true ? Math.Clamp(vignette.Intensity, 0F, 1F) : 0F;
         }
-        }
-        var volumes = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
-            .Select(SceneComponentTypes.ReadVolume)
-            .Where(item => item.Enabled && item.IsGlobal && item.Weight > 0F)
-            .ToArray();
-        if (volumes is { Length: > 0 })
-        {
-            foreach (var volumeData in volumes)
-            {
-                var weight = Math.Clamp(volumeData.Weight, 0F, 1F);
-                settings.Exposure += volumeData.Exposure * weight;
-                settings.FogDensity += MathF.Max(0F, volumeData.FogDensity) * weight;
-                settings.BloomIntensity += MathF.Max(0F, volumeData.BloomIntensity) * weight;
-               settings.BloomThreshold += (Math.Clamp(volumeData.BloomThreshold, 0F, 8F) - 1F) * weight;
-            }
-            settings.FogDensity = Math.Clamp(settings.FogDensity, 0F, 1F);
-            settings.BloomIntensity = Math.Clamp(settings.BloomIntensity, 0F, 100F);
-            settings.BloomThreshold = Math.Clamp(settings.BloomThreshold, 0F, 8F);
         }
         var probe = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
             .FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsProbeVolume(item));
@@ -2601,7 +2592,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
         SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离雾目前作用于实时渲染；路径追踪不计算该雾效。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离雾按相机到表面的距离混合雾色，作用于实时渲染和路径追踪。");
         SliderFloat("雾起始距离", ref settings.FogStart, 0F, 1024F, "%.0f 格");
         SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
         SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");
