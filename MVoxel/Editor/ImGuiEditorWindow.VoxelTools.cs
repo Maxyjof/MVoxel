@@ -691,6 +691,53 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>渲染窗口实时模式的体素间接光方向预算</summary>
     private const int RealtimeIndirectRayBudget = 4;
 
+    /// <summary>
+    /// 取归一化坐标附近最近的若干个探针样本
+    /// </summary>
+    /// <remarks>
+    /// 用固定容量的线性扫描代替整表排序，避免上万个探针时每帧的排序与分配开销
+    /// </remarks>
+    /// <param name="bake">探针烘焙数据</param>
+    /// <param name="normalized">相机在探针体积内的归一化坐标</param>
+    /// <param name="count">需要的样本数</param>
+    /// <returns>按距离由近到远的样本</returns>
+    private static List<ProbeSample> NearestProbeSamples(ProbeVolumeBakeData bake, Vector3 normalized, int count)
+    {
+        var best = new List<ProbeSample>(count);
+        var distances = new List<float>(count);
+        foreach (var sample in bake.Samples)
+        {
+            var dx = sample.X - normalized.X;
+            var dy = sample.Y - normalized.Y;
+            var dz = sample.Z - normalized.Z;
+            var distance = dx * dx + dy * dy + dz * dz;
+            if (best.Count == count && distance >= distances[count - 1]) continue;
+            var slot = best.Count;
+            while (slot > 0 && distances[slot - 1] > distance)
+            {
+                if (slot < count && slot < best.Count)
+                {
+                    best[slot] = best[slot - 1];
+                    distances[slot] = distances[slot - 1];
+                }
+
+                slot--;
+            }
+
+            if (best.Count < count)
+            {
+                best.Insert(slot, sample);
+                distances.Insert(slot, distance);
+            }
+            else
+            {
+                best[slot] = sample;
+                distances[slot] = distance;
+            }
+        }
+
+        return best;
+    }
     private int GetSceneGpuCellBudget()
     {
         // 场景视图只按显存安全上限采样，不再按相机距离做隐式降采样；
@@ -955,7 +1002,8 @@ internal sealed partial class ImGuiEditorWindow
                     var weightedOcclusion = 0F;
                     var weightedRadiance = 0F;
                     var totalWeight = 0F;
-                    foreach (var sample in bake.Samples.OrderBy(sample => (sample.X - normalized.X) * (sample.X - normalized.X) + (sample.Y - normalized.Y) * (sample.Y - normalized.Y) + (sample.Z - normalized.Z) * (sample.Z - normalized.Z)).Take(8))
+                    // 线性扫描取最近的 8 个样本：OrderBy 会整表排序并分配，探针上万时每帧要几毫秒
+            foreach (var sample in NearestProbeSamples(bake, normalized, 8))
                     {
                         var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
                         var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
