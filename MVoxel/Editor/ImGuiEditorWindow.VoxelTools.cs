@@ -1150,7 +1150,7 @@ internal sealed partial class ImGuiEditorWindow
             width, height,
             // 实时渲染与场景预览是确定性结果，稳定帧号允许管线复用上一帧；
             // 路径追踪仍需帧号驱动样本去相关。
-            FrameIndex: pathMode ? framePipeline?.AccumulatedSamples ?? 0 : ImGui.GetFrameCount(),
+            FrameIndex: pathMode ? framePipeline?.AccumulatedSamples ?? 0 : 0,
             framePipeline?.RegionMin ?? default,
             framePipeline?.RegionSize ?? default,
             framePipeline?.StepBudget ?? 8192,
@@ -1375,9 +1375,9 @@ internal sealed partial class ImGuiEditorWindow
             bool animatedEnvironment = (effective.ShowWater && effective.WaterAnimationEnabled && effective.WaterAnimationSpeed != 0F) ||
                 effective.WeatherRainIntensity > 0F || effective.WeatherSnowIntensity > 0F ||
                 effective.WeatherStormIntensity > 0F || effective.WeatherHeatHaze > 0F;
-            if (_capturePath is null && animatedEnvironment)
+            if (_capturePath is not null && animatedEnvironment)
             {
-                // 路径追踪在同一水面时刻累积，时间变化后重新采样，避免动画叠加成重影。
+                // 只有显式导出任务才推进环境时间；普通渲染窗口固定在当前时刻，保证采样稳定。
                 var nextWaterTime = effective.PathTracingEnabled ? MathF.Floor(_elapsedSeconds * 2F) * .5F : _elapsedSeconds;
                 if (effective.PathTracingEnabled && nextWaterTime != _waterAnimationTime) pipeline.ResetAccumulation();
                 _waterAnimationTime = nextWaterTime;
