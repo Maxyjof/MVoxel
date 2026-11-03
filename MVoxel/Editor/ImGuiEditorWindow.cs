@@ -5023,10 +5023,12 @@ DockId=0x6A3C3007,0
                             project = ProjectLayout.Create(absolutePath, name);
                         }
 
-                        using (StartupTimeline.Begin("新建·生成模板内容"))
+                        Dictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff = null;                        using (StartupTimeline.Begin("新建·生成模板内容"))
                         {
+                            handoff = new Dictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>();
                             ProjectTemplateCatalog.Populate(project, templateId,
-                                (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                                (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)),
+                                handoff);
                         }
 
                         using (StartupTimeline.Begin("新建·写入编辑器设置"))
@@ -5036,8 +5038,9 @@ DockId=0x6A3C3007,0
 
                         // 模板刚写出的内容就在磁盘上，接着在这里读回来：
                         // 交付给界面的已经是解好码、合好世界的完整结果，
-                        // 完成回调里不再同步读模型，进度条消失之后也不再卡一下
-                        var prepared = PrepareFreshProject(project, cancellation, report);
+                        // 完成回调里不再同步读模型，进度条消失之后也不再卡一下。
+                        // 传入手表让预读直接接管模板刚生成的体素，省掉写盘再解析的往返
+                        var prepared = PrepareFreshProject(project, cancellation, report, handoff);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return prepared;
                     },
@@ -5071,11 +5074,12 @@ DockId=0x6A3C3007,0
     /// <param name="report">进度回调</param>
     /// <returns>项目句柄与预读结果</returns>
     private static PreparedProjectLoad PrepareFreshProject(ProjectHandle project,
-        CancellationToken cancellation, Action<BlockingOperationProgress> report)
+        CancellationToken cancellation, Action<BlockingOperationProgress> report,
+        IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff = null)
     {
         try
         {
-            return ReadFreshProject(project, cancellation, report);
+            return ReadFreshProject(project, cancellation, report, handoff);
         }
         catch (OperationCanceledException)
         {
@@ -5097,7 +5101,8 @@ DockId=0x6A3C3007,0
     /// <param name="report">进度回调</param>
     /// <returns>项目句柄与预读结果</returns>
     private static PreparedProjectLoad ReadFreshProject(ProjectHandle project,
-        CancellationToken cancellation, Action<BlockingOperationProgress> report)
+        CancellationToken cancellation, Action<BlockingOperationProgress> report,
+        IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff)
     {
         report(new BlockingOperationProgress("正在读取材质表…", .90F, true));
         IReadOnlyList<MaterialAsset>? materials = null;
@@ -5120,7 +5125,7 @@ DockId=0x6A3C3007,0
             models = PreloadProjectModels(project, cancellation,
                 progress => report(new BlockingOperationProgress(progress.Detail,
                     .92F + progress.Fraction * .06F, progress.CanCancel)),
-                materials: materials);
+                materials: materials, handoff: handoff);
         }
 
         return new PreparedProjectLoad(project, models);
@@ -5204,12 +5209,15 @@ DockId=0x6A3C3007,0
                             project = ProjectLayout.Create(absolutePath, new DirectoryInfo(absolutePath).Name);
                         }
 
+                        Dictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff = null;
                         try
                         {
                             using (StartupTimeline.Begin("新建·生成模板内容"))
                             {
+                                handoff = [];
                                 ProjectTemplateCatalog.PopulateFromVox(project, absoluteVoxPath,
-                                    (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)));
+                                    (detail, fraction, canCancel) => report(new BlockingOperationProgress(detail, fraction, canCancel)),
+                                    handoff);
                             }
 
                             using (StartupTimeline.Begin("新建·写入编辑器设置"))
@@ -5223,7 +5231,7 @@ DockId=0x6A3C3007,0
                             throw;
                         }
 
-                        var prepared = PrepareFreshProject(project, cancellation, report);
+                        var prepared = PrepareFreshProject(project, cancellation, report, handoff);
                         report(new BlockingOperationProgress("正在完成项目初始化…", .98F, CanCancel: false));
                         return prepared;
                     },

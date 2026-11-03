@@ -223,9 +223,11 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="cancellation">取消令牌</param>
     /// <param name="report">进度回调</param>
     /// <param name="markFailed">出现单个对象失败时上报</param>
+    /// <param name="handoff">模板写盘时登记的内存世界，命中时不必读盘</param>
     private static void LoadObjectWorlds(List<ModelRequest> requests,
         Dictionary<StableId, VoxelWorld> worlds, Dictionary<ModelLoadKey, VoxelWorld> cache,
-        CancellationToken cancellation, Action<BlockingOperationProgress> report, Action markFailed)
+        CancellationToken cancellation, Action<BlockingOperationProgress> report, Action markFailed,
+        IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff = null)
     {
         if (requests.Count == 0) return;
         var materialized = new VoxelWorld?[requests.Count];
@@ -256,7 +258,7 @@ internal sealed partial class ImGuiEditorWindow
                     // 每个资产只解析一次，同组其余对象在同一线程内位移复制，
                     // 组与组之间没有共享可变状态，只有进度计数需要加锁
                     var first = requests[group[0]];
-                    var canonical = LargeWorldFormat.Read(first.Key.Path, first.Key.Origin, cancellation);
+                    var canonical = ResolveAssetWorld(first.Key, handoff, cancellation);
                     materialized[group[0]] = canonical;
                     for (var position = 1; position < group.Count; position++)
                     {
@@ -308,7 +310,7 @@ internal sealed partial class ImGuiEditorWindow
                 try
                 {
                     if (!cache.TryGetValue(request.Key, out var source))
-                        source = LargeWorldFormat.Read(request.Key.Path, request.Key.Origin, cancellation);
+                        source = ResolveAssetWorld(request.Key, handoff, cancellation);
                     world = source.Clone();
                 }
                 catch (OperationCanceledException)
@@ -328,9 +330,37 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 取一份资产的世界副本：优先用模板写盘时留下的内存副本，没有再读盘
+    /// </summary>
+    /// <remarks>
+    /// 大世界格式写盘时把坐标平移到包围盒最小角，读盘再按对象原点平移回来。
+    /// 内存副本本身还是写盘前的原始坐标，因此同样按“对象原点减最小角”平移就能对上，
+    /// 未登记的资产自动回落到读盘，行为不变
+    /// </remarks>
+    /// <param name="key">资产路径与对象原点</param>
+    /// <param name="handoff">内存世界登记表</param>
+    /// <param name="cancellation">取消令牌</param>
+    /// <returns>按对象原点就位的世界副本</returns>
+    private static VoxelWorld ResolveAssetWorld(ModelLoadKey key,
+        IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff,
+        CancellationToken cancellation)
+    {
+        if (handoff is not null && handoff.TryGetValue(key.Path, out var entry))
+        {
+            return entry.World.CloneShifted(
+                key.Origin.X - entry.Minimum.X,
+                key.Origin.Y - entry.Minimum.Y,
+                key.Origin.Z - entry.Minimum.Z);
+        }
+
+        return LargeWorldFormat.Read(key.Path, key.Origin, cancellation);
+    }
+
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
         CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null,
-        Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null, IReadOnlyList<MaterialAsset>? materials = null)
+        Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null, IReadOnlyList<MaterialAsset>? materials = null,
+        IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff = null)
     {
         var relative = FindStartupSceneRelativePath(project);
         var path = Path.Combine(project.AssetsPath, relative.Replace('/', Path.DirectorySeparatorChar));
@@ -377,7 +407,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
             }
 
-            LoadObjectWorlds(requests, worlds, cache, cancellation, report, () => failed = true);
+            LoadObjectWorlds(requests, worlds, cache, cancellation, report, () => failed = true, handoff);
         }
         cancellation.ThrowIfCancellationRequested();
         report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));

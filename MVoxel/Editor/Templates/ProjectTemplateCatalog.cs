@@ -216,12 +216,35 @@ public static class ProjectTemplateCatalog
         All.FirstOrDefault(template => template.Id == id) ?? All[0];
 
     /// <summary>
+    /// 模板写盘时同时登记的内存世界，供新建项目后的预读直接复用
+    /// </summary>
+    /// <param name="World">写入时的世界，坐标就是写盘前的原始世界坐标</param>
+    /// <param name="Minimum">写入时的包围盒最小角，读盘正是按它把坐标平移回原始世界</param>
+    public readonly record struct TemplateWorldHandoff(VoxelWorld World, VoxelCoord64 Minimum);
+
+    /// <summary>
+    /// 写盘并登记内存世界，登记之后新建项目的预读不必再解析同一份文件
+    /// </summary>
+    /// <param name="path">目标文件</param>
+    /// <param name="world">要写入的世界</param>
+    /// <param name="handoff">内存世界登记表，为空时只写盘</param>
+    private static void WriteWorldFile(string path, VoxelWorld world,
+        IDictionary<string, TemplateWorldHandoff>? handoff = null)
+    {
+        LargeWorldFormat.Write(path, world);
+        if (handoff is null || !world.TryGetBounds(out var minimum, out _)) return;
+        handoff[Path.GetFullPath(path)] = new TemplateWorldHandoff(world, minimum);
+    }
+
+    /// <summary>
     /// 将模板资源写入新项目
     /// </summary>
     /// <param name="project">新项目</param>
     /// <param name="id">模板 ID</param>
     /// <param name="report">进度回调</param>
-    public static void Populate(ProjectHandle project, ProjectTemplateId id, Action<string, float, bool>? report = null)
+    /// <param name="handoff">内存世界登记表，预读可直接接管而不必读盘</param>
+    public static void Populate(ProjectHandle project, ProjectTemplateId id, Action<string, float, bool>? report = null,
+        IDictionary<string, TemplateWorldHandoff>? handoff = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         report?.Invoke("正在生成示例体素模型…", .74F, true);
@@ -242,11 +265,11 @@ public static class ProjectTemplateCatalog
             {
                 var terrain = TemplateScenes.BuildValleyTerrain();
                 var trees = TemplateScenes.BuildValleyTrees(terrain);
-                var modelParts = WriteTemplateModelParts(project, id, terrain);
+                var modelParts = WriteTemplateModelParts(project, id, terrain, handoff);
                 for (var index = 0; index < trees.Count; index++)
                 {
                     var treeFile = $"Minecraft山谷_树{index + 1}.mvmodel";
-                    LargeWorldFormat.Write(Path.Combine(project.AssetsPath, "Worlds", treeFile), trees[index]);
+                    WriteWorldFile(Path.Combine(project.AssetsPath, "Worlds", treeFile), trees[index], handoff);
                     modelParts.Add(new SceneModelPart($"树 {index + 1}", "树木",
                         "Assets/Worlds/" + treeFile, trees[index].OccupiedVoxelCount,
                         GetWorldOrigin(trees[index])));
@@ -260,15 +283,15 @@ public static class ProjectTemplateCatalog
                 var largeFileName = id == ProjectTemplateId.LargeWorld ? "超大型场景.mvworld" : "渲染体验馆.mvworld";
                 var largePath = Path.Combine(project.AssetsPath, "Worlds", largeFileName);
                 var world = BuildWorld(id, VoxelPalette.Build());
-                LargeWorldFormat.Write(largePath, world);
-                var modelParts = WriteTemplateModelParts(project, id, world);
+                WriteWorldFile(largePath, world, handoff);
+                var modelParts = WriteTemplateModelParts(project, id, world, handoff);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount, $"Assets/Worlds/{largeFileName}",
                     modelParts: modelParts, framingWorld: world, materialSlots: materialSlots);
             }
             else
             {
                 var world = BuildWorld(id, VoxelPalette.Build());
-                var modelParts = WriteTemplateModelParts(project, id, world);
+                var modelParts = WriteTemplateModelParts(project, id, world, handoff);
                 WriteScene(project, Get(id), world.OccupiedVoxelCount,
                     "Assets/Worlds/分层模型.mvmodel",
                     cameraCount: id == ProjectTemplateId.CameraGallery ? 3 : 1,
@@ -287,8 +310,10 @@ public static class ProjectTemplateCatalog
     /// <param name="project">已经创建好的空项目</param>
     /// <param name="voxFilePath">MagicaVoxel .vox 文件绝对路径</param>
     /// <param name="report">进度回调</param>
+    /// <param name="handoff">内存世界登记表，预读可直接接管而不必读盘</param>
     /// <returns>导入的体素数</returns>
-    public static int PopulateFromVox(ProjectHandle project, string voxFilePath, Action<string, float, bool>? report = null)
+    public static int PopulateFromVox(ProjectHandle project, string voxFilePath, Action<string, float, bool>? report = null,
+        IDictionary<string, TemplateWorldHandoff>? handoff = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrWhiteSpace(voxFilePath);
@@ -311,7 +336,7 @@ public static class ProjectTemplateCatalog
             var fileName = (multiple ? $"{safeName}_{index + 1}" : safeName) + ".mvmodel";
             var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
-            else LargeWorldFormat.Write(absolutePath, world);
+            else WriteWorldFile(absolutePath, world, handoff);
             AssetMetaStore.EnsureMeta(absolutePath);
             assets[index] = "Assets/Worlds/" + fileName;
             voxelCounts[index] = world.OccupiedVoxelCount;
@@ -1124,8 +1149,11 @@ public static class ProjectTemplateCatalog
     /// 写入模板拆分后的独立模型，并返回场景层级所需的模型组件数据。
     /// 主世界完整文件仍保留在 Worlds 下作为可导出/备份资产，但场景不再让多个对象重复引用它。
     /// </summary>
+    /// <param name="id">模板 ID</param>
+    /// <param name="world">要拆分的完整世界</param>
+    /// <param name="handoff">内存世界登记表，预读可直接接管而不必读盘</param>
     private static List<SceneModelPart> WriteTemplateModelParts(ProjectHandle project,
-        ProjectTemplateId id, VoxelWorld world)
+        ProjectTemplateId id, VoxelWorld world, IDictionary<string, TemplateWorldHandoff>? handoff = null)
     {
         var result = new List<SceneModelPart>();
         var prefix = id == ProjectTemplateId.Showcase ? "小屋与花园" : Get(id).Name;
@@ -1135,7 +1163,7 @@ public static class ProjectTemplateCatalog
             if (partWorld.OccupiedVoxelCount == 0) continue;
             var fileName = $"{prefix}_{name}.mvmodel";
             var path = Path.Combine(project.AssetsPath, "Worlds", fileName);
-            LargeWorldFormat.Write(path, partWorld);
+            WriteWorldFile(path, partWorld, handoff);
             totalVoxels += partWorld.OccupiedVoxelCount;
             result.Add(new SceneModelPart(name, part, "Assets/Worlds/" + fileName,
                 partWorld.OccupiedVoxelCount, GetWorldOrigin(partWorld)));
