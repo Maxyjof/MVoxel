@@ -4168,7 +4168,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 实时模式保持屏幕空间效果稳定，不把毫秒级帧号带入 AO/阴影随机种子；
             // 路径模式才使用帧号做时间去相关并交给累积缓冲收敛。
             uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
-                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u));
+                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u) +
+            ((!pathMode && values[143] > 0.0) ? uint(values[7]) * 26699u : 0u));
             vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
             vec3 forward = vec3(values[4], values[5], values[6]);
