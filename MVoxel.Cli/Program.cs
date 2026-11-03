@@ -315,8 +315,16 @@ internal static class Program
                 Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
                 return result.TryGetProperty("valid", out var valid) && valid.GetBoolean() ? 0 : 1;
             }
-            case "--open-project" when args.Length == 2:
+            // 通用控制通道调用：编辑器控制通道里没有逐条封装的命令也能直接发，
+            // 例如 editor.captureView 与 editor.captureStatus
+            case "--editor-call" when args.Length is 2 or 3:
             {
+                using var arguments = JsonDocument.Parse(args.Length == 3 ? args[2] : "{}");
+                var result = CallEditor(args[1], arguments.RootElement);
+                Console.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+                return 0;
+            }
+            case "--open-project" when args.Length == 2:            {
                 using var arguments = JsonDocument.Parse(JsonSerializer.Serialize(new { path = args[1] }));
                 Console.WriteLine(JsonSerializer.Serialize(CallEditor("editor.openProject", arguments.RootElement), JsonOptions));
                 return 0;
