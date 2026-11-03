@@ -501,6 +501,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 renderSamples = _pipeline?.AccumulatedSamples ?? 0,
                 renderPathTracing = _renderSettings.PathTracingEnabled,
                 renderWorksetCells = _pipeline?.SyncTotalCells ?? 0,
+                realtimeHistoryActive = _pipeline?.RealtimeHistoryActive ?? false,
                 renderWorksetBuildMs = _pipeline?.SyncWorksetBuildMs ?? 0,
                 renderWorksetSyncCount = _pipeline?.SyncCompletedCount ?? 0,
                 renderWorksetBuild = DescribeWorksetBuild(_pipeline),

@@ -273,6 +273,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal int AccumulatedSamples { get; private set; }
 
     /// <summary>
+    /// 非光追通道的历史混合当前是否真正生效
+    /// </summary>
+    /// <remarks>
+    /// 时间累积权重非零但历史被判失效时画面不会有任何收敛，状态接口暴露这一项便于核对
+    /// </remarks>
+    internal bool RealtimeHistoryActive => _realtimeHistoryAInitialized && !_realtimeHistoryInvalid;
+
+    /// <summary>
     /// 获取体素工作集的最小坐标
     /// </summary>
     internal VoxelRenderParameters.Vector3I RegionMin => _workset.IsEmpty
