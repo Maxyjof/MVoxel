@@ -74,6 +74,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private bool _showEnvironmentWindow;
     private bool _showProbeVolumeWindow;
     private bool _showAnimationWindow;
+    private bool _showTimelineWindow;
     private bool _animationWindowLocked;
     private StableId? _animationLinkedObjectId;
     private int _probeVolumeSelection;
@@ -966,6 +967,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawEnvironmentWindow();
         DrawProbeVolumeWindow();
         DrawAnimationWindow();
+        DrawTimelineWindow();
         DrawStatusBar();
         DrawProjectPathDialog();
         DrawLayoutNameDialog();
@@ -1068,6 +1070,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (ImGui.MenuItem("环境")) _showEnvironmentWindow = true;
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
                 if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
+                if (ImGui.MenuItem("时间轴")) _showTimelineWindow = true;
                 ImGui.EndMenu();
             }
             if (ImGui.BeginMenu("工具"))
@@ -3109,7 +3112,6 @@ DockId=0x6A3C3007,0
             _inspectorLockedObjectId = inspector.Locked;
             if (ImGui.Begin($"{inspector.Kind} {inspector.Id}##ExtraInspector{inspector.Id}", ref inspector.Open, ImGuiWindowFlags.NoCollapse))
             {
-                FloatingWindowShadow.Draw();
                 DrawPanelWindowMenu();
                 DrawExtraWindowContents(inspector.Kind);
             }
