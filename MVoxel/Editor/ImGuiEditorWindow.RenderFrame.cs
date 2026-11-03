@@ -212,8 +212,29 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Button("导出", new Vector2(110F, 0F)))
         {
             SaveProjectSettings();
-            switch (settings.ExportDialogFormat)
+            if (settings.ExportDialogFormat == "video")
             {
+                if (string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset))
+                {
+                    SetStatus("视频导出必须先选择时间轴资产");
+                    ImGui.End();
+                    return;
+                }
+                var timeline = LoadTimelineRuntimeAsset(settings.ExportDialogTimelineAsset);
+                if (timeline is null)
+                {
+                    SetStatus("时间轴资产无法读取，请重新选择");
+                    ImGui.End();
+                    return;
+                }
+                settings.ExportDialogVideoFrameRate = timeline.FrameRate;
+                settings.ExportDialogVideoEndFrame = Math.Max(settings.ExportDialogVideoStartFrame, timeline.LengthFrames);
+                SetStatus("视频时间轴参数已保存；视频编码队列将在视频导出功能接入后启用");
+            }
+            else
+            {
+                switch (settings.ExportDialogFormat)
+                {
                 case "hdr":
                     ExportRenderHdr();
                     break;
@@ -223,6 +244,7 @@ internal sealed partial class ImGuiEditorWindow
                 default:
                     ExportRenderPng();
                     break;
+                }
             }
 
             _showExportDialog = false;

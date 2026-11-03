@@ -9,6 +9,54 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    private TimelineAsset? LoadTimelineRuntimeAsset(string asset)
+    {
+        if (_project is null || string.IsNullOrWhiteSpace(asset)) return null;
+        var path = Path.Combine(_project.AssetsPath, asset.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var timeline = JsonSerializer.Deserialize<TimelineAsset>(File.ReadAllText(path));
+            timeline?.Normalize();
+            return timeline;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// 在显式导出或动画采样上下文中应用时间轴指定帧，不由普通渲染预览调用
+    /// </summary>
+    private bool ApplyTimelineFrame(string asset, int frame)
+    {
+        var timeline = LoadTimelineRuntimeAsset(asset);
+        if (timeline is null || _sceneDocument is null) return false;
+        frame = Math.Clamp(frame, 0, timeline.LengthFrames);
+        foreach (var range in timeline.ActivationRanges)
+        {
+            if (!Guid.TryParse(range.ObjectId, out var objectId)) continue;
+            var target = _sceneDocument.Objects.FirstOrDefault(item => item.Id.Value == objectId);
+            if (target is not null) target.Visible = range.Enabled && frame >= range.StartFrame && frame <= range.EndFrame;
+        }
+        foreach (var placement in timeline.Clips)
+        {
+            if (!Guid.TryParse(placement.ObjectId, out var objectId)) continue;
+            var target = _sceneDocument.Objects.FirstOrDefault(item => item.Id.Value == objectId);
+            if (target is null) continue;
+            var active = frame >= placement.StartFrame && frame <= placement.EndFrame;
+            var component = target.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
+            if (component is null || !active) continue;
+            var animation = SceneComponentTypes.ReadAnimation(component);
+            animation.Playing = true;
+            animation.Loop = placement.Loop;
+            animation.Speed = placement.Speed;
+            animation.CurrentFrame = Math.Max(0, (int)MathF.Round((frame - placement.StartFrame) * placement.Speed));
+            animation.PlaybackTimeSeconds = animation.CurrentFrame / (float)Math.Max(1, LoadAnimationClip(animation.ClipAsset)?.FrameRate ?? 30);
+            SceneComponentTypes.WriteAnimation(component, animation);
+            EvaluateAnimation(target, animation);
+        }
+        return true;
+    }
+
     private AnimationClip? LoadAnimationClip(string asset)
     {
         if (_project is null || string.IsNullOrWhiteSpace(asset)) return null;
