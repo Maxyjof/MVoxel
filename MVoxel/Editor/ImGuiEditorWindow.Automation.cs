@@ -155,6 +155,8 @@ internal sealed partial class ImGuiEditorWindow
         new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
             [Param("path", "string", true, "体素模型文件路径")]),
         new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
+        new("render.captureDisplay", "渲染", "保存当前显示结果", "把当前最终显示图直接存成 PNG，不做重新渲染，用于核对非光追通道的画面",
+            [Param("path", "string", true, "输出 PNG 路径")]),
         new("ui.setCenterTab", "界面", "切换中央页面", "把中央区域切到场景或渲染页面，等同点击页签",
             [Param("tab", "string", true, "scene 或 render")]),
         new("ui.status", "界面", "读取状态栏", "读取编辑器状态栏文本", []),
@@ -246,6 +248,12 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.create" => CreateTimelineAsset(payload),
 
             "perf.profile" => SetForcedProfiling(payload),
+            "render.captureDisplay" => RunOnUi(() =>
+            {
+                var path = Path.GetFullPath(ReadString(payload, "path") ?? throw new ArgumentException("missing path"));
+                var saved = _pipeline?.SaveDisplayPng(path) == true;
+                return new { path, saved };
+            }),
             "project.importVox" => RunOnUi(() =>
                 ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
             "perf.stats" => DescribePerformanceStats(),
