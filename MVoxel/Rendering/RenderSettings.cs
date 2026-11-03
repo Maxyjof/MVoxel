@@ -128,7 +128,7 @@ public sealed class RenderSettings
     /// <summary>
     /// AO 强度，0 关闭效果 1 全量
     /// </summary>
-    public int RealtimeAntiAliasingSamples = 1;
+    public int RealtimeAntiAliasingSamples = 4;
     public int RealtimeAntiAliasingPattern;
     public float RealtimeAntiAliasingSpread = 1F;
     public float FxaaThreshold = .125F;
