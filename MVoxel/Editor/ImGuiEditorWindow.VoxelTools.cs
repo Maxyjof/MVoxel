@@ -685,6 +685,12 @@ internal sealed partial class ImGuiEditorWindow
     /// 根据当前场景距离和 LOD 配置计算场景视图的 GPU 体素预算
     /// </summary>
     /// <returns>零表示完整工作集，其余数值表示场景视图采样上限</returns>
+    /// <summary>渲染窗口实时模式的 AO 射线预算</summary>
+    private const int RealtimeAoRayBudget = 8;
+
+    /// <summary>渲染窗口实时模式的体素间接光方向预算</summary>
+    private const int RealtimeIndirectRayBudget = 4;
+
     private int GetSceneGpuCellBudget()
     {
         // 场景视图只按显存安全上限采样，不再按相机距离做隐式降采样；
@@ -841,6 +847,14 @@ internal sealed partial class ImGuiEditorWindow
             settings.VoxelIndirectLightStrength = indirect?.Enabled == true ? indirect.Intensity : 0F;
             // 采样数也由相机栈决定，这样渲染窗口的实时模式可以单独降采样而不影响场景窗口
             if (indirect is not null) settings.VoxelIndirectLightSamples = Math.Clamp(indirect.Samples, 1, 32);
+
+        // 渲染窗口的实时（非光追）预算：这一档直接决定帧时间，
+        // 场景窗口走另一条预览设置，不受这里影响
+        if (!settings.PathTracingEnabled)
+        {
+            settings.AoSamples = Math.Min(settings.AoSamples, RealtimeAoRayBudget);
+            settings.VoxelIndirectLightSamples = Math.Min(settings.VoxelIndirectLightSamples, RealtimeIndirectRayBudget);
+        }
             var probeGi = stack.Find(CameraPostProcessEffectType.ProbeVolumeGi);
             settings.ProbeVolumeGiStrength = probeGi?.Enabled == true ? probeGi.Intensity : 0F;
             var tone = stack.Find(CameraPostProcessEffectType.ToneMapping);
