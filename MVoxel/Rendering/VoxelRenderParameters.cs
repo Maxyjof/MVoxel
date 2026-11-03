@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 
 namespace MVoxel.Rendering;
@@ -72,7 +72,7 @@ public sealed class VoxelRenderParameters
     /// <summary>景深开关、MIS 开关、路径模式、视场角</summary>
     public const int DepthOfField = 84, MisEnabled = 85, ModePath = 86, FovDegrees = 87;
     /// <summary>抖动种子、网格步长、网格开关</summary>
-    public const int Pixel = 88, GridStep = 89, GridShown = 90, ReservedR = 91;
+    public const int Pixel = 88, GridStep = 89, GridShown = 90, WaterTime = 91;
     /// <summary>路径降噪开关与强度</summary>
     public const int DenoiseEnabled = 92, DenoiseStrength = 93;
     /// <summary>当前 GPU 工作集中的占用体素数量与 BVH 节点数量</summary>
@@ -117,12 +117,16 @@ public sealed class VoxelRenderParameters
     public const int WeatherWindStrength = 161, WeatherWindDirection = 162, WeatherRain = 163, WeatherSnow = 164;
     public const int WeatherStorm = 165, WeatherHeatHaze = 166, WeatherLightning = 167;
     public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
-    public const int WaterTime = 168;
+    // 注意：168 曾经同时被 WaterTime 和 VoxelIndirectSamples 占用，水面动画时间
+    // 会被间接光采样数覆盖。WaterTime 已移到 91，168 专用于实时间接光质量档位。
     /// <summary>
     /// 只重跑收尾通道的标记：采样已完成时用它刷新后处理结果，不重新求交
     /// </summary>
     public const int DisplayPass = 169;
-    public const int SlotCount = 170;
+    public const int SunShadowMethod = 170, SunShadowPass = 171, SunShadowMapResolution = 172;
+    public const int SunMapCenterX = 173, SunMapCenterY = 174, SunMapCenterZ = 175, SunMapRadius = 176;
+    public const int SunRealtimeFrames = 177;
+    public const int SlotCount = 178;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -132,6 +136,10 @@ public sealed class VoxelRenderParameters
     {
         var names = new (string, int)[]
         {
+            ("P_SUN_METHOD", SunShadowMethod), ("P_SUN_PASS", SunShadowPass),
+            ("P_SUN_MAP_SIZE", SunShadowMapResolution), ("P_SUN_MAP_X", SunMapCenterX),
+            ("P_SUN_MAP_Y", SunMapCenterY), ("P_SUN_MAP_Z", SunMapCenterZ),
+            ("P_SUN_MAP_RADIUS", SunMapRadius), ("P_SUN_REALTIME_FRAMES", SunRealtimeFrames),
             ("P_CAM_X", CamX), ("P_CAM_Y", CamY), ("P_CAM_Z", CamZ), ("P_FOCAL", Focal),
             ("P_FWD_X", ForwardX), ("P_FWD_Y", ForwardY), ("P_FWD_Z", ForwardZ), ("P_FRAME", Frame),
             ("P_RIGHT_X", RightX), ("P_RIGHT_Y", RightY), ("P_RIGHT_Z", RightZ), ("P_VIEW_W", ViewWidth),
@@ -302,7 +310,12 @@ public sealed class VoxelRenderParameters
         parameters[SunColorG] = settings.SunColor.Y;
         parameters[SunColorB] = settings.SunColor.Z;
         parameters[ShadowSoftness] = settings.ShadowSoftness;
-        parameters[ShadowSamples] = settings.ShadowSamples;
+        parameters[SunShadowMethod] = (float)settings.SunShadowMethod;
+        parameters[SunShadowMapResolution] = settings.SunShadowMapResolution;
+        // 面板里的 1~8 是半影质量档位，实时通道按 ×2 展开成 2~16 条 any-hit 射线：
+        // 档位就是可见度分级数，旧项目保存的 4 档会自动得到 8 级半影，不再留台阶。
+        // 实时与路径追踪读取同一质量预算。
+        parameters[ShadowSamples] = Math.Clamp(settings.ShadowSamples, 1, 8) * 2F;
         parameters[SunEnabled] = settings.SunEnabled ? 1F : 0F;
         parameters[GroundFade] = settings.GroundFade;
         parameters[GroundShown] = settings.ShowGround ? 1F : 0F;

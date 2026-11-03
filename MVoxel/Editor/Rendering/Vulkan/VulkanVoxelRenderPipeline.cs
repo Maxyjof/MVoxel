@@ -38,6 +38,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 分块起点 push constant 的字节数，对应着色器里的 ivec2
     /// </summary>
     private const int TilePushConstantBytes = 8;
+    /// <summary>探针体积缓冲的初始容量：3 个 vec4 头 + 若干探针，未上传时全零</summary>
+    private const ulong InitialProbeVolumeBytes = 512UL;
 
     private readonly VulkanWindowContext? _context;
     private readonly Vk? _api;
@@ -54,6 +56,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private VkBuffer _brickTableBuffer;
     private DeviceMemory _brickTableMemory;
     private ulong _brickTableCapacity;
+    // 烘焙探针体积（binding 7）：3 个 vec4 头 + 逐探针 vec4(辐照度 RGB, 天空可见度)
+    private VkBuffer _probeVolumeBuffer;
+    private DeviceMemory _probeVolumeMemory;
+    private ulong _probeVolumeCapacity;
+    private float[]? _probeVolumePacked;
 
     /// <summary>
     /// 当前工作集是否承载砖结构（cells = BrickCells，bvh = 区块粒度粗树）
@@ -272,9 +279,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     /// <summary>非光追通道在参数不变后仍继续渲染的帧数上限</summary>
     /// <remarks>
-    /// 时间累积需要连续多帧才有收敛效果，参数一相等就停会让斑点永远停在单帧方差上
+    /// 实时着色改为确定性解析估计后，静止画面逐帧完全一致，不再需要几十帧的
+    /// 噪声收敛窗口；保留两帧只是为了给历史图与描述符交换留出稳定的过渡。
     /// </remarks>
-    private const int RealtimeConvergeFrameBudget = 96;
+    private const int RealtimeConvergeFrameBudget = 2;
 
     private int _realtimeConvergedFrames;
 
@@ -563,6 +571,98 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _environmentHeight = height;
         _environmentIntensity = Math.Clamp(intensity, 0F, 16F);
         ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 把 CPU 烘焙好的探针体积上传到 GPU，供实时通道做三线性辐照度取样
+    /// </summary>
+    /// <param name="packed">3 个 vec4 头 + 逐探针 vec4 的浮点数组；null 或空表示清除</param>
+    /// <remarks>
+    /// 数据变化只发生在烘焙完成或探针体积参数改变时，不逐帧上传。
+    /// 写入前等待设备空闲，避免 GPU 正在读取时改写主机可见内存。
+    /// </remarks>
+    internal void SetProbeVolume(float[]? packed)
+    {
+        _probeVolumePacked = packed;
+        if (_context is null || _api is not { } api || _context.IsDeviceLost ||
+            _probeVolumeBuffer.Handle == 0) return;
+
+        var sourceBytes = (ulong)((packed?.Length ?? 0) * sizeof(float));
+        var writeBytes = Math.Max(sourceBytes, 48UL);
+        EnsureProbeVolumeBuffer(writeBytes);
+        api.DeviceWaitIdle(_device);
+        void* mapped = null;
+        Check(api.MapMemory(_device, _probeVolumeMemory, 0, writeBytes, 0, &mapped), "映射探针体积缓冲");
+        try
+        {
+            if (packed is { Length: > 0 })
+            {
+                fixed (float* source = packed)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, (long)writeBytes, (long)sourceBytes);
+                }
+            }
+            else
+            {
+                var zeros = new float[12];
+                fixed (float* source = zeros)
+                {
+                    System.Buffer.MemoryCopy(source, mapped, (long)writeBytes, 48L);
+                }
+            }
+        }
+        finally
+        {
+            api.UnmapMemory(_device, _probeVolumeMemory);
+        }
+
+        // 间接光变了，已有的实时历史与收敛计数都要作废并重画
+        _realtimeHistoryInvalid = true;
+        _realtimeConvergedFrames = 0;
+        UpdateComputeDescriptors();
+    }
+
+    private void ZeroProbeVolumeHeader()
+    {
+        if (_api is not { } api || _probeVolumeBuffer.Handle == 0) return;
+        void* mapped = null;
+        Check(api.MapMemory(_device, _probeVolumeMemory, 0, 48UL, 0, &mapped), "初始化探针体积缓冲");
+        try
+        {
+            var zeros = new float[12];
+            fixed (float* source = zeros)
+            {
+                System.Buffer.MemoryCopy(source, mapped, 48L, 48L);
+            }
+        }
+        finally
+        {
+            api.UnmapMemory(_device, _probeVolumeMemory);
+        }
+    }
+
+    private void EnsureProbeVolumeBuffer(ulong required)
+    {
+        if (_api is not { } api || _probeVolumeBuffer.Handle == 0) return;
+        var needed = NextCapacity(Math.Max(required, InitialProbeVolumeBytes));
+        if (_probeVolumeCapacity >= needed) return;
+        api.DeviceWaitIdle(_device);
+        DestroyProbeVolumeBuffer(api);
+        (_probeVolumeBuffer, _probeVolumeMemory) = CreateBuffer(
+            needed,
+            BufferUsageFlags.StorageBufferBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        _probeVolumeCapacity = needed;
+    }
+
+    private void DestroyProbeVolumeBuffer(Vk api)
+    {
+        if (_probeVolumeBuffer.Handle == 0) return;
+        api.DestroyBuffer(_device, _probeVolumeBuffer, null);
+        api.FreeMemory(_device, _probeVolumeMemory, null);
+        _probeVolumeBuffer = default;
+        _probeVolumeMemory = default;
+        _probeVolumeCapacity = 0;
     }
 
     /// <summary>
@@ -1224,6 +1324,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 api.FreeMemory(_device, _sceneLightMemory, null);
             }
 
+            DestroyProbeVolumeBuffer(api);
+
             if (_stagingBuffer.Handle != 0)
             {
                 api.DestroyBuffer(_device, _stagingBuffer, null);
@@ -1279,6 +1381,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     (ulong)SceneLightBufferBytes,
                     BufferUsageFlags.StorageBufferBit,
                     MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+                // 探针体积缓冲恒存在，头 12 个 float 全零表示“场景里没有探针”
+                (_probeVolumeBuffer, _probeVolumeMemory) = CreateBuffer(
+                    InitialProbeVolumeBytes,
+                    BufferUsageFlags.StorageBufferBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+                _probeVolumeCapacity = InitialProbeVolumeBytes;
+                ZeroProbeVolumeHeader();
             }
 
             var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
@@ -1383,8 +1492,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
-            // 参数没变也要继续画一段时间，否则实时通道的时间累积永远只跑一帧，
-            // 墙面斑点会一直停在单帧的方差上
+            // 参数不变后再画两帧让历史图与描述符交换稳定下来；实时着色本身
+            // 是确定性的，静止时逐帧结果相同，不需要靠多帧平均去噪
             if (!historyCleared && ParametersEqualForDisplay(parameters) &&
                 _realtimeConvergedFrames >= RealtimeConvergeFrameBudget)
             {
@@ -1407,11 +1516,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bool realtimePost = !pathMode && !frameState.ShowOutlines;
         bool bloomActive = settings.BloomEnabled && settings.BloomIntensity > 0F &&
                            (pathMode || realtimePost);
+        // 渲染窗口的非光追通道恒走收尾通道：采样阶段只写线性 HDR 与导引图，
+        // 降噪、泛光与色调映射都在收尾通道完成，对应 Render 视图的出片顺序
+        bool realtimeFinish = !pathMode && !frameState.ScenePreview;
         bool roundComplete = true;
         if (!pathMode)
         {
             DispatchRealtimeFrame(api, parameters, historyUsed, bloomActive, selectionActive,
-                widthPixels, heightPixels);
+                realtimeFinish, widthPixels, heightPixels);
         }
         else
         {
@@ -1420,11 +1532,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 收尾通道必须在整轮采样完成后执行。路径追踪先降噪再参与 Bloom；
-        // 实时模式也可以使用 Bloom，但不执行路径专用降噪。
+        // 实时收尾通道复用同一套联合双边降噪，不依赖路径开关。
         bool denoiseActive = pathMode && settings.PathDenoising && settings.PathDenoiseStrength > 0F;
         bool fxaaActive = !pathMode && !frameState.ScenePreview && settings.RealtimeAntiAliasingPattern == 2 && settings.FxaaStrength > 0F;
         var finishPassDispatched = false;
-        if (roundComplete && (bloomActive || denoiseActive || selectionActive || fxaaActive))
+        if (roundComplete && (realtimeFinish || bloomActive || denoiseActive || selectionActive || fxaaActive))
         {
             void DispatchFinalPass(int modeSlot, float modeValue)
             {
@@ -1436,11 +1548,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 var commandBuffer = _ringCommands[slot];
                 TransitionOutputToGeneral(commandBuffer);
                 if (!pathMode) TransitionRealtimeHistoryToGeneral(commandBuffer);
-                if (pathMode || bloomActive || selectionActive || fxaaActive)
+                if (pathMode || bloomActive || selectionActive || fxaaActive || realtimeFinish)
                 {
                     // 收尾通道读取整张中间图，等待所有分块写入。
                     TransitionAccumulationToGeneral(commandBuffer);
-                    if (pathMode || selectionActive) TransitionGuideToGeneral(commandBuffer);
+                    if (pathMode || selectionActive || realtimeFinish) TransitionGuideToGeneral(commandBuffer);
                 }
                 BindComputeTile(commandBuffer, _ringSets[slot], 0, 0);
                 api.CmdDispatch(commandBuffer, ((uint)widthPixels + 7U) / 8U,
@@ -1452,7 +1564,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 parameters[modeSlot] = 0F;
             }
 
-            if (selectionActive)
+            if (realtimeFinish)
+            {
+                DispatchFinalPass(VoxelRenderParameters.DisplayPass, 2F);
+            }
+            else if (selectionActive)
             {
                 DispatchFinalPass(VoxelRenderParameters.Reserved2, 2F);
                 parameters[VoxelRenderParameters.Reserved2] = 1F;
@@ -1509,7 +1625,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 环形槽位一次只占用一个，连续多帧都能与 GPU 并行，不再出现每帧等待全部在途提交
     /// </remarks>
     private void DispatchRealtimeFrame(Vk api, float[] parameters, bool historyUsed, bool bloomActive,
-        bool selectionActive, int widthPixels, int heightPixels)
+        bool selectionActive, bool realtimeFinish, int widthPixels, int heightPixels)
     {
         var slot = AcquireRingSlot();
         UploadParameters(slot, parameters);
@@ -1517,10 +1633,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         BeginGpuTiming(commandBuffer);
         TransitionOutputToGeneral(commandBuffer);
         if (historyUsed) TransitionRealtimeHistoryToGeneral(commandBuffer);
-        if (bloomActive || selectionActive)
+        // 渲染窗口实时通道恒写线性 HDR 累积图与法线/深度导引图，收尾通道才能读
+        if (bloomActive || selectionActive || realtimeFinish)
         {
             TransitionAccumulationToGeneral(commandBuffer);
-            if (selectionActive) TransitionGuideToGeneral(commandBuffer);
+            if (selectionActive || realtimeFinish) TransitionGuideToGeneral(commandBuffer);
         }
 
         BindComputeTile(commandBuffer, _ringSets[slot], 0, 0);
@@ -2487,7 +2604,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &environmentInfo
             };
-            DescriptorBufferInfo brickTableInfo = new(_brickTableBuffer, 0, Math.Max(_brickTableCapacity, 512));
+            // binding 7 现在承载 CPU 烘焙的探针体积；砖表缓冲仍按布局存在但
+            // 着色器不再声明它，避免为探针数据新增一整套描述符布局与池预算
+            DescriptorBufferInfo probeVolumeInfo = new(_probeVolumeBuffer, 0,
+                Math.Max(_probeVolumeCapacity, InitialProbeVolumeBytes));
             writes[7] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -2495,7 +2615,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DstBinding = 7,
                 DescriptorCount = 1,
                 DescriptorType = DescriptorType.StorageBuffer,
-                PBufferInfo = &brickTableInfo
+                PBufferInfo = &probeVolumeInfo
             };
             writes[8] = new() { SType = StructureType.WriteDescriptorSet, DstSet = _ringSets[slot],
                 DstBinding = 8, DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage, PImageInfo = &guideInfo };
@@ -2687,6 +2807,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         layout(set = 0, binding = 6, std430) readonly buffer EnvironmentMap
         {
             vec4 envTexels[];
+        };
+
+        // CPU 烘焙好的探针体积。布局与 C# 端 SetProbeVolume 一致：
+        // info[0] = (原点 xyz, X 方向探针数)，info[1] = (体积尺寸 xyz, Y 方向探针数)，
+        // info[2] = (Z 方向探针数, 样本总数, 0, 0)；其后每个 vec4 是一个探针。
+        // 探针索引 X 最快。count = 0 表示当前场景没有可用探针。
+        layout(set = 0, binding = 7, std430) readonly buffer ProbeVolumeBuffer
+        {
+            vec4 probeInfo[3];
+            vec4 probeSamples[];
         };
 
         struct SceneLightData
@@ -2943,6 +3073,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         float Random(inout uint state);
+        // 解析邻域光照要用到后面定义的色彩/天空函数；实时通道的前向声明让
+        // 新函数可以紧挨着求交代码摆放，不必把整份着色器重排
+        vec3 SrgbToLinear(vec3 color);
+        vec3 Sky(vec3 rayDirection);
 
         float TraceSoftShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
         {
@@ -2966,45 +3100,119 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return visible / float(sampleCount);
         }
 
-        float AmbientOcclusion(vec3 hitPoint, vec3 normal, inout uint state)
+        // 确定性点查询：沿 BVH 只下降包含该点的节点，叶子内做盒包含测试。
+        // 与射线求交不同，它既不发射辅助射线也不需要随机方向，结果零方差。
+        // 返回该点所在体素的 sRGB 颜色，a > 0 表示不透明实心；空气 / 半透明返回 0。
+        vec4 VoxelAt(vec3 point)
         {
-            if (values[59] <= 0.5) return 1.0;
-            vec3 tangent = normalize(abs(normal.y) < 0.9 ? cross(normal, vec3(0.0, 1.0, 0.0))
-                : cross(normal, vec3(1.0, 0.0, 0.0)));
-            vec3 bitangent = cross(normal, tangent);
-            float blocked = 0.0;
-            int sampleCount = clamp(int(values[62]), 4, 64);
-            const float radius = 1.75;
-            // 全屏共用的 8 个二值方向会把遮挡体轮廓复制成三角形/条带。
-            // 余弦半球积分 + 像素固定旋转消除这种空间相关性；距离连续衰减，
-            // 不再在探测半径边界突然从全遮挡跳到无遮挡。种子不含实时帧号。
-            float rotation = 6.28318530718 * Random(state);
-            for (int index = 0; index < sampleCount; index++)
+            int voxelCount = int(values[94]);
+            int nodeCount = int(values[95]);
+            if (nodeCount <= 0 || voxelCount <= 0) return vec4(0.0);
+            vec3 regionOrigin = vec3(values[16], values[17], values[18]);
+            int stackNodes[64];
+            int stackSize = 1;
+            stackNodes[0] = 0;
+            int visits = 0;
+            while (stackSize > 0 && visits++ < 64)
             {
-                float fraction = (float(index) + 0.5) / float(sampleCount);
-                float angle = rotation + float(index) * 2.39996323;
-                vec3 direction = normal * sqrt(1.0 - fraction)
-                    + (tangent * cos(angle) + bitangent * sin(angle)) * sqrt(fraction);
-                float distance;
-                vec3 hitNormal;
-                vec4 hitColor;
-                uint hitFlags;
-                uint hitSlot;
-                ivec3 hitCell;
-                ivec3 hitExtent;
-                if (TraceClosestWithin(hitPoint + normal * 0.003, direction, distance,
-                    hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, true, radius, false))
-                    blocked += 1.0 - smoothstep(0.0, radius, distance);
+                int nodeIndex = stackNodes[--stackSize];
+                if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+                BvhNode node = nodes[nodeIndex];
+                vec3 boxMin = vec3(node.minimum.xyz) + regionOrigin - vec3(0.0001);
+                vec3 boxMax = vec3(node.maximum.xyz) + regionOrigin + vec3(0.0001);
+                if (any(lessThan(point, boxMin)) || any(greaterThan(point, boxMax))) continue;
+                if (node.links.x >= 0)
+                {
+                    if (stackSize + 2 <= 64)
+                    {
+                        stackNodes[stackSize++] = node.links.x;
+                        stackNodes[stackSize++] = node.links.y;
+                    }
+                    continue;
+                }
+                int beginIndex = max(node.links.z, 0);
+                int endIndex = min(node.links.z + node.links.w, voxelCount);
+                for (int index = beginIndex; index < endIndex; index++)
+                {
+                    VoxelCell cell = cells[index];
+                    ivec3 extent = ivec3(
+                        max(cell.position.w & 0xFF, 1),
+                        max((cell.position.w >> 8) & 0xFF, 1),
+                        max((cell.position.w >> 16) & 0xFF, 1));
+                    vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
+                    vec3 voxelMax = voxelMin + vec3(extent);
+                    if (all(greaterThanEqual(point, voxelMin)) && all(lessThan(point, voxelMax)) &&
+                        cell.color.a > 0.0 && (cell.metadata.x >> 16 & 1u) == 0u)
+                        return cell.color;
+                }
             }
-            float visibility = 1.0 - blocked / float(sampleCount);
-            return pow(clamp(visibility, 0.0, 1.0), max(values[61], 0.05))
-                * values[60] + (1.0 - values[60]);
+            return vec4(0.0);
+        }
+
+        // 解析邻域遮蔽 + 一次反弹补光。体素命中面法线轴对齐，切平面基完全确定，
+        // 没有逐像素独立估计，因此没有椒盐噪点。
+        //
+        // 关键：采样点吸附到「绝对格中心」才能正确判断该格是否实心，但权重必须按
+        // 命中点到格中心的连续距离算。若把整格内所有像素量化到同一个中心（旧版做法），
+        // 遮挡值在格内恒定、跨格跳变，就会在物体周围留下一圈一圈的方块状亮度色阶。
+        // 这里用连续距离权重 + 窗口边缘权重归零，使 3x3 窗口跨格平移时结果连续，
+        // 相当于 MagicaVoxel Model 视图的顶点 varying 插值，但不需要额外射线。
+        void RealtimeVoxelEnvironment(vec3 hitPoint, vec3 normal,
+            out float visibility, out vec3 bounce)
+        {
+            vec3 tangent = normalize(abs(normal.y) < 0.9
+                ? cross(normal, vec3(0.0, 1.0, 0.0))
+                : cross(normal, vec3(1.0, 0.0, 0.0)));
+            vec3 bitangent = normalize(cross(normal, tangent));
+            // 面内连续坐标（体素格为单位），f = fract(plane) 为格内小数位置
+            vec3 surface = hitPoint + normal * 0.5;
+            vec2 plane = vec2(dot(surface, tangent), dot(surface, bitangent));
+            vec2 cell = floor(plane);
+            // 采样数现在表示解析邻域的探测层数，不再是随机射线数
+            int levels = (values[62] >= 20.0 || values[P_VOXEL_INDIRECT_SAMPLES] >= 12.0) ? 2 : 1;
+            float blocked = 0.0;
+            float totalWeight = 0.0;
+            vec3 reflected = vec3(0.0);
+            for (int level = 0; level < 2; level++)
+            {
+                if (level >= levels) break;
+                float levelWeight = level == 0 ? 1.0 : 0.42;
+                for (int j = 0; j < 3; j++)
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        // 绝对格中心（cell + i - 0.5）相对命中点的连续偏移
+                        vec2 delta = vec2(cell.x + float(i) - 0.5 - plane.x,
+                            cell.y + float(j) - 0.5 - plane.y);
+                        float radial = length(delta);
+                        // 距离超过 1.45 格权重为 0：窗口跨格平移时移出/移入的
+                        // 都是零权重格，遮挡场因此连续，色阶消失
+                        float weight = (1.0 - smoothstep(0.35, 1.45, radial)) * levelWeight;
+                        if (weight <= 0.0) continue;
+                        vec3 samplePoint = surface + tangent * delta.x + bitangent * delta.y
+                            + normal * float(level);
+                        vec4 voxel = VoxelAt(samplePoint);
+                        if (voxel.a > 0.0)
+                        {
+                            blocked += weight;
+                            reflected += SrgbToLinear(clamp(voxel.rgb, vec3(0.0), vec3(1.0))) * weight;
+                        }
+                        totalWeight += weight;
+                    }
+                }
+            }
+            visibility = totalWeight > 0.0 ? clamp(1.0 - blocked / totalWeight, 0.0, 1.0) : 1.0;
+            // 没被挡住的方向按天空补光，被挡住的方向按邻近表面反照率做一次反弹
+            float skyWeight = max(totalWeight - blocked, 0.0);
+            bounce = totalWeight > 0.0
+                ? (reflected * 0.35 + Sky(normal) * 0.35 * skyWeight) / totalWeight
+                : vec3(0.0);
         }
 
         float TraceSoftShadowVisibility(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
-            // 配置值就是每像素的阴影射线数，默认值偏向实时性能。
-            int sampleCount = clamp(int(values[32]), 1, 8);
+            // 参数层保留旧档位映射；实时太阳阴影将其转换为积分横条数量。
+            int sampleCount = clamp(int(values[32]), 1, 16);
             if (values[31] <= 0.0001 || sampleCount == 1)
                 return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
 
@@ -3012,19 +3220,57 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 ? cross(rayDirection, vec3(0.0, 1.0, 0.0))
                 : cross(rayDirection, vec3(1.0, 0.0, 0.0)));
             vec3 bitangent = cross(rayDirection, tangent);
-            float visible = 0.0;
-            for (int index = 0; index < 8; index++)
+            // 在太阳圆盘上按等面积横条积分。每条弦检测遮挡转换，再二分
+            // 定位边界；贡献来自可见区间长度，不再是少数二值射线投票。
+            // 固定采样保持静止稳定，不引入逐像素随机噪点。
+            int chordCount = clamp(sampleCount / 2, 2, 8);
+            int segmentCount = 8;
+            float visibleArea = 0.0;
+            float totalArea = 0.0;
+            for (int chord = 0; chord < 8; chord++)
             {
-                if (index >= sampleCount) break;
-                // 圆盘内固定采样，实时阴影稳定且不会出现随机颗粒。
-                float fraction = (float(index) + 0.5) / float(sampleCount);
-                float angle = 6.28318530718 * fraction;
-                float radius = values[31] * sqrt(fraction);
-                vec3 sampleDirection = normalize(rayDirection + tangent * cos(angle) * radius
-                    + bitangent * sin(angle) * radius);
-                visible += TraceShadow(rayOrigin, sampleDirection, maxDistance) ? 0.0 : 1.0;
+                if (chord >= chordCount) break;
+                float y = (float(chord) + 0.5) / float(chordCount) * 2.0 - 1.0;
+                float halfWidth = sqrt(max(1.0 - y * y, 0.0));
+                float stepWidth = 2.0 * halfWidth / float(segmentCount);
+                float left = -halfWidth;
+                vec3 direction = normalize(rayDirection + values[31] *
+                    (tangent * left + bitangent * y));
+                bool leftBlocked = TraceShadow(rayOrigin, direction, maxDistance);
+                float visibleLength = 0.0;
+                for (int segment = 0; segment < 8; segment++)
+                {
+                    float right = -halfWidth + float(segment + 1) * stepWidth;
+                    direction = normalize(rayDirection + values[31] *
+                        (tangent * right + bitangent * y));
+                    bool rightBlocked = TraceShadow(rayOrigin, direction, maxDistance);
+                    if (leftBlocked == rightBlocked)
+                    {
+                        if (!leftBlocked) visibleLength += stepWidth;
+                    }
+                    else
+                    {
+                        float low = left;
+                        float high = right;
+                        for (int refine = 0; refine < 6; refine++)
+                        {
+                            float middle = (low + high) * 0.5;
+                            direction = normalize(rayDirection + values[31] *
+                                (tangent * middle + bitangent * y));
+                            bool blocked = TraceShadow(rayOrigin, direction, maxDistance);
+                            if (blocked == leftBlocked) low = middle;
+                            else high = middle;
+                        }
+                        float boundary = (low + high) * 0.5;
+                        visibleLength += leftBlocked ? right - boundary : boundary - left;
+                    }
+                    left = right;
+                    leftBlocked = rightBlocked;
+                }
+                visibleArea += visibleLength;
+                totalArea += 2.0 * halfWidth;
             }
-            return visible / float(sampleCount);
+            return clamp(visibleArea / max(totalArea, 0.0001), 0.0, 1.0);
         }
 
         uint Hash(uint value)
@@ -3230,35 +3476,88 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return irradiance;
         }
 
-        vec3 RealtimeIndirectLight(vec3 hitPoint, vec3 hitNormal, inout uint state)
+        // 同一像素的 AA 子样本共享一次确定性邻域查询：光照场是空间平滑的，
+        // 亚像素命中点差异不会改变邻域占用，重复查询只是白费算力
+        bool realtimeEnvironmentReady = false;
+        float realtimeEnvironmentAo = 1.0;
+        vec3 realtimeEnvironmentIndirect = vec3(0.0);
+
+        vec4 ProbeSampleAt(ivec3 coordinate, int countX, int countY, int count)
         {
-            if (values[119] <= 0.0001) return vec3(0.0);
-            vec3 accumulated = vec3(0.0);
-            // 方向数由配置决定：实时通道没有跨帧累积，采样越多噪声越低、求交次数越多
-            int sampleCount = clamp(int(values[168]), 1, 32);
-            for (int index = 0; index < sampleCount; index++)
+            int index = coordinate.x + coordinate.y * countX + coordinate.z * countX * countY;
+            return probeSamples[clamp(index, 0, max(count - 1, 0))];
+        }
+
+        // 三线性读取 CPU 烘焙好的探针辐照度：8 次缓冲读取，不发射任何射线。
+        // rgb 为线性辐照度，a 为「是否确实取到有效探针」（体积外为 0）。
+        // 注意：烘焙样本的 a 是天空可见度，不能直接拿来当有效性标记，
+        // 否则室内深处可见度接近 0 的表面会被误判成"没有探针"而完全不补光。
+        vec4 ProbeIrradiance(vec3 worldPoint)
+        {
+            int countX = int(probeInfo[0].w + 0.5);
+            int countY = int(probeInfo[1].w + 0.5);
+            int countZ = int(probeInfo[2].x + 0.5);
+            int count = int(probeInfo[2].y + 0.5);
+            if (countX < 1 || countY < 1 || countZ < 1 || count < countX * countY * countZ)
+                return vec4(0.0);
+            vec3 size = max(probeInfo[1].xyz, vec3(0.001));
+            vec3 uv = (worldPoint - probeInfo[0].xyz) / size;
+            if (any(lessThan(uv, vec3(-0.02))) || any(greaterThan(uv, vec3(1.02))))
+                return vec4(0.0);
+            vec3 grid = clamp(uv, vec3(0.0), vec3(1.0)) *
+                vec3(float(countX - 1), float(countY - 1), float(countZ - 1));
+            ivec3 base = ivec3(floor(grid));
+            ivec3 next = min(base + ivec3(1), ivec3(countX - 1, countY - 1, countZ - 1));
+            vec3 f = fract(grid);
+            vec4 c000 = ProbeSampleAt(ivec3(base.x, base.y, base.z), countX, countY, count);
+            vec4 c100 = ProbeSampleAt(ivec3(next.x, base.y, base.z), countX, countY, count);
+            vec4 c010 = ProbeSampleAt(ivec3(base.x, next.y, base.z), countX, countY, count);
+            vec4 c110 = ProbeSampleAt(ivec3(next.x, next.y, base.z), countX, countY, count);
+            vec4 c001 = ProbeSampleAt(ivec3(base.x, base.y, next.z), countX, countY, count);
+            vec4 c101 = ProbeSampleAt(ivec3(next.x, base.y, next.z), countX, countY, count);
+            vec4 c011 = ProbeSampleAt(ivec3(base.x, next.y, next.z), countX, countY, count);
+            vec4 c111 = ProbeSampleAt(ivec3(next.x, next.y, next.z), countX, countY, count);
+            vec4 bottom = mix(mix(c000, c100, f.x), mix(c010, c110, f.x), f.y);
+            vec4 top = mix(mix(c001, c101, f.x), mix(c011, c111, f.x), f.y);
+            vec4 probeValue = mix(bottom, top, f.z);
+            // 烘焙值是天空色/反照率的球面平均（sRGB 量级），转线性后会明显变暗，
+            // 因此这里重新标定到与实时环境补光同一量级；天空可见度只做温和调制，
+            // 不再当作整体衰减系数，否则室内探针 GI 几乎看不见。
+            float skyVisibility = clamp(probeValue.a, 0.0, 1.0);
+            vec3 irradiance = SrgbToLinear(clamp(probeValue.rgb, vec3(0.0), vec3(1.0))) * 1.45
+                * mix(0.65, 1.0, skyVisibility);
+            return vec4(irradiance, 1.0);
+        }
+
+        // 实时通道的全部间接光：解析邻域遮蔽 + 邻域一次反弹 + 烘焙探针辐照度。
+        // 三项都是确定性估计，逐像素方差为零，因此不需要时间累积或降噪。
+        void RealtimeEnvironment(vec3 hitPoint, vec3 normal, out float ao, out vec3 indirect)
+        {
+            if (!realtimeEnvironmentReady)
             {
-                vec3 direction = CosineHemisphere(hitNormal, state);
-                // 交替扩大法线偏移，减少贴面自相交，同时保持体素接触区域的遮蔽
-                float originOffset = index % 2 == 0 ? 0.006 : 0.014;
-                // 距离档位按 4 个一循环，采样数提高时不再把探测距离一路拉长
-                float maxDistance = 8.0 + float(index % 4) * 2.0;
-                float distance;
-                vec3 normal;
-                vec4 color;
-                uint flags;
-                uint slot;
-                ivec3 cell;
-                ivec3 extent;
-                if (TraceClosestWithin(hitPoint + hitNormal * originOffset, direction, distance, normal, color,
-                    flags, slot, cell, extent, true, maxDistance, false))
+                float visibility = 1.0;
+                vec3 bounce = vec3(0.0);
+                if (values[59] > 0.5 || values[119] > 0.0001)
+                    RealtimeVoxelEnvironment(hitPoint, normal, visibility, bounce);
+                float aoValue = values[59] > 0.5
+                    ? pow(visibility, max(values[61], 0.05)) * values[60] + (1.0 - values[60])
+                    : 1.0;
+                vec3 indirectValue = bounce * max(values[119], 0.0);
+                // 探针只照亮真正烘焙过的体积；辐照度按法线朝上程度加权，
+                // 局部可见度只做温和压制，避免把室内补光整体吃掉
+                vec4 probe = ProbeIrradiance(hitPoint + normal * 0.5);
+                if (probe.a > 0.0)
                 {
-                    accumulated += SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0))) *
-                        max(dot(normal, -direction), 0.0) * (1.0 - distance / maxDistance);
+                    float normalWeight = 0.65 + 0.35 * max(normal.y, 0.0);
+                    indirectValue += probe.rgb * normalWeight * mix(0.5, 1.0, visibility)
+                        * max(values[120], 0.0);
                 }
-                else accumulated += Sky(direction) * 0.35;
+                realtimeEnvironmentAo = aoValue;
+                realtimeEnvironmentIndirect = indirectValue;
+                realtimeEnvironmentReady = true;
             }
-            return accumulated / float(sampleCount) * values[119];
+            ao = realtimeEnvironmentAo;
+            indirect = realtimeEnvironmentIndirect;
         }
 
         // 实时渲染路径：对应 Eevee 的职责，使用确定性的直接光、软阴影、AO、
@@ -3279,9 +3578,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ambientFill *= 0.82 + values[43] * 0.55;
             ambientFill += vec3(0.035, 0.040, 0.050) * (0.5 + max(hitNormal.y, 0.0));
             // AO 只衰减环境补光；太阳已经有可见度阴影，不能被重复压暗。
-            float ao = AmbientOcclusion(hitPoint, hitNormal, state);
+            // 解析遮蔽、邻域反弹与探针辐照度共用一次确定性邻域查询，
+            // 既没有逐像素随机估计，也不需要为每一条 AA 子射线重算。
+            float ao;
+            vec3 indirect;
+            RealtimeEnvironment(hitPoint, hitNormal, ao, indirect);
             vec3 diffuse = baseColor * ambientFill * mix(1.0, ao, 0.60);
-            diffuse += baseColor * RealtimeIndirectLight(hitPoint, hitNormal, state);
+            diffuse += baseColor * indirect;
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
             // SunDirection 表示从表面指向太阳，正方向才是受光方向。
             vec3 lightDirection = sunDirection;
@@ -3660,16 +3963,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float emissiveScale = material.scalars.z >= 0.0 ? material.scalars.z : 1.0;
                 if ((hitFlags & 2u) != 0u)
                 {
-                    // 发光贡献按萤火虫钳制：单次弹射命中发光体素的辐射上限取最终钳制的 10% 且不低于 1，
-                    // 否则高强度小发光体（提灯等）在漫弹射中偶发命中会产生白点火噪，
-                    // 低采样累积阶段表现为亮斑周围的蓝白噪点
-                    float emissiveCeil = max(values[77] * 0.1, 1.0);
+                    // 发光辐射保留真实强度与色比，路径最终统一执行辐射钳制。
                     float lampPdf = previousBsdfPdf > 0.0
                         ? EmissiveHitPdf(previousVertex, hitPoint, hitNormal) : 0.0;
                     float hitWeight = previousBsdfPdf > 0.0
                         ? previousBsdfPdf / (previousBsdfPdf + lampPdf) : 1.0;
-                    radiance += throughput * min(hitLinearColor * values[80] * emissiveScale,
-                        vec3(emissiveCeil)) * hitWeight;
+                    radiance += throughput * hitLinearColor * values[80] * emissiveScale * hitWeight;
                 }
 
                 // 路径追踪的随机半球反弹已经通过实际几何自然积分间接遮挡；
@@ -3938,7 +4237,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             bool denoiseEnabled = values[P_DENOISE_ENABLED] > 0.5;
             bool denoiseBranch = values[P_DISPLAY_PASS] > 0.5 || values[P_DENOISE_PASS] > 0.5 ||
                 int(values[P_BLOOM_PASS]) == 1;
-            return pathMode && denoiseEnabled && denoiseBranch;
+            // 实时收尾通道（DisplayPass == 2）复用同一套联合双边降噪：
+            // 对应 MagicaVoxel Render 视图的「累积图 → 降噪 → ACES → 泛光」链路
+            bool realtimeFinish = !pathMode && values[P_DISPLAY_PASS] > 1.5;
+            return denoiseBranch && (realtimeFinish || (pathMode && denoiseEnabled));
         }
 
         void PrefetchDenoiseTile(ivec2 pixel, int width, int height)
@@ -3962,6 +4264,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // pixel 与 width/height 只用于保持调用签名一致，邻域数据来自工作组共享缓冲，
             // 越界坐标已在预取阶段夹紧到图像内
             float strength = clamp(values[93], 0.0, 1.0);
+            // 实时通道本身是确定性着色，没有蒙特卡洛噪声，只需轻度平滑
+            // 抗锯齿残差与色带；强度过大反而会抹平体素棱线
+            if (values[P_MODE_PATH] < 0.5) strength *= 0.55;
             ivec2 local = ivec2(gl_LocalInvocationID.xy) + ivec2(2, 2);
             vec3 center = denoiseColorTile[local.y * DenoiseTileSize + local.x];
             vec3 filtered = vec3(0.0);
@@ -4101,11 +4406,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             // 显示刷新通道：采样已经完成，只按当前后处理参数重算显示颜色，
-            // 因此曝光、色调映射、降噪和 Bloom 的变化不需要重新求交
+            // 因此曝光、色调映射、降噪和 Bloom 的变化不需要重新求交。
+            // DisplayPass == 2 是非光追实时通道的收尾：线性 HDR → 联合双边降噪
+            // → 泛光 → ACES/曝光 → 显示，与 MagicaVoxel Render 视图同一套顺序
             if (values[P_DISPLAY_PASS] > 0.5)
             {
-                bool displayDenoise = values[P_MODE_PATH] > 0.5 &&
-                    values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0;
+                bool realtimeFinish = values[P_MODE_PATH] < 0.5 && values[P_DISPLAY_PASS] > 1.5;
+                bool displayDenoise = realtimeFinish ||
+                    (values[P_MODE_PATH] > 0.5 &&
+                     values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0);
                 vec3 displayBase = displayDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
                 if (values[P_BLOOM_ENABLED] > 0.5 && values[P_BLOOM_INTENSITY] > 0.0)
@@ -4165,11 +4474,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
             int samples = pathMode ? max(int(values[78]), 1) : clamp(int(values[P_REALTIME_AA_SAMPLES]), 1, 16);
             int accumulatedSamples = max(int(values[79]), 0);
-            // 实时模式保持屏幕空间效果稳定，不把毫秒级帧号带入 AO/阴影随机种子；
-            // 路径模式才使用帧号做时间去相关并交给累积缓冲收敛。
+            // 实时通道已改为确定性解析着色，不消费任何随机数；只有路径追踪
+            // 才把帧号混入种子做时间去相关并交给累积缓冲收敛。
             uint state = Hash(uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
-                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u) +
-            ((!pathMode && values[143] > 0.0) ? uint(values[7]) * 26699u : 0u));
+                (pathMode ? uint(values[7]) * 26699u + uint(values[88]) : 0u));
             vec3 origin = vec3(values[0], values[1], values[2]);
             float focalPixels = max(values[3], 1.0);
             vec3 forward = vec3(values[4], values[5], values[6]);
@@ -4260,6 +4568,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 // 采样阶段只写累积图与导引图：显示图由每轮结束后的显示通道统一写。
                 // 跨帧分块时一轮会分几帧提交，若这里顺手写显示图，
                 // 已处理横条会和上一轮残留的横条混在同一张图上，收敛过程中出现横向色带
+                return;
+            }
+            // 渲染窗口的非光追通道把尾部拆成两段：这里只写线性 HDR 与法线/深度导引图，
+            // 由 DisplayPass == 2 的收尾通道统一降噪、泛光、ACES 并写显示图。
+            // 场景窗口（ScenePreview）与选中描边通道仍保持原来的单次出图，不受影响。
+            bool realtimeRenderView = values[115] < 0.5 && values[63] < 0.5;
+            if (realtimeRenderView)
+            {
+                imageStore(guideImage, pixel, guide);
+                imageStore(accumulationImage, pixel, vec4(color, 1.0));
                 return;
             }
             else if (bloomRequested)

@@ -1060,7 +1060,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("远处裁剪", ref _sceneFarClip, 1F, 100000000F, "%.0f 格");
                 SliderFloat("视场角 FOV", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
                 DrawSettingsSectionHeader("场景背景", "项目打开后的预览底色");
-                DrawColorSlider("场景背景色", ref _projectSettings.SceneRenderSettings.SceneBackgroundColor);
+                ImGui.TextDisabled("场景背景色由编辑器设置统一控制");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("打开项目后优先使用项目级背景色");
                 DrawSettingsSectionHeader("场景 LOD", "远距离显示策略");
                 DrawLodSection(_projectSettings.RenderSettings);

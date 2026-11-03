@@ -189,8 +189,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
                 hitSlot, hitCell, hitExtent, false, max(distance - 0.0001, 0.0), true)) return vec3(0.0);
             float scale = materialSlots[int(face.colorSlot.w)].scalars.z;
             scale = scale >= 0.0 ? scale : 1.0;
-            vec3 emission = min(SrgbToLinear(face.colorSlot.rgb) * values[80] * scale,
-                vec3(max(values[77] * 0.1, 1.0)));
+            vec3 emission = SrgbToLinear(face.colorSlot.rgb) * values[80] * scale;
             return emission * SunSurfaceResponse(baseColor, metalness, roughness,
                 normal, viewDirection, direction) / (3.14159265 * (lightPdf + bsdfPdf));
         }

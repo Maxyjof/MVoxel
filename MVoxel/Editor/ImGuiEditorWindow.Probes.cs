@@ -38,6 +38,13 @@ internal sealed partial class ImGuiEditorWindow
     private long _probeAutoBakeSeenAt;
     private long _probeAutoBakeSeenSignature = long.MinValue;
 
+    // GPU 探针体积的上传缓存：烘焙结果引用、体积变换与管线实例都没变时不重新打包
+    private string _probeAssetCachePath = string.Empty;
+    private DateTime _probeAssetCacheWrite;
+    private ProbeVolumeBakeData? _probeAssetCache;
+    private long _gpuProbeSignature = long.MinValue;
+    private object? _gpuProbePipeline;
+
     private void DrawProbeVolumeWindow()
     {
         if (!_showProbeVolumeWindow) return;
@@ -380,6 +387,102 @@ internal sealed partial class ImGuiEditorWindow
         // 探针数据变化会改变间接光，丢弃已累积的样本
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
+    }
+
+    /// <summary>
+    /// 读取持久化的探针资产；同一文件在修改时间不变时复用反序列化结果
+    /// </summary>
+    private ProbeVolumeBakeData? ReadCachedProbeAsset(string path)
+    {
+        try
+        {
+            var write = File.GetLastWriteTimeUtc(path);
+            if (_probeAssetCache is not null && _probeAssetCachePath == path && _probeAssetCacheWrite == write)
+                return _probeAssetCache;
+            var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(path),
+                new JsonSerializerOptions { IncludeFields = true });
+            bake?.Normalize();
+            _probeAssetCache = bake;
+            _probeAssetCachePath = path;
+            _probeAssetCacheWrite = write;
+            return bake;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 把烘焙结果打包成 GPU 布局并上传；数据、体积变换与管线实例都没变时直接跳过
+    /// </summary>
+    /// <remarks>
+    /// 布局与着色器 ProbeVolumeBuffer 一致：3 个 vec4 头（原点/尺寸/网格数），
+    /// 之后逐探针 vec4(R, G, B, 天空可见度)，索引 X 最快。
+    /// </remarks>
+    private void PushProbeVolumeGpu(SceneObject? probeObject, ProbeVolumeComponentData data,
+        ProbeVolumeBakeData? bake)
+    {
+        // 管线还没创建时不能缓存签名，否则之后创建出来的管线永远收不到数据
+        if (_pipeline is null) return;
+        var hash = new HashCode();
+        hash.Add(probeObject?.Id);
+        hash.Add(data.OffsetX);
+        hash.Add(data.OffsetY);
+        hash.Add(data.OffsetZ);
+        hash.Add(data.SizeX);
+        hash.Add(data.SizeY);
+        hash.Add(data.SizeZ);
+        hash.Add(bake?.CountX ?? 0);
+        hash.Add(bake?.CountY ?? 0);
+        hash.Add(bake?.CountZ ?? 0);
+        hash.Add(bake?.Samples.Count ?? 0);
+        hash.Add(bake);
+        var signature = hash.ToHashCode();
+        if (signature == _gpuProbeSignature && ReferenceEquals(_gpuProbePipeline, _pipeline)) return;
+
+        float[] packed;
+        if (bake is null || bake.Samples.Count == 0)
+        {
+            packed = new float[12];
+        }
+        else
+        {
+            var count = bake.Samples.Count;
+            packed = new float[12 + count * 4];
+            // GetObjectWorldPosition 返回 OpenTK.Vector3，与 System.Numerics.Vector3 不互通
+            var position = probeObject is null
+                ? OpenTK.Mathematics.Vector3.Zero
+                : GetObjectWorldPosition(probeObject);
+            var size = new OpenTK.Mathematics.Vector3(MathF.Max(data.SizeX, .001F),
+                MathF.Max(data.SizeY, .001F), MathF.Max(data.SizeZ, .001F));
+            var origin = position + new OpenTK.Mathematics.Vector3(data.OffsetX, data.OffsetY, data.OffsetZ) - size * .5F;
+            packed[0] = origin.X;
+            packed[1] = origin.Y;
+            packed[2] = origin.Z;
+            packed[3] = bake.CountX;
+            packed[4] = size.X;
+            packed[5] = size.Y;
+            packed[6] = size.Z;
+            packed[7] = bake.CountY;
+            packed[8] = bake.CountZ;
+            packed[9] = count;
+            packed[10] = 0F;
+            packed[11] = 0F;
+            for (var index = 0; index < count; index++)
+            {
+                var sample = bake.Samples[index];
+                var offset = 12 + index * 4;
+                packed[offset] = sample.R;
+                packed[offset + 1] = sample.G;
+                packed[offset + 2] = sample.B;
+                packed[offset + 3] = sample.Occlusion;
+            }
+        }
+
+        _pipeline.SetProbeVolume(packed);
+        _gpuProbeSignature = signature;
+        _gpuProbePipeline = _pipeline;
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -442,7 +442,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     using var viewPhase = StartupTimeline.Begin("预读·合成视图世界");
                     viewComposed = store.Compose(scene, uint.MaxValue, true, cancellation,
-                        (objectId, value) => RemapRuntimeMaterial(map.SlotsByObject, objectId, value));
+                        (objectId, value) => RemapRuntimeMaterial(map.SlotsByObject, map.Materials, objectId, value));
                 }
             }
         }
@@ -685,12 +685,6 @@ internal sealed partial class ImGuiEditorWindow
     /// 根据当前场景距离和 LOD 配置计算场景视图的 GPU 体素预算
     /// </summary>
     /// <returns>零表示完整工作集，其余数值表示场景视图采样上限</returns>
-    /// <summary>渲染窗口实时模式的 AO 射线预算</summary>
-    private const int RealtimeAoRayBudget = 8;
-
-    /// <summary>渲染窗口实时模式的体素间接光方向预算</summary>
-    private const int RealtimeIndirectRayBudget = 4;
-
     /// <summary>
     /// 取归一化坐标附近最近的若干个探针样本
     /// </summary>
@@ -895,13 +889,8 @@ internal sealed partial class ImGuiEditorWindow
             // 采样数也由相机栈决定，这样渲染窗口的实时模式可以单独降采样而不影响场景窗口
             if (indirect is not null) settings.VoxelIndirectLightSamples = Math.Clamp(indirect.Samples, 1, 32);
 
-        // 渲染窗口的实时（非光追）预算：这一档直接决定帧时间，
-        // 场景窗口走另一条预览设置，不受这里影响
-        if (!settings.PathTracingEnabled)
-        {
-            settings.AoSamples = Math.Min(settings.AoSamples, RealtimeAoRayBudget);
-            settings.VoxelIndirectLightSamples = Math.Min(settings.VoxelIndirectLightSamples, RealtimeIndirectRayBudget);
-        }
+        // 实时通道已不发射 AO / 间接光射线，这两项只是解析邻域的精度档位，
+        // 不再需要为渲染窗口单独压低预算；场景窗口仍走另一条预览设置
             var probeGi = stack.Find(CameraPostProcessEffectType.ProbeVolumeGi);
             settings.ProbeVolumeGiStrength = probeGi?.Enabled == true ? probeGi.Intensity : 0F;
             var tone = stack.Find(CameraPostProcessEffectType.ToneMapping);
@@ -964,12 +953,14 @@ internal sealed partial class ImGuiEditorWindow
         }
         var probe = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
             .FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsProbeVolume(item));
-        if (probe is not null && cameraObject is not null)
+        SceneObject? probeObject = null;
+        ProbeVolumeComponentData probeData = default;
+        ProbeVolumeBakeData? bake = null;
+        if (probe is not null)
         {
-            var probeData = SceneComponentTypes.ReadProbeVolume(probe);
-            var probeObject = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe));
+            probeData = SceneComponentTypes.ReadProbeVolume(probe);
+            probeObject = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe));
             // 本会话自动烘焙过的数据优先，没烘过才回落到资产文件
-            ProbeVolumeBakeData? bake = null;
             if (probeObject is not null && _liveProbeBakeObjectId == probeObject.Id)
             {
                 bake = _liveProbeBake;
@@ -977,47 +968,43 @@ internal sealed partial class ImGuiEditorWindow
             else if (!string.IsNullOrWhiteSpace(probeData.BakedAsset) && _project is not null)
             {
                 var probePath = Path.Combine(_project.RootPath, probeData.BakedAsset.Replace('/', Path.DirectorySeparatorChar));
-                if (File.Exists(probePath))
-                {
-                    try
-                    {
-                        bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath), new JsonSerializerOptions { IncludeFields = true });
-                        bake?.Normalize();
-                    }
-                    catch (JsonException) { }
-                }
+                if (File.Exists(probePath)) bake = ReadCachedProbeAsset(probePath);
             }
 
-            if (bake is { Samples.Count: > 0 })
+            // 相机位置的标量折叠只用于兼容旧项目；逐像素的空间辐照度由 GPU 探针体积提供
+            if (bake is { Samples.Count: > 0 } && cameraObject is not null)
             {
+                var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
+                    ? cameraObject.Transform.Free.Position
+                    : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
+                var probePosition = probeObject is null ? Vector3.Zero : GetObjectWorldPosition(probeObject);
+                var normalized = new Vector3(
+                    Math.Clamp((float)(cameraPosition.X - probePosition.X - probeData.OffsetX) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
+                    Math.Clamp((float)(cameraPosition.Y - probePosition.Y - probeData.OffsetY) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
+                    Math.Clamp((float)(cameraPosition.Z - probePosition.Z - probeData.OffsetZ) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
+                var weightedOcclusion = 0F;
+                var weightedRadiance = 0F;
+                var totalWeight = 0F;
+                // 线性扫描取最近的 8 个样本：OrderBy 会整表排序并分配，探针上万时每帧要几毫秒
+                foreach (var sample in NearestProbeSamples(bake, normalized, 8))
                 {
-                    var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
-                        ? cameraObject.Transform.Free.Position
-                        : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
-                    var probePosition = probeObject is null ? Vector3.Zero : GetObjectWorldPosition(probeObject);
-                    var normalized = new Vector3(
-                        Math.Clamp((float)(cameraPosition.X - probePosition.X - probeData.OffsetX) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
-                        Math.Clamp((float)(cameraPosition.Y - probePosition.Y - probeData.OffsetY) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
-                        Math.Clamp((float)(cameraPosition.Z - probePosition.Z - probeData.OffsetZ) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
-                    var weightedOcclusion = 0F;
-                    var weightedRadiance = 0F;
-                    var totalWeight = 0F;
-                    // 线性扫描取最近的 8 个样本：OrderBy 会整表排序并分配，探针上万时每帧要几毫秒
-            foreach (var sample in NearestProbeSamples(bake, normalized, 8))
-                    {
-                        var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
-                        var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
-                        weightedOcclusion += Math.Clamp(sample.Occlusion, 0F, 1F) * weight;
-                        var radiance = Math.Clamp(sample.R, 0F, 1F) * 0.2126F + Math.Clamp(sample.G, 0F, 1F) * 0.7152F + Math.Clamp(sample.B, 0F, 1F) * 0.0722F;
-                        weightedRadiance += radiance * weight;
-                        totalWeight += weight;
-                    }
-                    var occlusion = totalWeight > 0F ? weightedOcclusion / totalWeight : 1F;
-                    settings.SkyAmbient = Math.Clamp(settings.SkyAmbient +
-                        (totalWeight > 0F ? weightedRadiance / totalWeight : 0F) * (0.35F + occlusion * 0.65F) * settings.ProbeVolumeGiStrength * .35F, 0F, 2F);
+                    var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
+                    var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
+                    weightedOcclusion += Math.Clamp(sample.Occlusion, 0F, 1F) * weight;
+                    var radiance = Math.Clamp(sample.R, 0F, 1F) * 0.2126F + Math.Clamp(sample.G, 0F, 1F) * 0.7152F + Math.Clamp(sample.B, 0F, 1F) * 0.0722F;
+                    weightedRadiance += radiance * weight;
+                    totalWeight += weight;
                 }
+                var occlusion = totalWeight > 0F ? weightedOcclusion / totalWeight : 1F;
+                // 相机位置的标量折叠只保留很弱的一份，用于兼容没有 GPU 探针数据的旧项目；
+                // 空间辐照度由 SetProbeVolume 上传的体积提供，避免把探针开关效果摊薄
+                settings.SkyAmbient = Math.Clamp(settings.SkyAmbient +
+                    (totalWeight > 0F ? weightedRadiance / totalWeight : 0F) * (0.35F + occlusion * 0.65F) * settings.ProbeVolumeGiStrength * .12F, 0F, 2F);
             }
         }
+        // 把烘焙辐照度真正上传给实时通道做逐像素三线性取样；
+        // 场景没有探针时清空缓冲，着色器自动回落到解析邻域遮蔽
+        PushProbeVolumeGpu(probeObject, probeData, bake);
         return settings;
     }
 
@@ -1511,6 +1498,7 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')
             .Append(settings.SunIntensity).Append(',').Append(settings.ShadowSoftness).Append(',').Append(settings.ShadowSamples)
+            .Append(',').Append(settings.SunShadowMethod).Append(',').Append(settings.SunAccumulationFrames).Append(',').Append(settings.SunShadowMapResolution)
             .Append(',').Append(settings.SunColor.X).Append(',').Append(settings.SunColor.Y).Append(',').Append(settings.SunColor.Z)
             .Append(',').Append(settings.SunEnabled).Append(',').Append(settings.ShowGround).Append(',').Append(settings.GroundFade)
             .Append(',').Append(settings.GroundColor.X).Append(',').Append(settings.GroundColor.Y).Append(',').Append(settings.GroundColor.Z)
@@ -1648,6 +1636,7 @@ internal sealed partial class ImGuiEditorWindow
 
             var pipeline = _scenePipeline;
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
+            settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
             pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 greedyMerge: false,
@@ -2969,28 +2958,45 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("强度##sun", ref settings.SunIntensity, 0F, 6F, "%.2f");
         DrawColorSlider("颜色##sun", ref settings.SunColor);
         SliderFloat("阴影柔和度（半影锥）##sun", ref settings.ShadowSoftness, 0F, 0.3F, "%.3f");
-        SliderInt("阴影采样数##sun", ref settings.ShadowSamples, 1, 8);
+        int sunMethod = (int)settings.SunShadowMethod;
+        if (ImGui.Combo("太阳阴影方案", ref sunMethod, "出片优先：渐进采样\0实时平衡：半影重建\0稳定预览：PCSS 阴影贴图\0"))
+            settings.SunShadowMethod = (SunShadowMethod)sunMethod;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("每像素阴影射线数。较低值性能更好，较高值可降低半影噪点；默认值偏向性能。");
+            ImGui.SetTooltip("实时与路径追踪共用。出片优先会在静止后逐步收敛；半影重建以少量射线和独立阴影过滤改善单帧预览；PCSS 缓存太阳深度图，适合稳定预览，但细小阴影受贴图精度限制。太阳开启时使用完整 Compute 着色管线，避免基础硬件 RT 分支忽略光照。");
+        SliderInt("太阳阴影质量##sun", ref settings.ShadowSamples, 1, 8);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("提高太阳采样或过滤预算；三种方案均生效，增加质量会提高 GPU 成本，不改变视口分辨率或模型精度。");
+        if (settings.SunShadowMethod == SunShadowMethod.Progressive)
+        {
+            SliderInt("实时太阳累积帧数", ref settings.SunAccumulationFrames, 1, 512);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅控制实时视口的静止收敛；相机、场景和设置变化后重新累积。路径追踪使用其累积样本上限。动画持续变化时不能完成静止收敛。");
+        }
+        if (settings.SunShadowMethod == SunShadowMethod.ShadowMap)
+        {
+            int mapSize = settings.SunShadowMapResolution <= 512 ? 0 : settings.SunShadowMapResolution <= 1024 ? 1 : 2;
+            if (ImGui.Combo("太阳阴影贴图", ref mapSize, "512\01024\02048\0"))
+                settings.SunShadowMapResolution = 512 << mapSize;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只改变阴影深度图精度。覆盖整个体素工作集；大场景中可提高此值保留细小阴影。太阳或几何变化时重新生成。");
+        }
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
             if (ImGui.Checkbox("角点环境光遮蔽", ref settings.AmbientOcclusionEnabled) && ReferenceEquals(settings, _renderSettings))
                 _settingsToggleAo = settings.AmbientOcclusionEnabled;
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
-            SliderInt("AO 射线采样数", ref settings.AoSamples, 4, 64);
+            SliderInt("AO 邻域精度", ref settings.AoSamples, 4, 64);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("每个可见表面像素发出的 AO 射线数；更多采样更平滑但更耗时。默认 16，优先保证性能。");
+                ImGui.SetTooltip("实时通道用解析邻域占用查询算遮蔽，不发射 AO 射线，因此任何档位都没有噪点。数值较高时多取一层邻域，接触阴影范围更宽、开销略增。");
             SliderFloat("体素间接光强度", ref settings.VoxelIndirectLightStrength, 0F, 4F, "%.2f");
-            SliderInt("体素间接光采样数", ref settings.VoxelIndirectLightSamples, 1, 32);
+            SliderInt("体素间接光精度", ref settings.VoxelIndirectLightSamples, 1, 32);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("每个像素的间接光方向数。实时通道没有跨帧累积，这一项直接决定间接光噪声：4 个方向明显发毛，16 个方向基本可用，代价是求交次数同比上升。");
+                ImGui.SetTooltip("实时通道的邻域一次反弹精度档位，不再表示随机方向数，调高不会引入噪点；两项精度共用同一组确定性点查询。");
             SliderFloat("探针体积GI强度", ref settings.ProbeVolumeGiStrength, 0F, 4F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("探针 GI 对环境的补光权重，依赖探针体积窗口里烘焙出的数据。");
-            SliderFloat("实时时间累积", ref settings.RealtimeTemporalWeight, 0F, 0.98F, "%.2f");
+                ImGui.SetTooltip("烘焙探针的三线性辐照度补光权重，按表面位置取样、零射线零噪点；依赖探针体积窗口里烘焙出的数据。");
+            SliderFloat("实时历史平滑", ref settings.RealtimeTemporalWeight, 0F, 0.98F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("非光追通道的时间累积权重。0 表示不累积，每帧独立采样、画面一直发毛；0.85 左右静止几帧后噪声基本收敛。相机或设置变化时历史自动作废。");
+                ImGui.SetTooltip("实时光照已是确定性解析估计，静止画面逐帧一致，默认 0 即不读写历史图。保留供后续时间抗锯齿使用；相机或设置变化时历史自动作废。");
         }
 
     }

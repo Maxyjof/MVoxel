@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -44,6 +44,14 @@ public enum RenderBackend
     /// 强制使用 CPU 预览
     /// </summary>
     Cpu = 1,
+}
+
+/// <summary>实时与路径追踪共用的太阳阴影策略。</summary>
+public enum SunShadowMethod
+{
+    Progressive = 0,
+    Reconstructed = 1,
+    ShadowMap = 2,
 }
 
 /// <summary>
@@ -114,11 +122,14 @@ public sealed class RenderSettings
     /// </summary>
     public float ShadowSoftness = 0.06F;
 
-    /// <summary>
-    /// 软阴影的抖动采样数
-    /// </summary>
-    // 默认用少量采样优先保证交互速度，想要更柔和的半影可在渲染配置提高。
-    public int ShadowSamples = 4;
+    /// <summary>默认出片优先；旧项目没有此字段时同样使用渐进采样。</summary>
+    public SunShadowMethod SunShadowMethod = SunShadowMethod.Progressive;
+    /// <summary>太阳采样质量，1～8。</summary>
+    public int ShadowSamples = 8;
+    /// <summary>实时模式出片优先的静止累积帧数。</summary>
+    public int SunAccumulationFrames = 128;
+    /// <summary>PCSS 太阳深度图边长，不改变视口或模型精度。</summary>
+    public int SunShadowMapResolution = 1024;
 
     /// <summary>
     /// 角点环境光遮蔽开关（MagicaVoxel 顶点 AO）
@@ -191,14 +202,14 @@ public sealed class RenderSettings
     public float ProbeVolumeGiStrength = 0.5F;
 
     /// <summary>
-    /// 非光追实时通道的时间累积权重
+    /// 非光追实时通道的历史平滑权重
     /// </summary>
     /// <remarks>
-    /// 0 表示不累积，每帧都是独立的一批随机采样，画面会一直发毛；
-    /// 0.8 到 0.95 之间会把历史帧混合进来，静止几帧后噪声基本收敛。
-    /// 相机或设置变化时历史会自动作废，避免拖影
+    /// 实时着色已改为确定性解析估计（邻域遮蔽 + 探针辐照度），静止画面逐帧完全一致，
+    /// 不再需要靠历史混合消除蒙特卡洛噪声，默认关闭以省掉历史图的读写与交换。
+    /// 保留该权重供后续做时间抗锯齿等需要历史帧的效果使用；相机或设置变化时历史会自动作废。
     /// </remarks>
-    public float RealtimeTemporalWeight = 0.97F;
+    public float RealtimeTemporalWeight = 0F;
 
     /// <summary>
     /// 强制使用 Compute 渲染路径，忽略硬件光追能力
@@ -528,7 +539,9 @@ public sealed class RenderSettings
         if (!PathTracingEnabled)
         {
             preview.AoSamples = Math.Min(AoSamples, LargeSceneAoSampleLimit(worksetCells));
-            preview.ShadowSamples = Math.Min(ShadowSamples, worksetCells > 250_000 ? 1 : worksetCells > 80_000 ? 2 : 3);
+            // 阴影射线是 any-hit 短路，成本远低于 AO/间接光射线。压到 1~3 条只会
+            // 留下 2~4 档可见度、在半影里形成肉眼可辨的亮度台阶，因此给出保底档位。
+            // 太阳质量由用户选择，不随工作集规模自动降低。
             if (worksetCells > 700_000) preview.AmbientOcclusionEnabled = false;
         }
 
@@ -620,6 +633,9 @@ public sealed class RenderSettings
         SunIntensity = Math.Clamp(SunIntensity, 0F, 8F);
         ShadowSoftness = Math.Clamp(ShadowSoftness, 0F, 0.5F);
         ShadowSamples = Math.Clamp(ShadowSamples, 1, 8);
+        if (!Enum.IsDefined(SunShadowMethod)) SunShadowMethod = SunShadowMethod.Progressive;
+        SunAccumulationFrames = Math.Clamp(SunAccumulationFrames, 1, 2048);
+        SunShadowMapResolution = SunShadowMapResolution <= 512 ? 512 : SunShadowMapResolution <= 1024 ? 1024 : 2048;
         AoSamples = Math.Clamp(AoSamples, 4, 64);
         VoxelIndirectLightSamples = Math.Clamp(VoxelIndirectLightSamples, 1, 32);
         ProbeBakeRays = Math.Clamp(ProbeBakeRays, 8, 256);

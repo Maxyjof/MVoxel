@@ -136,7 +136,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     private VoxelValue RemapRuntimeMaterial(StableId objectId, VoxelValue value) =>
-        RemapRuntimeMaterial(_runtimeMaterialSlotsByObject, objectId, value);
+        RemapRuntimeMaterial(_runtimeMaterialSlotsByObject, _runtimeMaterials, objectId, value);
 
     /// <summary>
     /// 按运行时材质映射改写体素的材质槽，槽位未知时退化为无材质
@@ -146,12 +146,17 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="value">原始体素值</param>
     /// <returns>改写后的体素值</returns>
     private static VoxelValue RemapRuntimeMaterial(Dictionary<StableId, Dictionary<int, int>> slotsByObject,
-        StableId objectId, VoxelValue value)
+        IReadOnlyDictionary<int, MaterialAsset> materials, StableId objectId, VoxelValue value)
     {
         if (value.MaterialSlot == 0) return value;
         var runtimeSlot = slotsByObject.TryGetValue(objectId, out var slots) &&
             slots.TryGetValue(value.MaterialSlot, out var mapped) ? mapped : (ushort)0;
-        return value with { MaterialSlot = (ushort)runtimeSlot };
+        // 显式材质倍率决定发光；只有“跟随全局”材质兼容旧体素标记。
+        var flags = value.Flags;
+        if (materials.TryGetValue(runtimeSlot, out var material) && material.EmissiveScale is { } emission)
+            flags = emission > 0F ? (byte)(flags | VoxelFlags.Emissive)
+                : (byte)(flags & ~VoxelFlags.Emissive);
+        return value with { MaterialSlot = (ushort)runtimeSlot, Flags = flags };
     }
 
     private bool _showModelingTools = true;

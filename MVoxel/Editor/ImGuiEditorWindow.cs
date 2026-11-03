@@ -1757,7 +1757,7 @@ DockId=0x6A3C3007,0
         _lastSceneViewportSize = size;
         var drawList = ImGui.GetWindowDrawList();
         var sceneSettings = CurrentSceneRenderSettings;
-        drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(sceneSettings)));
+        drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(_editorSettings.SceneRenderSettings)));
 
         var gizmoCenter = origin + new Vector2(size.X - 58F, 76F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.07F, 28F, 36F);
