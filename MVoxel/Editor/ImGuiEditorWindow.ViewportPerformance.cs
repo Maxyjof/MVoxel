@@ -33,6 +33,7 @@ internal sealed partial class ImGuiEditorWindow
             gpuProfiling ? pipeline.LastGpuFrameMs : 0,
             gpuProfiling ? pipeline.LastGpuSamplingMs : 0,
             gpuProfiling ? pipeline.LastGpuFinishMs : 0,
+            pipeline.AccumulatedSamples,
             allocatedKb);
     }
 }

@@ -51,6 +51,8 @@ internal sealed partial class ImGuiEditorWindow
     private readonly AnalysisFrameSample[] _analysisFrames = new AnalysisFrameSample[AnalysisFrameCapacity];
     private readonly float[] _analysisStatBuffer = new float[AnalysisFrameCapacity];
     private AnalysisFrameSample _analysisLive;
+    // 当前帧是否已经由 BeginPerformanceFrame 分配了样本序号
+    private bool _analysisFrameStarted;
     private long _analysisSerial;
     private bool _analysisPaused, _analysisFollowLatest = true;
     private long _analysisSelectedSerial;
@@ -98,9 +100,11 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void BeginPerformanceFrame()
     {
+        _analysisFrameStarted = false;
         if (!PerformanceProbeActive) return;
         _analysisLive = default;
         _analysisLive.Serial = ++_analysisSerial;
+        _analysisFrameStarted = true;
     }
 
     private long PerformanceMark() => PerformanceProbeActive ? Stopwatch.GetTimestamp() : 0L;
@@ -116,7 +120,9 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void RecordPerformanceFrame(double intervalSeconds, long start)
     {
-        if (!PerformanceProbeActive) return;
+        // 暂停可能发生在帧中途（点击时间轴柱状图就会暂停），这一帧已经分配了样本序号，
+        // 必须照常写入，否则样本序号与环形槽位会永久错位，GPU 时间再也对不回任何一帧
+        if (!_analysisFrameStarted) return;
         var sample = _analysisLive;
         sample.IntervalMs = (float)(Math.Max(intervalSeconds, 0D) * 1000D);
         sample.CallbackMs = (float)Stopwatch.GetElapsedTime(start).TotalMilliseconds;

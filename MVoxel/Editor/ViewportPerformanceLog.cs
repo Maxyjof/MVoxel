@@ -43,6 +43,11 @@ internal sealed class ViewportPerformanceLog
     private double _gpuSamplingSum;
     private double _gpuFinishSum;
     private double _allocSum;
+    // 路径追踪样本吞吐：记录窗口内的起点与终点样本数，
+    // 计数器回退（重置、换相机）时把起点挪到新值，避免算出负数
+    private int _samplesFirst;
+    private int _samplesLast;
+    private bool _samplesTracked;
 
     /// <summary>
     /// 创建单个视口的采样器
@@ -66,10 +71,12 @@ internal sealed class ViewportPerformanceLog
     /// <param name="gpuMs">最近一次回读的 GPU 计算总耗时，未采样时为 0</param>
     /// <param name="gpuSamplingMs">最近一次回读的采样段耗时</param>
     /// <param name="gpuFinishMs">最近一次回读的收尾段耗时</param>
+    /// <param name="accumulatedSamples">当前累积样本数，用于统计样本吞吐</param>
     /// <param name="allocatedKb">本帧线程分配字节数换算的 KB</param>
     internal void Record(double frameMs, double cpuMs, long submits, double fenceWaitMs,
         int syncCount, double syncMs, int dispatches, int width, int height, int cells,
-        double gpuMs, double gpuSamplingMs, double gpuFinishMs, double allocatedKb)
+        double gpuMs, double gpuSamplingMs, double gpuFinishMs, int accumulatedSamples,
+        double allocatedKb)
     {
         var now = Environment.TickCount64;
         if (_windowStartMs == 0)
@@ -94,6 +101,13 @@ internal sealed class ViewportPerformanceLog
         _gpuMax = Math.Max(_gpuMax, gpuMs);
         _gpuSamplingSum += Math.Max(0, gpuSamplingMs);
         _gpuFinishSum += Math.Max(0, gpuFinishMs);
+        if (!_samplesTracked || accumulatedSamples < _samplesLast)
+        {
+            _samplesFirst = accumulatedSamples;
+            _samplesTracked = true;
+        }
+
+        _samplesLast = accumulatedSamples;
         _allocSum += Math.Max(0, allocatedKb);
         _lastWidth = width;
         _lastHeight = height;
@@ -117,11 +131,14 @@ internal sealed class ViewportPerformanceLog
         }
 
         var frames = Math.Max(1, _frames);
+        var coverageSeconds = Math.Max(0.001, _frameMsSum / 1000.0);
+        var samplesPerSecond = Math.Max(0, _samplesLast - _samplesFirst) / coverageSeconds;
         MVoxelLog.Info($"视口性能｜{_viewport}：帧均值 {_frameMsSum / frames:0.0}ms，峰值 {_frameMsMax:0.0}ms，" +
             $"队列提交 均值 {_submitSum / frames:0.00} 次/帧 峰值 {_submitMax} 次，" +
             $"栅栏等待 {_fenceWaitSum / frames:0.0}ms/帧，CPU 提交 {_cpuSum / frames:0.0}ms/帧，" +
             $"派发峰值 {_dispatchMax} 次，同步峰值 {_syncMax:0.0}ms，" +
             $"GPU {(_gpuSamples > 0 ? $"{_gpuSum / _gpuSamples:0.0}ms 均值（采样 {_gpuSamplingSum / _gpuSamples:0.0} + 收尾 {_gpuFinishSum / _gpuSamples:0.0}） 峰值 {_gpuMax:0.0}ms" : "未采样")}，" +
+            $"样本吞吐 {samplesPerSecond:0.00} spp/s，" +
             $"分配 {_allocSum / frames:0}KB/帧，输出 {_lastWidth}x{_lastHeight}，体素 {_lastCells:N0}");
         Reset(now);
     }
@@ -146,6 +163,9 @@ internal sealed class ViewportPerformanceLog
         _gpuSamples = 0;
         _gpuSamplingSum = 0;
         _gpuFinishSum = 0;
+        _samplesTracked = false;
+        _samplesFirst = 0;
+        _samplesLast = 0;
         _allocSum = 0;
     }
 }
