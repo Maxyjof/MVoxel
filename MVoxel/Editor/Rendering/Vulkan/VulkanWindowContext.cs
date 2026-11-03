@@ -744,6 +744,11 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// </summary>
     /// <param name="device">待评分物理设备</param>
     /// <returns>评分，越大越优先</returns>
+    /// <summary>
+    /// 强制走 Compute 路径，忽略硬件光追能力；用于 RDNA2 这类支持 ray query 但实际更慢的显卡
+    /// </summary>
+    internal static bool ForceComputePath { get; set; }
+
     private long ScorePhysicalDevice(PhysicalDevice device)
     {
         PhysicalDeviceProperties properties = default;
@@ -831,7 +836,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// </summary>
     private Device CreateDevice(PhysicalDevice physicalDevice, uint queueFamilyIndex)
     {
-        if (_rayTracingCapabilities.SupportsHardwarePipeline &&
+        // 显式偏好优先于能力探测：RDNA2 支持 ray query 不代表实际更快，
+        // 让用户能强制走 Compute 路径做对比，而不是替他决定
+        if (!ForceComputePath && _rayTracingCapabilities.SupportsHardwarePipeline &&
             TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: true, out var rayTracingDevice))
         {
             MVoxelLog.Info("已启用 Vulkan 硬件光追设备特性，渲染管线按能力选择硬件或 Compute 路径");

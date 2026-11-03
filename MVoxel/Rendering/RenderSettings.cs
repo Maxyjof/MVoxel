@@ -201,6 +201,11 @@ public sealed class RenderSettings
     public float RealtimeTemporalWeight = 0.92F;
 
     /// <summary>
+    /// 强制使用 Compute 渲染路径，忽略硬件光追能力
+    /// </summary>
+    public bool ForceComputePath = false;
+
+    /// <summary>
     /// 天顶颜色（sRGB 数值，着色时转线性）
     /// </summary>
     public Vector3 SkyTop = new(0.24F, 0.45F, 0.78F);

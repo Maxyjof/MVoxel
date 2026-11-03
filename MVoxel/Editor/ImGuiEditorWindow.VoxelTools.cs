@@ -1599,6 +1599,8 @@ internal sealed partial class ImGuiEditorWindow
             var submitsBefore = pipeline.SubmitCount;
             var fenceBefore = pipeline.FenceWaitTotalMs;
             pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+            // 设备创建前生效，运行中切换需要重建渲染设备
+            VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
             pipeline.GpuTimingToken = _analysisLive.Serial;
             var performanceMark = PerformanceMark();
             var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
@@ -1715,6 +1717,8 @@ internal sealed partial class ImGuiEditorWindow
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
                 pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+            // 设备创建前生效，运行中切换需要重建渲染设备
+            VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
                 var performanceMark = PerformanceMark();
                 var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
@@ -1772,6 +1776,8 @@ internal sealed partial class ImGuiEditorWindow
             if (wantTrace)
             {
                 pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+            // 设备创建前生效，运行中切换需要重建渲染设备
+            VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
@@ -2890,6 +2896,9 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SeparatorText("太阳与阴影");
         if (ImGui.Checkbox("太阳平行光", ref settings.SunEnabled) && ReferenceEquals(settings, _renderSettings))
             _settingsToggleSun = settings.SunEnabled;
+        ImGui.Checkbox("强制使用 Compute 路径", ref settings.ForceComputePath);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("忽略显卡的硬件光追能力，强制走 Compute 计算路径。RDNA2 等支持 ray query 但实际更慢的显卡可据此对比；切换后需重建渲染设备或重启编辑器生效。");
         SliderFloat("方位角##sun", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
         SliderFloat("仰角##sun", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
         SliderFloat("强度##sun", ref settings.SunIntensity, 0F, 6F, "%.2f");
