@@ -529,6 +529,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 frameViewportMs = LatestAnalysisFrame.ViewportCpuMs,
                 framePresentMs = LatestAnalysisFrame.PresentMs,
                 gpuFrameMs = LatestAnalysisFrame.GpuValid ? LatestAnalysisFrame.GpuMs : 0,
+                gpuSamplingMs = LatestAnalysisFrame.GpuValid ? LatestAnalysisFrame.GpuSamplingMs : 0,
+                gpuFinishMs = LatestAnalysisFrame.GpuValid ? LatestAnalysisFrame.GpuFinishMs : 0,
                 gpuTimingSupported = (_pipeline ?? _scenePipeline)?.GpuTimingSupported ?? false,
                 managedAllocationBytesPerSecond = _analysisAllocatedPerSecond,
                 renderBvhBuildMs = _pipeline?.SyncBvhBuildMs ?? 0,
