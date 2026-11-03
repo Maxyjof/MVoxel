@@ -53,8 +53,10 @@ internal sealed class EmissiveFaceCatalog
     {
         if (_chunks.Remove(coordinate, out var previous)) FaceCount -= previous.Length;
         if (!world.TryGetChunk(coordinate, out var chunk)) return;
-        var faces = new List<Face>();
-        foreach (var (index, value) in chunk.Snapshot.OrderBy(pair => pair.Key))
+        // 直接遍历区块字典：唯一的消费方 UploadEmissiveFaces 会按砖块与坐标完整排序，
+        // 区块内顺序不影响结果，因此不必为每个区块再做一次 LINQ 排序
+        List<Face>? faces = null;
+        foreach (var (index, value) in chunk.Snapshot)
         {
             if (!VoxelFlags.Has(value.Flags, VoxelFlags.Emissive) ||
                 VoxelFlags.Has(value.Flags, VoxelFlags.Translucent) || value.Color.A != byte.MaxValue)
@@ -68,10 +70,11 @@ internal sealed class EmissiveFaceCatalog
                 var neighbor = new VoxelCoord64(voxel.X + x, voxel.Y + y, voxel.Z + z);
                 // 首版仅采样邻格完全为空的面；其余发光仍由原有命中路径处理。
                 if (!world.TryGet(neighbor, out var adjacent) || adjacent.IsEmpty)
-                    faces.Add(new Face(voxel, direction, value));
+                    (faces ??= new List<Face>()).Add(new Face(voxel, direction, value));
             }
         }
-        if (faces.Count == 0) return;
+
+        if (faces is null) return;
         var result = faces.ToArray();
         _chunks.Add(coordinate, result);
         FaceCount = checked(FaceCount + result.Length);

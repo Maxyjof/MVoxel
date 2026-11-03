@@ -656,6 +656,16 @@ internal sealed partial class ImGuiEditorWindow
             $"提交 {pipeline.SubmitCount:N0}  栅栏等待 {pipeline.FenceWaitTotalMs:0.00} ms");
         ImGui.Text($"构建 {pipeline.SyncWorksetBuildMs:0.00}  BVH {pipeline.SyncBvhBuildMs:0.00}  " +
             $"打包 {pipeline.SyncPackMs:0.00}  上传 {pipeline.SyncUploadMs:0.00} ms");
+        var timing = pipeline.WorksetBuildTiming;
+        if (timing.TotalMs > 0D)
+        {
+            ImGui.TextDisabled($"  构建分解 快照 {timing.SnapshotMs:0.00} 收集 {timing.CollectMs:0.00} " +
+                $"排序 {timing.SortMs:0.00} 剔除 {timing.CullMs:0.00} 构盒 {timing.MergeMs:0.00} 汇总 {timing.GatherMs:0.00} ms");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("工作集构建的 CPU 分阶段耗时：快照列区块并排序，" +
+                    Environment.NewLine + "收集把区块字典落成数组，排序按局部索引稳定，" +
+                    Environment.NewLine + "剔除去掉全封闭内部体素，构盒做贪心合并或 LOD 粗化，汇总拼接输出数组。");
+        }
         ImGui.Text($"发光面 {pipeline.EmissiveFaceCount:N0}  光源树节点 {pipeline.EmissiveTreeNodeCount:N0}  " +
             $"索引同步 {pipeline.EmissiveSyncMilliseconds:0.00} ms");
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("最近一次 CPU 发光面提取、排序、光源树构建或更新、打包与上传耗时，不是 GPU 采样耗时。反向 PDF 使用二分面查询和相同的光源树分支概率。");

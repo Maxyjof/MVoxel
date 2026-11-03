@@ -109,7 +109,26 @@ public sealed class VoxelGpuWorkset
         VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null, bool greedyMerge = true,
         bool includeInterior = false)
     {
+        return Build(world, maximumCells, lod, cameraPosition, greedyMerge, includeInterior, out _);
+    }
+
+    /// <summary>
+    /// 从稀疏世界创建 GPU 工作集，并回传各阶段耗时供性能分析器定位热点
+    /// </summary>
+    /// <param name="world">源稀疏世界</param>
+    /// <param name="maximumCells">工作集最大体素数，零表示不采样</param>
+    /// <param name="lod">距离 LOD 配置，null 或关闭时全细节</param>
+    /// <param name="cameraPosition">LOD 判距相机</param>
+    /// <param name="greedyMerge">是否做贪心盒体合并；场景视图传 false 只显示原始体素，渲染与导出传 true</param>
+    /// <param name="includeInterior">保留完全被包围的内部体素</param>
+    /// <param name="timing">各阶段耗时</param>
+    /// <returns>可直接上传到 GPU 的确定性快照</returns>
+    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells,
+        VoxelLodSettings? lod, System.Numerics.Vector3? cameraPosition, bool greedyMerge,
+        bool includeInterior, out VoxelWorksetBuildTiming timing)
+    {
         ArgumentNullException.ThrowIfNull(world);
+        timing = default;
         if (!world.TryGetBounds(out var minimum, out var maximum))
         {
             return world.ContentVersion == 0
@@ -117,6 +136,7 @@ public sealed class VoxelGpuWorkset
                 : new VoxelGpuWorkset(world.ContentVersion, default, default, [], 0);
         }
 
+        var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var size = new VoxelCoord64(
             CheckedExtent(minimum.X, maximum.X, nameof(minimum)),
             CheckedExtent(minimum.Y, maximum.Y, nameof(minimum)),
@@ -138,31 +158,44 @@ public sealed class VoxelGpuWorkset
 
         var chunkCount = chunks.Count;
         var lodActive = lod is { Enabled: true } && cameraPosition.HasValue;
+        var snapshotMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
+
+        // 字典枚举顺序不稳定，先整体落成数组；排序与剔除分成独立并行阶段，
+        // 既方便分别计时，也避免一个 lambda 里混着分配、排序和邻域查询
+        var visiblePairs = new (int Key, VoxelValue Value)[chunkCount][];
+        System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
+        {
+            var chunk = chunks[chunkIndex].Chunk;
+            var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
+            var pairIndex = 0;
+            foreach (var pair in chunk.Snapshot)
+            {
+                pairs[pairIndex++] = (pair.Key, pair.Value);
+            }
+
+            visiblePairs[chunkIndex] = pairs;
+        });
+        var collectMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
+
+        System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions,
+            chunkIndex => Array.Sort(visiblePairs[chunkIndex], static (a, b) => a.Key.CompareTo(b.Key)));
+        var sortMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
 
         // 所有显示和导出路径均先经过这一层的全封闭体素剔除。源世界并不修改；
         // 这里只消除永远不能从外部射线命中的不透明内部格。随后预算采样作用于
         // 已剔除的可见工作集，而不是合并后的盒，避免把一个合并盒整块挖空。
-        var visiblePairs = new (int Key, VoxelValue Value)[chunkCount][];
-        System.Threading.Tasks.Parallel.For(0, chunkCount,
-            new System.Threading.Tasks.ParallelOptions
-            {
-                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
-            },
-            chunkIndex =>
-            {
-                var (coordinate, chunk) = chunks[chunkIndex];
-                var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
-                var pairIndex = 0;
-                foreach (var pair in chunk.Snapshot)
-                {
-                    pairs[pairIndex++] = (pair.Key, pair.Value);
-                }
-
-                Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
-                visiblePairs[chunkIndex] = includeInterior
-                    ? pairs
-                    : CullFullyOccludedPairs(world, pairs, coordinate, greedyMerge);
-            });
+        System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
+        {
+            var pairs = visiblePairs[chunkIndex];
+            visiblePairs[chunkIndex] = includeInterior
+                ? pairs
+                : CullFullyOccludedPairs(world, pairs, chunks[chunkIndex].Coordinate, greedyMerge);
+        });
+        var cullMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
 
         var rawStarts = new long[chunkCount + 1];
         for (var index = 0; index < chunkCount; index++)
@@ -176,84 +209,111 @@ public sealed class VoxelGpuWorkset
             : 1;
 
         var perChunk = new List<VoxelGpuCell>[chunkCount];
-        System.Threading.Tasks.Parallel.For(0, chunkCount,
-            new System.Threading.Tasks.ParallelOptions
+        var chunkEmissive = new int[chunkCount];
+        System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
+        {
+            var (coordinate, _) = chunks[chunkIndex];
+            var pairs = visiblePairs[chunkIndex];
+            if (sampleStride != 1)
             {
-                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
-            },
-            chunkIndex =>
-            {
-                var (coordinate, chunk) = chunks[chunkIndex];
-                var pairs = visiblePairs[chunkIndex];
-                if (sampleStride != 1)
+                var kept = new List<(int Key, VoxelValue Value)>(pairs.Length / sampleStride + 1);
+                for (var localIndex = 0; localIndex < pairs.Length; localIndex++)
                 {
-                    var kept = new List<(int Key, VoxelValue Value)>(pairs.Length / sampleStride + 1);
-                    for (var localIndex = 0; localIndex < pairs.Length; localIndex++)
+                    if ((rawStarts[chunkIndex] + localIndex) % sampleStride == 0)
                     {
-                        if ((rawStarts[chunkIndex] + localIndex) % sampleStride == 0)
-                        {
-                            kept.Add(pairs[localIndex]);
-                        }
+                        kept.Add(pairs[localIndex]);
                     }
-
-                    pairs = [.. kept];
                 }
 
-                var level = 0;
-                if (lodActive)
-                {
-                    level = lod!.LevelFor(ChunkDistance(cameraPosition!.Value, coordinate, minimum));
-                }
+                pairs = [.. kept];
+            }
 
-                var list = new List<VoxelGpuCell>(pairs.Length);
-                if (level == 0)
+            var level = 0;
+            if (lodActive)
+            {
+                level = lod!.LevelFor(ChunkDistance(cameraPosition!.Value, coordinate, minimum));
+            }
+
+            var list = new List<VoxelGpuCell>(pairs.Length);
+            if (level == 0)
+            {
+                if (greedyMerge)
                 {
-                    if (greedyMerge)
-                    {
-                        GreedyMergeChunk(pairs, coordinate, minimum, list);
-                    }
-                    else
-                    {
-                        // 场景视图：逐格原始体素，不做盒体合并，素描边与拾取按真实体素
-                        foreach (var (key, value) in pairs)
-                        {
-                            var local = SparseVoxelChunk.FromIndex(key);
-                            list.Add(new VoxelGpuCell(
-                                (int)(coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X),
-                                (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y),
-                                (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z),
-                                value));
-                        }
-                    }
+                    GreedyMergeChunk(pairs, coordinate, minimum, list);
                 }
                 else
                 {
-                    CoarsenChunk(pairs, coordinate, minimum, level, list);
+                    // 场景视图：逐格原始体素，不做盒体合并，素描边与拾取按真实体素
+                    foreach (var (key, value) in pairs)
+                    {
+                        var local = SparseVoxelChunk.FromIndex(key);
+                        list.Add(new VoxelGpuCell(
+                            (int)(coordinate.X * VoxelWorld.ChunkSize + local.X - minimum.X),
+                            (int)(coordinate.Y * VoxelWorld.ChunkSize + local.Y - minimum.Y),
+                            (int)(coordinate.Z * VoxelWorld.ChunkSize + local.Z - minimum.Z),
+                            value));
+                    }
                 }
+            }
+            else
+            {
+                CoarsenChunk(pairs, coordinate, minimum, level, list);
+            }
 
-                perChunk[chunkIndex] = list;
-            });
-
-        var total = 0;
-        var emissiveCount = 0;
-        foreach (var list in perChunk)
-        {
-            total += list.Count;
+            // 发光面计数顺带在做完的列表上统计，省掉之后再全量扫一遍
+            var emissive = 0;
             foreach (var cell in list)
             {
-                if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissiveCount++;
+                if (VoxelFlags.Has(cell.Value.Flags, VoxelFlags.Emissive)) emissive++;
             }
-        }
 
-        var cells = new VoxelGpuCell[total];
-        var write = 0;
-        foreach (var list in perChunk)
+            chunkEmissive[chunkIndex] = emissive;
+            perChunk[chunkIndex] = list;
+        });
+        var mergeMs = phaseWatch.Elapsed.TotalMilliseconds;
+        phaseWatch.Restart();
+
+        var total = 0;
+        var emissiveTotal = 0;
+        var chunkStarts = new int[chunkCount + 1];
+        for (var index = 0; index < chunkCount; index++)
         {
-            foreach (var cell in list) cells[write++] = cell;
+            chunkStarts[index] = total;
+            total += perChunk[index].Count;
+            emissiveTotal += chunkEmissive[index];
         }
 
-        return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveCount);
+        chunkStarts[chunkCount] = total;
+        var cells = new VoxelGpuCell[total];
+        System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
+        {
+            var list = perChunk[chunkIndex];
+            var write = chunkStarts[chunkIndex];
+            for (var index = 0; index < list.Count; index++) cells[write + index] = list[index];
+        });
+        var gatherMs = phaseWatch.Elapsed.TotalMilliseconds;
+
+        timing = new VoxelWorksetBuildTiming(snapshotMs, collectMs, sortMs, cullMs, mergeMs, gatherMs);
+        return new VoxelGpuWorkset(world.ContentVersion, minimum, size, cells, emissiveTotal);
     }
+
+    /// <summary>
+    /// 工作集构建各阶段的耗时，单位毫秒
+    /// </summary>
+    public readonly record struct VoxelWorksetBuildTiming(
+        double SnapshotMs, double CollectMs, double SortMs, double CullMs, double MergeMs, double GatherMs)
+    {
+        /// <summary>各阶段合计</summary>
+        public double TotalMs => SnapshotMs + CollectMs + SortMs + CullMs + MergeMs + GatherMs;
+    }
+
+    /// <summary>
+    /// 工作集并行阶段共享的线程预算
+    /// </summary>
+    private static readonly System.Threading.Tasks.ParallelOptions ChunkParallelOptions = new()
+    {
+        MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 1, 1, 16),
+    };
 
     private static uint MortonChunkKey(ChunkCoord64 coordinate, VoxelCoord64 minimum, VoxelCoord64 size)
     {
@@ -275,36 +335,111 @@ public sealed class VoxelGpuWorkset
     }
 
     /// <summary>
+    /// 从已排序的区块体素中移除完全不可见的内部不透明格，使用按线程复用的区块局部缓冲
+    /// </summary>
+    /// <param name="world">完整源世界</param>
+    /// <param name="pairs">已按局部索引排序的区块体素</param>
+    /// <param name="chunkCoordinate">区块坐标</param>
+    /// <param name="preserveUniformSolids">同值实心体是否保留核心</param>
+    internal static (int Key, VoxelValue Value)[] CullFullyOccludedPairs(VoxelWorld world,
+        (int Key, VoxelValue Value)[] pairs, ChunkCoord64 chunkCoordinate, bool preserveUniformSolids) =>
+        CullFullyOccludedPairs(world, pairs, chunkCoordinate, preserveUniformSolids, RentLocalCells());
+
+    /// <summary>按线程复用的区块局部缓冲，进出由剔除方法负责清空</summary>
+    [ThreadStatic]
+    private static VoxelValue[]? _threadLocalCells;
+
+    private static VoxelValue[] RentLocalCells() =>
+        _threadLocalCells ??= new VoxelValue[VoxelWorld.ChunkVolume];
+
+    /// <summary>
     /// 从已排序的区块体素中移除完全不可见的内部不透明格。该方法也由砖块工作集调用，
     /// 确保场景预览、实时/路径渲染和导出使用同一条可见性规则。
     /// </summary>
+    /// <param name="world">完整源世界，只用于查询区块边界外一格的邻居</param>
+    /// <param name="pairs">已按局部索引排序的区块体素</param>
+    /// <param name="chunkCoordinate">区块坐标</param>
+    /// <param name="preserveUniformSolids">同值实心体是否保留核心</param>
+    /// <param name="localCells">
+    /// 调用方提供的区块局部密集缓冲，长度至少为 <see cref="VoxelWorld.ChunkVolume"/>，
+    /// 进出都必须是空值。区块内部的邻居直接查这张表，只有贴边的体素才回落到世界查询
+    /// </param>
     internal static (int Key, VoxelValue Value)[] CullFullyOccludedPairs(VoxelWorld world,
-        (int Key, VoxelValue Value)[] pairs, ChunkCoord64 chunkCoordinate, bool preserveUniformSolids)
+        (int Key, VoxelValue Value)[] pairs, ChunkCoord64 chunkCoordinate, bool preserveUniformSolids,
+        VoxelValue[] localCells)
     {
-        List<(int Key, VoxelValue Value)>? retained = null;
-        for (var index = 0; index < pairs.Length; index++)
+        if (pairs.Length == 0) return pairs;
+        if (localCells.Length < VoxelWorld.ChunkVolume)
         {
-            var pair = pairs[index];
-            var local = SparseVoxelChunk.FromIndex(pair.Key);
-            var coordinate = new VoxelCoord64(
-                chunkCoordinate.X * VoxelWorld.ChunkSize + local.X,
-                chunkCoordinate.Y * VoxelWorld.ChunkSize + local.Y,
-                chunkCoordinate.Z * VoxelWorld.ChunkSize + local.Z);
-            if (!VoxelRenderVisibility.CanCullInterior(world, coordinate, pair.Value, preserveUniformSolids))
-            {
-                retained?.Add(pair);
-                continue;
-            }
-
-            if (retained is null)
-            {
-                retained = new List<(int Key, VoxelValue Value)>(pairs.Length);
-                for (var previous = 0; previous < index; previous++) retained.Add(pairs[previous]);
-            }
+            throw new ArgumentException("区块局部缓冲长度不足", nameof(localCells));
         }
 
-        return retained is null ? pairs : [.. retained];
+        // 先把本区块写进密集数组：区块内邻居查询因此退化成一次数组下标，
+        // 只有贴在区块六个面上的体素才需要回落到世界查询
+        foreach (var pair in pairs)
+        {
+            localCells[pair.Key] = pair.Value;
+        }
+
+        Span<VoxelValue> neighbors = stackalloc VoxelValue[VoxelRenderVisibility.NeighborCount];
+        var baseX = chunkCoordinate.X * VoxelWorld.ChunkSize;
+        var baseY = chunkCoordinate.Y * VoxelWorld.ChunkSize;
+        var baseZ = chunkCoordinate.Z * VoxelWorld.ChunkSize;
+        try
+        {
+            List<(int Key, VoxelValue Value)>? retained = null;
+            for (var index = 0; index < pairs.Length; index++)
+            {
+                var pair = pairs[index];
+                var key = pair.Key;
+                var local = SparseVoxelChunk.FromIndex(key);
+                var worldX = baseX + local.X;
+                var worldY = baseY + local.Y;
+                var worldZ = baseZ + local.Z;
+                neighbors[0] = local.X > 0 ? localCells[key - 1]
+                    : NeighborAt(world, worldX - 1, worldY, worldZ);
+                neighbors[1] = local.X < VoxelWorld.ChunkSize - 1 ? localCells[key + 1]
+                    : NeighborAt(world, worldX + 1, worldY, worldZ);
+                neighbors[2] = local.Y > 0 ? localCells[key - VoxelWorld.ChunkSize]
+                    : NeighborAt(world, worldX, worldY - 1, worldZ);
+                neighbors[3] = local.Y < VoxelWorld.ChunkSize - 1 ? localCells[key + VoxelWorld.ChunkSize]
+                    : NeighborAt(world, worldX, worldY + 1, worldZ);
+                neighbors[4] = local.Z > 0 ? localCells[key - ChunkLayer]
+                    : NeighborAt(world, worldX, worldY, worldZ - 1);
+                neighbors[5] = local.Z < VoxelWorld.ChunkSize - 1 ? localCells[key + ChunkLayer]
+                    : NeighborAt(world, worldX, worldY, worldZ + 1);
+
+                if (!VoxelRenderVisibility.CanCullInterior(pair.Value, neighbors, preserveUniformSolids))
+                {
+                    retained?.Add(pair);
+                    continue;
+                }
+
+                if (retained is null)
+                {
+                    retained = new List<(int Key, VoxelValue Value)>(pairs.Length);
+                    for (var previous = 0; previous < index; previous++) retained.Add(pairs[previous]);
+                }
+            }
+
+            return retained is null ? pairs : [.. retained];
+        }
+        finally
+        {
+            // 缓冲由线程复用，离开时必须还原为空值
+            foreach (var pair in pairs)
+            {
+                localCells[pair.Key] = default;
+            }
+        }
     }
+
+    /// <summary>区块一层的体素数量，用于 Z 方向邻居的索引偏移</summary>
+    private const int ChunkLayer = VoxelWorld.ChunkSize * VoxelWorld.ChunkSize;
+
+    /// <summary>读取区块外一格的邻居，缺失按空值处理</summary>
+    private static VoxelValue NeighborAt(VoxelWorld world, long x, long y, long z) =>
+        world.TryGet(new VoxelCoord64(x, y, z), out var value) ? value : default;
 
     /// <summary>
     /// 相机到区块世界 AABB 的最短距离（格）。区块覆盖世界坐标

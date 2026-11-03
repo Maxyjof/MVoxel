@@ -370,7 +370,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _brickResidency = null;
         _usingBrickPath = false;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior);
+        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior,
+            out var buildTiming);
+        WorksetBuildTiming = buildTiming;
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         SyncPackMs = 0;
         SyncUploadMs = 0;
@@ -635,6 +637,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 获取最近一次同步中工作集构建耗时毫秒
     /// </summary>
     internal double SyncWorksetBuildMs { get; private set; }
+
+    /// <summary>
+    /// 最近一次工作集构建的分阶段耗时，用于定位构建热点
+    /// </summary>
+    internal VoxelGpuWorkset.VoxelWorksetBuildTiming WorksetBuildTiming { get; private set; }
 
     /// <summary>
     /// 获取最近一次同步中 BVH 构建耗时毫秒

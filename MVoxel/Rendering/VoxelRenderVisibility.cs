@@ -1,4 +1,3 @@
-using MVoxel.Core;
 using MVoxel.Voxels;
 
 namespace MVoxel.Rendering;
@@ -14,22 +13,24 @@ internal static class VoxelRenderVisibility
     /// 仅移除被六个不透明邻居完全包围、且自身不发光的体素：外部相机、阴影和反射射线
     /// 都不可能首次命中它。半透明和发光体素永远保留，避免改变光学与光源语义。
     /// </summary>
-    /// <param name="world">完整源世界</param>
-    /// <param name="coordinate">待判断体素的世界坐标</param>
     /// <param name="value">待判断体素值</param>
+    /// <param name="neighbors">六个邻居，顺序为 -X +X -Y +Y -Z +Z；不存在的邻居传空值</param>
     /// <param name="preserveUniformSolid">同值实体会由贪心盒体压缩时为 true，保留其核心以形成最少盒体</param>
     /// <returns>可从渲染工作集中移除时返回 true</returns>
-    internal static bool CanCullInterior(VoxelWorld world, VoxelCoord64 coordinate, VoxelValue value,
+    /// <remarks>
+    /// 邻居由调用方按自身数据布局收集：工作集构建会先在区块内做密集数组查表，
+    /// 只有贴在区块边界的体素才回落到世界查询。判定规则因此仍然只有这一处。
+    /// </remarks>
+    internal static bool CanCullInterior(in VoxelValue value, ReadOnlySpan<VoxelValue> neighbors,
         bool preserveUniformSolid)
     {
         if (!IsOpaqueOccluder(value) || VoxelFlags.Has(value.Flags, VoxelFlags.Emissive)) return false;
 
         var allNeighborsMatch = true;
-        foreach (var offset in NeighborOffsets)
+        for (var index = 0; index < NeighborCount; index++)
         {
-            var neighborCoordinate = new VoxelCoord64(
-                coordinate.X + offset.X, coordinate.Y + offset.Y, coordinate.Z + offset.Z);
-            if (!world.TryGet(neighborCoordinate, out var neighbor) || !IsOpaqueOccluder(neighbor)) return false;
+            var neighbor = neighbors[index];
+            if (!IsOpaqueOccluder(neighbor)) return false;
             allNeighborsMatch &= neighbor == value;
         }
 
@@ -38,13 +39,9 @@ internal static class VoxelRenderVisibility
         return !preserveUniformSolid || !allNeighborsMatch;
     }
 
+    /// <summary>六个轴向邻居的数量</summary>
+    internal const int NeighborCount = 6;
+
     private static bool IsOpaqueOccluder(VoxelValue value) =>
         !value.IsEmpty && value.Color.A == byte.MaxValue && !VoxelFlags.Has(value.Flags, VoxelFlags.Translucent);
-
-    private static readonly (long X, long Y, long Z)[] NeighborOffsets =
-    [
-        (-1, 0, 0), (1, 0, 0),
-        (0, -1, 0), (0, 1, 0),
-        (0, 0, -1), (0, 0, 1),
-    ];
 }
