@@ -54,7 +54,36 @@ internal sealed partial class ImGuiEditorWindow
             SceneComponentTypes.WriteAnimation(component, animation);
             EvaluateAnimation(target, animation);
         }
+        foreach (var marker in timeline.Events.Where(item => item.Frame == frame))
+        {
+            var target = _sceneDocument.Objects.FirstOrDefault(item => item.Id.ToString() == marker.TargetObjectId || item.Name == marker.TargetObjectId);
+            if (target is null || !TimelineConditionMatches(marker.Condition, target)) continue;
+            switch (marker.Action.Trim().ToLowerInvariant())
+            {
+                case "visible": target.Visible = true; break;
+                case "hidden": target.Visible = false; break;
+                case "animation.play": SetTimelineAnimationPlayback(target, true); break;
+                case "animation.stop": SetTimelineAnimationPlayback(target, false); break;
+            }
+        }
         return true;
+    }
+
+    private static bool TimelineConditionMatches(string condition, SceneObject target) => condition.Trim().ToLowerInvariant() switch
+    {
+        "" or "always" => true,
+        "visible" => target.Visible,
+        "hidden" => !target.Visible,
+        _ => false,
+    };
+
+    private static void SetTimelineAnimationPlayback(SceneObject target, bool playing)
+    {
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
+        if (component is null) return;
+        var animation = SceneComponentTypes.ReadAnimation(component);
+        animation.Playing = playing;
+        SceneComponentTypes.WriteAnimation(component, animation);
     }
 
     private AnimationClip? LoadAnimationClip(string asset)

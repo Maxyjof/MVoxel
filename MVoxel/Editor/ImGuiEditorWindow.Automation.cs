@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using MVoxel.Core;
+using MVoxel.Animation;
+using MVoxel.Editor.Assets;
 using MVoxel.Project;
 using MVoxel.Rendering;
 using MVoxel.Scene;
@@ -134,7 +136,10 @@ internal sealed partial class ImGuiEditorWindow
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",
             [.. TargetIdOrName, Param("scaleX", "number", true, "X 轴倍率"),
              Param("scaleY", "number", true, "Y 轴倍率"), Param("scaleZ", "number", true, "Z 轴倍率")]),
-        new("ui.panels", "界面", "列出面板", "列出可开关的界面面板与当前状态", []),
+        new("timeline.list", "时间轴", "列出时间轴", "列出Assets目录下的时间轴资产", []),
+        new("timeline.get", "时间轴", "读取时间轴", "读取一个时间轴资产", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径")]),
+        new("timeline.create", "时间轴", "新建时间轴", "创建默认时间轴资产，不覆盖已有文件", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径"), Param("name", "string", false, "时间轴名称")]),
+
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
         new("ui.status", "界面", "读取状态栏", "读取编辑器状态栏文本", []),
@@ -221,7 +226,10 @@ internal sealed partial class ImGuiEditorWindow
             "render.settings.set" => ApplyRenderSettings(payload),
             "render.resetAccumulation" => ResetRenderAccumulation(),
             "model.scale" => SetModelScale(payload),
-            "ui.panels" => ListPanels(),
+            "timeline.list" => ListTimelineAssets(),
+            "timeline.get" => GetTimelineAsset(payload),
+            "timeline.create" => CreateTimelineAsset(payload),
+
             "ui.setPanel" => SetPanel(payload),
             "ui.status" => new { status = _statusText },
             "project.info" => DescribeProject(),
@@ -698,6 +706,56 @@ internal sealed partial class ImGuiEditorWindow
         _accumulationSignature = string.Empty;
         return new { activeId = target.Id.ToString(), name = target.Name };
     });
+
+    private object ListTimelineAssets() => RunOnUi(() =>
+    {
+        var project = RequireProject();
+        var assets = Directory.Exists(project.AssetsPath)
+            ? Directory.GetFiles(project.AssetsPath, "*.mvtimeline.json", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/')).OrderBy(path => path).ToArray()
+            : Array.Empty<string>();
+        return new { count = assets.Length, assets };
+    });
+
+    private object GetTimelineAsset(JsonElement arguments) => RunOnUi(() =>
+    {
+        RequireTimelineArguments(arguments, "path");
+        var path = ResolveTimelinePath(ReadString(arguments, "path")!);
+        if (!File.Exists(path)) throw new FileNotFoundException("未找到时间轴资产", path);
+        var timeline = JsonSerializer.Deserialize<TimelineAsset>(File.ReadAllText(path)) ?? new TimelineAsset();
+        timeline.Normalize();
+        return new { path = Path.GetRelativePath(RequireProject().AssetsPath, path).Replace('\\', '/'), timeline };
+    });
+
+    private object CreateTimelineAsset(JsonElement arguments) => RunOnUi(() =>
+    {
+        RequireTimelineArguments(arguments, "path", "name");
+        var path = ResolveTimelinePath(ReadString(arguments, "path")!);
+        if (File.Exists(path)) throw new InvalidOperationException("时间轴资产已存在，不允许覆盖");
+        var timeline = new TimelineAsset { Name = ReadString(arguments, "name") ?? Path.GetFileNameWithoutExtension(path) };
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, JsonSerializer.Serialize(timeline, new JsonSerializerOptions { WriteIndented = true }));
+        AssetMetaStore.EnsureMeta(path);
+        SetStatus($"已新建时间轴：{timeline.Name}");
+        return new { path = Path.GetRelativePath(RequireProject().AssetsPath, path).Replace('\\', '/'), timeline };
+    });
+
+    private static void RequireTimelineArguments(JsonElement arguments, params string[] allowed)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object) throw new ArgumentException("参数必须是对象");
+        foreach (var property in arguments.EnumerateObject())
+            if (!allowed.Contains(property.Name, StringComparer.Ordinal)) throw new ArgumentException($"不支持的时间轴参数：{property.Name}");
+    }
+
+    private string ResolveTimelinePath(string relativePath)
+    {
+        var project = RequireProject();
+        if (!relativePath.EndsWith(".mvtimeline.json", StringComparison.OrdinalIgnoreCase)) relativePath += ".mvtimeline.json";
+        var fullPath = Path.GetFullPath(Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var root = Path.GetFullPath(project.AssetsPath) + Path.DirectorySeparatorChar;
+        if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("时间轴路径必须位于Assets目录内");
+        return fullPath;
+    }
 
     private object ListMaterials()
     {
