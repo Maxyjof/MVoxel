@@ -839,6 +839,8 @@ internal sealed partial class ImGuiEditorWindow
             }
             var indirect = stack.Find(CameraPostProcessEffectType.VoxelIndirectLight);
             settings.VoxelIndirectLightStrength = indirect?.Enabled == true ? indirect.Intensity : 0F;
+            // 采样数也由相机栈决定，这样渲染窗口的实时模式可以单独降采样而不影响场景窗口
+            if (indirect is not null) settings.VoxelIndirectLightSamples = Math.Clamp(indirect.Samples, 1, 32);
             var probeGi = stack.Find(CameraPostProcessEffectType.ProbeVolumeGi);
             settings.ProbeVolumeGiStrength = probeGi?.Enabled == true ? probeGi.Intensity : 0F;
             var tone = stack.Find(CameraPostProcessEffectType.ToneMapping);

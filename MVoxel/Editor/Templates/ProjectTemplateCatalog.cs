@@ -1241,7 +1241,7 @@ public static class ProjectTemplateCatalog
         });
         stack.Effects.Add(new CameraPostProcessEffect
         {
-            Type = CameraPostProcessEffectType.VoxelIndirectLight, Intensity = 1.15F, Radius = 9F, Samples = 6,
+            Type = CameraPostProcessEffectType.VoxelIndirectLight, Intensity = 1.15F, Radius = 9F, Samples = 4,
         });
         stack.Effects.Add(new CameraPostProcessEffect
         {
