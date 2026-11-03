@@ -163,7 +163,7 @@ internal sealed partial class ImGuiEditorWindow
                 var rgba = new Rgba32(color.GetProperty("r").GetByte(), color.GetProperty("g").GetByte(), color.GetProperty("b").GetByte(), color.GetProperty("a").GetByte());
                 world.Set(coordinate, new VoxelValue(rgba, item.GetProperty("material").GetUInt16(), item.GetProperty("flags").GetByte()));
             }
-            _composedRenderWorld = null;
+            InvalidateComposedWorldCache();
             _pipeline?.ResetAccumulation();
         }
         catch (JsonException) { }

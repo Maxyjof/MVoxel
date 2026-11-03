@@ -363,9 +363,7 @@ internal sealed partial class ImGuiEditorWindow
     private void ResetAfterVoxelTransform()
     {
         _selectedVoxel = null;
-        _composedRenderWorld = null;
-        _composedSignature = 0;
-        _composedMask = uint.MaxValue;
+        InvalidateComposedWorldCache();
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         _renderViewNeedsInitialRender = true;

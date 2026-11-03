@@ -97,8 +97,7 @@ internal sealed partial class ImGuiEditorWindow
         _runtimeMaterials = runtimeMaterials;
         if (signature == _runtimeMaterialSignature) return;
         _runtimeMaterialSignature = signature;
-        _composedRenderWorld = null;
-        _composedSignature = 0;
+        InvalidateComposedWorldCache();
         _pipeline?.SetMaterialTable(MaterialAsset.PackTable(runtimeMaterials));
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
@@ -251,8 +250,7 @@ internal sealed partial class ImGuiEditorWindow
         SceneComponentTypes.WriteVoxelModel(component, data with { MaterialSlots = bindings.Values.OrderBy(item => item.Slot).ToArray() });
         EnsureModelBrushMaterialTarget();
         MarkSceneDocumentDirty();
-        _composedRenderWorld = null;
-        _composedSignature = 0;
+        InvalidateComposedWorldCache();
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         SetStatus($"已更新“{modelObject.Name}”的材质槽位映射");

@@ -5282,8 +5282,7 @@ DockId=0x6A3C3007,0
             _world = recovery.Composed;
             ApplyPreloadedBounds(recovery);
             _worldLoadFailed |= recovery.LoadFailed;
-            _composedRenderWorld = null;
-            _composedSignature = 0;
+            InvalidateComposedWorldCache();
             _pickVersion++;
             _voxelHistory.Clear();
             MarkSceneDocumentDirty();

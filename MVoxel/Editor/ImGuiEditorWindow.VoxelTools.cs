@@ -302,9 +302,7 @@ internal sealed partial class ImGuiEditorWindow
         _renderCameraId = null;
         _renderOrbitAnchor = null;
         _renderCameraInitialFramePending = true;
-        _composedRenderWorld = null;
-        _composedSignature = 0;
-        _composedMask = uint.MaxValue;
+        InvalidateComposedWorldCache();
         _selectedProjectPalettePath = EditorPalettes.NormalizeProjectPalettePath(_projectSettings.ActivePalettePath);
         var projectPalettePaths = EditorPalettes.EnumerateProjectPalettePaths(project);
         if (projectPalettePaths.Count > 0 &&
@@ -481,17 +479,38 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var signature = RenderStateSignature() ^ (sceneVisibility ? long.MinValue : 0);
-        if (_composedRenderWorld is { } cached && _composedSignature == signature && _composedMask == cullingMask)
+        // 场景视图与渲染视图各用一份组合世界：单条缓存会让每次切换视图都重新合成整份世界，
+        // 紧接着触发工作集重建，切换直接卡一秒以上。命中条目提到最近使用位置
+        for (var index = 0; index < _composedWorlds.Count; index++)
         {
-            return cached;
+            var entry = _composedWorlds[index];
+            if (entry.Mask != cullingMask || entry.Signature != signature) continue;
+            if (index > 0)
+            {
+                _composedWorlds.RemoveAt(index);
+                _composedWorlds.Insert(0, entry);
+            }
+
+            return entry.World;
         }
 
         var composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility,
             remap: RemapRuntimeMaterial);
-        _composedRenderWorld = composed;
-        _composedSignature = signature;
-        _composedMask = cullingMask;
+        if (_composedWorlds.Count >= ComposedWorldCacheCapacity)
+        {
+            _composedWorlds.RemoveAt(_composedWorlds.Count - 1);
+        }
+
+        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed));
         return composed;
+    }
+
+    /// <summary>
+    /// 清空组合世界缓存：对象可见性、图层、材质等存储状态变化后必须重新合成
+    /// </summary>
+    private void InvalidateComposedWorldCache()
+    {
+        _composedWorlds.Clear();
     }
 
     /// <summary>
@@ -726,8 +745,18 @@ internal sealed partial class ImGuiEditorWindow
 
     /// <summary>体素编辑事务日志，随恢复区目录存放，正式保存或快照后清空</summary>
 
-    /// <summary>按图层遮罩组成的渲染世界缓存</summary>
-    private VoxelWorld? _composedRenderWorld;
+    /// <summary>
+    /// 组合世界缓存容量：场景视图与渲染视图各用一份变体，另留一格给不同相机图层遮罩
+    /// </summary>
+    private const int ComposedWorldCacheCapacity = 3;
+
+    /// <summary>
+    /// 组合世界缓存条目：同一份对象体素按不同可见性语义与图层遮罩合成出不同世界
+    /// </summary>
+    private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World);
+
+    /// <summary>按图层遮罩组成的渲染世界缓存，最近使用的排在最前面</summary>
+    private readonly List<ComposedWorldEntry> _composedWorlds = new(ComposedWorldCacheCapacity);
 
     private VoxelWorld? _axisOcclusionBoundsWorld;
     private int _axisOcclusionBoundsVersion = -1;
@@ -833,12 +862,6 @@ internal sealed partial class ImGuiEditorWindow
         if (low < high && ImGui.SliderInt("切面位置##SceneSlicePosition", ref _sceneSliceCoordinate, low, high))
             _sceneSliceWorld = null;
     }
-
-    /// <summary>缓存对应的渲染状态指纹</summary>
-    private long _composedSignature;
-
-    /// <summary>缓存对应的图层遮罩</summary>
-    private uint _composedMask;
 
     private bool SaveWorldToProject(ProjectHandle project)
     {
@@ -1823,7 +1846,7 @@ internal sealed partial class ImGuiEditorWindow
         _objectVoxels.GetOrCreate(model.Id);
         if (!firstModel) _layerOwnership[model.Id] = new HashSet<VoxelCoord64>();
         _selectedSceneObjectId = model.Id;
-        _composedRenderWorld = null;
+        InvalidateComposedWorldCache();
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _showModelingTools = true;

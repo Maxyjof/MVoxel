@@ -1,4 +1,4 @@
-﻿using MVoxel.Core;
+using MVoxel.Core;
 using MVoxel.Project;
 using MVoxel.Scene;
 using MVoxel.Voxels;
@@ -39,8 +39,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_sceneDocument is null) return;
         _world = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, false);
         _layerOwnership.Clear();
-        _composedRenderWorld = null;
-        _composedSignature = 0;
+        InvalidateComposedWorldCache();
         _pickVersion++;
         _pipeline?.ResetAccumulation();
     }
