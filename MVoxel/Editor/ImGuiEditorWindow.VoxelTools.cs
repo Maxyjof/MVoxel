@@ -1031,12 +1031,13 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void SaveEditableRenderSettings(RenderSettings settings, string before)
     {
+        // 先夹取再比较：夹取会改写数值，若放在比较之后，每次重绘都会因为
+        // “夹后值 ≠ 界面写入值”而判定为变更，导致展开面板时反复清空累积、画面跳变
+        settings.ClampAll();
         if (string.Equals(before, settings.ToJson(), StringComparison.Ordinal))
         {
             return;
         }
-
-        settings.ClampAll();
         _renderSettings = settings;
         SyncSettingsToggles(settings);
         _pipeline?.ResetAccumulation();
