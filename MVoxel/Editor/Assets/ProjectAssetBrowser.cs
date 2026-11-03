@@ -1,6 +1,8 @@
+using ImGuiNET;
 using System.Drawing;
 using System.Diagnostics;
-using ImGuiNET;
+using System.Text.Json;
+using MVoxel.Animation;
 using MVoxel.Editor.Assets;
 using MVoxel.Project;
 using MVoxel.Scene;
@@ -750,9 +752,38 @@ internal sealed class ProjectAssetBrowser
         catch (Exception exception) { reportStatus($"打开资源管理器失败：{exception.Message}"); }
     }
 
-    /// <summary>
-    /// 在指定目录创建新的可共享材质资产
-    /// </summary>
+    private void CreateTimelineAsset(ProjectHandle? project, Action<string> reportStatus,
+        Action<ProjectAssetChange> assetChanged, string folder)
+    {
+        if (project is null)
+        {
+            reportStatus("请先打开项目再创建时间轴");
+            return;
+        }
+        var index = 1;
+        var relativePath = CombineRelative(folder, "新时间轴.mvtimeline.json");
+        var absolutePath = Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        while (File.Exists(absolutePath))
+        {
+            relativePath = CombineRelative(folder, $"新时间轴 {index++}.mvtimeline.json");
+            absolutePath = Path.Combine(project.AssetsPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        }
+        try
+        {
+            var timeline = new TimelineAsset();
+            timeline.Normalize();
+            File.WriteAllText(absolutePath, JsonSerializer.Serialize(timeline, new JsonSerializerOptions { WriteIndented = true }));
+            AssetMetaStore.EnsureMeta(absolutePath);
+            _selectedAsset = relativePath;
+            assetChanged(new ProjectAssetChange(relativePath, relativePath));
+            reportStatus("已创建时间轴资产；可在时间轴窗口中编排对象、动画片段和事件");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            reportStatus($"创建时间轴失败：{exception.Message}");
+        }
+    }
+
     private void CreateMaterialAsset(ProjectHandle? project, Action<string> reportStatus,
         Action<ProjectAssetChange> assetChanged, string folder)
     {
@@ -877,6 +908,8 @@ internal enum ProjectAssetKind
     Environment,
     /// <summary>渲染预设</summary>
     RenderPreset,
+    /// <summary>时间轴 .mvtimeline.json</summary>
+    Timeline,
     /// <summary>生成脚本</summary>
     Generator,
     /// <summary>代码脚本</summary>
@@ -1055,6 +1088,7 @@ internal static class ProjectAssetCatalog
         ProjectAssetKind.Palette => "调色盘",
         ProjectAssetKind.Environment => "环境",
         ProjectAssetKind.RenderPreset => "渲染预设",
+        ProjectAssetKind.Timeline => "时间轴",
         ProjectAssetKind.Generator => "生成器",
         ProjectAssetKind.Script => "脚本",
         ProjectAssetKind.Document => "文档",
@@ -1089,8 +1123,10 @@ internal static class ProjectAssetCatalog
     internal static ProjectAssetKind Classify(string path, bool isFolder)
     {
         if (isFolder) return ProjectAssetKind.Folder;
+        if (path.EndsWith(".mvtimeline.json", StringComparison.OrdinalIgnoreCase)) return ProjectAssetKind.Timeline;
         return Path.GetExtension(path).ToLowerInvariant() switch
         {
+            ".mvtimeline.json" => ProjectAssetKind.Timeline,
             ".mvox" => ProjectAssetKind.Scene,
             ".mvmodel" or ".mvworld" or ".vox" or ".qb" or ".schem" => ProjectAssetKind.VoxelModel,
             ".prefab" => ProjectAssetKind.Prefab,
