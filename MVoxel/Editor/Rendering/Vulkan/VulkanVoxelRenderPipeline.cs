@@ -661,7 +661,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 硬件 RT 尚无这些后处理，启用时走完整 Compute 路径，避免静默忽略相机效果。
-        bool needsCameraEffects = settings.FilmGrainIntensity > 0F || settings.PosterizeMix > 0F || settings.SplitToneMix > 0F;
+        bool needsCameraEffects = settings.ShowWater || settings.FogDensity > 0F || settings.WeatherRainIntensity > 0F || settings.WeatherSnowIntensity > 0F || settings.WeatherStormIntensity > 0F || settings.WeatherHeatHaze > 0F || settings.FilmGrainIntensity > 0F || settings.PosterizeMix > 0F || settings.SplitToneMix > 0F;
         if (settings.UseHardwareRayTracing && _sceneLightCount == 0 && !emissiveLighting && !needsCameraEffects && _context is not null && _imguiRenderer is not null &&
             _context.SupportsHardwareRayTracing)
         {
@@ -2181,7 +2181,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         bool TraceClosestWithin(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
-            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit)
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit, bool preferContaining)
         {
             ivec2 stack[64];
             int stackSize = 1;
@@ -2219,7 +2219,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         vec3 voxelMax = voxelMin + vec3(packedExtent);
                         float distance;
                         vec3 normal;
-                        if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal) &&
+                        bool intersects = IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal);
+                        // 介质连续性查询要找起点所在盒，而不是最近的表面。
+                        // 所在盒的出口可能比旁边盒的入口更远，按表面距离排序会制造假空气缝。
+                        if (intersects && preferContaining && all(greaterThanEqual(rayOrigin, voxelMin)) &&
+                            all(lessThan(rayOrigin, voxelMax))) distance = 0.0;
+                        if (intersects &&
                             distance < closestDistance &&
                             !(ignoreTranslucent && (cell.metadata.x >> 16 & 1u) != 0u))
                         {
@@ -2260,12 +2265,28 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return hitColor.a > 0.0;
         }
 
+        bool TraceClosestWithin(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit)
+        {
+            return TraceClosestWithin(rayOrigin, rayDirection, closestDistance, hitNormal,
+                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, maxDistance, anyHit, false);
+        }
+
+        bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, bool preferContaining)
+        {
+            return TraceClosestWithin(rayOrigin, rayDirection, closestDistance, hitNormal,
+                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, 3.402823e+38, false, preferContaining);
+        }
+
         bool TraceClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
             out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent)
         {
-            return TraceClosestWithin(rayOrigin, rayDirection, closestDistance, hitNormal,
-                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, 3.402823e+38, false);
+            return TraceClosest(rayOrigin, rayDirection, closestDistance, hitNormal,
+                hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, false);
         }
 
         bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
@@ -2753,7 +2774,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 ivec3 hitExtent;
                 bool groundHit = false;
                 bool waterHit = false;
-                bool voxelHit = TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false);
+                bool voxelHit = TraceClosest(rayOrigin, rayDirection, hitDistance, hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent, false, hasPendingInterface);
                 float waterDistance = values[144] > 0.5 && abs(rayDirection.y) > 0.00001
                     ? (values[145] - rayOrigin.y) / rayDirection.y : 3.402823e+38;
                 float groundDistance = (values[35] > 0.5 || (!pathMode && values[90] > 0.5 && values[115] < 0.5)) && abs(rayDirection.y) > 0.00001
@@ -2782,18 +2803,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                              vec3 wp = rayOrigin + rayDirection * hitDistance;
                              float wavelength = max(values[P_WATER_WAVE_LENGTH], 0.1);
                              float k = 6.28318530718 / wavelength;
-                             float animationTime = values[P_WATER_ANIMATION_ENABLED] > 0.5 ? float(values[P_FRAME]) * 0.0166667 * values[P_WATER_ANIMATION_SPEED] : 0.0;
-                             vec2 flow = normalize(vec2(values[P_WATER_FLOW_X], values[P_WATER_FLOW_Z]));
+                             float animationTime = values[P_WATER_ANIMATION_ENABLED] > 0.5 ? values[P_WATER_TIME] * values[P_WATER_ANIMATION_SPEED] : 0.0;
+                             vec2 flowInput = vec2(values[P_WATER_FLOW_X], values[P_WATER_FLOW_Z]);
+                             vec2 flow = length(flowInput) > 0.0001 ? normalize(flowInput) : vec2(1.0, 0.0);
                              vec2 p = wp.xz;
-                             float phaseA = dot(p, flow) * k - animationTime * k;
-                             float phaseB = dot(p, vec2(-flow.y, flow.x)) * k * 1.37 + animationTime * k * 0.73;
                              float detail = values[P_WATER_DETAIL_STRENGTH];
-                             float waveA = sin(phaseA) + sin(phaseA * 1.91 + phaseB * 0.43) * detail * 0.35;
-                             float waveB = cos(phaseB) + cos(phaseB * 1.67 - phaseA * 0.29) * detail * 0.3;
-                             float slope = values[P_WATER_WAVE_SIZE] * k;
-                             float dx = (flow.x * waveA - flow.y * waveB * 0.72) * slope;
-                             float dz = (flow.y * waveA + flow.x * waveB * 0.72) * slope;
-                             hitNormal = normalize(vec3(-dx, 1.0, -dz));
+                             vec2 crossFlow = vec2(-flow.y, flow.x);
+                             vec2 d1 = normalize(flow + crossFlow * 0.37);
+                             vec2 d2 = normalize(flow - crossFlow * 0.68);
+                             vec2 d3 = normalize(flow * 0.29 + crossFlow);
+                             vec2 d4 = normalize(flow * -0.54 + crossFlow);
+                             float t = animationTime * k;
+                             vec2 gradient = d1 * cos(dot(p, d1) * k - t) * 0.36
+                                 + d2 * cos(dot(p, d2) * k * 0.73 - t * 0.81 + 1.7) * 0.31
+                                 + d3 * cos(dot(p, d3) * k * 1.31 - t * 1.13 + 3.1) * 0.21
+                                 + d4 * cos(dot(p, d4) * k * 1.93 - t * 1.37 + 0.8) * 0.12 * detail;
+                             gradient *= values[P_WATER_WAVE_SIZE] * k;
+                             hitNormal = normalize(vec3(-gradient.x, 1.0, -gradient.y));
                         }
                         hitColor = vec4(0.0, 0.0, 0.0, 1.0);
                         hitFlags = 0u;
@@ -3115,7 +3141,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         ivec3 nextCell;
                         ivec3 nextExtent;
                         bool nextHit = TraceClosest(nextOrigin, mediumDirection, nextDistance, nextNormal,
-                            nextColor, nextFlags, nextSlot, nextCell, nextExtent, false);
+                            nextColor, nextFlags, nextSlot, nextCell, nextExtent, false, true);
                         vec3 nextMin = vec3(values[16], values[17], values[18]) + vec3(nextCell);
                         vec3 nextMax = nextMin + vec3(nextExtent);
                         bool insideNext = nextHit && all(greaterThanEqual(nextOrigin, nextMin)) &&
@@ -3123,6 +3149,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         if (!insideNext || (nextFlags & 1u) == 0u || nextSlot != hitSlot ||
                             any(greaterThan(abs(nextColor - hitColor), vec4(0.001))))
                         {
+                            // 介质直接贴着不透明池底时并不存在水到空气的出口；
+                            // 不应在这里发生全内反射，否则池底会出现黑色块状缺口。
+                            if (insideNext && (nextFlags & 1u) == 0u)
+                                nextMediumIor = mediumIor;
                             if (insideNext && (nextFlags & 1u) != 0u)
                             {
                                 float nextIor = materialSlots[int(nextSlot)].optics.x;
@@ -3512,8 +3542,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float sampleSurfaceDistance = 3.402823e+38;
                 vec3 sampleNormal;
                 bool sampleSelected;
-                sampleColor += TracePath(sampleOrigin, direction, state, pathMode,
+                vec3 tracedColor = TracePath(sampleOrigin, direction, state, pathMode,
                     sampleSurfaceHit, sampleSurfaceDistance, sampleNormal, sampleSelected);
+                if (pathMode && sampleSurfaceHit && values[39] > 0.0)
+                    tracedColor = mix(Sky(direction), tracedColor, smoothstep(0.0, values[39], sampleSurfaceDistance));
+                if (pathMode && sampleSurfaceHit && values[51] > 0.0)
+                {
+                    float fogAmount = 1.0 - exp(-values[51] * max(sampleSurfaceDistance - values[152], 0.0));
+                    vec3 fogColor = mix(Sky(direction), SrgbToLinear(clamp(vec3(values[48], values[49], values[50]), vec3(0.0), vec3(1.0))), clamp(values[153], 0.0, 1.0));
+                    tracedColor = mix(tracedColor, fogColor, clamp(fogAmount, 0.0, values[154]));
+                }
+                sampleColor += tracedColor;
                 if (sampleIndex == 0) selectedPixel = sampleSelected;
                 if (sampleIndex == 0 && sampleSurfaceHit)
                     guide = vec4(sampleNormal, max(sampleSurfaceDistance * dot(direction, forward), 0.0001));
@@ -3615,47 +3654,38 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
             color = max(color, vec3(0.0));
-             vec2 weatherUv = (vec2(pixel) + 0.5) / vec2(width, height);
-             float weatherTime = float(values[P_FRAME]) * 0.0166667;
-              float heatStrength = clamp(values[P_WEATHER_HEAT_HAZE], 0.0, 1.0);
-              if (heatStrength > 0.001)
-              {
-                  float heatWave = sin(weatherUv.y * 90.0 + weatherTime * 3.0) + 0.5 * sin(weatherUv.y * 173.0 - weatherTime * 4.7);
-                  float heatOffset = heatWave * heatStrength * 2.2;
-                  ivec2 refractedPixel = clamp(pixel + ivec2(int(heatOffset), 0), ivec2(0), ivec2(width - 1, height - 1));
-                  vec3 refractedColor = imageLoad(outputImage, refractedPixel).rgb;
-                  color = mix(color, refractedColor, heatStrength * 0.24);
-              }
-              vec2 windDirection = vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])));
-              float windStrength = max(values[P_WEATHER_WIND_STRENGTH], 0.0);
-              float stormStrength = clamp(values[P_WEATHER_STORM], 0.0, 1.0);
-              float gust = 1.0 + stormStrength * (0.3 + 0.7 * (0.5 + 0.5 * sin(weatherTime * 1.7)));
-              float windPhase = dot(weatherUv, windDirection) * 48.0 - weatherTime * windStrength * gust * 8.0;
-              float windSlope = windDirection.x * (0.45 + 0.2 * clamp(windStrength, 0.0, 4.0));
-              float rainCoord = weatherUv.y + windSlope * (weatherUv.x - 0.5);
-              float snowCoord = weatherUv.y + windSlope * 0.65 * (weatherUv.x - 0.5);
-              float rainLayerA = smoothstep(0.76, 0.995, fract(rainCoord * 43.0 + windPhase));
-              float rainLayerB = smoothstep(0.82, 0.995, fract(rainCoord * 71.0 - windPhase * 1.35 + 0.37));
-              float rainLayerC = smoothstep(0.88, 0.998, fract(rainCoord * 113.0 + windPhase * 1.9 + 0.71));
-              float rainWeight = clamp(values[P_WEATHER_RAIN] * gust * (rainLayerA * 0.58 + rainLayerB * 0.3 + rainLayerC * 0.16), 0.0, 1.0);
-              float snowLayerA = smoothstep(0.82, 0.998, fract(snowCoord * 29.0 - windPhase * 0.42));
-              float snowLayerB = smoothstep(0.9, 1.0, fract(snowCoord * 47.0 + windPhase * 0.27 + 0.29));
-              float snowWeight = clamp(values[P_WEATHER_SNOW] * gust * (snowLayerA * 0.72 + snowLayerB * 0.38), 0.0, 1.0);
-              color = mix(color, vec3(0.82, 0.9, 1.0), snowWeight * 0.24);
-             color *= 1.0 - stormStrength * (0.24 + 0.16 * (0.5 + 0.5 * sin(weatherTime * 1.7)));
-              float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
-              float lightningCycle = weatherTime * max(lightningRate * 0.42, 0.0001);
-              float lightningIndex = floor(lightningCycle);
-              float lightningPhase = fract(lightningCycle);
-              float lightningSeed = fract(sin(lightningIndex * 91.173 + 17.31) * 43758.547);
-              float lightningGate = step(0.22, lightningSeed) * step(0.001, lightningRate);
-              float firstFlash = 1.0 - smoothstep(0.0, 0.08, lightningPhase);
-              float secondFlash = 1.0 - smoothstep(0.115, 0.17, lightningPhase);
-              float lightningSpatial = 0.72 + 0.28 * pow(max(0.0, sin(weatherUv.x * 19.0 + lightningSeed * 31.0)), 18.0);
-              float lightning = lightningGate * max(firstFlash, secondFlash * 0.62) * lightningSpatial;
-              color += vec3(1.0, 0.92, 0.72) * lightning * values[P_WEATHER_STORM] * min(lightningRate * 0.48, 1.0);
-             float heat = values[P_WEATHER_HEAT_HAZE] * sin(weatherUv.y * 90.0 + weatherTime * 3.0) * 0.012;
-             color += vec3(heat, heat * 0.5, 0.0);
+            // 天气是屏幕空间近似：每个网格内随机分布独立粒子，避免整屏周期性条纹。
+            vec2 weatherUv = (vec2(pixel) + 0.5) / vec2(height);
+            float weatherTime = values[P_WATER_TIME];
+            vec2 windDirection = vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])));
+            float windStrength = max(values[P_WEATHER_WIND_STRENGTH], 0.0);
+            float stormStrength = clamp(values[P_WEATHER_STORM], 0.0, 1.0);
+            vec2 drift = vec2(windDirection.x * windStrength * 0.045, -0.55);
+            vec2 rainPos = (weatherUv - drift * weatherTime) * vec2(92.0, 24.0);
+            vec2 rainCell = floor(rainPos);
+            vec2 rainLocal = fract(rainPos);
+            float rainSeed = fract(sin(dot(rainCell, vec2(127.1, 311.7))) * 43758.5453);
+            float rainX = abs(rainLocal.x - fract(rainSeed * 13.17));
+            float rainY = abs(rainLocal.y - fract(rainSeed * 7.31));
+            float rainDrop = (1.0 - smoothstep(0.025, 0.09, rainX)) * (1.0 - smoothstep(0.15, 0.36, rainY));
+            rainDrop *= step(0.35, rainSeed) * clamp(values[P_WEATHER_RAIN], 0.0, 1.0);
+            vec2 snowPos = (weatherUv - vec2(drift.x * 0.45, -0.10) * weatherTime) * 32.0;
+            vec2 snowCell = floor(snowPos);
+            vec2 snowLocal = fract(snowPos);
+            float snowSeed = fract(sin(dot(snowCell, vec2(173.3, 269.5))) * 31837.731);
+            vec2 snowCenter = vec2(fract(snowSeed * 19.37), fract(snowSeed * 43.11));
+            float snowDrop = 1.0 - smoothstep(0.035, 0.105, length(snowLocal - snowCenter));
+            snowDrop *= step(0.22, snowSeed) * clamp(values[P_WEATHER_SNOW], 0.0, 1.0);
+            color = mix(color, vec3(0.75, 0.86, 0.98), rainDrop * 0.5);
+            color = mix(color, vec3(0.94, 0.97, 1.0), snowDrop * 0.9);
+            color *= 1.0 - stormStrength * 0.18;
+            float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
+            float lightningPhase = fract(weatherTime * lightningRate * 0.42);
+            float flash = (1.0 - smoothstep(0.0, 0.08, lightningPhase)) * step(0.001, lightningRate);
+            color += vec3(0.8, 0.85, 1.0) * flash * stormStrength * 0.5;
+            // 当前没有安全的独立颜色输入供折射采样；使用轻微热雾色偏近似。
+            float heat = values[P_WEATHER_HEAT_HAZE] * (0.5 + 0.5 * sin(weatherUv.y * 90.0 + weatherTime * 3.0));
+            color = mix(color, color * vec3(1.04, 1.01, 0.95), heat * 0.25);
             if (values[64] > 0.5)
             {
                 if (int(values[64]) == 1)

@@ -421,7 +421,9 @@ internal static class TemplateScenes
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or ProjectTemplateId.GlassStudy or
                 ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy =>
                 BuildOpticalParts(id, source),
-            ProjectTemplateId.WorldOcean or ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset => SplitByRegions(source,
+            ProjectTemplateId.WorldOcean or ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset or
+                ProjectTemplateId.WeatherRain or ProjectTemplateId.WeatherSnow or ProjectTemplateId.WeatherStorm or
+                ProjectTemplateId.WeatherHeatHaze => SplitByRegions(source,
                 ("岛屿", "岛屿", c => c.Y <= 4),
                 ("远方航标", "航标", c => c.X >= 22),
                 ("灯塔与树木", "岛上景物", _ => true)),

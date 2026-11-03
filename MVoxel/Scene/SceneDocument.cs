@@ -31,11 +31,13 @@ public sealed class SceneDocument
     /// </summary>
     private SceneEnvironmentSettings _environment = new();
     [JsonIgnore] public bool HasSerializedEnvironment { get; private set; }
+    [JsonConverter(typeof(SceneEnvironmentJsonConverter))]
     public SceneEnvironmentSettings Environment
     {
         get => _environment;
         set { _environment = value; HasSerializedEnvironment = true; }
     }
+    internal void MarkEnvironmentMissing() => HasSerializedEnvironment = false;
 
     /// <summary>
     /// 场景内全部对象，父子关系由每个对象的 ParentId 表达
@@ -617,6 +619,12 @@ public static class SceneSerializer
         ValidateCurrentFormatVersion(json, path);
         var scene = JsonSerializer.Deserialize<SceneDocument>(json, Options);
         if (scene is null) throw new InvalidDataException("场景 JSON 不是合法文档");
+        using (var document = JsonDocument.Parse(json))
+        {
+            if (!document.RootElement.TryGetProperty("environment", out var environment) ||
+                environment.ValueKind != JsonValueKind.Object || !environment.EnumerateObject().Any())
+                scene.MarkEnvironmentMissing();
+        }
 
         // 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
         // 保证内存中的场景图始终可被渲染与层级面板安全访问。

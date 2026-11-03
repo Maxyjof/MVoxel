@@ -115,7 +115,8 @@ public sealed class VoxelRenderParameters
     public const int WeatherWindStrength = 161, WeatherWindDirection = 162, WeatherRain = 163, WeatherSnow = 164;
     public const int WeatherStorm = 165, WeatherHeatHaze = 166, WeatherLightning = 167;
     public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
-    public const int SlotCount = 168;
+    public const int WaterTime = 168;
+    public const int SlotCount = 169;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -176,9 +177,12 @@ public sealed class VoxelRenderParameters
             ("P_SPLIT_BALANCE", SplitToneBalance), ("P_SPLIT_MIX", SplitToneMix),
             ("P_FXAA_PASS", FxaaPass), ("P_FXAA_THRESHOLD", FxaaThreshold), ("P_FXAA_STRENGTH", FxaaStrength),
             ("P_REALTIME_TEMPORAL_WEIGHT", RealtimeTemporalWeight),
+            ("P_WATER_WAVE_SIZE", WaterWaveSize), ("P_WATER_WAVE_LENGTH", WaterWaveLength),
+            ("P_WATER_ROUGHNESS", WaterRoughness),
             ("P_WATER_ANIMATION_ENABLED", WaterAnimationEnabled), ("P_WATER_ANIMATION_SPEED", WaterAnimationSpeed),
             ("P_WATER_FLOW_X", WaterFlowX), ("P_WATER_FLOW_Z", WaterFlowZ),
             ("P_WATER_DETAIL_STRENGTH", WaterDetailStrength), ("P_WATER_SPECULAR_STRENGTH", WaterSpecularStrength),
+            ("P_WATER_TIME", WaterTime),
             ("P_WEATHER_WIND_STRENGTH", WeatherWindStrength), ("P_WEATHER_WIND_DIRECTION", WeatherWindDirection),
             ("P_WEATHER_RAIN", WeatherRain), ("P_WEATHER_SNOW", WeatherSnow),
             ("P_WEATHER_STORM", WeatherStorm), ("P_WEATHER_HEAT_HAZE", WeatherHeatHaze), ("P_WEATHER_LIGHTNING", WeatherLightning),
@@ -266,6 +270,7 @@ public sealed class VoxelRenderParameters
         parameters[UpZ] = frame.CameraUp.Z;
         parameters[Focal] = frame.FocalPixels;
         parameters[Frame] = frame.FrameIndex;
+        parameters[WaterTime] = frame.WaterTime;
         parameters[ViewWidth] = frame.ViewWidthPixels;
         parameters[ViewHeight] = frame.ViewHeightPixels;
         parameters[Pixel] = pixelSeedSalt;
@@ -472,6 +477,7 @@ public sealed class VoxelRenderParameters
         bool ShowGrid = false,
         bool ScenePreview = false)
     {
+        public float WaterTime { get; init; }
         /// <summary>
         /// 相机近平面距离
         /// </summary>

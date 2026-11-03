@@ -1133,6 +1133,7 @@ internal sealed partial class ImGuiEditorWindow
 
     // 渲染视口 GPU 管线
 
+    private float _waterAnimationTime;
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
         bool showGrid = false, float gridStep = 0F, bool scenePreview = false,
@@ -1162,6 +1163,7 @@ internal sealed partial class ImGuiEditorWindow
             ShowGrid: showGrid,
             ScenePreview: scenePreview)
         {
+            WaterTime = _waterAnimationTime,
             NearClip = camera.NearClip,
             FarClip = float.IsFinite(camera.FarClip) ? camera.FarClip : 100_000_000F,
         };
@@ -1187,6 +1189,9 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SkyHorizon.Z).Append(',').Append(settings.SkyAmbient).Append(',').Append(settings.AmbientTint)
             .Append(',').Append(settings.FogColor.X).Append(',').Append(settings.FogColor.Y).Append(',').Append(settings.FogColor.Z)
             .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.WaterAnimationEnabled).Append(',').Append(settings.WaterAnimationSpeed).Append(',').Append(settings.WaterFlowDirection).Append(',').Append(settings.WaterDetailStrength).Append(',').Append(settings.WaterSpecularStrength).Append(',').Append(settings.PathTracingEnabled)
+            .Append(',').Append(settings.WeatherWindStrength).Append(',').Append(settings.WeatherWindDirection)
+            .Append(',').Append(settings.WeatherRainIntensity).Append(',').Append(settings.WeatherSnowIntensity)
+            .Append(',').Append(settings.WeatherStormIntensity).Append(',').Append(settings.WeatherHeatHaze).Append(',').Append(settings.WeatherLightningFrequency)
             .Append(',').Append(settings.UseHardwareRayTracing)
             .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
@@ -1367,6 +1372,16 @@ internal sealed partial class ImGuiEditorWindow
                 height = _captureHeight;
             }
             var nowMs = Environment.TickCount64;
+            bool animatedEnvironment = (effective.ShowWater && effective.WaterAnimationEnabled && effective.WaterAnimationSpeed != 0F) ||
+                effective.WeatherRainIntensity > 0F || effective.WeatherSnowIntensity > 0F ||
+                effective.WeatherStormIntensity > 0F || effective.WeatherHeatHaze > 0F;
+            if (_capturePath is null && animatedEnvironment)
+            {
+                // 路径追踪在同一水面时刻累积，时间变化后重新采样，避免动画叠加成重影。
+                var nextWaterTime = effective.PathTracingEnabled ? MathF.Floor(_elapsedSeconds * 2F) * .5F : _elapsedSeconds;
+                if (effective.PathTracingEnabled && nextWaterTime != _waterAnimationTime) pipeline.ResetAccumulation();
+                _waterAnimationTime = nextWaterTime;
+            }
             var signature = TraceSignature(frameSize, scale) + $"|{width}x{height}";
             if (signature != _accumulationSignature)
             {
@@ -2556,6 +2571,9 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawEnvironmentSection(RenderSettings settings)
     {
+        var environmentBefore = new SceneEnvironmentSettings();
+        environmentBefore.CaptureFrom(settings);
+        var previousEnvironment = System.Text.Json.JsonSerializer.Serialize(environmentBefore, EnvironmentJsonOptions);
         ImGui.SeparatorText("天空与地面");
         if (ImGui.Checkbox("显示地面平面", ref settings.ShowGround) && ReferenceEquals(settings, _renderSettings))
             _settingsToggleGround = settings.ShowGround;
@@ -2566,8 +2584,9 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
         SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
         ImGui.SeparatorText("水面");
-        ImGui.Checkbox("显示水面", ref settings.ShowWater);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪为静态法线波纹，不改变轮廓或产生透明折射。");
+        if (ImGui.Checkbox("显示水面", ref settings.ShowWater) && settings.ShowWater)
+            settings.WaterAnimationEnabled = true;
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪改变表面法线，不改变轮廓或产生透明折射。");
         SliderFloat("水面高度", ref settings.WaterHeight, -1024F, 1024F, "%.1f 格");
         DrawColorSlider("水面颜色", ref settings.WaterColor);
         SliderFloat("波浪大小", ref settings.WaterWaveSize, 0F, 4F, "%.2f");
@@ -2575,7 +2594,7 @@ internal sealed partial class ImGuiEditorWindow
                  SliderFloat("水面粗糙度", ref settings.WaterRoughness, 0.01F, 1F, "%.2f");
          ImGui.SeparatorText("水面动画与Shader");
          ImGui.Checkbox("启用实时水面动画", ref settings.WaterAnimationEnabled);
-         if (ImGui.IsItemHovered()) ImGui.SetTooltip("使用实时帧时间驱动双层流动波纹，只影响水面法线和高光，不改变无限平面轮廓");
+         if (ImGui.IsItemHovered()) ImGui.SetTooltip("驱动流动波纹；路径追踪动态预览会重新累积，截图时固定水面时刻。");
          SliderFloat("动画速度", ref settings.WaterAnimationSpeed, -4F, 4F, "%.2f");
          SliderFloat("流向X", ref settings.WaterFlowDirection.X, -1F, 1F, "%.2f");
          SliderFloat("流向Z", ref settings.WaterFlowDirection.Y, -1F, 1F, "%.2f");
@@ -2597,6 +2616,17 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
         SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");
         SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
+        if (ReferenceEquals(settings, _renderSettings) && _sceneDocument is not null)
+        {
+            var environmentAfter = new SceneEnvironmentSettings();
+            environmentAfter.CaptureFrom(settings);
+            if (previousEnvironment != System.Text.Json.JsonSerializer.Serialize(environmentAfter, EnvironmentJsonOptions))
+            {
+                _sceneDocument.Environment = environmentAfter;
+                MarkSceneDocumentDirty();
+                _pipeline?.ResetAccumulation();
+            }
+        }
     }
 
     private void DrawPaletteSection(RenderSettings settings)

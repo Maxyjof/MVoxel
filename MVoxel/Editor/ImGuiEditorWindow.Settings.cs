@@ -277,6 +277,11 @@ internal sealed partial class ImGuiEditorWindow
         if (name is not null) _projectSettings.DefaultRenderPreset = name;
         _projectSettings.RenderSettings = settings;
         _renderSettings = settings;
+        if (_sceneDocument is not null)
+        {
+            _sceneDocument.Environment.CaptureFrom(settings);
+            MarkSceneDocumentDirty();
+        }
         _useHardwareRayTracing = settings.UseHardwareRayTracing;
         SyncSettingsToggles();
         _pipeline?.ResetAccumulation();

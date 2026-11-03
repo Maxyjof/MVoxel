@@ -1,7 +1,18 @@
 using System.Numerics;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using MVoxel.Rendering;
 
 namespace MVoxel.Scene;
+
+public sealed class SceneEnvironmentJsonConverter : JsonConverter<SceneEnvironmentSettings>
+{
+    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { IncludeFields = true };
+    public override SceneEnvironmentSettings? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        JsonSerializer.Deserialize<SceneEnvironmentSettings>(ref reader, Options);
+    public override void Write(Utf8JsonWriter writer, SceneEnvironmentSettings value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, Options);
+}
 
 /// <summary>
 /// 场景唯一的环境配置，不包含相机、光照和后处理参数
