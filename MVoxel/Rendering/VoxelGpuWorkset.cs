@@ -432,7 +432,10 @@ public sealed class VoxelGpuWorkset
         var baseZ = chunkCoordinate.Z * VoxelWorld.ChunkSize;
         try
         {
-            List<(int Key, VoxelValue Value)>? retained = null;
+            // 就地压缩：写入位置永远不超前于读取位置，因此不需要额外的中间列表。
+            // 以前的写法先建一份 List 再拷成数组，一个区块一万多个体素就是两次大对象分配，
+            // 十几万体素级别的大场景里光这一步就能把整段耗时拖成 GC 时间
+            var write = 0;
             for (var index = 0; index < pairs.Length; index++)
             {
                 var pair = pairs[index];
@@ -454,20 +457,14 @@ public sealed class VoxelGpuWorkset
                 neighbors[5] = local.Z < VoxelWorld.ChunkSize - 1 ? localCells[key + ChunkLayer]
                     : NeighborAt(world, worldX, worldY, worldZ + 1);
 
-                if (!VoxelRenderVisibility.CanCullInterior(pair.Value, neighbors, preserveUniformSolids))
-                {
-                    retained?.Add(pair);
-                    continue;
-                }
-
-                if (retained is null)
-                {
-                    retained = new List<(int Key, VoxelValue Value)>(pairs.Length);
-                    for (var previous = 0; previous < index; previous++) retained.Add(pairs[previous]);
-                }
+                if (VoxelRenderVisibility.CanCullInterior(pair.Value, neighbors, preserveUniformSolids)) continue;
+                pairs[write++] = pair;
             }
 
-            return retained is null ? pairs : [.. retained];
+            if (write == pairs.Length) return pairs;
+            // 只按保留数量重新分配一次，源数组随后被回收
+            Array.Resize(ref pairs, write);
+            return pairs;
         }
         finally
         {
