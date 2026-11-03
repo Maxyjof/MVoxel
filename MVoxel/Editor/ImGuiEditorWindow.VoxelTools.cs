@@ -1170,10 +1170,10 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 只有光照、几何体和相机变化会使累积失效
-    /// 后期处理变化直接重新呈现，不重启路径追踪
+    /// 采样签名：相机、几何体、光照、材质和采样设置变化才会让已完成的路径样本失效
+    /// 每帧样本数与累积样本上限不参与签名，只影响推进速度，不会改变已经收敛的结果
     /// </summary>
-    private string TraceSignature(Vector2 size, float deviceScale)
+    private string PathSamplingSignature(Vector2 size, float deviceScale)
     {
         var settings = ResolveRenderSettings(GetActiveRenderCameraObject());
         var buffer = new StringBuilder()
@@ -1189,33 +1189,16 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SkyHorizon.Z).Append(',').Append(settings.SkyAmbient).Append(',').Append(settings.AmbientTint)
             .Append(',').Append(settings.FogColor.X).Append(',').Append(settings.FogColor.Y).Append(',').Append(settings.FogColor.Z)
             .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.WaterAnimationEnabled).Append(',').Append(settings.WaterAnimationSpeed).Append(',').Append(settings.WaterFlowDirection).Append(',').Append(settings.WaterDetailStrength).Append(',').Append(settings.WaterSpecularStrength).Append(',').Append(settings.PathTracingEnabled)
-            .Append(',').Append(settings.WeatherWindStrength).Append(',').Append(settings.WeatherWindDirection)
-            .Append(',').Append(settings.WeatherRainIntensity).Append(',').Append(settings.WeatherSnowIntensity)
-            .Append(',').Append(settings.WeatherStormIntensity).Append(',').Append(settings.WeatherHeatHaze).Append(',').Append(settings.WeatherLightningFrequency)
             .Append(',').Append(settings.UseHardwareRayTracing)
             .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
-            .Append(',').Append(settings.PathSamplesPerFrame).Append(',').Append(settings.PathMaxAccumulatedSamples)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
             .Append(',').Append(settings.SunDirectLighting).Append(',').Append(settings.EmissiveDirectSampling)
             .Append(',').Append(settings.EmissiveLightTree).Append(',').Append(settings.RussianRouletteThreshold)
             .Append(',').Append(settings.RadianceClamp).Append(',').Append(settings.TransmissiveAbsorption).Append(',').Append(settings.Backend)
-            .Append(',').Append(settings.VoxelIndirectLightStrength).Append(',').Append(settings.ProbeVolumeGiStrength)
-            .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength).Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
-            .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees)
-            .Append(',').Append(settings.ColorContrast).Append(',').Append(settings.Brightness).Append(',').Append(settings.Tone)
-            .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
-            .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither)
-            .Append(',').Append(settings.FilmGrainIntensity).Append(',').Append(settings.FilmGrainSize)
-            .Append(',').Append(settings.PosterizeLevels).Append(',').Append(settings.PosterizeMix)
-            .Append(',').Append(settings.SplitToneShadows).Append(',').Append(settings.SplitToneHighlights)
-            .Append(',').Append(settings.SplitToneBalance).Append(',').Append(settings.SplitToneMix).Append(',').Append(settings.PathDenoising)
-            .Append(',').Append(settings.PathDenoiseStrength)
+            .Append(',').Append(settings.PaletteShading).Append(',').Append(settings.SceneShading)
             .Append(',').Append(settings.AutoPerformanceScaling)
-            .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
-            .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
-            .Append(',').Append(settings.SceneShading)
             .Append(",lod:").Append(settings.SceneLod.Enabled).Append(';').Append(settings.SceneLod.LevelCount)
             .Append(':').Append(string.Join(",", settings.SceneLod.Distances))
             .Append("|rlod:").Append(settings.RenderLod.Enabled).Append(';').Append(settings.RenderLod.LevelCount)
@@ -1239,6 +1222,38 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         return buffer.ToString();
+    }
+
+    /// <summary>
+    /// 显示签名：只有后处理与显示参数参与，变化时直接重跑收尾通道，不重新采样
+    /// </summary>
+    private string PathDisplaySignature()
+    {
+        var settings = ResolveRenderSettings(GetActiveRenderCameraObject());
+        return new StringBuilder()
+            .Append(settings.Saturation).Append(',').Append(settings.HueShiftDegrees).Append(',')
+            .Append(settings.HueCycle).Append(',').Append(settings.HueCycleSpeed).Append(',')
+            .Append(settings.ColorContrast).Append(',').Append(settings.Brightness).Append(',').Append(settings.Tone)
+            .Append(',').Append(settings.Exposure).Append(',').Append(settings.Gamma).Append(',').Append(settings.WhiteBalance)
+            .Append(',').Append(settings.Vignette).Append(',').Append(settings.Dither)
+            .Append(',').Append(settings.FilmGrainIntensity).Append(',').Append(settings.FilmGrainSize)
+            .Append(',').Append(settings.PosterizeLevels).Append(',').Append(settings.PosterizeMix)
+            .Append(',').Append(settings.SplitToneShadows).Append(',').Append(settings.SplitToneHighlights)
+            .Append(',').Append(settings.SplitToneBalance).Append(',').Append(settings.SplitToneMix)
+            .Append(',').Append(settings.PathDenoising).Append(',').Append(settings.PathDenoiseStrength)
+            .Append(',').Append(settings.BloomEnabled).Append(',').Append(settings.BloomIntensity)
+            .Append(',').Append(settings.BloomThreshold).Append(',').Append(settings.BloomRadius)
+            .Append(',').Append(settings.WeatherWindStrength).Append(',').Append(settings.WeatherWindDirection)
+            .Append(',').Append(settings.WeatherRainIntensity).Append(',').Append(settings.WeatherSnowIntensity)
+            .Append(',').Append(settings.WeatherStormIntensity).Append(',').Append(settings.WeatherHeatHaze)
+            .Append(',').Append(settings.WeatherLightningFrequency)
+            .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength)
+            .Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
+            .Append(',').Append(settings.VoxelIndirectLightStrength).Append(',').Append(settings.ProbeVolumeGiStrength)
+            .Append(',').Append(settings.RealtimeAntiAliasingSamples).Append(',').Append(settings.RealtimeAntiAliasingPattern)
+            .Append(',').Append(settings.RealtimeAntiAliasingSpread).Append(',').Append(settings.FxaaThreshold)
+            .Append(',').Append(settings.FxaaStrength)
+            .ToString();
     }
 
     private readonly VoxelWorld _emptyScenePreviewWorld = new();
@@ -1398,11 +1413,22 @@ internal sealed partial class ImGuiEditorWindow
                 if (effective.PathTracingEnabled && nextWaterTime != _waterAnimationTime) pipeline.ResetAccumulation();
                 _waterAnimationTime = nextWaterTime;
             }
-            var signature = TraceSignature(frameSize, scale) + $"|{width}x{height}";
-            if (signature != _accumulationSignature)
+            // 采样签名只用相机、几何、光照与采样参数；后处理参数进入显示签名，
+            // 变化时只重跑收尾通道，避免调曝光等纯显示参数时丢掉已完成的样本
+            var samplingSignature = PathSamplingSignature(frameSize, scale) + $"|{width}x{height}";
+            var displaySignature = PathDisplaySignature();
+            if (samplingSignature != _accumulationSignature)
             {
-                _accumulationSignature = signature;
+                _accumulationSignature = samplingSignature;
+                _accumulationDisplaySignature = displaySignature;
                 pipeline.ResetAccumulation();
+            }
+            else if (displaySignature != _accumulationDisplaySignature)
+            {
+                _accumulationDisplaySignature = displaySignature;
+                // 硬件光追保存的是单帧成品，没有可重新后处理的累积，只能重画
+                if (pipeline.UsingHardwareRayTracing) pipeline.ResetAccumulation();
+                else pipeline.RequestDisplayRefresh();
             }
 
             // 实时帧是确定性的；参数未变时管线会直接复用上一张 GPU 图像，
@@ -1460,6 +1486,8 @@ internal sealed partial class ImGuiEditorWindow
                 ? previewSettings.CreateInteractionPreview()
                 : previewSettings;
             var state = BuildFrameState(camera, frameSize, scale, width, height, pathMode: true, outlines: false);
+            // 样本上限变化不丢弃已经完成的样本：提高上限继续采样，降低上限只收敛计数
+            pipeline.LimitAccumulatedSamples(renderSettings.PathMaxAccumulatedSamples);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
             var firstSubmit = _renderViewNeedsInitialRender || _lastRenderGpuSubmitMs == 0 ||
                               pipeline.DisplayTextureId == IntPtr.Zero;

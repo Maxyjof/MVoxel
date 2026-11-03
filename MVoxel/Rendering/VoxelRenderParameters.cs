@@ -116,7 +116,11 @@ public sealed class VoxelRenderParameters
     public const int WeatherStorm = 165, WeatherHeatHaze = 166, WeatherLightning = 167;
     public const int FogStart = 152, FogSkyBlend = 153, FogMaxOpacity = 154;
     public const int WaterTime = 168;
-    public const int SlotCount = 169;
+    /// <summary>
+    /// 只重跑收尾通道的标记：采样已完成时用它刷新后处理结果，不重新求交
+    /// </summary>
+    public const int DisplayPass = 169;
+    public const int SlotCount = 170;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -183,6 +187,7 @@ public sealed class VoxelRenderParameters
             ("P_WATER_FLOW_X", WaterFlowX), ("P_WATER_FLOW_Z", WaterFlowZ),
             ("P_WATER_DETAIL_STRENGTH", WaterDetailStrength), ("P_WATER_SPECULAR_STRENGTH", WaterSpecularStrength),
             ("P_WATER_TIME", WaterTime),
+            ("P_DISPLAY_PASS", DisplayPass),
             ("P_WEATHER_WIND_STRENGTH", WeatherWindStrength), ("P_WEATHER_WIND_DIRECTION", WeatherWindDirection),
             ("P_WEATHER_RAIN", WeatherRain), ("P_WEATHER_SNOW", WeatherSnow),
             ("P_WEATHER_STORM", WeatherStorm), ("P_WEATHER_HEAT_HAZE", WeatherHeatHaze), ("P_WEATHER_LIGHTNING", WeatherLightning),
@@ -395,6 +400,7 @@ public sealed class VoxelRenderParameters
         parameters[SceneBackgroundB] = settings.SceneBackgroundColor.Z;
         parameters[DenoisePass] = 0F;
         parameters[BloomPass] = 0F;
+        parameters[DisplayPass] = 0F;
         parameters[BloomEnabled] = settings.BloomEnabled ? 1F : 0F;
         parameters[BloomIntensity] = settings.BloomIntensity;
         parameters[BloomThreshold] = settings.BloomThreshold;

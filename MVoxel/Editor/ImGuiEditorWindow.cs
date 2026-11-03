@@ -152,6 +152,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private float _undoHeldSeconds;
     private float _undoRepeatAccumulator;
     private string _accumulationSignature = string.Empty;
+    // 只影响后处理的显示签名：变化时重跑收尾通道即可，不丢弃已完成的路径样本
+    private string _accumulationDisplaySignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
     private bool _pipelineInitializationAttempted;

@@ -168,6 +168,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _outputIsShaderReadOnly;
     private bool _accumulationInitialized;
     private bool _clearAccumulationPending = true;
+    // 采样已完成但后处理参数变化时的显示刷新请求：只重跑收尾通道，
+    // 复用已有 HDR 累积和引导图，不再重新求交
+    private bool _displayRefreshPending;
     private float[]? _lastParameters;
     private long _realtimeHistorySignature;
     private bool _realtimeHistoryInvalid = true;
@@ -693,6 +696,26 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _lastParameters = null;
         _clearAccumulationPending = true;
         _realtimeHistoryInvalid = true;
+        _displayRefreshPending = false;
+    }
+
+    /// <summary>
+    /// 请求只在已有采样结果上重跑收尾通道，用于曝光、色调映射、降噪和 Bloom
+    /// 这类只影响显示的参数变化，避免丢弃已经完成的路径样本
+    /// </summary>
+    internal void RequestDisplayRefresh()
+    {
+        _displayRefreshPending = true;
+    }
+
+    /// <summary>
+    /// 采样达到上限后把累积计数收敛到新上限，用于降低样本上限时保留已有画面
+    /// </summary>
+    /// <param name="maximumSamples">新的累积样本上限</param>
+    internal void LimitAccumulatedSamples(int maximumSamples)
+    {
+        var limit = Math.Max(0, maximumSamples);
+        if (AccumulatedSamples > limit) AccumulatedSamples = limit;
     }
 
     /// <summary>
@@ -758,11 +781,75 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal bool Present(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
-        _ = settings;
-        _ = frameState;
-        _ = widthPixels;
-        _ = heightPixels;
-        return DisplayTextureId != IntPtr.Zero;
+        if (DisplayTextureId == IntPtr.Zero) return false;
+        // 采样已完成时，只有后处理参数变化才需要刷新；其余情况直接复用现有纹理
+        return !_displayRefreshPending ||
+               DispatchDisplayRefresh(settings, frameState, widthPixels, heightPixels);
+    }
+
+    /// <summary>
+    /// 构造本帧参数块并补齐工作集、环境贴图和场景光源等运行期字段
+    /// </summary>
+    /// <param name="settings">当前渲染设置</param>
+    /// <param name="frameState">相机与工作集状态</param>
+    private float[] BuildParameters(RenderSettings settings, in VoxelRenderParameters.FrameState frameState)
+    {
+        var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
+        parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
+        parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
+        parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
+        parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
+        parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
+        parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
+        parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
+        parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
+        return parameters;
+    }
+
+    /// <summary>
+    /// 只重跑收尾通道：用已有 HDR 累积和引导图刷新显示，不重新求交也不推进样本计数
+    /// </summary>
+    /// <param name="settings">当前渲染设置</param>
+    /// <param name="frameState">相机与工作集状态</param>
+    /// <param name="widthPixels">输出宽度</param>
+    /// <param name="heightPixels">输出高度</param>
+    /// <returns>是否成功提交显示刷新</returns>
+    private bool DispatchDisplayRefresh(RenderSettings settings,
+        in VoxelRenderParameters.FrameState frameState, int widthPixels, int heightPixels)
+    {
+        _displayRefreshPending = false;
+        // 硬件光追保存的是单帧成品，没有可供重新后处理的 HDR 累积
+        if (_usingHardwareRayTracing) return true;
+        if (!IsAvailable || _context is null || _api is not { } api || widthPixels <= 0 || heightPixels <= 0)
+        {
+            return false;
+        }
+
+        // 尺寸变化会让累积失效，此时保留上一张纹理，交给下一轮正常采样重建
+        if (_accumulationImage.Handle == 0 || _outputImage.Handle == 0 ||
+            _outputWidth != (uint)widthPixels || _outputHeight != (uint)heightPixels)
+        {
+            return true;
+        }
+
+        if (!_accumulationInitialized || AccumulatedSamples <= 0) return true;
+        var parameters = BuildParameters(settings, frameState);
+        parameters[VoxelRenderParameters.DisplayPass] = 1F;
+        var slot = AcquireRingSlot();
+        UploadParameters(slot, parameters);
+        var commandBuffer = _ringCommands[slot];
+        TransitionOutputToGeneral(commandBuffer);
+        TransitionAccumulationToGeneral(commandBuffer);
+        TransitionGuideToGeneral(commandBuffer);
+        BindComputeTile(commandBuffer, _ringSets[slot], 0, 0);
+        var groupX = ((uint)widthPixels + 7U) / 8U;
+        var groupY = ((uint)heightPixels + 7U) / 8U;
+        api.CmdDispatch(commandBuffer, groupX, groupY, 1);
+        LastDispatchCount = 1;
+        LastWorkgroupCount = (long)groupX * (long)groupY;
+        TransitionOutputToShaderRead(commandBuffer);
+        CommitRingSlot(slot);
+        return true;
     }
 
     /// <summary>
@@ -1173,15 +1260,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
-        var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
-        parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
-        parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
-        parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
-        parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
-        parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
-        parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
-        parameters[VoxelRenderParameters.EnvIntensity] = _environmentIntensity;
-        parameters[VoxelRenderParameters.SceneLightCount] = _sceneLightCount;
+        var parameters = BuildParameters(settings, frameState);
         bool selectionActive = !pathMode && frameState.ScenePreview && _sceneSelectionActive;
         parameters[VoxelRenderParameters.Reserved2] = selectionActive ? 1F : 0F;
         // 时间混合权重为零时历史读写对画面没有任何影响，整段历史机制都可以跳过：
@@ -1308,6 +1387,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 AccumulatedSamples + Math.Max(1, settings.PathSamplesPerFrame));
             _accumulationInitialized = true;
             _clearAccumulationPending = false;
+            // 本次采样已经带上了当前后处理参数，挂起的显示刷新不再需要
+            _displayRefreshPending = false;
         }
         _lastParameters = parameters;
         return true;
@@ -2363,9 +2444,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _outputIsShaderReadOnly = false;
         _accumulationInitialized = false;
         _lastParameters = null;
+        _displayRefreshPending = false;
     }
-
-    internal static string ComputeShaderSourceForTests => SceneComputeShader;
 
     // #version 必须是第一条有效指令，因此参数槽位与光源容量的 #define 放在版本行之后注入，
     // GLSL 侧只读 P_ 开头的宏，不再硬编码新增槽位号
@@ -3796,6 +3876,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     result = mix(center.rgb, filtered, clamp(values[P_FXAA_STRENGTH], 0.0, 1.0));
                 }
                 imageStore(accumulationImage, pixel, vec4(result, center.a));
+                return;
+            }
+
+            // 显示刷新通道：采样已经完成，只按当前后处理参数重算显示颜色，
+            // 因此曝光、色调映射、降噪和 Bloom 的变化不需要重新求交
+            if (values[P_DISPLAY_PASS] > 0.5)
+            {
+                bool displayDenoise = values[P_MODE_PATH] > 0.5 &&
+                    values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0;
+                vec3 displayBase = displayDenoise ? DenoiseAt(pixel, width, height)
+                    : imageLoad(accumulationImage, pixel).rgb;
+                if (values[P_BLOOM_ENABLED] > 0.5 && values[P_BLOOM_INTENSITY] > 0.0)
+                {
+                    displayBase += BloomGather(pixel, width, height) *
+                        clamp(values[P_BLOOM_INTENSITY], 0.0, 2.0);
+                }
+                StoreSceneOutput(pixel, vec4(PostProcess(displayBase, pixel, width, height), 1.0));
                 return;
             }
 
