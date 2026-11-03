@@ -553,8 +553,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 probeBakeProbes = _probeBakeJob?.ProbeCount ?? 0,
                 liveProbeSamples = _liveProbeBake?.Samples.Count ?? 0,
                 probeBakeCompletedCount = _probeBakeCompletedCount,
-                voxelBufferBudgetMb = _renderSettings.VoxelBufferBudgetMb,
-                voxelBufferBudgetCells = _renderSettings.VoxelBufferBudgetCells,
                 startup = StartupTimeline.Snapshot(),
             },
             "scene.validate" => ValidateCurrentSceneCommand(),

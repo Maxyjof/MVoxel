@@ -191,38 +191,6 @@ public sealed class RenderSettings
     public float ProbeVolumeGiStrength = 0.5F;
 
     /// <summary>
-    /// 体素显存预算档位，单位 MB
-    /// </summary>
-    /// <remarks>
-    /// 按 2 的幂量化到 16 至 1024 之间，实际值由 <see cref="VoxelBufferBudgetMb"/> 统一取整；
-    /// 预算换算成工作集格数后用于限制场景视图采样与砖路径资格
-    /// </remarks>
-    public int VoxelBufferBudget = 256;
-
-    /// <summary>
-    /// 量化后的体素显存预算档位
-    /// </summary>
-    public int VoxelBufferBudgetMb
-    {
-        get
-        {
-            var value = Math.Clamp(VoxelBufferBudget, 16, 1024);
-            var power = 16;
-            while (power < value) power <<= 1;
-            return power;
-        }
-    }
-
-    /// <summary>
-    /// 由预算换算出的工作集体素格数上限
-    /// </summary>
-    /// <remarks>
-    /// 单格在 GPU 侧占 48 字节，再给 BVH 节点与暂存留出约四分之一余量
-    /// </remarks>
-    public int VoxelBufferBudgetCells => (int)Math.Min(int.MaxValue,
-        (long)VoxelBufferBudgetMb * 1024L * 1024L / 60L);
-
-    /// <summary>
     /// 非光追实时通道的时间累积权重
     /// </summary>
     /// <remarks>

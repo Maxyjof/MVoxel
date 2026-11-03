@@ -313,14 +313,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal const int MaxFullWorksetCells = 8_000_000;
 
     /// <summary>
-    /// 砖路径允许的源体素上限，由项目显存预算决定
-    /// </summary>
-    /// <remarks>
-    /// 默认沿用旧的硬编码上限，渲染时由调用方按 RenderSettings.VoxelBufferBudgetCells 覆盖
-    /// </remarks>
-    internal int FullWorksetCellLimit { get; set; } = MaxFullWorksetCells;
-
-    /// <summary>
     /// 同步稀疏体素世界到 Vulkan 工作集
     /// </summary>
     /// <param name="world">体素世界</param>
@@ -364,7 +356,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭、体素在预算内
         using var syncPhase = StartupTimeline.Begin("同步工作集");
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
-            lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= FullWorksetCellLimit;
+            lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
         SyncCompletedCount++;
         if (brickEligible)
