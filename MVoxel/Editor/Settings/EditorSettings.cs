@@ -217,8 +217,20 @@ public sealed class ProjectSettingsDocument
     /// <summary>当前选中的分辨率预设 Id，空表示跟随视图；预览不使用它，仅导出对话框的默认值</summary>
     public string RenderResolutionPresetId = string.Empty;
 
-    /// <summary>导出对话框上次使用的格式：png / hdr / all</summary>
+    /// <summary>导出对话框上次使用的格式：png / hdr / all / video</summary>
     public string ExportDialogFormat = "png";
+
+    /// <summary>视频导出使用的时间轴资产相对Assets路径</summary>
+    public string ExportDialogTimelineAsset = string.Empty;
+
+    /// <summary>视频导出帧率</summary>
+    public int ExportDialogVideoFrameRate = 30;
+
+    /// <summary>视频导出起始帧</summary>
+    public int ExportDialogVideoStartFrame;
+
+    /// <summary>视频导出结束帧</summary>
+    public int ExportDialogVideoEndFrame = 300;
 
     /// <summary>导出对话框上次选择的分辨率预设 Id，空表示按比例从视图推算</summary>
     public string ExportDialogResolutionId = string.Empty;
@@ -299,7 +311,10 @@ public sealed class ProjectSettingsDocument
 
         ExportDialogWidth = Math.Clamp(ExportDialogWidth, 16, 8192);
         ExportDialogHeight = Math.Clamp(ExportDialogHeight, 16, 8192);
-        if (ExportDialogFormat is not ("png" or "hdr" or "all")) ExportDialogFormat = "png";
+        if (ExportDialogFormat is not ("png" or "hdr" or "all" or "video")) ExportDialogFormat = "png";
+        ExportDialogVideoFrameRate = Math.Clamp(ExportDialogVideoFrameRate, 1, 240);
+        ExportDialogVideoStartFrame = Math.Max(0, ExportDialogVideoStartFrame);
+        ExportDialogVideoEndFrame = Math.Max(ExportDialogVideoStartFrame, ExportDialogVideoEndFrame);
 
         // 选中的预设被删掉时回落到自由比例 / 跟随视图
         if (RenderAspectPresets.All(preset => preset.Id != RenderAspectPresetId)) RenderAspectPresetId = string.Empty;

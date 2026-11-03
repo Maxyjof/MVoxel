@@ -96,10 +96,36 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        ImGui.TextUnformatted("格式");
-        foreach (var (id, label) in new[] { ("png", "当前相机 · PNG"), ("hdr", "当前相机 · HDR"), ("all", "全部相机 · PNG") })
+        ImGui.TextUnformatted("导出类型");
+        if (ImGui.RadioButton("图像", settings.ExportDialogFormat != "video")) settings.ExportDialogFormat = "png";
+        ImGui.SameLine();
+        if (ImGui.RadioButton("视频", settings.ExportDialogFormat == "video")) settings.ExportDialogFormat = "video";
+        if (settings.ExportDialogFormat == "video")
         {
-            if (ImGui.RadioButton(label, settings.ExportDialogFormat == id)) settings.ExportDialogFormat = id;
+            ImGui.TextDisabled("按时间轴逐帧推进，渲染窗口预览保持静止。");
+            var timelines = _project is null ? Array.Empty<string>() : Directory.GetFiles(_project.AssetsPath, "*.mvtimeline.json", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(_project.AssetsPath, path).Replace('\\', '/')).OrderBy(path => path).ToArray();
+            ImGui.SetNextItemWidth(-1F);
+            var timelineLabel = string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset) ? "选择时间轴资产" : settings.ExportDialogTimelineAsset;
+            if (ImGui.BeginCombo("##ExportTimeline", timelineLabel))
+            {
+                foreach (var timeline in timelines)
+                    if (ImGui.Selectable(timeline, timeline == settings.ExportDialogTimelineAsset)) settings.ExportDialogTimelineAsset = timeline;
+                ImGui.EndCombo();
+            }
+            var frameRate = settings.ExportDialogVideoFrameRate;
+            if (ImGui.InputInt("视频帧率", ref frameRate)) settings.ExportDialogVideoFrameRate = Math.Clamp(frameRate, 1, 240);
+            var startFrame = settings.ExportDialogVideoStartFrame;
+            if (ImGui.InputInt("起始帧", ref startFrame)) settings.ExportDialogVideoStartFrame = Math.Max(0, startFrame);
+            var endFrame = settings.ExportDialogVideoEndFrame;
+            if (ImGui.InputInt("结束帧", ref endFrame)) settings.ExportDialogVideoEndFrame = Math.Max(settings.ExportDialogVideoStartFrame, endFrame);
+            if (timelines.Length == 0) ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "请在Assets文件夹右键新建时间轴。");
+        }
+        else
+        {
+            ImGui.TextUnformatted("图像格式");
+            foreach (var (id, label) in new[] { ("png", "当前相机 · PNG"), ("hdr", "当前相机 · HDR"), ("all", "全部相机 · PNG") })
+                if (ImGui.RadioButton(label, settings.ExportDialogFormat == id)) settings.ExportDialogFormat = id;
         }
 
         ImGui.Separator();
@@ -175,7 +201,11 @@ internal sealed partial class ImGuiEditorWindow
 
         var (canvas, canvasScale) = ResolveExportCanvas();
         ImGui.TextDisabled($"输出 {(int)(canvas.X * canvasScale)} × {(int)(canvas.Y * canvasScale)} 像素");
-        if (settings.ExportDialogFormat == "all")
+        if (settings.ExportDialogFormat == "video")
+        {
+            ImGui.TextDisabled("视频模式当前只建立时间轴导出配置，编码队列将在视频导出阶段启用。");
+        }
+        else if (settings.ExportDialogFormat == "all")
             ImGui.TextDisabled("每个相机各出一张，尺寸同上，构图按各自相机取景");
 
         ImGui.Separator();
