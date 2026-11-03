@@ -1104,10 +1104,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             var undo = _voxelHistory.PeekUndo();
             var redo = _voxelHistory.PeekRedo();
             var bindings = _editorSettings.ActiveScheme().Bindings;
-            if (ImGui.MenuItem(undo is null ? "撤销" : $"撤销 {undo.Name}", bindings.GetValueOrDefault("edit.undo"), false, undo is not null || _historyCommands.Count > 0)) ApplyUndo();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("撤销上一步；按住快捷键可连续撤销，在快捷键方案中修改绑定。");
-            if (ImGui.MenuItem(redo is null ? "重做" : $"重做 {redo.Name}", bindings.GetValueOrDefault("edit.redo"), false, redo is not null)) ApplyRedo();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"重做上一步；备用快捷键 {bindings.GetValueOrDefault("edit.redoAlternate")}，支持按住连续重做。");
+            if (ImGui.MenuItem("撤销", bindings.GetValueOrDefault("edit.undo"), false, undo is not null || _historyCommands.Count > 0)) ApplyUndo();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(undo is null ? "撤销上一步；按住快捷键可连续撤销。" : $"撤销：{undo.Name}；按住快捷键可连续撤销。");
+            if (ImGui.MenuItem("重做", bindings.GetValueOrDefault("edit.redo"), false, redo is not null)) ApplyRedo();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{(redo is null ? "重做上一步" : $"重做：{redo.Name}")}；备用快捷键 {bindings.GetValueOrDefault("edit.redoAlternate")}，支持按住连续重做。");
+            ImGui.Separator();
+            var selected = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId);
+            if (ImGui.MenuItem("聚焦选中对象", enabled: selected is not null) && selected is not null) FocusHierarchyObject(selected);
+            if (ImGui.MenuItem(selected?.Visible == false ? "显示选中对象" : "隐藏选中对象", enabled: selected is not null) && selected is not null)
+            { selected.Visible = !selected.Visible; MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }
+            if (ImGui.MenuItem(selected?.Locked == true ? "解锁选中对象" : "锁定选中对象", enabled: selected is not null) && selected is not null) ToggleSceneObjectLock(selected);
+            if (ImGui.BeginMenu("创建子对象", selected is not null))
+            {
+                DrawHierarchyCreateMenu(selected!);
+                ImGui.EndMenu();
+            }
+            if (ImGui.MenuItem("取消选择", enabled: selected is not null)) _selectedSceneObjectId = null;
             ImGui.EndMenu();
         }
 
