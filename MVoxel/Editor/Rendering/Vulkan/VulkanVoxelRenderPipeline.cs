@@ -366,7 +366,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
-        RefreshEmissiveCatalog(world, maximumCells == 0 && lodSignature == 0);
         _brickResidency = null;
         _usingBrickPath = false;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -374,6 +373,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             out var buildTiming);
         WorksetBuildTiming = buildTiming;
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        // 索引刷新放在构建之后：工作集已经给出本轮发光体素数，
+        // 为零时可以直接清空索引，省掉一次整份世界的扫描
+        RefreshEmissiveCatalog(world, maximumCells == 0 && lodSignature == 0, next.EmissiveCount);
         SyncPackMs = 0;
         SyncUploadMs = 0;
         if (_context is not null)

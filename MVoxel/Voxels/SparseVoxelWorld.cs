@@ -401,22 +401,57 @@ public sealed class VoxelWorld
         maximum = default;
         var found = false;
         long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
-        foreach (var (coordinate, _) in EnumerateOccupied())
+        // 逐区块先求局部包围盒再换算世界坐标：内层只剩整数比较，
+        // 不再为每个体素构造 (坐标, 值) 元组并走一遍迭代器
+        foreach (var (chunkCoordinate, chunk) in _chunks)
         {
+            if (chunk.OccupiedCount == 0) continue;
+            var localFound = false;
+            int localMinX = 0, localMinY = 0, localMinZ = 0, localMaxX = 0, localMaxY = 0, localMaxZ = 0;
+            foreach (var index in chunk.Snapshot.Keys)
+            {
+                var local = SparseVoxelChunk.FromIndex(index);
+                if (!localFound)
+                {
+                    localMinX = localMaxX = local.X;
+                    localMinY = localMaxY = local.Y;
+                    localMinZ = localMaxZ = local.Z;
+                    localFound = true;
+                    continue;
+                }
+
+                if (local.X < localMinX) localMinX = local.X;
+                else if (local.X > localMaxX) localMaxX = local.X;
+                if (local.Y < localMinY) localMinY = local.Y;
+                else if (local.Y > localMaxY) localMaxY = local.Y;
+                if (local.Z < localMinZ) localMinZ = local.Z;
+                else if (local.Z > localMaxZ) localMaxZ = local.Z;
+            }
+
+            if (!localFound) continue;
+            var baseX = chunkCoordinate.X * ChunkSize;
+            var baseY = chunkCoordinate.Y * ChunkSize;
+            var baseZ = chunkCoordinate.Z * ChunkSize;
+            var chunkMinX = baseX + localMinX;
+            var chunkMinY = baseY + localMinY;
+            var chunkMinZ = baseZ + localMinZ;
+            var chunkMaxX = baseX + localMaxX;
+            var chunkMaxY = baseY + localMaxY;
+            var chunkMaxZ = baseZ + localMaxZ;
             if (!found)
             {
-                (minX, minY, minZ) = (coordinate.X, coordinate.Y, coordinate.Z);
-                (maxX, maxY, maxZ) = (minX, minY, minZ);
+                (minX, minY, minZ) = (chunkMinX, chunkMinY, chunkMinZ);
+                (maxX, maxY, maxZ) = (chunkMaxX, chunkMaxY, chunkMaxZ);
                 found = true;
                 continue;
             }
 
-            minX = Math.Min(minX, coordinate.X);
-            minY = Math.Min(minY, coordinate.Y);
-            minZ = Math.Min(minZ, coordinate.Z);
-            maxX = Math.Max(maxX, coordinate.X);
-            maxY = Math.Max(maxY, coordinate.Y);
-            maxZ = Math.Max(maxZ, coordinate.Z);
+            if (chunkMinX < minX) minX = chunkMinX;
+            if (chunkMinY < minY) minY = chunkMinY;
+            if (chunkMinZ < minZ) minZ = chunkMinZ;
+            if (chunkMaxX > maxX) maxX = chunkMaxX;
+            if (chunkMaxY > maxY) maxY = chunkMaxY;
+            if (chunkMaxZ > maxZ) maxZ = chunkMaxZ;
         }
 
         minimum = new VoxelCoord64(minX, minY, minZ);

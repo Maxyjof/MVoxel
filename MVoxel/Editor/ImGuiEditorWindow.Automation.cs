@@ -142,6 +142,8 @@ internal sealed partial class ImGuiEditorWindow
 
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
+        new("ui.setCenterTab", "界面", "切换中央页面", "把中央区域切到场景或渲染页面，等同点击页签",
+            [Param("tab", "string", true, "scene 或 render")]),
         new("ui.status", "界面", "读取状态栏", "读取编辑器状态栏文本", []),
         new("project.info", "项目", "读取项目信息", "读取当前项目的路径、场景与统计", []),
     ];
@@ -231,6 +233,7 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.create" => CreateTimelineAsset(payload),
 
             "ui.setPanel" => SetPanel(payload),
+            "ui.setCenterTab" => SetCenterTab(payload),
             "ui.status" => new { status = _statusText },
             "project.info" => DescribeProject(),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{commandId}"),
@@ -1100,6 +1103,21 @@ internal sealed partial class ImGuiEditorWindow
         count = PanelIds.Length,
         panels = PanelIds.Select(item => new { id = item.Id, title = item.Title, visible = GetPanelVisible(item.Id) }).ToArray(),
     };
+
+    /// <summary>
+    /// 切换中央页面：与菜单里的“场景/渲染”走同一个请求字段，下一帧聚焦对应窗口
+    /// </summary>
+    /// <param name="arguments">命令参数，tab 取 scene 或 render</param>
+    /// <returns>目标页面编号</returns>
+    private object SetCenterTab(JsonElement arguments) => RunOnUi(() =>
+    {
+        var tab = ReadString(arguments, "tab") ?? throw new ArgumentException("缺少 tab");
+        var target = tab.Equals("render", StringComparison.OrdinalIgnoreCase) ? 1
+            : tab.Equals("scene", StringComparison.OrdinalIgnoreCase) ? 0
+            : throw new ArgumentException("tab 只能是 scene 或 render");
+        _requestedCenterTab = target;
+        return new { centerTab = target };
+    });
 
     private object SetPanel(JsonElement arguments) => RunOnUi(() =>
     {

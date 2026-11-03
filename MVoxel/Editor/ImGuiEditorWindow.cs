@@ -448,6 +448,26 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     }
 
     /// <summary>
+    /// 把工作集构建的分阶段耗时整理成可序列化结构，供 CLI 与自动化读取
+    /// </summary>
+    /// <param name="pipeline">目标管线，可为空</param>
+    /// <returns>各阶段毫秒数与合计</returns>
+    private static object DescribeWorksetBuild(VulkanVoxelRenderPipeline? pipeline)
+    {
+        var timing = pipeline?.WorksetBuildTiming ?? default;
+        return new
+        {
+            snapshotMs = timing.SnapshotMs,
+            collectMs = timing.CollectMs,
+            sortMs = timing.SortMs,
+            cullMs = timing.CullMs,
+            mergeMs = timing.MergeMs,
+            gatherMs = timing.GatherMs,
+            totalMs = timing.TotalMs,
+        };
+    }
+
+    /// <summary>
     /// 处理 CLI 发来的只读状态和项目打开命令
     /// </summary>
     /// <param name="request">命令 JSON</param>
@@ -478,11 +498,20 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 renderPathTracing = _renderSettings.PathTracingEnabled,
                 renderWorksetCells = _pipeline?.SyncTotalCells ?? 0,
                 renderWorksetBuildMs = _pipeline?.SyncWorksetBuildMs ?? 0,
+                renderWorksetSyncCount = _pipeline?.SyncCompletedCount ?? 0,
+                renderWorksetBuild = DescribeWorksetBuild(_pipeline),
                 performanceAnalyzerVisible = IsPerformanceAnalyzerVisible,
                 centerTab = _centerTab,
                 scenePipelineAvailable = _scenePipeline?.IsAvailable ?? false,
                 renderPipelineAvailable = _pipeline?.IsAvailable ?? false,
                 sceneWorksetCells = _scenePipeline?.SyncTotalCells ?? 0,
+                sceneWorksetBuildMs = _scenePipeline?.SyncWorksetBuildMs ?? 0,
+                sceneWorksetSyncCount = _scenePipeline?.SyncCompletedCount ?? 0,
+                sceneWorksetBuild = DescribeWorksetBuild(_scenePipeline),
+                sceneBvhBuildMs = _scenePipeline?.SyncBvhBuildMs ?? 0,
+                scenePackMs = _scenePipeline?.SyncPackMs ?? 0,
+                sceneUploadMs = _scenePipeline?.SyncUploadMs ?? 0,
+                sceneEmissiveSyncCpuMs = _scenePipeline?.EmissiveSyncMilliseconds ?? 0,
                 sceneDispatchCount = _scenePipeline?.LastDispatchCount ?? 0,
                 performanceAnalyzerRecording = PerformanceProbeActive,
                 performanceAnalyzerFrozen = _analysisPaused,

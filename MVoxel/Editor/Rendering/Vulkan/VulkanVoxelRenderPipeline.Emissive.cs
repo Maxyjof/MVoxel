@@ -211,7 +211,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
     internal int EmissiveTreeNodeCount { get; private set; }
     internal double EmissiveSyncMilliseconds { get; private set; }
 
-    private void RefreshEmissiveCatalog(VoxelWorld world, bool exactGeometry)
+    /// <summary>
+    /// 刷新发光面索引
+    /// </summary>
+    /// <param name="world">源世界</param>
+    /// <param name="exactGeometry">工作集是否等于完整几何，决定索引能否直接复用</param>
+    /// <param name="emissiveCells">
+    /// 本轮工作集里的发光体素数，未知传 -1。已知为零时整份世界不可能有发光面，
+    /// 直接清空索引即可，不必再完整扫一遍世界
+    /// </param>
+    private void RefreshEmissiveCatalog(VoxelWorld world, bool exactGeometry, int emissiveCells = -1)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         if (!exactGeometry)
@@ -219,6 +228,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             _emissiveCatalog = new();
             _emissiveSource = null;
             _emissiveVersion = -1;
+        }
+        else if (emissiveCells == 0)
+        {
+            // 内部体素剔除不会移除发光体素，因此工作集为零就代表世界没有发光体素
+            if (_emissiveCatalog.FaceCount > 0) _emissiveCatalog = new();
+            _emissiveSource = world;
+            _emissiveVersion = world.ContentVersion;
         }
         else if (!ReferenceEquals(_emissiveSource, world))
         {
