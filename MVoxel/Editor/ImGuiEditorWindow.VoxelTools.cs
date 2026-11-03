@@ -202,6 +202,130 @@ internal sealed partial class ImGuiEditorWindow
         Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed,
         bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum);
 
+    /// <summary>
+    /// 一个场景对象对模型资产的读取请求
+    /// </summary>
+    private readonly record struct ModelRequest(StableId ObjectId, string Name, ModelLoadKey Key);
+
+    /// <summary>
+    /// 按资产路径去重后读取对象体素
+    /// </summary>
+    /// <remarks>
+    /// 模型文件只保存局部坐标，同一份资产常被多个场景对象引用（街区、屋顶、树木）；
+    /// 原实现按“路径加原点”做缓存键，导致同一个文件被重复解码几十次。
+    /// 这里改为每个资产解析一次，其余对象按原点差平移复制，并按资产并行
+    /// </remarks>
+    /// <param name="requests">对象的读取请求</param>
+    /// <param name="worlds">输出的对象标识到体素世界的映射</param>
+    /// <param name="cache">跨场景复用的模型缓存，键为路径与原点的组合</param>
+    /// <param name="cancellation">取消令牌</param>
+    /// <param name="report">进度回调</param>
+    /// <param name="markFailed">出现单个对象失败时上报</param>
+    private static void LoadObjectWorlds(List<ModelRequest> requests,
+        Dictionary<StableId, VoxelWorld> worlds, Dictionary<ModelLoadKey, VoxelWorld> cache,
+        CancellationToken cancellation, Action<BlockingOperationProgress> report, Action markFailed)
+    {
+        if (requests.Count == 0) return;
+        var materialized = new VoxelWorld?[requests.Count];
+        // 精确命中缓存（路径与原点都一致）不付解析成本，留到后面的串行复制
+        var groups = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < requests.Count; index++)
+        {
+            var key = requests[index].Key;
+            if (cache.ContainsKey(key)) continue;
+            if (!groups.TryGetValue(key.Path, out var group)) groups.Add(key.Path, group = []);
+            group.Add(index);
+        }
+
+        var totalGroups = Math.Max(1, groups.Count);
+        var completedGroups = 0;
+        var progressGate = new object();
+        try
+        {
+            Parallel.ForEach(groups, new ParallelOptions
+            {
+                CancellationToken = cancellation,
+                MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount - 2, 2, 8),
+            }, entry =>
+            {
+                var group = entry.Value;
+                try
+                {
+                    // 每个资产只解析一次，同组其余对象在同一线程内位移复制，
+                    // 组与组之间没有共享可变状态，只有进度计数需要加锁
+                    var first = requests[group[0]];
+                    var canonical = LargeWorldFormat.Read(first.Key.Path, first.Key.Origin, cancellation);
+                    materialized[group[0]] = canonical;
+                    for (var position = 1; position < group.Count; position++)
+                    {
+                        var request = requests[group[position]];
+                        materialized[group[position]] = canonical.CloneShifted(
+                            request.Key.Origin.X - first.Key.Origin.X,
+                            request.Key.Origin.Y - first.Key.Origin.Y,
+                            request.Key.Origin.Z - first.Key.Origin.Z);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+                {
+                    markFailed();
+                    MVoxelLog.Error($"对象体素加载失败：{Path.GetFileName(entry.Key)}", exception);
+                }
+
+                int done;
+                lock (progressGate)
+                {
+                    done = ++completedGroups;
+                }
+
+                report(new BlockingOperationProgress(
+                    $"正在读取对象体素：{Path.GetFileNameWithoutExtension(entry.Key)}（{done}/{totalGroups}）…",
+                    .22F + .60F * done / totalGroups, true));
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (AggregateException exception) when (exception.InnerException is OperationCanceledException)
+        {
+            throw new OperationCanceledException(exception.InnerException.Message, exception.InnerException, cancellation);
+        }
+
+        //把解析结果落到对象标识上，并回填缓存供后续场景复用
+        for (var index = 0; index < requests.Count; index++)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var request = requests[index];
+            var world = materialized[index];
+            if (world is null)
+            {
+                try
+                {
+                    if (!cache.TryGetValue(request.Key, out var source))
+                        source = LargeWorldFormat.Read(request.Key.Path, request.Key.Origin, cancellation);
+                    world = source.Clone();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+                {
+                    markFailed();
+                    MVoxelLog.Error($"对象体素加载失败：{request.Name}", exception);
+                    continue;
+                }
+            }
+
+            worlds[request.ObjectId] = world;
+            cache[request.Key] = world;
+        }
+    }
+
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
         CancellationToken cancellation, Action<BlockingOperationProgress> report, Scene.SceneDocument? overrideScene = null,
         Dictionary<ModelLoadKey, VoxelWorld>? modelCache = null)
@@ -223,30 +347,26 @@ internal sealed partial class ImGuiEditorWindow
             using var decodePhase = StartupTimeline.Begin("预读·解码体素模型");
             var keys = GetObjectModelLoadKeys(project, scene).ToDictionary(item => item.ObjectId, item => item.Key);
             var objects = scene.Objects.Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel)).ToList();
+            var requests = new List<ModelRequest>(objects.Count);
             for (var i = 0; i < objects.Count; i++)
             {
-                cancellation.ThrowIfCancellationRequested();
                 var item = objects[i];
-                report(new BlockingOperationProgress($"正在读取对象体素：{item.Name}（{i + 1}/{objects.Count}）…",
-                    .22F + .60F * i / Math.Max(1, objects.Count), true));
                 var component = item.Components.First(SceneComponentTypes.IsVoxelModel);
                 try
                 {
                     var data = SceneComponentTypes.ReadVoxelModel(component);
-                    VoxelWorld world;
                     if (string.IsNullOrWhiteSpace(data.Model))
-                        world = EmbeddedVoxelData.HasData(component) ? EmbeddedVoxelData.Read(component) : new VoxelWorld();
-                    else if (keys.TryGetValue(item.Id, out var key))
                     {
-                        if (!cache.TryGetValue(key, out var source))
-                            cache[key] = world = LargeWorldFormat.Read(key.Path, key.Origin, cancellation,
-                                (done, total) => report(new BlockingOperationProgress(
-                                    $"正在读取对象体素：{item.Name}（{done:N0}/{total:N0}）…",
-                                    .22F + .60F * (i + (float)done / Math.Max(1, total)) / Math.Max(1, objects.Count), true)));
-                        else world = source.Clone();
+                        // 内置体素对象不读文件，直接取组件里的数据
+                        worlds[item.Id] = EmbeddedVoxelData.HasData(component)
+                            ? EmbeddedVoxelData.Read(component)
+                            : new VoxelWorld();
+                        continue;
                     }
-                    else throw new InvalidDataException($"模型资产不存在：{data.Model}");
-                    worlds[item.Id] = world;
+
+                    if (!keys.TryGetValue(item.Id, out var key))
+                        throw new InvalidDataException($"模型资产不存在：{data.Model}");
+                    requests.Add(new ModelRequest(item.Id, item.Name, key));
                 }
                 catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
                 {
@@ -254,6 +374,8 @@ internal sealed partial class ImGuiEditorWindow
                     MVoxelLog.Error("对象体素加载失败", exception);
                 }
             }
+
+            LoadObjectWorlds(requests, worlds, cache, cancellation, report, () => failed = true);
         }
         cancellation.ThrowIfCancellationRequested();
         report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));

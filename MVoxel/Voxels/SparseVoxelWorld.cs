@@ -486,6 +486,51 @@ public sealed class VoxelWorld
     }
 
     /// <summary>
+    /// 复制全部区块并整体平移指定偏移，副本和原世界可独立修改
+    /// </summary>
+    /// <remarks>
+    /// 模型文件只保存局部坐标，同一份资产被多个场景对象引用时只需要解析一次，
+    /// 其余对象按原点差平移复制，避免把同一份几十万体素的文件重复解码
+    /// </remarks>
+    /// <param name="offsetX">X 方向平移量</param>
+    /// <param name="offsetY">Y 方向平移量</param>
+    /// <param name="offsetZ">Z 方向平移量</param>
+    /// <returns>平移后的新世界</returns>
+    internal VoxelWorld CloneShifted(long offsetX, long offsetY, long offsetZ)
+    {
+        if (offsetX == 0 && offsetY == 0 && offsetZ == 0) return Clone();
+        var copy = new VoxelWorld();
+        var target = new Dictionary<ChunkCoord64, SparseVoxelChunk>(_chunks.Count);
+        foreach (var (coordinate, chunk) in _chunks)
+        {
+            var baseX = coordinate.X * ChunkSize + offsetX;
+            var baseY = coordinate.Y * ChunkSize + offsetY;
+            var baseZ = coordinate.Z * ChunkSize + offsetZ;
+            foreach (var (index, value) in chunk.Snapshot)
+            {
+                var local = SparseVoxelChunk.FromIndex(index);
+                var worldX = baseX + local.X;
+                var worldY = baseY + local.Y;
+                var worldZ = baseZ + local.Z;
+                var chunkCoordinate = new ChunkCoord64(
+                    FloorDiv(worldX, ChunkSize), FloorDiv(worldY, ChunkSize), FloorDiv(worldZ, ChunkSize));
+                if (!target.TryGetValue(chunkCoordinate, out var destination))
+                {
+                    destination = new SparseVoxelChunk();
+                    target.Add(chunkCoordinate, destination);
+                }
+
+                destination.Set(new LocalCoord(
+                    FloorMod(worldX, ChunkSize), FloorMod(worldY, ChunkSize), FloorMod(worldZ, ChunkSize)), value);
+            }
+        }
+
+        foreach (var (coordinate, chunk) in target)
+            copy.AdoptChunk(coordinate, chunk);
+        return copy;
+    }
+
+    /// <summary>
     /// 收养一个外部构建好的稀疏区块，键必须尚未存在于世界中，
     /// 供导入器把并行解析的分组结果整体并入，避免逐体素全局锁合并
     /// </summary>
