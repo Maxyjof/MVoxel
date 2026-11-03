@@ -58,6 +58,11 @@ internal sealed partial class ImGuiEditorWindow
     private long _analysisSelectedSerial;
     private int _analysisFrameIndex;
     private int _analysisFrameCount;
+    /// <summary>最近一次成功解析的 GPU 时间戳，供状态接口稳定读取</summary>
+    private float _lastResolvedGpuFrameMs;
+    private float _lastResolvedGpuSamplingMs;
+    private float _lastResolvedGpuFinishMs;
+    private long _lastResolvedGpuToken;
     private double _analysisRefreshSeconds;
     private long _analysisWorkingSet;
     private long _analysisPrivateBytes;
@@ -155,6 +160,12 @@ internal sealed partial class ImGuiEditorWindow
             !pipeline.TryTakeGpuTiming(out var token, out var milliseconds,
                 out var samplingMilliseconds, out var finishMilliseconds)) return;
         if (token <= 0) return;
+        // 异步回读总是落在已经结束的旧帧上，最新一帧通常还没解析；
+        // 这里单独记一份最近解析到的值，状态接口就不再受最新帧是否已解析影响
+        _lastResolvedGpuFrameMs = (float)milliseconds;
+        _lastResolvedGpuSamplingMs = (float)samplingMilliseconds;
+        _lastResolvedGpuFinishMs = (float)finishMilliseconds;
+        _lastResolvedGpuToken = token;
         var slot = (int)((token - 1) % AnalysisFrameCapacity);
         if (_analysisFrames[slot].Serial != token) return;
         _analysisFrames[slot].GpuMs = (float)milliseconds;
