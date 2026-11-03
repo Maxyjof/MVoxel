@@ -940,6 +940,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         style.Colors[(int)ImGuiCol.ButtonActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.Border] = ToColor(EditorPalette.Border);
         style.Colors[(int)ImGuiCol.Separator] = ToColor(EditorPalette.Border);
+        // 表格头和隔行底色跟随当前主题，不能沿用 ImGui 默认的深色表头，
+        // 否则浅色主题下会出现黑底黑字
+        style.Colors[(int)ImGuiCol.TableHeaderBg] = ToColor(EditorPalette.PanelHeader);
+        style.Colors[(int)ImGuiCol.TableRowBg] = new Vector4(0F, 0F, 0F, 0F);
+        var tableRowAlt = ToColor(EditorPalette.Panel);
+        tableRowAlt.W = 0.45F;
+        style.Colors[(int)ImGuiCol.TableRowBgAlt] = tableRowAlt;
+        style.Colors[(int)ImGuiCol.TableBorderStrong] = ToColor(EditorPalette.Border);
+        var tableBorderLight = ToColor(EditorPalette.Border);
+        tableBorderLight.W = 0.6F;
+        style.Colors[(int)ImGuiCol.TableBorderLight] = tableBorderLight;
         style.Colors[(int)ImGuiCol.SeparatorHovered] = ToColor(EditorPalette.Accent);
         style.Colors[(int)ImGuiCol.Tab] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TabHovered] = ToColor(EditorPalette.SelectedHover);
