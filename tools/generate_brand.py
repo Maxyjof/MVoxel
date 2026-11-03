@@ -12,53 +12,50 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 BRAND = ROOT / "MVoxel" / "Editor" / "Brand"
 SIZE = 256
-CELL = 18
-ORIGIN_X = 20
-ORIGIN_Y = 20
-
-BLUE = (29, 103, 196, 255)
-BLUE_FACE = (53, 165, 239, 255)
-BLUE_GLEAM = (130, 221, 255, 255)
-BLUE_SHADE = (13, 59, 132, 255)
-RED = (187, 45, 65, 255)
-RED_FACE = (245, 80, 91, 255)
-RED_GLEAM = (255, 160, 143, 255)
-RED_SHADE = (121, 24, 52, 255)
+BLUE = (71, 169, 232, 255)
+BLUE_SIDE = (47, 133, 195, 255)
+RED = (243, 119, 119, 255)
+RED_SIDE = (214, 91, 99, 255)
 
 
 def voxels():
-    for row in range(12):
-        blue = {0, 1}
-        red = {10, 11}
-        if row <= 3:
-            blue.update((row + 1, row + 2))
-            red.update((9 - row, 10 - row))
-        elif row == 4:
-            blue.update((4, 5))
-            red.update((6, 7))
-        for col in sorted(blue):
-            yield col, row, (BLUE, BLUE_FACE, BLUE_GLEAM, BLUE_SHADE)
-        for col in sorted(red):
-            yield col, row, (RED, RED_FACE, RED_GLEAM, RED_SHADE)
+    rows = ((0, 1, 4, 5), (0, 1, 2, 3, 4, 5), (0, 1, 2, 3, 4, 5), (0, 1, 4, 5))
+    for row, cols in enumerate(rows):
+        for col in cols:
+            yield col, row, BLUE if row < 2 else RED
 
 
 def rectangles():
-    for col, row, colors in voxels():
-        x = ORIGIN_X + col * CELL
-        y = ORIGIN_Y + row * CELL
-        # Square body, inset square face, and two square light/shadow pixels.
-        yield x, y, 17, colors[0]
-        yield x + 2, y + 2, 13, colors[1]
-        yield x + 3, y + 3, 4, colors[2]
-        yield x + 11, y + 11, 4, colors[3]
+    # Three continuous isometric voxel bands form the selected M silhouette.
+    # Each cell is a 3-face cube on a shared 30-degree projection grid.
+    for row in range(4):
+        cols = range(6) if row else (0, 1, 4, 5)
+        for col in cols:
+            x, y = 54 + col * 25, 44 + row * 27
+            front = BLUE if row < 2 else RED
+            side = BLUE_SIDE if row < 2 else RED_SIDE
+            top_pts = [(x, y+14), (x+25, y), (x+50, y+14), (x+25, y+28)]
+            left_pts = [(x, y+14), (x+25, y+28), (x+25, y+52), (x, y+38)]
+            right_pts = [(x+25, y+28), (x+50, y+14), (x+50, y+38), (x+25, y+52)]
+            yield (top_pts, front, 0)
+            yield (left_pts, side, 0)
+            yield (right_pts, front, 0)
 
 
 def rgba_pixels():
     pixels = bytearray(SIZE * SIZE * 4)
-    for x, y, side, color in rectangles():
-        for py in range(y, y + side):
-            offset = (py * SIZE + x) * 4
-            pixels[offset : offset + side * 4] = bytes(color) * side
+    for points, color, _ in rectangles():
+        for y in range(max(0, min(p[1] for p in points)), min(SIZE, max(p[1] for p in points))):
+            for x in range(max(0, min(p[0] for p in points)), min(SIZE, max(p[0] for p in points))):
+                inside = False
+                j = len(points) - 1
+                for i, (xi, yi) in enumerate(points):
+                    xj, yj = points[j]
+                    if ((yi > y) != (yj > y)) and x < (xj-xi)*(y-yi)/(yj-yi+1e-12)+xi:
+                        inside = not inside
+                    j = i
+                if inside:
+                    pixels[(y*SIZE+x)*4:(y*SIZE+x+1)*4] = bytes(color)
     return bytes(pixels)
 
 
@@ -93,8 +90,9 @@ def svg():
         '  <title>MVoxel</title>',
         '  <desc>Red and blue M composed exclusively of equal-grid square voxels on transparency.</desc>',
     ]
-    for x, y, side, color in rectangles():
-        lines.append(f'  <rect x="{x}" y="{y}" width="{side}" height="{side}" fill="#{color[0]:02X}{color[1]:02X}{color[2]:02X}"/>')
+    for points, color, _ in rectangles():
+        pts = ' '.join(f'{x},{y}' for x,y in points)
+        lines.append(f'  <polygon points="{pts}" fill="#{color[0]:02X}{color[1]:02X}{color[2]:02X}"/>')
     lines.append('</svg>')
     return "\n".join(lines) + "\n"
 
