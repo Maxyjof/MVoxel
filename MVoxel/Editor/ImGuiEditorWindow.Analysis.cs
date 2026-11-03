@@ -327,7 +327,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var recording = !_analysisPaused;
         if (recording) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.72F, 0.18F, 0.18F, 1F));
-        if (ImGui.Button(recording ? "● 录制中" : "○ 已暂停")) SetAnalysisPaused(recording);
+        if (ImGui.Button(recording ? "录制中" : "已暂停")) SetAnalysisPaused(recording);
         if (recording) ImGui.PopStyleColor();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("打开分析器即开始记录；点击暂停会保留已有帧和当前所选帧，再次点击继续记录，不会清空历史。" + Environment.NewLine +
