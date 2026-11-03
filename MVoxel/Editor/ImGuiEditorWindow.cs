@@ -2915,6 +2915,15 @@ DockId=0x6A3C3007,0
                         ? _pipelineStatus.Length > 0 ? "显卡路径追踪不可用 · 当前显示 CPU 预览" : "显卡路径追踪初始化中"
                         : _pipelineStatus.Length > 0 ? "实时渲染管线不可用 · 当前显示 CPU 预览" : "实时渲染管线初始化中"
                     : "体素世界已隐藏");
+                if (_pipelineStatus.Length > 0)
+                {
+                    // 失败原因直接摆在视口里：降级本身用户能看见，但“为什么降级”以前只在日志里
+                    var reason = _pipelineStatus.Length > 180 ? string.Concat(_pipelineStatus.AsSpan(0, 180), "…") : _pipelineStatus;
+                    ImGui.SetCursorScreenPos(origin + new Vector2(12F, size.Y * .5F + 24F));
+                    ImGui.PushTextWrapPos(origin.X + size.X - 12F);
+                    ImGui.TextColored(new System.Numerics.Vector4(1F, .66F, .3F, 1F), reason);
+                    ImGui.PopTextWrapPos();
+                }
             }
         }
         else
