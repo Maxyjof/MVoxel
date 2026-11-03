@@ -81,11 +81,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private const int MaxIncrementalChunks = 64;
 
     /// <summary>
-    /// 显式启用砖路径（渲染台架 `brick` 旗标）。
-    /// 默认关闭：密集场景的砖内线性扫描尚待区块内 BVH 替换，
-    /// 且砖格未做贪心合并，与传统路径存在噪声级像素差异
+    /// 是否走砖驻留路径
     /// </summary>
-    internal static bool EnableBrickPath { get; set; }
+    /// <remarks>
+    /// 早先默认关闭的两个原因都已被后续提交修掉：砖内线性扫描换成了区块对齐的两级 BVH，
+    /// 格图元也改用与传统路径同一套贪心合并；因此现在默认开启，
+    /// 仍可用 <see cref="DisableBrickPath"/> 强制走传统全量路径做 A/B 对比
+    /// </remarks>
+    internal static bool EnableBrickPath { get; set; } = true;
 
     /// <summary>
     /// 强制走传统全量路径（渲染台架 A/B 对比用）
