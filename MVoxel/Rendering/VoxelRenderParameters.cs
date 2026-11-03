@@ -99,6 +99,8 @@ public sealed class VoxelRenderParameters
     public const int EmissiveDirectSampling = 117;
     public const int EmissiveLightTree = 118;
     public const int VoxelIndirectStrength = 119, ProbeGiStrength = 120;
+    /// <summary>非光追体素间接光的每像素采样方向数</summary>
+    public const int VoxelIndirectSamples = 168;
     public const int VolumeWeight = 121, VolumeFogDensity = 122, VolumeBloomIntensity = 123, VolumeExposure = 124;
     public const int RealtimeAntiAliasingSamples = 125;
     public const int RealtimeAntiAliasingPattern = 126, RealtimeAntiAliasingSpread = 127;
@@ -170,6 +172,7 @@ public sealed class VoxelRenderParameters
             ("P_SCENE_PREVIEW", ScenePreview),
             ("P_SCENE_LIGHT_COUNT", SceneLightCount),
             ("P_VOXEL_INDIRECT_STRENGTH", VoxelIndirectStrength),
+            ("P_VOXEL_INDIRECT_SAMPLES", VoxelIndirectSamples),
             ("P_PROBE_GI_STRENGTH", ProbeGiStrength),
             ("P_VOLUME_WEIGHT", VolumeWeight), ("P_VOLUME_FOG_DENSITY", VolumeFogDensity),
             ("P_VOLUME_BLOOM_INTENSITY", VolumeBloomIntensity), ("P_VOLUME_EXPOSURE", VolumeExposure),
@@ -355,6 +358,7 @@ public sealed class VoxelRenderParameters
         parameters[EmissiveDirectSampling] = settings.EmissiveDirectSampling ? 1F : 0F;
         parameters[EmissiveLightTree] = settings.EmissiveLightTree ? 1F : 0F;
         parameters[VoxelIndirectStrength] = settings.VoxelIndirectLightStrength;
+        parameters[VoxelIndirectSamples] = Math.Clamp(settings.VoxelIndirectLightSamples, 1, 32);
         parameters[ProbeGiStrength] = settings.ProbeVolumeGiStrength;
         parameters[VolumeWeight] = settings.FogDensity > 0F || settings.BloomIntensity > 0F || MathF.Abs(settings.Exposure) > 0.0001F ? 1F : 0F;
         parameters[VolumeFogDensity] = settings.FogDensity;
@@ -378,7 +382,8 @@ public sealed class VoxelRenderParameters
         parameters[FxaaPass] = 0F;
         parameters[FxaaThreshold] = float.IsFinite(settings.FxaaThreshold) ? Math.Clamp(settings.FxaaThreshold, .0312F, .333F) : .125F;
         parameters[FxaaStrength] = float.IsFinite(settings.FxaaStrength) ? Math.Clamp(settings.FxaaStrength, 0F, 1F) : .75F;
-        parameters[RealtimeTemporalWeight] = 0F;
+        parameters[RealtimeTemporalWeight] =
+            float.IsFinite(settings.RealtimeTemporalWeight) ? Math.Clamp(settings.RealtimeTemporalWeight, 0F, .98F) : 0F;
         parameters[Absorption] = settings.TransmissiveAbsorption;
         parameters[Aperture] = settings.DepthOfField ? settings.ApertureRadius : 0F;
         parameters[FocusDistance] = settings.FocusDistance;

@@ -23,8 +23,12 @@ internal sealed partial class ImGuiEditorWindow
     private int _sceneGizmoDragAxis;
     private bool _sceneGizmoDragRange;
     private bool _sceneGizmoDragScale;
-    private bool _sceneGizmoDragProbe;    private System.Numerics.Vector3 _sceneGizmoProbeStartSize;
+    private bool _sceneGizmoDragProbe;
+    private System.Numerics.Vector3 _sceneGizmoProbeStartSize;
     private System.Numerics.Vector3 _sceneGizmoProbeStartOffset;
+    /// <summary>正在拖拽的探针面：0 到 2 为轴，符号表示拖的是哪一侧；-1 表示整体平移</summary>
+    private int _sceneGizmoProbeAxis = -1;
+    private int _sceneGizmoProbeFaceSign = 1;
     private bool _sceneGizmoDragRotation;
     private int _sceneGizmoDragPlane = -1;
     private Quaternion _sceneGizmoStartRotation;
@@ -107,18 +111,10 @@ internal sealed partial class ImGuiEditorWindow
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = Math.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
-        if (probeComponent is not null && SceneComponentTypes.ReadProbeVolume(probeComponent).Editing)
+        if (probeComponent is not null)
         {
             var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
-            var center = pivot + camera.Right * probe.OffsetX + camera.Up * probe.OffsetY;
-            if (SceneProjection.Project(center, origin, size, camera, out var probeScreen, out _))
-            {
-                var halfX = MathF.Max(8F, probe.SizeX / Math.Max(unitsPerPixel, .0001F) * .5F);
-                var halfY = MathF.Max(8F, probe.SizeY / Math.Max(unitsPerPixel, .0001F) * .5F);
-                var color = ToPackedColor(EditorPalette.Accent);
-                drawList.AddRect(probeScreen - new Vector2(halfX, halfY), probeScreen + new Vector2(halfX, halfY), color, 2F, ImDrawFlags.None, 1.5F);
-                drawList.AddText(probeScreen + new Vector2(halfX + 6F, -8F), color, "Probe Volume");
-            }
+            DrawProbeVolumeBox(drawList, origin, size, camera, pivot, probe, probe.Editing);
         }
 
         switch (_sceneGizmoMode)
@@ -226,6 +222,133 @@ internal sealed partial class ImGuiEditorWindow
             drawList.AddLine(centerScreen, handleScreen, packed, 1.2F);
             drawList.AddRectFilled(handleScreen - new Vector2(4F), handleScreen + new Vector2(4F), packed);
         }
+    }
+
+    /// <summary>
+    /// 画探针体积的三维线框盒，编辑状态下额外画六面与中心手柄
+    /// </summary>
+    /// <remarks>
+    /// 偏移与尺寸都以世界轴为准，和渲染端按世界坐标取样保持一致；
+    /// 十二根棱按离相机远近分级透明度，避免正方体看起来像平面
+    /// </remarks>
+    /// <param name="drawList">绘制列表</param>
+    /// <param name="origin">视口原点</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">场景相机</param>
+    /// <param name="pivot">探针对象的世界参考点</param>
+    /// <param name="probe">探针组件参数</param>
+    /// <param name="editing">是否处于探针编辑状态</param>
+    private void DrawProbeVolumeBox(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        Vector3 pivot, ProbeVolumeComponentData probe, bool editing)
+    {
+        var center = pivot + new Vector3(probe.OffsetX, probe.OffsetY, probe.OffsetZ);
+        var half = new Vector3(
+            MathF.Max(.05F, probe.SizeX) * .5F, MathF.Max(.05F, probe.SizeY) * .5F, MathF.Max(.05F, probe.SizeZ) * .5F);
+        Span<Vector3> corners = stackalloc Vector3[8];
+        Span<Vector2> projected = stackalloc Vector2[8];
+        Span<float> depths = stackalloc float[8];
+        var visible = 0;
+        for (var index = 0; index < 8; index++)
+        {
+            var sx = (index & 1) == 0 ? -1F : 1F;
+            var sy = (index & 2) == 0 ? -1F : 1F;
+            var sz = (index & 4) == 0 ? -1F : 1F;
+            corners[index] = center + new Vector3(half.X * sx, half.Y * sy, half.Z * sz);
+            if (!SceneProjection.Project(corners[index], origin, size, camera, out projected[index], out depths[index]))
+                continue;
+            visible++;
+        }
+
+        // 八个角全都投影成功才画，避免相机贴到盒子里时出现乱线
+        if (visible == 8)
+        {
+            var color = ToPackedColor(editing ? EditorPalette.Accent : EditorPalette.Icon);
+            var nearDepth = 0F;
+            var farDepth = 0F;
+            for (var index = 0; index < 8; index++)
+            {
+                if (index == 0 || depths[index] < nearDepth) nearDepth = depths[index];
+                if (index == 0 || depths[index] > farDepth) farDepth = depths[index];
+            }
+
+            var span = MathF.Max(.001F, farDepth - nearDepth);
+            // 十二条棱：X 方向 4 条，Y 方向 4 条，Z 方向 4 条
+            for (var axis = 0; axis < 3; axis++)
+            {
+                var step = 1 << axis;
+                for (var index = 0; index < 8; index++)
+                {
+                    if ((index & step) != 0) continue;
+                    var other = index | step;
+                    var alphaNear = Math.Clamp(1F - ((depths[index] + depths[other]) * .5F - nearDepth) / span * .6F, .35F, 1F);
+                    var edgeColor = AlphaColor(color, alphaNear);
+                    drawList.AddLine(projected[index], projected[other], edgeColor, editing ? 1.6F : 1.2F);
+                }
+            }
+
+            if (editing)
+            {
+                // 六面手柄：画在该面中心，拖它就是对这一侧缩放
+                for (var axis = 0; axis < 3; axis++)
+                for (var sign = -1; sign <= 1; sign += 2)
+                {
+                    var handle = center;
+                    var offset = axis switch
+                    {
+                        0 => new Vector3(half.X * sign, 0F, 0F),
+                        1 => new Vector3(0F, half.Y * sign, 0F),
+                        _ => new Vector3(0F, 0F, half.Z * sign),
+                    };
+                    handle += offset;
+                    if (!SceneProjection.Project(handle, origin, size, camera, out var handleScreen, out _)) continue;
+                    drawList.AddRectFilled(handleScreen - new Vector2(4F), handleScreen + new Vector2(4F), color, 1F);
+                    drawList.AddRect(handleScreen - new Vector2(4F), handleScreen + new Vector2(4F),
+                        AlphaColor(color, .95F), 1F, ImDrawFlags.None, 1.2F);
+                }
+
+                // 中心手柄：只平移偏移，不改尺寸
+                if (SceneProjection.Project(center, origin, size, camera, out var centerScreen, out _))
+                {
+                    drawList.AddCircleFilled(centerScreen, 5F, color);
+                    drawList.AddCircle(centerScreen, 5F, AlphaColor(color, .95F), 16, 1.4F);
+                }
+            }
+
+            if (SceneProjection.Project(center, origin, size, camera, out var labelScreen, out _))
+                drawList.AddText(labelScreen + new Vector2(8F, -18F), AlphaColor(color, .9F),
+                    editing ? "探针体积（编辑中）" : "探针体积");
+        }
+    }
+
+    private static uint AlphaColor(uint packed, float alpha)
+    {
+        var value = (packed & 0x00FFFFFFU) | ((uint)Math.Clamp(alpha * 255F, 0F, 255F) << 24);
+        return value;
+    }
+
+    /// <summary>
+    /// 开始拖拽探针体积手柄
+    /// </summary>
+    /// <param name="mouse">按下时的鼠标位置</param>
+    /// <param name="probe">探针参数</param>
+    /// <param name="axis">轴向，0 到 2 表示拖面；-1 表示整体平移</param>
+    /// <param name="faceSign">拖的是轴的哪一侧</param>
+    /// <param name="depth">命中点的相机深度</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">场景相机</param>
+    private void BeginProbeGizmoDrag(Vector2 mouse, ProbeVolumeComponentData probe, int axis, int faceSign,
+        float depth, Vector2 size, SceneCamera camera)
+    {
+        _sceneGizmoDragProbe = true;
+        _sceneGizmoDragging = true;
+        _sceneGizmoProbeAxis = axis;
+        _sceneGizmoProbeFaceSign = faceSign;
+        _sceneGizmoDragStartMouse = mouse;
+        _sceneGizmoProbeStartSize = new System.Numerics.Vector3(probe.SizeX, probe.SizeY, probe.SizeZ);
+        _sceneGizmoProbeStartOffset = new System.Numerics.Vector3(probe.OffsetX, probe.OffsetY, probe.OffsetZ);
+        _sceneGizmoDragPixelsPerUnit =
+            MathF.Max(.001F, SceneProjection.FocalLength(size, camera) / MathF.Max(1F, depth));
+        _sceneGizmoPivotScreen = mouse;
     }
 
     private void DrawMoveGizmo(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
@@ -393,15 +516,29 @@ internal sealed partial class ImGuiEditorWindow
         if (probeComponent is not null && SceneComponentTypes.ReadProbeVolume(probeComponent).Editing)
         {
             var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
-            if (SceneProjection.Project(GetObjectPivot(selected), origin, size, camera, out var probeCenter, out var probeDepth) &&
-                Vector2.Distance(mouse, probeCenter) < 18F)
+            var probePivot = GetObjectPivot(selected);
+            var probeCenter = probePivot + new Vector3(probe.OffsetX, probe.OffsetY, probe.OffsetZ);
+            var half = new Vector3(probe.SizeX * .5F, probe.SizeY * .5F, probe.SizeZ * .5F);
+            // 命中顺序：中心手柄优先，其次六个面手柄
+            if (SceneProjection.Project(probeCenter, origin, size, camera, out var centerScreen, out var centerDepth) &&
+                Vector2.Distance(mouse, centerScreen) < 10F)
             {
-                _sceneGizmoDragProbe = true;
-                _sceneGizmoDragging = true;
-                _sceneGizmoDragStartMouse = mouse;
-                _sceneGizmoProbeStartSize = new System.Numerics.Vector3(probe.SizeX, probe.SizeY, probe.SizeZ);
-                _sceneGizmoProbeStartOffset = new System.Numerics.Vector3(probe.OffsetX, probe.OffsetY, probe.OffsetZ);
-                _sceneGizmoDragPixelsPerUnit = MathF.Max(.001F, SceneProjection.FocalLength(size, camera) / MathF.Max(1F, probeDepth));
+                BeginProbeGizmoDrag(mouse, probe, -1, 1, centerDepth, size, camera);
+                return true;
+            }
+
+            for (var axis = 0; axis < 3; axis++)
+            for (var sign = -1; sign <= 1; sign += 2)
+            {
+                var handle = probeCenter + (axis switch
+                {
+                    0 => new Vector3(half.X * sign, 0F, 0F),
+                    1 => new Vector3(0F, half.Y * sign, 0F),
+                    _ => new Vector3(0F, 0F, half.Z * sign),
+                });
+                if (!SceneProjection.Project(handle, origin, size, camera, out var faceHandleScreen, out var handleDepth)) continue;
+                if (Vector2.Distance(mouse, faceHandleScreen) >= 9F) continue;
+                BeginProbeGizmoDrag(mouse, probe, axis, sign, handleDepth, size, camera);
                 return true;
             }
         }
@@ -500,9 +637,61 @@ internal sealed partial class ImGuiEditorWindow
             var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
             if (probeComponent is null) return;
             var probe = SceneComponentTypes.ReadProbeVolume(probeComponent);
-            var deltaX = (mouse.X - _sceneGizmoDragStartMouse.X) / _sceneGizmoDragPixelsPerUnit;
-            var deltaY = (_sceneGizmoDragStartMouse.Y - mouse.Y) / _sceneGizmoDragPixelsPerUnit;
-            SceneComponentTypes.WriteProbeVolume(probeComponent, probe with { OffsetX = _sceneGizmoProbeStartOffset.X + deltaX, OffsetY = _sceneGizmoProbeStartOffset.Y + deltaY, SizeX = Math.Max(.1F, _sceneGizmoProbeStartSize.X + deltaX), SizeY = Math.Max(.1F, _sceneGizmoProbeStartSize.Y + deltaY) });
+            var mouseDelta = mouse - _sceneGizmoDragStartMouse;
+            if (_sceneGizmoProbeAxis < 0)
+            {
+                // 中心手柄：只在相机平面内平移，不改尺寸
+                var shiftX = mouseDelta.X / _sceneGizmoDragPixelsPerUnit;
+                var shiftY = -mouseDelta.Y / _sceneGizmoDragPixelsPerUnit;
+                var offset = new Vector3(_sceneGizmoProbeStartOffset.X, _sceneGizmoProbeStartOffset.Y, _sceneGizmoProbeStartOffset.Z) + camera.Right * shiftX + camera.Up * shiftY;
+                SceneComponentTypes.WriteProbeVolume(probeComponent, probe with
+                {
+                    OffsetX = offset.X,
+                    OffsetY = offset.Y,
+                    OffsetZ = offset.Z,
+                });
+            }
+            else
+            {
+                var axis = _sceneGizmoProbeAxis;
+                var axisUnit = new Vector3(
+                    axis == 0 ? 1F : 0F, axis == 1 ? 1F : 0F, axis == 2 ? 1F : 0F);
+                var pivot = GetObjectPivot(selected);
+                var startCenter = pivot + new Vector3(_sceneGizmoProbeStartOffset.X, _sceneGizmoProbeStartOffset.Y, _sceneGizmoProbeStartOffset.Z);
+                var startSize = axis switch
+                {
+                    0 => _sceneGizmoProbeStartSize.X,
+                    1 => _sceneGizmoProbeStartSize.Y,
+                    _ => _sceneGizmoProbeStartSize.Z,
+                };
+                var facePoint = startCenter + axisUnit * (startSize * .5F * _sceneGizmoProbeFaceSign);
+                if (!SceneProjection.Project(facePoint, origin, size, camera, out var faceScreen, out _) ||
+                    !SceneProjection.Project(facePoint + axisUnit, origin, size, camera, out var faceNext, out _))
+                {
+                    return;
+                }
+
+                // 把世界单位换算成屏幕上沿该轴的像素长度，再把手柄位移投影回世界单位
+                var axisScreen = faceNext - faceScreen;
+                var pixelsPerUnit = axisScreen.Length();
+                if (pixelsPerUnit < .001F) return;
+                var worldDelta = Vector2.Dot(mouseDelta, axisScreen / pixelsPerUnit) / pixelsPerUnit;
+                var newSize = MathF.Max(.1F, startSize + worldDelta * _sceneGizmoProbeFaceSign);
+                var newOffset = _sceneGizmoProbeStartOffset;
+                if (axis == 0) newOffset.X += worldDelta * .5F;
+                else if (axis == 1) newOffset.Y += worldDelta * .5F;
+                else newOffset.Z += worldDelta * .5F;
+                SceneComponentTypes.WriteProbeVolume(probeComponent, probe with
+                {
+                    OffsetX = newOffset.X,
+                    OffsetY = newOffset.Y,
+                    OffsetZ = newOffset.Z,
+                    SizeX = axis == 0 ? newSize : probe.SizeX,
+                    SizeY = axis == 1 ? newSize : probe.SizeY,
+                    SizeZ = axis == 2 ? newSize : probe.SizeZ,
+                });
+            }
+
             MarkSceneDocumentDirty();
             _pipeline?.ResetAccumulation();
             return;

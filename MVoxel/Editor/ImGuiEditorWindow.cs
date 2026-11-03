@@ -343,6 +343,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (UiDiagnostics.TakeSettingsRequest()) OpenSettings(0, 2, "editor.input.shortcuts");
         if (UiDiagnostics.TakeExportRequest() && _centerTab == 1) ExportRenderPng();
         if (_historyConfirmation is null) _projectOperation.Pump();
+        if (_historyConfirmation is null) PumpProbeBake();
         if (_project is null && _welcomeWindow?.IsOpen != true) RequestWelcomeWindow();
         EnsureWelcomeWindow();
         if (_project is not null && _editorSettings.AutoSave && _sceneDocumentDirty)
@@ -541,6 +542,11 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 panels = _pluginRuntime?.Panels ?? [],
                 pluginDiagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project),
                 pluginActivationStatus = _pluginRuntime?.ActivationStatus,
+                probeBakeActive = _probeBakeJob is not null,
+                probeBakeProgress = _probeBakeJob?.Progress ?? 1F,
+                probeBakeProbes = _probeBakeJob?.ProbeCount ?? 0,
+                liveProbeSamples = _liveProbeBake?.Samples.Count ?? 0,
+                probeBakeCompletedCount = _probeBakeCompletedCount,
                 startup = StartupTimeline.Snapshot(),
             },
             "scene.validate" => ValidateCurrentSceneCommand(),
@@ -4032,7 +4038,7 @@ DockId=0x6A3C3007,0
                 MarkSceneDocumentDirty();
                 SetStatus(editing ? "已退出探针编辑" : "已进入探针编辑，可在场景视图调整体积");
             }
-            BeginInspectorField("自动烘焙", "尚未实现；请在探针体积窗口手动生成数据。已有设置会保留。");
+            BeginInspectorField("自动烘焙", "开启后，场景体素内容稳定约半秒会自动重烘一次探针；自动结果只在本会话生效，需要写进项目请到探针体积窗口手动生成数据。");
             var autoBake = data.AutoBake;
             ImGui.BeginDisabled();
             ImGui.Checkbox("##ProbeAutoBake", ref autoBake);

@@ -147,8 +147,58 @@ public sealed class RenderSettings
 
     /// <summary>非光追体素间接光强度</summary>
     public float VoxelIndirectLightStrength = 0.35F;
+
+    /// <summary>
+    /// 非光追体素间接光的每像素采样方向数
+    /// </summary>
+    /// <remarks>
+    /// 实时通道没有跨帧累积，这一项直接决定间接光的噪声水平：
+    /// 4 个方向噪点明显，16 个方向基本可用，代价是每个像素的限距求交次数同步上升
+    /// </remarks>
+    public int VoxelIndirectLightSamples = 12;
+
+    /// <summary>
+    /// 每个探针的烘焙采样方向数
+    /// </summary>
+    /// <remarks>
+    /// 方向越多，单个探针的天空可见度与反弹能量估计越稳，相邻探针之间的跳变越小
+    /// </remarks>
+    public int ProbeBakeRays = 64;
+
+    /// <summary>
+    /// 单个探针体积允许的探针数量上限
+    /// </summary>
+    /// <remarks>
+    /// 体积与密度一起放大时按总量上限等比降密度，调高它会显著增加烘焙时间
+    /// </remarks>
+    public int ProbeBakeMaxProbes = 65536;
+
+    /// <summary>
+    /// 烘焙结果的三维盒式平滑迭代次数
+    /// </summary>
+    /// <remarks>
+    /// 单个探针的估计本身是带噪的，相邻探针做几次平滑能把斑块压下去；
+    /// 次数过多会让洞穴里的明暗边界变软
+    /// </remarks>
+    public int ProbeBakeSmoothing = 1;
+
+    /// <summary>
+    /// 探针烘焙射线的最长探测距离，0 表示按探针体积对角线自动取值
+    /// </summary>
+    public float ProbeBakeDistance = 0F;
+
     /// <summary>非光追探针体积GI环境光强度</summary>
     public float ProbeVolumeGiStrength = 0.5F;
+
+    /// <summary>
+    /// 非光追实时通道的时间累积权重
+    /// </summary>
+    /// <remarks>
+    /// 0 表示不累积，每帧都是独立的一批随机采样，画面会一直发毛；
+    /// 0.8 到 0.95 之间会把历史帧混合进来，静止几帧后噪声基本收敛。
+    /// 相机或设置变化时历史会自动作废，避免拖影
+    /// </remarks>
+    public float RealtimeTemporalWeight = 0.85F;
 
     /// <summary>
     /// 天顶颜色（sRGB 数值，着色时转线性）
@@ -566,6 +616,14 @@ public sealed class RenderSettings
         ShadowSoftness = Math.Clamp(ShadowSoftness, 0F, 0.5F);
         ShadowSamples = Math.Clamp(ShadowSamples, 1, 8);
         AoSamples = Math.Clamp(AoSamples, 4, 64);
+        VoxelIndirectLightSamples = Math.Clamp(VoxelIndirectLightSamples, 1, 32);
+        ProbeBakeRays = Math.Clamp(ProbeBakeRays, 8, 256);
+        ProbeBakeMaxProbes = Math.Clamp(ProbeBakeMaxProbes, 1024, 262144);
+        ProbeBakeSmoothing = Math.Clamp(ProbeBakeSmoothing, 0, 4);
+        ProbeBakeDistance = float.IsFinite(ProbeBakeDistance) ? Math.Clamp(ProbeBakeDistance, 0F, 100000F) : 0F;
+        RealtimeTemporalWeight = float.IsFinite(RealtimeTemporalWeight)
+            ? Math.Clamp(RealtimeTemporalWeight, 0F, .98F)
+            : 0F;
         AoStrength = Math.Clamp(AoStrength, 0F, 1F);
         AoPower = Math.Clamp(AoPower, 0.2F, 4F);
         VoxelIndirectLightStrength = Math.Clamp(float.IsFinite(VoxelIndirectLightStrength) ? VoxelIndirectLightStrength : 0.35F, 0F, 4F);

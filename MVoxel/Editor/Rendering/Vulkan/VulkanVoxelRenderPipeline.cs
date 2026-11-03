@@ -3206,13 +3206,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             if (values[119] <= 0.0001) return vec3(0.0);
             vec3 accumulated = vec3(0.0);
-            const int sampleCount = 4;
+            // 方向数由配置决定：实时通道没有跨帧累积，采样越多噪声越低、求交次数越多
+            int sampleCount = clamp(int(values[168]), 1, 32);
             for (int index = 0; index < sampleCount; index++)
             {
                 vec3 direction = CosineHemisphere(hitNormal, state);
                 // 交替扩大法线偏移，减少贴面自相交，同时保持体素接触区域的遮蔽
                 float originOffset = index % 2 == 0 ? 0.006 : 0.014;
-                float maxDistance = 8.0 + float(index) * 2.0;
+                // 距离档位按 4 个一循环，采样数提高时不再把探测距离一路拉长
+                float maxDistance = 8.0 + float(index % 4) * 2.0;
                 float distance;
                 vec3 normal;
                 vec4 color;

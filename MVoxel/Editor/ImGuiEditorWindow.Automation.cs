@@ -109,6 +109,14 @@ internal sealed partial class ImGuiEditorWindow
              Param("skyAmbient", "number", false, "天空环境光强度"),
              Param("ambientOcclusion", "boolean", false, "是否启用环境光遮蔽"),
              Param("aoStrength", "number", false, "环境光遮蔽强度"),
+             Param("aoSamples", "integer", false, "AO 射线采样数，4 到 64"),
+             Param("voxelIndirectLightSamples", "integer", false, "体素间接光每像素方向数，1 到 32"),
+             Param("shadowSamples", "integer", false, "阴影采样数，1 到 8"),
+             Param("probeBakeRays", "integer", false, "每个探针的烘焙方向数，8 到 256"),
+             Param("probeBakeMaxProbes", "integer", false, "单个体积的探针数量上限，1024 到 262144"),
+             Param("probeBakeSmoothing", "integer", false, "烘焙结果平滑次数，0 到 4"),
+             Param("probeVolumeGiStrength", "number", false, "探针 GI 补光强度"),
+             Param("realtimeTemporalWeight", "number", false, "非光追时间累积权重，0 到 0.98"),
              Param("fogDensity", "number", false, "雾浓度"),
              Param("showGround", "boolean", false, "是否显示地面"),
               Param("fogStart", "number", false, "雾起始距离"),
@@ -995,6 +1003,19 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "skyAmbient") is { } ambient) settings.SkyAmbient = (float)ambient;
         if (ReadBoolean(arguments, "ambientOcclusion") is { } ao) settings.AmbientOcclusionEnabled = ao;
         if (ReadNumber(arguments, "aoStrength") is { } aoStrength) settings.AoStrength = (float)aoStrength;
+        if (ReadNumber(arguments, "aoSamples") is { } aoSamples) settings.AoSamples = (int)aoSamples;
+        if (ReadNumber(arguments, "voxelIndirectLightSamples") is { } indirectSamples)
+            settings.VoxelIndirectLightSamples = (int)indirectSamples;
+        if (ReadNumber(arguments, "shadowSamples") is { } shadowSamples) settings.ShadowSamples = (int)shadowSamples;
+        if (ReadNumber(arguments, "probeBakeRays") is { } probeRays) settings.ProbeBakeRays = (int)probeRays;
+        if (ReadNumber(arguments, "probeBakeMaxProbes") is { } probeMaxProbes)
+            settings.ProbeBakeMaxProbes = (int)probeMaxProbes;
+        if (ReadNumber(arguments, "probeBakeSmoothing") is { } probeSmoothing)
+            settings.ProbeBakeSmoothing = (int)probeSmoothing;
+        if (ReadNumber(arguments, "probeVolumeGiStrength") is { } probeGi)
+            settings.ProbeVolumeGiStrength = (float)probeGi;
+        if (ReadNumber(arguments, "realtimeTemporalWeight") is { } temporal)
+            settings.RealtimeTemporalWeight = (float)temporal;
          if (ReadNumber(arguments, "fogDensity") is { } fog) settings.FogDensity = (float)fog;
          if (ReadNumber(arguments, "fogStart") is { } fogStart) settings.FogStart = (float)fogStart;
          if (ReadNumber(arguments, "fogSkyBlend") is { } fogSkyBlend) settings.FogSkyBlend = (float)fogSkyBlend;

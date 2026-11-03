@@ -904,44 +904,53 @@ internal sealed partial class ImGuiEditorWindow
         if (probe is not null && cameraObject is not null)
         {
             var probeData = SceneComponentTypes.ReadProbeVolume(probe);
-            if (!string.IsNullOrWhiteSpace(probeData.BakedAsset) && _project is not null)
+            var probeObject = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe));
+            // 本会话自动烘焙过的数据优先，没烘过才回落到资产文件
+            ProbeVolumeBakeData? bake = null;
+            if (probeObject is not null && _liveProbeBakeObjectId == probeObject.Id)
+            {
+                bake = _liveProbeBake;
+            }
+            else if (!string.IsNullOrWhiteSpace(probeData.BakedAsset) && _project is not null)
             {
                 var probePath = Path.Combine(_project.RootPath, probeData.BakedAsset.Replace('/', Path.DirectorySeparatorChar));
                 if (File.Exists(probePath))
                 {
                     try
                     {
-                        var bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath), new JsonSerializerOptions { IncludeFields = true });
-                         bake?.Normalize();
-                        if (bake is not null && bake.Samples.Count > 0)
-                        {
-                            var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
-                                ? cameraObject.Transform.Free.Position
-                                : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
-                            var probeObject = _sceneDocument?.Objects.FirstOrDefault(item => item.Components.Contains(probe));
-                            var probePosition = probeObject is null ? Vector3.Zero : GetObjectWorldPosition(probeObject);
-                            var normalized = new Vector3(
-                                Math.Clamp((float)(cameraPosition.X - probePosition.X - probeData.OffsetX) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
-                                Math.Clamp((float)(cameraPosition.Y - probePosition.Y - probeData.OffsetY) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
-                                Math.Clamp((float)(cameraPosition.Z - probePosition.Z - probeData.OffsetZ) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
-                            var weightedOcclusion = 0F;
-                            var weightedRadiance = 0F;
-                            var totalWeight = 0F;
-                            foreach (var sample in bake.Samples.OrderBy(sample => (sample.X - normalized.X) * (sample.X - normalized.X) + (sample.Y - normalized.Y) * (sample.Y - normalized.Y) + (sample.Z - normalized.Z) * (sample.Z - normalized.Z)).Take(8))
-                            {
-                                var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
-                                var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
-                                weightedOcclusion += Math.Clamp(sample.Occlusion, 0F, 1F) * weight;
-                                var radiance = Math.Clamp(sample.R, 0F, 1F) * 0.2126F + Math.Clamp(sample.G, 0F, 1F) * 0.7152F + Math.Clamp(sample.B, 0F, 1F) * 0.0722F;
-                                weightedRadiance += radiance * weight;
-                                totalWeight += weight;
-                            }
-                            var occlusion = totalWeight > 0F ? weightedOcclusion / totalWeight : 1F;
-                            settings.SkyAmbient = Math.Clamp(settings.SkyAmbient +
-                                (totalWeight > 0F ? weightedRadiance / totalWeight : 0F) * (0.35F + occlusion * 0.65F) * settings.ProbeVolumeGiStrength * .35F, 0F, 2F);
-                        }
+                        bake = JsonSerializer.Deserialize<ProbeVolumeBakeData>(File.ReadAllText(probePath), new JsonSerializerOptions { IncludeFields = true });
+                        bake?.Normalize();
                     }
                     catch (JsonException) { }
+                }
+            }
+
+            if (bake is { Samples.Count: > 0 })
+            {
+                {
+                    var cameraPosition = cameraObject.Transform.Mode == TransformMode.Free
+                        ? cameraObject.Transform.Free.Position
+                        : new Double3(cameraObject.Transform.Grid.Position.X, cameraObject.Transform.Grid.Position.Y, cameraObject.Transform.Grid.Position.Z);
+                    var probePosition = probeObject is null ? Vector3.Zero : GetObjectWorldPosition(probeObject);
+                    var normalized = new Vector3(
+                        Math.Clamp((float)(cameraPosition.X - probePosition.X - probeData.OffsetX) / Math.Max(probeData.SizeX, .001F) + .5F, 0F, 1F),
+                        Math.Clamp((float)(cameraPosition.Y - probePosition.Y - probeData.OffsetY) / Math.Max(probeData.SizeY, .001F) + .5F, 0F, 1F),
+                        Math.Clamp((float)(cameraPosition.Z - probePosition.Z - probeData.OffsetZ) / Math.Max(probeData.SizeZ, .001F) + .5F, 0F, 1F));
+                    var weightedOcclusion = 0F;
+                    var weightedRadiance = 0F;
+                    var totalWeight = 0F;
+                    foreach (var sample in bake.Samples.OrderBy(sample => (sample.X - normalized.X) * (sample.X - normalized.X) + (sample.Y - normalized.Y) * (sample.Y - normalized.Y) + (sample.Z - normalized.Z) * (sample.Z - normalized.Z)).Take(8))
+                    {
+                        var distanceSquared = MathF.Pow(sample.X - normalized.X, 2F) + MathF.Pow(sample.Y - normalized.Y, 2F) + MathF.Pow(sample.Z - normalized.Z, 2F);
+                        var weight = 1F / MathF.Max(distanceSquared, 0.0001F);
+                        weightedOcclusion += Math.Clamp(sample.Occlusion, 0F, 1F) * weight;
+                        var radiance = Math.Clamp(sample.R, 0F, 1F) * 0.2126F + Math.Clamp(sample.G, 0F, 1F) * 0.7152F + Math.Clamp(sample.B, 0F, 1F) * 0.0722F;
+                        weightedRadiance += radiance * weight;
+                        totalWeight += weight;
+                    }
+                    var occlusion = totalWeight > 0F ? weightedOcclusion / totalWeight : 1F;
+                    settings.SkyAmbient = Math.Clamp(settings.SkyAmbient +
+                        (totalWeight > 0F ? weightedRadiance / totalWeight : 0F) * (0.35F + occlusion * 0.65F) * settings.ProbeVolumeGiStrength * .35F, 0F, 2F);
                 }
             }
         }
@@ -2896,10 +2905,18 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("AO 强度", ref settings.AoStrength, 0F, 1F, "%.2f");
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
             SliderInt("AO 射线采样数", ref settings.AoSamples, 4, 64);
-            SliderFloat("体素间接光强度", ref settings.VoxelIndirectLightStrength, 0F, 4F, "%.2f");
-            SliderFloat("探针体积GI强度", ref settings.ProbeVolumeGiStrength, 0F, 4F, "%.2f");
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("每个可见表面像素发出的 AO 射线数；更多采样更平滑但更耗时。默认 16，优先保证性能。");
+            SliderFloat("体素间接光强度", ref settings.VoxelIndirectLightStrength, 0F, 4F, "%.2f");
+            SliderInt("体素间接光采样数", ref settings.VoxelIndirectLightSamples, 1, 32);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("每个像素的间接光方向数。实时通道没有跨帧累积，这一项直接决定间接光噪声：4 个方向明显发毛，16 个方向基本可用，代价是求交次数同比上升。");
+            SliderFloat("探针体积GI强度", ref settings.ProbeVolumeGiStrength, 0F, 4F, "%.2f");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("探针 GI 对环境的补光权重，依赖探针体积窗口里烘焙出的数据。");
+            SliderFloat("实时时间累积", ref settings.RealtimeTemporalWeight, 0F, 0.98F, "%.2f");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("非光追通道的时间累积权重。0 表示不累积，每帧独立采样、画面一直发毛；0.85 左右静止几帧后噪声基本收敛。相机或设置变化时历史自动作废。");
         }
 
     }

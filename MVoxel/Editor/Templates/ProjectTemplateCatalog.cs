@@ -154,8 +154,8 @@ public static class ProjectTemplateCatalog
         new(ProjectTemplateId.WeatherSnow, "雪原微光", "低温雪原与冷色天空，展示降雪和微风效果。", "天气 · 降雪 · 冷光", "小型", "调整降雪强度和风向"),
         new(ProjectTemplateId.WeatherStorm, "雷暴海湾", "雷云压境的海湾灯塔，展示风暴、闪电和海面动画。", "天气 · 雷暴 · 闪电", "小型", "调整雷暴强度与闪电频率"),
         new(ProjectTemplateId.WeatherHeatHaze, "灼热荒岸", "高温荒岸与远方热浪，展示热浪扰动和稀薄雾气。", "天气 · 高温 · 热浪", "小型", "调整热浪折射散射强度"),
-        new(ProjectTemplateId.ProbeGiAtrium, "探针 GI 中庭", "两层回廊围出天井，顶层只留一个方形天窗，室内不点灯：先靠实时体素间接光补光，场景里已放好自动探针，在探针体积窗口点一次烘焙即可切到探针 GI。", "非光追 · 体素间接光 · 探针体积 GI", "中型", "对比实时体素间接光与探针 GI 在室内的差别"),
-        new(ProjectTemplateId.ProbeGiCave, "间接光洞穴", "只有洞口进光的洞穴，主洞室、连接隧道与内室层层加深，不点灯也不用路径追踪，靠实时体素间接光显示明暗衰减；洞内已放好自动探针供烘焙对比。", "非光追 · 体素间接光 · 遮蔽衰减", "中型", "观察体素间接光在深洞与洞口附近的衰减差异"),
+        new(ProjectTemplateId.ProbeGiAtrium, "探针 GI 中庭", "两层回廊围出天井，顶层只留一个方形天窗，室内不点灯：打开后自动探针会自动烘焙一次，先靠实时体素间接光、再靠探针 GI 把天光带到回廊底部。", "非光追 · 体素间接光 · 探针体积 GI", "中型", "对比实时体素间接光与探针 GI 在室内的差别"),
+        new(ProjectTemplateId.ProbeGiCave, "间接光洞穴", "只有洞口进光与一个洞顶竖井，主洞室、连接隧道与内室层层加深：不点灯也不用路径追踪，打开后自动探针自动烘焙一次，靠间接光显示明暗衰减。", "非光追 · 体素间接光 · 遮蔽衰减", "中型", "观察体素间接光在深洞与洞口附近的衰减差异"),
         new(ProjectTemplateId.XianxiaContinent, "仙域大陆", "1024×1024 的整块修仙大陆：天柱峰、五方地脉、青云剑宗、长乐坊市、三座浮空仙岛与锁妖塔、剑冢、传送大阵等古迹共同组成可漫游的世界。", "超大型世界 · 地理 · 建筑群 · 浮空岛 · 多层叙事", "超大型", "理解分区分件、世界坐标与镜头组织"),
         new(ProjectTemplateId.Showcase, "小屋与花园", "一座有生活痕迹的小屋、井台、花圃、林木与夜间提灯。打开即可理解场景组织。", "基础建模 · 材质 · 自发光", "小型", "学习对象、体素数据和相机的关系"),
         new(ProjectTemplateId.MaterialLab, "材质实验室", "把粗糙度、金属、玻璃、水和自发光样品放在同一间可比较的展厅。", "材质 · 透明 · 发光", "小型", "比较材质参数如何改变画面"),
@@ -653,6 +653,15 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.AmbientOcclusionEnabled = true;
                 settings.RenderSettings.AoStrength = .9F;
                 settings.RenderSettings.AoPower = 1.3F;
+                // 实时通道的 AO 与体素间接光都是每帧少量射线估计，采样数给足才不毛糙
+                settings.RenderSettings.AoSamples = 32;
+                settings.RenderSettings.VoxelIndirectLightSamples = 24;
+                settings.RenderSettings.ShadowSamples = 6;
+                settings.RenderSettings.RealtimeAntiAliasingSamples = 4;
+                // 探针按高画质烘焙：方向翻倍、探针更密、平滑两次
+                settings.RenderSettings.ProbeBakeRays = 96;
+                settings.RenderSettings.ProbeBakeMaxProbes = 98304;
+                settings.RenderSettings.ProbeBakeSmoothing = 2;
                 settings.RenderSettings.EmissiveVoxels = false;
                 settings.RenderSettings.ShowWater = false;
                 settings.RenderSettings.ShowGround = false;
@@ -662,7 +671,8 @@ public static class ProjectTemplateCatalog
                 settings.RenderSettings.Exposure = .15F;
                 settings.RenderSettings.Brightness = 1.02F;
                 settings.RenderSettings.ColorContrast = 1.06F;
-                settings.RenderSettings.Dither = true;
+                // 抖动是为断带准备的逐像素噪声，观察间接光时只会让画面更像噪点
+                settings.RenderSettings.Dither = false;
                 settings.RenderSettings.CameraFovDegrees = 62F;
                 settings.ExportRenderSettings = settings.RenderSettings.CloneForExport();
                 break;
@@ -1227,7 +1237,7 @@ public static class ProjectTemplateCatalog
         stack.Effects.Clear();
         stack.Effects.Add(new CameraPostProcessEffect
         {
-            Type = CameraPostProcessEffectType.AmbientOcclusion, Intensity = .85F, Radius = 2F, Samples = 12,
+            Type = CameraPostProcessEffectType.AmbientOcclusion, Intensity = .85F, Radius = 2F, Samples = 32,
         });
         stack.Effects.Add(new CameraPostProcessEffect
         {
