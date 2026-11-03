@@ -2594,7 +2594,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         };
 
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
-            out float distance, out vec3 normal)
+            out float distance, out vec3 normal, bool computeNormal)
         {
             // 方向分量为 0 时 1/0=±Inf 会在“起点恰与该轴平面共面”时算出 0*Inf=NaN，
             // 污染全部 max/min 比较，命中判定逐像素随机翻转（探针与主光线都可能轴向对齐）。
@@ -2648,6 +2648,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 之间按 1 体素周期跳变，菲涅尔从 0.04 跳到 1.0，水面出现规则点阵棋盘。
             // 参数距离没有重建误差：正面命中取入口轴（lower 最大者，法线逆着射线），
             // 起点在盒内取出口轴（upper 最小者，法线顺着射线）
+            // 遮挡查询只要知道“有没有更近的命中”，不会用到法线，
+            // 这里跳过法线选轴与正负号计算；距离与命中判定和完整路径完全一致
+            if (!computeNormal)
+            {
+                normal = vec3(0.0, 1.0, 0.0);
+                return true;
+            }
+
             int normalAxis = 0;
             if (fromInside)
             {
@@ -2667,13 +2675,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return true;
         }
 
-        bool IntersectBounds(vec3 rayOrigin, vec3 rayDirection, BvhNode node, out float distance)
+        bool IntersectBounds(vec3 rayOrigin, vec3 rayDirection, vec3 regionOrigin, BvhNode node,
+            out float distance)
         {
             // BVH 返回区间的下界，不能复用实体表面求交的出口距离。
             // 起点在节点内时下界必须为零，否则已有远处命中会错误剔除近处几何。
-            vec3 origin = vec3(values[16], values[17], values[18]);
-            vec3 boxMin = vec3(node.minimum.xyz) + origin;
-            vec3 boxMax = vec3(node.maximum.xyz) + origin;
+            // 区域原点由调用方按射线读一次后传入，避免每个子节点都去参数缓冲重读
+            vec3 boxMin = vec3(node.minimum.xyz) + regionOrigin;
+            vec3 boxMax = vec3(node.maximum.xyz) + regionOrigin;
             float entry = 0.0;
             float exitDistance = 3.402823e+38;
             for (int axis = 0; axis < 3; axis++)
@@ -2734,7 +2743,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         vec3 voxelMax = voxelMin + vec3(packedExtent);
                         float distance;
                         vec3 normal;
-                        bool intersects = IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax, distance, normal);
+                        bool intersects = IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax,
+                            distance, normal, !anyHit);
                         // 介质连续性查询要找起点所在盒，而不是最近的表面。
                         // 所在盒的出口可能比旁边盒的入口更远，按表面距离排序会制造假空气缝。
                         if (intersects && preferContaining && all(greaterThanEqual(rayOrigin, voxelMin)) &&
@@ -2760,8 +2770,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     {
                         float leftDistance;
                         float rightDistance;
-                        bool leftHit = IntersectBounds(rayOrigin, rayDirection, nodes[node.links.x], leftDistance) && leftDistance <= closestDistance;
-                        bool rightHit = IntersectBounds(rayOrigin, rayDirection, nodes[node.links.y], rightDistance) && rightDistance <= closestDistance;
+                        bool leftHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.x], leftDistance) && leftDistance <= closestDistance;
+                        bool rightHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.y], rightDistance) && rightDistance <= closestDistance;
                         //先访问近节点，让最近命中尽早排除远节点
                         if (leftHit && rightHit)
                         {
@@ -3473,7 +3483,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             vec3 boxMax = boxMin + vec3(currentExtent);
                             float segment;
                             vec3 segmentNormal;
-                            if (!IntersectBox(cursor, rayDirection, boxMin, boxMax, segment, segmentNormal)) break;
+                            if (!IntersectBox(cursor, rayDirection, boxMin, boxMax, segment, segmentNormal, true)) break;
                             float overrideOpacity = materialSlots[int(currentSlot)].optics.z;
                             float density = overrideOpacity >= 0.0 ? overrideOpacity : currentColor.a;
                             MaterialSlotData layerMaterial = materialSlots[int(currentSlot)];
@@ -3642,7 +3652,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         vec3 boxMax = boxMin + vec3(mediumExtent);
                         float segmentDistance;
                         vec3 segmentNormal;
-                        if (!IntersectBox(cursor, mediumDirection, boxMin, boxMax, segmentDistance, segmentNormal))
+                        if (!IntersectBox(cursor, mediumDirection, boxMin, boxMax, segmentDistance, segmentNormal, true))
                             break;
                         exitPoint = cursor + mediumDirection * segmentDistance;
                         exitNormal = segmentNormal;

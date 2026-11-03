@@ -299,13 +299,18 @@ public sealed class VoxelGpuBvh
     }
 
     /// <summary>
-    /// 读取体素中心在指定轴上的排序值
+    /// 读取体素盒中心在指定轴上的排序值
     /// </summary>
+    /// <remarks>
+    /// 合并盒的 min 角并不代表它的位置：贪心合并与 LOD 会把多个体素压成一个长条盒，
+    /// 只按 min 角排序会让长条盒整体偏向一侧，兄弟节点的包围盒互相重叠。
+    /// 这里返回中心的两倍坐标，既计入 extent 又保持整数比较，不引入取整误差
+    /// </remarks>
     private static int GetCenter(VoxelGpuCell cell, int axis) => axis switch
     {
-        0 => cell.X,
-        1 => cell.Y,
-        _ => cell.Z
+        0 => cell.X * 2 + cell.ExtentX - 1,
+        1 => cell.Y * 2 + cell.ExtentY - 1,
+        _ => cell.Z * 2 + cell.ExtentZ - 1
     };
 
     /// <summary>
