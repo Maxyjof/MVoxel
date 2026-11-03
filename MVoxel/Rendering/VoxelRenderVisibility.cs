@@ -26,6 +26,19 @@ internal static class VoxelRenderVisibility
     {
         if (!IsOpaqueOccluder(value) || VoxelFlags.Has(value.Flags, VoxelFlags.Emissive)) return false;
 
+        // 场景逐格预览不保留同值核心，因此不需要逐邻居比对同值：
+        // 只需确认六面都是不透明遮挡体。逐邻居的 record struct 相等比较很贵，
+        // 一份上千万体素的世界里光这一步就吃掉可观的 CPU
+        if (!preserveUniformSolid)
+        {
+            for (var index = 0; index < NeighborCount; index++)
+            {
+                if (!IsOpaqueOccluder(neighbors[index])) return false;
+            }
+
+            return true;
+        }
+
         var allNeighborsMatch = true;
         for (var index = 0; index < NeighborCount; index++)
         {
@@ -34,9 +47,9 @@ internal static class VoxelRenderVisibility
             allNeighborsMatch &= neighbor == value;
         }
 
-        // 对场景逐格预览，任何全封闭不透明体素都没有可见面；对渲染/导出贪心盒路径，
-        // 纯同值实体保留核心能够折成更少的实心盒，已经等价消除了内部面。
-        return !preserveUniformSolid || !allNeighborsMatch;
+        // 对渲染/导出贪心盒路径，纯同值实体保留核心能够折成更少的实心盒，
+        // 已经等价消除了内部面
+        return !allNeighborsMatch;
     }
 
     /// <summary>六个轴向邻居的数量</summary>
