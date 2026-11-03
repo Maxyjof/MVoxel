@@ -7,7 +7,7 @@ blue and coral red with a transparent background. `MVoxelLogo.png` serves the we
 
 All three files are generated from the same grid and palette with
 `python tools/generate_brand.py` at the repository root. The ICO contains
-16/24/32/48/64/128/256-pixel PNG layers. Keep the icon square and use nearest-
-neighbor resizing so the voxel edges stay crisp. The standard-library generator
+16/24/32/48/64/128/256-pixel PNG layers, each drawn directly from the same
+geometry. The standard-library generator
 uses a shared isometric projection for all cube faces and requires no image
 packages.
