@@ -810,6 +810,20 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         MVoxelLog.Info($"Vulkan 设备候选：{name}，类型 {properties.DeviceType}，" +
             $"厂商 0x{properties.VendorID:X4}，设备 0x{properties.DeviceID:X4}，" +
             $"驱动 {driverText}，队列族 {queueFamilyIndex}，评分 {score}");
+        // 上限与显存一起打出来：跨厂商排查时这几项决定工作集能不能装下、单次缓冲够不够大
+        PhysicalDeviceMemoryProperties memoryProperties = default;
+        _api.GetPhysicalDeviceMemoryProperties(device, &memoryProperties);
+        long deviceLocalBytes = 0;
+        for (var heap = 0; heap < memoryProperties.MemoryHeapCount; heap++)
+        {
+            if ((memoryProperties.MemoryHeaps[(int)heap].Flags & MemoryHeapFlags.DeviceLocalBit) != 0)
+                deviceLocalBytes = Math.Max(deviceLocalBytes, (long)memoryProperties.MemoryHeaps[(int)heap].Size);
+        }
+
+        MVoxelLog.Info($"Vulkan 设备上限：显存 {deviceLocalBytes / (1024L * 1024L)} MB，" +
+            $"存储缓冲上限 {properties.Limits.MaxStorageBufferRange / 1024L} KB，" +
+            $"工作组调用上限 {properties.Limits.MaxComputeWorkGroupInvocations}，" +
+            $"内存分配次数上限 {properties.Limits.MaxMemoryAllocationCount}");
     }
 
     /// <summary>
