@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -852,6 +852,12 @@ internal sealed partial class ImGuiEditorWindow
     {
         var settings = (baseSettings ?? _captureRenderSettings ?? _renderSettings).CloneForExport();
         _sceneDocument?.Environment.ApplyTo(settings);
+        if (baseSettings is null && _capturePath is not null)
+        {
+            if (_captureRain.HasValue) settings.WeatherRainIntensity = _captureRain.Value;
+            if (_captureSnow.HasValue) settings.WeatherSnowIntensity = _captureSnow.Value;
+            if (_captureHeat.HasValue) settings.WeatherHeatHaze = _captureHeat.Value;
+        }
         var camera = cameraObject?.Components.FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsCamera(item));
         if (camera is not null)
         {
@@ -861,6 +867,7 @@ internal sealed partial class ImGuiEditorWindow
         settings.RealtimeAntiAliasingSpread = data.RealtimeAntiAliasingSpread;
         settings.FxaaThreshold = data.FxaaThreshold;
         settings.FxaaStrength = data.FxaaStrength;
+        settings.WaterFootprintFiltering = data.WaterFootprintFiltering;
         settings.CameraFovDegrees = data.PhysicalCamera
             ? 2F * MathF.Atan(data.SensorWidthMillimeters / (2F * data.FocalLengthMillimeters)) * (180F / MathF.PI)
             : data.FieldOfViewDegrees;
@@ -951,6 +958,8 @@ internal sealed partial class ImGuiEditorWindow
             settings.Vignette = vignette?.Enabled == true ? Math.Clamp(vignette.Intensity, 0F, 1F) : 0F;
         }
         }
+        if (baseSettings is null && _capturePath is not null && _captureWaterFiltering.HasValue)
+            settings.WaterFootprintFiltering = _captureWaterFiltering.Value;
         var probe = _sceneDocument?.Objects.Where(IsSceneObjectVisible).SelectMany(item => item.Components)
             .FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsProbeVolume(item));
         SceneObject? probeObject = null;
@@ -1450,7 +1459,7 @@ internal sealed partial class ImGuiEditorWindow
 
     // 渲染视口 GPU 管线
 
-    private float _waterAnimationTime;
+    private float _waterAnimationTime = 0F;
     private VoxelRenderParameters.FrameState BuildFrameState(SceneCamera camera, Vector2 viewLogical,
         float deviceScale, int widthOverride, int heightOverride, bool pathMode, bool outlines,
         bool showGrid = false, float gridStep = 0F, bool scenePreview = false,
@@ -1498,7 +1507,8 @@ internal sealed partial class ImGuiEditorWindow
             .Append(_world.ContentVersion).Append('|')
             .Append(settings.SunAzimuthDegrees).Append(',').Append(settings.SunElevationDegrees).Append(',')
             .Append(settings.SunIntensity).Append(',').Append(settings.ShadowSoftness).Append(',').Append(settings.ShadowSamples)
-            .Append(',').Append(settings.SunShadowMethod).Append(',').Append(settings.SunAccumulationFrames).Append(',').Append(settings.SunShadowMapResolution)
+            .Append(',').Append(settings.SunShadowMethod).Append(',').Append(settings.SunShadowMapResolution)
+            .Append(',').Append(settings.WaterFootprintFiltering)
             .Append(',').Append(settings.SunColor.X).Append(',').Append(settings.SunColor.Y).Append(',').Append(settings.SunColor.Z)
             .Append(',').Append(settings.SunEnabled).Append(',').Append(settings.ShowGround).Append(',').Append(settings.GroundFade)
             .Append(',').Append(settings.GroundColor.X).Append(',').Append(settings.GroundColor.Y).Append(',').Append(settings.GroundColor.Z)
@@ -1506,9 +1516,17 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.SkyTop.Z).Append(',').Append(settings.SkyHorizon.X).Append(',').Append(settings.SkyHorizon.Y)
             .Append(',').Append(settings.SkyHorizon.Z).Append(',').Append(settings.SkyAmbient).Append(',').Append(settings.AmbientTint)
             .Append(',').Append(settings.FogColor.X).Append(',').Append(settings.FogColor.Y).Append(',').Append(settings.FogColor.Z)
-            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity).Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.WaterAnimationEnabled).Append(',').Append(settings.WaterAnimationSpeed).Append(',').Append(settings.WaterFlowDirection).Append(',').Append(settings.WaterDetailStrength).Append(',').Append(settings.WaterSpecularStrength).Append(',').Append(settings.PathTracingEnabled)
-            .Append(',').Append(settings.UseHardwareRayTracing)
-            .Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
+            .Append(',').Append(settings.FogDensity).Append(',').Append(settings.FogStart).Append(',').Append(settings.FogSkyBlend).Append(',').Append(settings.FogMaxOpacity)
+            .Append(',').Append(settings.FogHeight).Append(',').Append(settings.FogHeightFalloff)
+            .Append(',').Append(settings.FogAnisotropy).Append(',').Append(settings.FogSunScatterStrength)
+            .Append(',').Append(settings.FogSunScatterColor.X).Append(',').Append(settings.FogSunScatterColor.Y).Append(',').Append(settings.FogSunScatterColor.Z)
+            .Append(',').Append(settings.FogAlbedo).Append(',').Append(settings.FogInscatterStrength)
+            .Append(',').Append(settings.FogSkyFogStrength).Append(',').Append(settings.FogVolumetricSteps)
+            .Append(',').Append(settings.FogViewDistance).Append(',').Append(settings.FogNoiseStrength)
+            .Append(',').Append(settings.FogNoiseScale).Append(',').Append(settings.FogNoiseSpeed)
+            .Append(',').Append(settings.ShowWater).Append(',').Append(settings.WaterHeight).Append(',').Append(settings.WaterColor).Append(',').Append(settings.WaterWaveSize).Append(',').Append(settings.WaterWaveLength).Append(',').Append(settings.WaterRoughness).Append(',').Append(settings.WaterAnimationEnabled).Append(',').Append(settings.WaterAnimationSpeed).Append(',').Append(settings.WaterFlowDirection).Append(',').Append(settings.WaterDetailStrength).Append(',').Append(settings.WaterSpecularStrength).Append(',').Append(settings.PathTracingEnabled)
+            .Append(',').Append(settings.UseHardwareRayTracing).Append(',').Append(settings.HardwareRayTracingAuto)
+            .Append(',').Append(settings.ForceComputePath).Append(',').Append(settings.MaxBounces).Append(',').Append(settings.PathRoughness).Append(',').Append(settings.PathMetalness)
             .Append(',').Append(settings.PathSpecularF0).Append(',').Append(settings.ResolutionScale)
             .Append(',').Append(settings.DepthOfField).Append(',').Append(settings.ApertureRadius).Append(',').Append(settings.FocusDistance)
             .Append(',').Append(settings.CameraFovDegrees).Append(',').Append(settings.EmissiveVoxels).Append(settings.EmissiveIntensity)
@@ -1751,16 +1769,7 @@ internal sealed partial class ImGuiEditorWindow
                 height = _captureHeight;
             }
             var nowMs = Environment.TickCount64;
-            bool animatedEnvironment = (effective.ShowWater && effective.WaterAnimationEnabled && effective.WaterAnimationSpeed != 0F) ||
-                effective.WeatherRainIntensity > 0F || effective.WeatherSnowIntensity > 0F ||
-                effective.WeatherStormIntensity > 0F || effective.WeatherHeatHaze > 0F;
-            if (_capturePath is not null && animatedEnvironment)
-            {
-                // 只有显式导出任务才推进环境时间；普通渲染窗口固定在当前时刻，保证采样稳定。
-                var nextWaterTime = effective.PathTracingEnabled ? MathF.Floor(_elapsedSeconds * 2F) * .5F : _elapsedSeconds;
-                if (effective.PathTracingEnabled && nextWaterTime != _waterAnimationTime) pipeline.ResetAccumulation();
-                _waterAnimationTime = nextWaterTime;
-            }
+            // 截图固定当前环境时间，避免水面和天气在逐帧累积时不断变化。
             // 采样签名只用相机、几何、光照与采样参数；后处理参数进入显示签名，
             // 变化时只重跑收尾通道，避免调曝光等纯显示参数时丢掉已完成的样本
             var samplingSignature = PathSamplingSignature(frameSize, scale) + $"|{width}x{height}";
@@ -1800,6 +1809,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     return false;
                 }
+                if (_capturePath is not null) _captureRendered = true;
 
                 renderWatch.Stop();
                 RecordViewportFrame(_renderViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
@@ -1862,6 +1872,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     return false;
                 }
+                if (_capturePath is not null) _captureRendered = true;
 
                 RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
                     fenceBefore, width, height, pathTracing: true);
@@ -1981,6 +1992,13 @@ internal sealed partial class ImGuiEditorWindow
         // 相机和选择是观察工具，绝不能因为默认左键动作是 Place 而修改体素。
         // 之前“相机/选择/擦除”按钮虽然能切换状态，却仍会落入同一套放置逻辑。
         if (_activeTool == EditorTool.Camera)
+        {
+            _brushPreview = null;
+            return;
+        }
+
+        // 框选模式下鼠标用来调整范围盒，左键不应该顺手画出或擦掉体素
+        if (IsVoxelSelectionEditing(GetSelectedSceneObject()))
         {
             _brushPreview = null;
             return;
@@ -2898,7 +2916,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "世界环境", () => DrawEnvironmentSection(settings));
+        DrawRenderSettingsAccordion("environment", "环境配置", () => DrawEnvironmentSection(settings));
         DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
         DrawRenderSettingsAccordion("color", "色彩输出", () => DrawPostSection(settings));
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
@@ -2978,13 +2996,18 @@ internal sealed partial class ImGuiEditorWindow
         DrawColorSlider("颜色##sun", ref settings.SunColor);
         SliderFloat("阴影柔和度（半影锥）##sun", ref settings.ShadowSoftness, 0F, 0.3F, "%.3f");
         int sunMethod = (int)settings.SunShadowMethod;
-        if (ImGui.Combo("太阳阴影方案", ref sunMethod, "出片优先：渐进采样\0实时平衡：半影重建\0快速预览：低采样稳定\0"))
+        if (ImGui.Combo("太阳阴影方案", ref sunMethod, "出片优先：渐进采样\0实时平衡：半影重建\0稳定预览：PCSS 阴影贴图\0"))
             settings.SunShadowMethod = (SunShadowMethod)sunMethod;
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("实时与路径追踪共用同一档位。渐进采样在太阳圆盘上随机分层采样，静止后累积收敛，最终画质最好但移动时有细噪点；半影重建用高密度确定性圆盘积分，单帧就平滑且静止逐帧一致；低采样稳定只取较少射线，靠抗锯齿与收尾降噪抹平，最省显卡。三种方案都不改变视口分辨率或模型精度。");
+        {
+            string description = "实时与路径追踪共用。渐进采样静止后累积，移动时可能有噪点；半影重建使用独立遮挡与几何导引；PCSS 使用缓存太阳深度图，细节受贴图精度限制。";
+            if (ReferenceEquals(settings, _renderSettings) && _pipeline?.SunShadowFallbackReason is { Length: > 0 } reason)
+                description += "\n" + reason;
+            ImGui.SetTooltip(description);
+        }
         SliderInt("太阳阴影质量##sun", ref settings.ShadowSamples, 1, 8);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("控制太阳圆盘采样预算：档位越高半影越平滑，GPU 成本越高。渐进方案把它换成每帧样本数，半影重建换成确定性圆盘采样数，低采样稳定换成的基数最小。");
+            ImGui.SetTooltip("控制太阳采样或 PCSS 搜索和过滤数量。提高档位通常改善细节，同时增加 GPU 开销；重建和贴图仍受导引与精度限制。");
         if (settings.SunShadowMethod == SunShadowMethod.Progressive)
         {
             SliderInt("实时太阳累积帧数", ref settings.SunAccumulationFrames, 1, 512);
@@ -2992,7 +3015,10 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (settings.SunShadowMethod == SunShadowMethod.ShadowMap)
         {
-            ImGui.TextWrapped("低采样稳定使用少量射线加画面抗锯齿，不需要阴影贴图；想进一步压平半影请提高太阳阴影质量或改用半影重建。");
+            int resolution = settings.SunShadowMapResolution <= 512 ? 0 : settings.SunShadowMapResolution <= 1024 ? 1 : 2;
+            if (ImGui.Combo("太阳阴影贴图精度", ref resolution, "512\01024\02048\0"))
+                settings.SunShadowMapResolution = 512 << resolution;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只调整太阳深度图，不改变视口或模型精度。太阳与几何变化时重建；相机移动复用缓存。覆盖边缘回退射线查询，细小遮挡可能需要提高精度。");
         }
         if (ImGui.CollapsingHeader("环境柔光"))
         {
@@ -3074,9 +3100,9 @@ internal sealed partial class ImGuiEditorWindow
          SliderFloat("雷电频率", ref settings.WeatherLightningFrequency, 0F, 4F, "%.2f");
         ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
-        SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.02F, "%.4f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离雾按相机到表面的距离混合雾色，作用于实时渲染和路径追踪。");
-        SliderFloat("雾起始距离", ref settings.FogStart, 0F, 1024F, "%.0f 格");
+        SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.05F, "%.4f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("消光系数，实时渲染与路径追踪共用；高度分布、太阳散射、噪声与体积质量等完整参数在「环境」窗口的雾气分组中调整。");
+        SliderFloat("雾起始距离", ref settings.FogStart, 0F, 100000F, "%.0f 格");
         SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
         SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");
         SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
@@ -3181,6 +3207,12 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
         SliderFloat("介电基础反射 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
         SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
+        ImGui.Checkbox("薄板玻璃近似", ref settings.ThinGlassApproximation);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射。\n体素化的圆柱壳、球壳每一格台阶都有独立法线，逐格折射会把台阶放大成规则棱镜条纹，而真实的窗玻璃和灯罩玻璃是薄板，本身不该聚焦成像。关闭后恢复逐格折射。");
+        SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值就按薄板处理；0 表示关闭判定，所有透明介质仍按体折射处理。厚水体、厚冰块超过阈值后仍保留真实折射。");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);

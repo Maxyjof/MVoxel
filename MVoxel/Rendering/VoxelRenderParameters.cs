@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 
 namespace MVoxel.Rendering;
@@ -11,7 +11,7 @@ namespace MVoxel.Rendering;
 public sealed class VoxelRenderParameters
 {
     /// <summary>
-    /// 参数块总槽数（float 个数），SSBO 按此大小上传
+    /// 参数块槽位定义；Vulkan uniform 缓冲按 std140 的 16 字节步长上传。
     /// </summary>
 
     // 相机基向量与逐帧标量
@@ -132,7 +132,21 @@ public sealed class VoxelRenderParameters
     public const int SoftFillRightX = 182, SoftFillRightY = 183, SoftFillRightZ = 184;
     public const int SoftFillUpX = 185, SoftFillUpY = 186, SoftFillUpZ = 187;
     public const int SoftFillR = 188, SoftFillG = 189, SoftFillB = 190, SoftFillIntensity = 191;
-    public const int SlotCount = 192;
+    public const int SunReconstructionAvailable = 192;
+    public const int WaterFootprintFiltering = 193;
+    /// <summary>雾层基准高度、高度衰减系数、各向异性 g</summary>
+    public const int FogHeight = 194, FogHeightFalloff = 195, FogAnisotropy = 196;
+    /// <summary>太阳内散射强度与颜色</summary>
+    public const int FogSunScatterStrength = 197;
+    public const int FogSunScatterR = 198, FogSunScatterG = 199, FogSunScatterB = 200;
+    /// <summary>单次散射反照率、内散射亮度、天空雾强度</summary>
+    public const int FogAlbedo = 201, FogInscatterStrength = 202, FogSkyFogStrength = 203;
+    /// <summary>实时体积步进数、体积距离、噪声强度/频率/速度</summary>
+    public const int FogVolumetricSteps = 204, FogViewDistance = 205;
+    public const int FogNoiseStrength = 206, FogNoiseScale = 207, FogNoiseSpeed = 208;
+    /// <summary>薄板玻璃近似开关与厚度上限（世界格）</summary>
+    public const int ThinGlassEnabled = 209, ThinGlassMaxThickness = 210;
+    public const int SlotCount = 212;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -142,6 +156,9 @@ public sealed class VoxelRenderParameters
     {
         var names = new (string, int)[]
         {
+            ("P_PARAMETER_COUNT", SlotCount),
+            ("P_WATER_FOOTPRINT_FILTERING", WaterFootprintFiltering),
+            ("P_SUN_RECONSTRUCTION_AVAILABLE", SunReconstructionAvailable),
             ("P_SUN_METHOD", SunShadowMethod), ("P_SUN_PASS", SunShadowPass),
             ("P_SUN_MAP_SIZE", SunShadowMapResolution), ("P_SUN_MAP_X", SunMapCenterX),
             ("P_SUN_MAP_Y", SunMapCenterY), ("P_SUN_MAP_Z", SunMapCenterZ),
@@ -164,6 +181,15 @@ public sealed class VoxelRenderParameters
             ("P_SKY_TOP_R", SkyTopR), ("P_SKY_TOP_G", SkyTopG), ("P_SKY_TOP_B", SkyTopB), ("P_SKY_AMBIENT", SkyAmbient),
             ("P_SKY_HORIZON_R", SkyHorizonR), ("P_SKY_HORIZON_G", SkyHorizonG), ("P_SKY_HORIZON_B", SkyHorizonB), ("P_AMBIENT_TINT", AmbientTint),
             ("P_FOG_R", FogR), ("P_FOG_G", FogG), ("P_FOG_B", FogB), ("P_FOG_DENSITY", FogDensity),
+            ("P_FOG_START", FogStart), ("P_FOG_SKY_BLEND", FogSkyBlend), ("P_FOG_MAX_OPACITY", FogMaxOpacity),
+            ("P_FOG_HEIGHT", FogHeight), ("P_FOG_HEIGHT_FALLOFF", FogHeightFalloff),
+            ("P_FOG_ANISOTROPY", FogAnisotropy), ("P_FOG_SUN_STRENGTH", FogSunScatterStrength),
+            ("P_FOG_SUN_R", FogSunScatterR), ("P_FOG_SUN_G", FogSunScatterG), ("P_FOG_SUN_B", FogSunScatterB),
+            ("P_FOG_ALBEDO", FogAlbedo), ("P_FOG_INSCATTER_STRENGTH", FogInscatterStrength),
+            ("P_FOG_SKY_STRENGTH", FogSkyFogStrength), ("P_FOG_STEPS", FogVolumetricSteps),
+            ("P_FOG_VIEW_DISTANCE", FogViewDistance), ("P_FOG_NOISE_STRENGTH", FogNoiseStrength),
+            ("P_FOG_NOISE_SCALE", FogNoiseScale), ("P_FOG_NOISE_SPEED", FogNoiseSpeed),
+            ("P_THIN_GLASS_ENABLED", ThinGlassEnabled), ("P_THIN_GLASS_MAX_THICKNESS", ThinGlassMaxThickness),
             ("P_SATURATION", Saturation), ("P_HUE_SHIFT", HueShift), ("P_CONTRAST", Contrast), ("P_BRIGHTNESS", Brightness),
             ("P_PALETTE_SHADING", PaletteShading), ("P_OUTLINES", Outlines), ("P_HUE_PHASE", HuePhase), ("P_AO_ENABLED", AoEnabled),
             ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower), ("P_AO_SAMPLES", AoSamples),
@@ -445,6 +471,7 @@ public sealed class VoxelRenderParameters
         parameters[FxaaPass] = 0F;
         parameters[FxaaThreshold] = float.IsFinite(settings.FxaaThreshold) ? Math.Clamp(settings.FxaaThreshold, .0312F, .333F) : .125F;
         parameters[FxaaStrength] = float.IsFinite(settings.FxaaStrength) ? Math.Clamp(settings.FxaaStrength, 0F, 1F) : .75F;
+        parameters[WaterFootprintFiltering] = float.IsFinite(settings.WaterFootprintFiltering) ? Math.Clamp(settings.WaterFootprintFiltering, 0F, 2F) : 1F;
         parameters[RealtimeTemporalWeight] =
             float.IsFinite(settings.RealtimeTemporalWeight) ? Math.Clamp(settings.RealtimeTemporalWeight, 0F, .98F) : 0F;
         parameters[Absorption] = settings.TransmissiveAbsorption;
@@ -500,6 +527,23 @@ public sealed class VoxelRenderParameters
         parameters[FogStart] = settings.FogStart;
         parameters[FogSkyBlend] = settings.FogSkyBlend;
         parameters[FogMaxOpacity] = settings.FogMaxOpacity;
+        parameters[FogHeight] = settings.FogHeight;
+        parameters[FogHeightFalloff] = settings.FogHeightFalloff;
+        parameters[FogAnisotropy] = settings.FogAnisotropy;
+        parameters[FogSunScatterStrength] = settings.FogSunScatterStrength;
+        parameters[FogSunScatterR] = settings.FogSunScatterColor.X;
+        parameters[FogSunScatterG] = settings.FogSunScatterColor.Y;
+        parameters[FogSunScatterB] = settings.FogSunScatterColor.Z;
+        parameters[FogAlbedo] = settings.FogAlbedo;
+        parameters[FogInscatterStrength] = settings.FogInscatterStrength;
+        parameters[FogSkyFogStrength] = settings.FogSkyFogStrength;
+        parameters[FogVolumetricSteps] = settings.FogVolumetricSteps;
+        parameters[FogViewDistance] = settings.FogViewDistance;
+        parameters[FogNoiseStrength] = settings.FogNoiseStrength;
+        parameters[FogNoiseScale] = settings.FogNoiseScale;
+        parameters[FogNoiseSpeed] = settings.FogNoiseSpeed;
+        parameters[ThinGlassEnabled] = settings.ThinGlassApproximation ? 1F : 0F;
+        parameters[ThinGlassMaxThickness] = Math.Clamp(settings.ThinGlassMaxThickness, 0F, 16F);
 
         for (var index = 0; index < parameters.Length; index++)
         {

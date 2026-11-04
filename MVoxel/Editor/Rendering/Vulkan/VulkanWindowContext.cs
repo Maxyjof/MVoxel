@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Numerics;
 using MVoxel.Core;
 using OpenTK.Windowing.Desktop;
@@ -139,7 +139,20 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// <summary>
     /// 获取设备是否已经丢失
     /// </summary>
+    internal bool HardwareShadersTargetVulkan11
+    {
+        get
+        {
+            PhysicalDeviceProperties properties = default;
+            _api.GetPhysicalDeviceProperties(_physicalDevice, &properties);
+            return properties.ApiVersion < Vk.Version12;
+        }
+    }
+
     internal bool IsDeviceLost => _deviceLost;
+
+    /// <summary>硬件求交子管线发现设备丢失时同步状态，阻止后续提交和原生释放。</summary>
+    internal void MarkDeviceLost() => _deviceLost = true;
 
     /// <summary>
     /// 当前物理设备名称
@@ -149,7 +162,10 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// <summary>
     /// 当前物理设备是否可以创建 Vulkan 硬件光追管线
     /// </summary>
-    internal bool SupportsHardwareRayTracing => _rayTracingCapabilities.SupportsHardwarePipeline;
+    private bool _hardwareRayTracingEnabled;
+    private bool _hardwarePipelineEnabled;
+
+    internal bool SupportsHardwareRayTracing => _hardwarePipelineEnabled;
 
     /// <summary>
     /// 当前物理设备是否支持 Ray Query
@@ -163,8 +179,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// 需要加速结构、Buffer Device Address 与 Ray Query 同时可用；
     /// 不按显卡品牌判断，AMD 与 NVIDIA 走同一套能力探测
     /// </remarks>
-    internal bool SupportsHardwareRayQuery => _rayTracingCapabilities.SupportsHardwarePipeline &&
-        _rayTracingCapabilities.SupportsRayQuery;
+    internal bool SupportsHardwareRayQuery => _hardwareRayTracingEnabled &&
+        _rayTracingCapabilities.SupportsHardwareQuery;
 
     /// <summary>
     /// 当前图形队列是否支持 GPU 时间戳查询
@@ -848,19 +864,36 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     {
         // 显式偏好优先于能力探测：RDNA2 支持 ray query 不代表实际更快，
         // 让用户能强制走 Compute 路径做对比，而不是替他决定
-        if (!ForceComputePath && _rayTracingCapabilities.SupportsHardwarePipeline &&
-            TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: true, out var rayTracingDevice))
+        if (!ForceComputePath && (_rayTracingCapabilities.SupportsHardwarePipeline || _rayTracingCapabilities.SupportsHardwareQuery) &&
+            TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: true,
+                enablePipeline: _rayTracingCapabilities.SupportsHardwarePipeline, out var rayTracingDevice))
         {
+            _hardwareRayTracingEnabled = true;
+            _hardwarePipelineEnabled = _rayTracingCapabilities.SupportsHardwarePipeline;
             MVoxelLog.Info("已启用 Vulkan 硬件光追设备特性，渲染管线按能力选择硬件或 Compute 路径");
             return rayTracingDevice;
         }
 
-        if (_rayTracingCapabilities.SupportsHardwarePipeline)
+        // RT Pipeline 是可选能力：驱动无法同时启用时，仍尝试单独保留 Ray Query。
+        if (!ForceComputePath && _rayTracingCapabilities.SupportsHardwarePipeline &&
+            _rayTracingCapabilities.SupportsHardwareQuery &&
+            TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: true,
+                enablePipeline: false, out var queryOnlyDevice))
+        {
+            _hardwareRayTracingEnabled = true;
+            _hardwarePipelineEnabled = false;
+            MVoxelLog.Info("Vulkan 完整硬件光追设备创建失败，已启用仅 Ray Query 模式");
+            return queryOnlyDevice;
+        }
+
+        _hardwareRayTracingEnabled = false;
+        _hardwarePipelineEnabled = false;
+        if (!ForceComputePath && (_rayTracingCapabilities.SupportsHardwarePipeline || _rayTracingCapabilities.SupportsHardwareQuery))
         {
             MVoxelLog.Warn("Vulkan 硬件光追设备特性启用失败，回退到 Vulkan Compute 路径");
         }
 
-        if (!TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: false, out var device))
+        if (!TryCreateDevice(physicalDevice, queueFamilyIndex, enableHardwareRayTracing: false, enablePipeline: false, out var device))
         {
             throw new InvalidOperationException("创建 Vulkan 逻辑设备失败");
         }
@@ -872,7 +905,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// 尝试创建启用或关闭硬件光追特性的逻辑设备
     /// </summary>
     private bool TryCreateDevice(PhysicalDevice physicalDevice, uint queueFamilyIndex,
-        bool enableHardwareRayTracing, out Device device)
+        bool enableHardwareRayTracing, bool enablePipeline, out Device device)
     {
         device = default;
         float queuePriority = 1F;
@@ -887,15 +920,22 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         if (enableHardwareRayTracing)
         {
             extensions.Add(KhrAccelerationStructure.ExtensionName);
-            extensions.Add(KhrRayTracingPipeline.ExtensionName);
+            if (enablePipeline)
+                extensions.Add(KhrRayTracingPipeline.ExtensionName);
             extensions.Add(KhrDeferredHostOperations.ExtensionName);
             if (_rayTracingCapabilities.SupportsRayQuery)
             {
                 extensions.Add("VK_KHR_ray_query");
             }
-            if (_rayTracingCapabilities.SupportsBufferDeviceAddress)
+            PhysicalDeviceProperties deviceProperties = default;
+            _api.GetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+            // Vulkan 1.2 已将 BDA 纳入核心，不要求驱动额外暴露扩展名。
+            if (deviceProperties.ApiVersion < Vk.Version12)
             {
                 extensions.Add(KhrBufferDeviceAddress.ExtensionName);
+                extensions.Add("VK_EXT_descriptor_indexing");
+                extensions.Add("VK_KHR_shader_float_controls");
+                extensions.Add("VK_KHR_spirv_1_4");
             }
         }
 
@@ -919,7 +959,7 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             *pipelinePointer = new()
             {
                 SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr,
-                RayTracingPipeline = enableHardwareRayTracing
+                RayTracingPipeline = enableHardwareRayTracing && enablePipeline
             };
             *rayQueryPointer = new()
             {
@@ -934,8 +974,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             if (enableHardwareRayTracing)
             {
                 featuresPointer->PNext = accelerationPointer;
-                accelerationPointer->PNext = pipelinePointer;
-                pipelinePointer->PNext = rayQueryPointer;
+                accelerationPointer->PNext = enablePipeline
+                    ? (void*)pipelinePointer : _rayTracingCapabilities.SupportsRayQuery ? (void*)rayQueryPointer : bufferAddressPointer;
+                pipelinePointer->PNext = _rayTracingCapabilities.SupportsRayQuery ? (void*)rayQueryPointer : bufferAddressPointer;
                 rayQueryPointer->PNext = bufferAddressPointer;
             }
 

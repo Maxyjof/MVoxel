@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 
@@ -21,6 +21,9 @@ internal readonly record struct VulkanHardwareRayTracingCapabilities(
     /// </summary>
     internal bool SupportsHardwarePipeline =>
         SupportsAccelerationStructure && SupportsRayTracingPipeline &&
+        SupportsBufferDeviceAddress && SupportsDeferredHostOperations;
+
+    internal bool SupportsHardwareQuery => SupportsAccelerationStructure && SupportsRayQuery &&
         SupportsBufferDeviceAddress && SupportsDeferredHostOperations;
 }
 
@@ -68,16 +71,41 @@ internal static unsafe class VulkanHardwareRayTracing
         rayQuery.PNext = &bufferAddress;
         api.GetPhysicalDeviceFeatures2(physicalDevice, &features);
 
-        var supportsAcceleration = extensions.Contains(KhrAccelerationStructure.ExtensionName) &&
-            acceleration.AccelerationStructure;
+        // Vulkan 1.1 通过扩展满足 1.2 中的依赖；不按厂商判断。
+        var core12 = properties.ApiVersion >= Vk.Version12;
+        var spirv14 = core12 || (properties.ApiVersion >= Vk.Version11 &&
+            extensions.Contains("VK_KHR_spirv_1_4") && extensions.Contains("VK_KHR_shader_float_controls"));
+        var accelerationDependencies = core12 || (properties.ApiVersion >= Vk.Version11 &&
+            extensions.Contains("VK_EXT_descriptor_indexing") && extensions.Contains(KhrBufferDeviceAddress.ExtensionName));
+        var supportsAcceleration = spirv14 && accelerationDependencies &&
+            extensions.Contains(KhrAccelerationStructure.ExtensionName) && acceleration.AccelerationStructure;
         var supportsPipeline = extensions.Contains(KhrRayTracingPipeline.ExtensionName) &&
             pipeline.RayTracingPipeline;
-        var supportsRayQuery = extensions.Contains("VK_KHR_ray_query") && rayQuery.RayQuery;
+        // Compute 管线需要 14 个常规描述符和 1 个加速结构；仅扩展名/feature
+        // 不足以证明硬件变体的描述符布局可创建。上限不足时保留软件 GPU 管线。
+        PhysicalDeviceAccelerationStructurePropertiesKHR accelerationLimits = new()
+        {
+            SType = StructureType.PhysicalDeviceAccelerationStructurePropertiesKhr
+        };
+        if (supportsAcceleration)
+        {
+            PhysicalDeviceProperties2 properties2 = new()
+            {
+                SType = StructureType.PhysicalDeviceProperties2,
+                PNext = &accelerationLimits
+            };
+            api.GetPhysicalDeviceProperties2(physicalDevice, &properties2);
+        }
+        var supportsRayQuery = extensions.Contains("VK_KHR_ray_query") && rayQuery.RayQuery &&
+            supportsAcceleration && properties.Limits.MaxPerStageResources >= 15 &&
+            accelerationLimits.MaxPerStageDescriptorAccelerationStructures >= 1 &&
+            accelerationLimits.MaxDescriptorSetAccelerationStructures >= 1;
         var supportsAddress = (extensions.Contains(KhrBufferDeviceAddress.ExtensionName) ||
             properties.ApiVersion >= Vk.Version12) && bufferAddress.BufferDeviceAddress;
         var supportsDeferred = extensions.Contains(KhrDeferredHostOperations.ExtensionName);
         var diagnostic = $"设备 {name}，AS={supportsAcceleration}，Pipeline={supportsPipeline}，" +
-            $"RayQuery={supportsRayQuery}，BDA={supportsAddress}，DeferredHost={supportsDeferred}";
+            $"RayQuery={supportsRayQuery}，BDA={supportsAddress}，DeferredHost={supportsDeferred}，SPIRV14={spirv14}，" +
+            $"阶段资源={properties.Limits.MaxPerStageResources}，AS描述符={accelerationLimits.MaxPerStageDescriptorAccelerationStructures}/{accelerationLimits.MaxDescriptorSetAccelerationStructures}";
         return new VulkanHardwareRayTracingCapabilities(name, supportsAcceleration, supportsPipeline,
             supportsRayQuery, supportsAddress, supportsDeferred, diagnostic);
     }

@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using MVoxel.Core;
 using MVoxel.Rendering;
 using MVoxel.Animation;
+using MVoxel.Voxels;
 
 namespace MVoxel.Scene;
 
@@ -38,6 +40,8 @@ public static class SceneComponentTypes
     public const string WindField = "mvoxel.windfield";
     /// <summary>风力接收器组件的稳定类型标识</summary>
     public const string WindReceiver = "mvoxel.windreceiver";
+    /// <summary>体素框选组件的稳定类型标识</summary>
+    public const string VoxelSelection = "mvoxel.voxelselection";
 
     /// <summary>动画组件的稳定类型标识</summary>
     public const string Animation = "mvoxel.animation";
@@ -46,6 +50,7 @@ public static class SceneComponentTypes
     [
         new(Transform, "变换", "基础", true),
         new(VoxelModel, "模型", "体素", true),
+        new(VoxelSelection, "体素框选", "体素", true),
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
@@ -66,6 +71,12 @@ public static class SceneComponentTypes
 
     public static bool IsTransform(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Transform, StringComparison.Ordinal);
     public static bool IsVoxelModel(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelModel, StringComparison.Ordinal);
+    /// <summary>
+    /// 判断组件记录是否为体素框选组件
+    /// </summary>
+    /// <param name="component">待判断的组件记录</param>
+    /// <returns>是否为体素框选组件</returns>
+    public static bool IsVoxelSelection(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, VoxelSelection, StringComparison.Ordinal);
     public static bool IsLight(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, Light, StringComparison.Ordinal);
     public static bool IsProbeVolume(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, ProbeVolume, StringComparison.Ordinal);
     public static bool IsPostProcessOverride(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, PostProcessOverride, StringComparison.Ordinal);
@@ -121,11 +132,45 @@ public static class SceneComponentTypes
         component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
     }
 
+    /// <summary>体素框选组件当前数据版本：2 起范围用对象局部坐标</summary>
+    public const int VoxelSelectionSchemaVersion = 2;
+
+    public static ComponentRecord CreateVoxelSelection(VoxelSelectionComponentData data) => new()
+    {
+        TypeId = VoxelSelection, SchemaVersion = VoxelSelectionSchemaVersion,
+        Data = JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions),
+    };
+
+    /// <summary>
+    /// 读取体素框选组件：范围用相对局部原点的整格坐标，颜色用 0 到 255 的原始体素色
+    /// </summary>
+    /// <param name="component">组件记录</param>
+    /// <returns>经过范围约束的框选参数</returns>
+    public static VoxelSelectionComponentData ReadVoxelSelection(ComponentRecord component)
+    {
+        if (!IsVoxelSelection(component) || component.Data.ValueKind != JsonValueKind.Object)
+            return VoxelSelectionComponentData.Default;
+        var data = component.Data;
+        return new VoxelSelectionComponentData(
+            ReadInt(data, "startX", 0), ReadInt(data, "startY", 0), ReadInt(data, "startZ", 0),
+            ReadInt(data, "sizeX", 16), ReadInt(data, "sizeY", 16), ReadInt(data, "sizeZ", 16),
+            ReadInt(data, "colorR", 255), ReadInt(data, "colorG", 255), ReadInt(data, "colorB", 255),
+            ReadInt(data, "colorA", 255), ReadFloat(data, "colorTolerance", 0F),
+            ReadBool(data, "emissiveOnly", false), ReadBool(data, "editing", false),
+            ReadInt(data, "originX", 0), ReadInt(data, "originY", 0), ReadInt(data, "originZ", 0)).Normalize();
+    }
+
+    public static void WriteVoxelSelection(ComponentRecord component, VoxelSelectionComponentData data)
+    {
+        if (!IsVoxelSelection(component)) throw new ArgumentException("组件记录不是体素框选组件", nameof(component));
+        component.SchemaVersion = VoxelSelectionSchemaVersion;
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
+    }
+
     public static ComponentRecord CreateProbeVolume(ProbeVolumeComponentData data) => new()
     {
         TypeId = ProbeVolume, SchemaVersion = 1, Data = JsonSerializer.SerializeToElement(data.Normalize(), JsonOptions),
     };
-
     public static ProbeVolumeComponentData ReadProbeVolume(ComponentRecord component)
     {
         if (!IsProbeVolume(component) || component.Data.ValueKind != JsonValueKind.Object) return ProbeVolumeComponentData.Default;
@@ -183,7 +228,8 @@ public static class SceneComponentTypes
             ReadModelScale(data, "scaleZ"),
             ReadString(data, "sortingLayer", "默认"),
             data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0,
-            ReadMaterialSlots(data));
+            ReadMaterialSlots(data),
+            data.TryGetProperty("mirrorX", out var mirrorX) && mirrorX.ValueKind == JsonValueKind.True);
     }
 
     /// <summary>
@@ -312,6 +358,7 @@ public static class SceneComponentTypes
             realtimeAntiAliasingSpread = normalized.RealtimeAntiAliasingSpread,
             fxaaThreshold = normalized.FxaaThreshold,
             fxaaStrength = normalized.FxaaStrength,
+            waterFootprintFiltering = normalized.WaterFootprintFiltering,
         }, FieldJsonOptions);
     }
 
@@ -363,7 +410,8 @@ public static class SceneComponentTypes
             (int)ReadFloat(data, "realtimeAntiAliasingSamples", 1F),
             ReadInt(data, "realtimeAntiAliasingPattern", 0),
             ReadFloat(data, "realtimeAntiAliasingSpread", 1F),
-            ReadFloat(data, "fxaaThreshold", .125F), ReadFloat(data, "fxaaStrength", .75F)).Normalize();
+            ReadFloat(data, "fxaaThreshold", .125F), ReadFloat(data, "fxaaStrength", .75F),
+            ReadFloat(data, "waterFootprintFiltering", 1F)).Normalize();
     }
 
     /// <summary>
@@ -478,7 +526,7 @@ public readonly record struct VoxelModelComponentData(
     string Model, string Part, int VoxelCount, string Template,
     float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
     string SortingLayer = "默认", int SortingOrder = 0,
-    MaterialSlotBinding[]? MaterialSlots = null)
+    MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }
@@ -554,6 +602,87 @@ public readonly record struct LightComponentData(
     }
 }
 
+/// <summary>
+/// 体素框选组件参数：对象局部坐标里的长方体范围、目标颜色与匹配容差
+/// </summary>
+/// <remarks>
+/// 范围用整格坐标而不是浮点包围盒：选中的格子直接对应体素世界里的键，
+/// 做换色、删除、移动、旋转、缩放时不需要再做坐标取整，撤销记录也能逐格精确还原。
+/// 坐标是局部的：原点由组件自己的 Origin 加对象原点组成，对象移动时范围框跟着走，
+/// 场景文件里也不会出现整张地图那样的巨大坐标
+/// </remarks>
+/// <param name="StartX">相对局部原点的最小角 X</param>
+/// <param name="StartY">相对局部原点的最小角 Y</param>
+/// <param name="StartZ">相对局部原点的最小角 Z</param>
+/// <param name="SizeX">X 方向格数</param>
+/// <param name="SizeY">Y 方向格数</param>
+/// <param name="SizeZ">Z 方向格数</param>
+/// <param name="ColorR">目标颜色红通道</param>
+/// <param name="ColorG">目标颜色绿通道</param>
+/// <param name="ColorB">目标颜色蓝通道</param>
+/// <param name="ColorA">目标颜色透明度</param>
+/// <param name="ColorTolerance">逐通道允许的最大差值，0 表示完全相同</param>
+/// <param name="EmissiveOnly">是否只匹配带自发光标记的体素</param>
+/// <param name="Editing">是否处于框选调整模式</param>
+/// <param name="OriginX">局部原点相对对象原点的 X 偏移，添加组件时取模型包围盒最小角</param>
+/// <param name="OriginY">局部原点相对对象原点的 Y 偏移</param>
+/// <param name="OriginZ">局部原点相对对象原点的 Z 偏移</param>
+public readonly record struct VoxelSelectionComponentData(
+    int StartX, int StartY, int StartZ,
+    int SizeX, int SizeY, int SizeZ,
+    int ColorR, int ColorG, int ColorB, int ColorA,
+    float ColorTolerance = 0F, bool EmissiveOnly = false, bool Editing = false,
+    int OriginX = 0, int OriginY = 0, int OriginZ = 0)
+{
+    /// <summary>默认框选参数：16 格立方、纯白、精确匹配、原点对齐对象</summary>
+    public static VoxelSelectionComponentData Default => new(0, 0, 0, 16, 16, 16, 255, 255, 255, 255);
+
+    /// <summary>相对局部原点的最小角</summary>
+    [JsonIgnore]
+    public VoxelCoord64 Minimum => new(StartX, StartY, StartZ);
+
+    /// <summary>局部原点相对对象原点的偏移</summary>
+    [JsonIgnore]
+    public VoxelCoord64 Origin => new(OriginX, OriginY, OriginZ);
+
+    /// <summary>
+    /// 把局部范围换算成体素世界坐标：对象原点 + 局部原点 + 起点
+    /// </summary>
+    /// <param name="objectOrigin">对象自身的格原点</param>
+    /// <returns>范围最小角的世界体素坐标</returns>
+    public VoxelCoord64 WorldMinimum(VoxelCoord64 objectOrigin) =>
+        new(objectOrigin.X + OriginX + StartX, objectOrigin.Y + OriginY + StartY, objectOrigin.Z + OriginZ + StartZ);
+
+    /// <summary>范围格数</summary>
+    [JsonIgnore]
+    public VoxelCoord64 Size => new(SizeX, SizeY, SizeZ);
+
+    /// <summary>范围体积（格数），用 64 位避免大范围溢出</summary>
+    [JsonIgnore]
+    public long Volume => (long)SizeX * SizeY * SizeZ;
+
+    /// <summary>目标颜色对应的体素值，材质槽与标志由操作方决定</summary>
+    [JsonIgnore]
+    public VoxelValue TargetColor => new(new Rgba32((byte)ColorR, (byte)ColorG, (byte)ColorB, (byte)ColorA));
+
+    /// <summary>
+    /// 把范围、颜色和容差约束到编辑器支持区间
+    /// </summary>
+    /// <returns>规范化后的框选参数</returns>
+    public VoxelSelectionComponentData Normalize() => new(
+        ClampCoordinate(StartX), ClampCoordinate(StartY), ClampCoordinate(StartZ),
+        ClampSize(SizeX), ClampSize(SizeY), ClampSize(SizeZ),
+        Math.Clamp(ColorR, 0, 255), Math.Clamp(ColorG, 0, 255),
+        Math.Clamp(ColorB, 0, 255), Math.Clamp(ColorA, 0, 255),
+        float.IsFinite(ColorTolerance) ? Math.Clamp(ColorTolerance, 0F, 255F) : 0F,
+        EmissiveOnly, Editing,
+        ClampCoordinate(OriginX), ClampCoordinate(OriginY), ClampCoordinate(OriginZ));
+
+    private static int ClampCoordinate(int value) => Math.Clamp(value, -10_000_000, 10_000_000);
+
+    private static int ClampSize(int value) => Math.Clamp(value, 1, 4096);
+}
+
 /// <summary>自动探针体积组件数据</summary>
 public readonly record struct ProbeVolumeComponentData(
     float OffsetX, float OffsetY, float OffsetZ, float SizeX, float SizeY, float SizeZ,
@@ -592,7 +721,8 @@ public readonly record struct CameraComponentData(
     int RealtimeAntiAliasingPattern = 0,
     float RealtimeAntiAliasingSpread = 1F,
     float FxaaThreshold = .125F,
-    float FxaaStrength = .75F)
+    float FxaaStrength = .75F,
+    float WaterFootprintFiltering = 1F)
 {
     /// <summary>
     /// 默认相机摄影参数：全图层遮罩
@@ -623,6 +753,7 @@ public readonly record struct CameraComponentData(
             Math.Clamp(RealtimeAntiAliasingPattern, 0, 2),
             float.IsFinite(RealtimeAntiAliasingSpread) ? Math.Clamp(RealtimeAntiAliasingSpread, .25F, 1F) : 1F,
             float.IsFinite(FxaaThreshold) ? Math.Clamp(FxaaThreshold, .0312F, .333F) : .125F,
-            float.IsFinite(FxaaStrength) ? Math.Clamp(FxaaStrength, 0F, 1F) : .75F);
+            float.IsFinite(FxaaStrength) ? Math.Clamp(FxaaStrength, 0F, 1F) : .75F,
+            float.IsFinite(WaterFootprintFiltering) ? Math.Clamp(WaterFootprintFiltering, 0F, 2F) : 1F);
     }
 }

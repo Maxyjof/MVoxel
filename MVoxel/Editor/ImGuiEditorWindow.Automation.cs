@@ -80,6 +80,10 @@ internal sealed partial class ImGuiEditorWindow
              Param("nearClip", "number", false, "近裁剪面"), Param("farClip", "number", false, "远裁剪面")]),
         new("camera.setActive", "相机", "设为渲染相机", "让渲染窗口使用指定相机",
             [.. TargetIdOrName]),
+        new("view.setCamera", "相机", "设置视口轨道相机", "直接把视口/渲染视图的观察点与机位放到指定位姿，供脚本取图与画面对比",
+            [Param("position", "number[3]", true, "机位 x/y/z"),
+             Param("target", "number[3]", true, "注视点 x/y/z"),
+             Param("fieldOfView", "number", false, "视场角（度），20 到 120")]),
         new("material.list", "材质", "列出材质", "列出项目内全部 .material 资产", []),
         new("material.get", "材质", "读取材质", "按资产路径读取材质参数，路径相对项目Assets目录",
             [Param("path", "string", true, "材质资产路径，以.material结尾")]),
@@ -122,7 +126,20 @@ internal sealed partial class ImGuiEditorWindow
              Param("probeBakeSmoothing", "integer", false, "烘焙结果平滑次数，0 到 4"),
              Param("probeVolumeGiStrength", "number", false, "探针 GI 补光强度"),
              Param("realtimeTemporalWeight", "number", false, "非光追实时历史平滑权重，0 到 0.98；确定性光照下默认 0"),
-             Param("fogDensity", "number", false, "雾浓度"),
+             Param("fogDensity", "number", false, "雾浓度，即消光系数"),
+             Param("fogHeight", "number", false, "雾层基准高度（世界 Y）"),
+             Param("fogHeightFalloff", "number", false, "雾密度随高度的指数衰减系数，0 为均匀雾"),
+             Param("fogAnisotropy", "number", false, "Henyey–Greenstein 相函数各向异性 g，-0.95 到 0.95"),
+             Param("fogSunScatterStrength", "number", false, "太阳内散射强度"),
+             Param("fogSunScatterColor", "string", false, "太阳内散射色，格式为 R,G,B"),
+             Param("fogAlbedo", "number", false, "单次散射反照率，0 到 1"),
+             Param("fogInscatterStrength", "number", false, "雾内散射亮度倍率"),
+             Param("fogSkyFogStrength", "number", false, "天空融入雾色的强度，0 到 1"),
+             Param("fogVolumetricSteps", "integer", false, "实时体积步进采样数，0 到 64，0 为解析积分"),
+             Param("fogViewDistance", "number", false, "体积雾计算最远距离，0 为跟随命中距离"),
+             Param("fogNoiseStrength", "number", false, "雾密度噪声起伏强度，0 到 1"),
+             Param("fogNoiseScale", "number", false, "雾密度噪声空间频率"),
+             Param("fogNoiseSpeed", "number", false, "雾密度噪声漂移速度"),
              Param("showGround", "boolean", false, "是否显示地面"),
               Param("fogStart", "number", false, "雾起始距离"),
               Param("fogSkyBlend", "number", false, "雾颜色与天空颜色混合权重"),
@@ -144,6 +161,8 @@ internal sealed partial class ImGuiEditorWindow
               Param("weatherStorm", "number", false, "雷暴强度"), Param("weatherHeatHaze", "number", false, "热浪折射散射"),
               Param("weatherLightning", "number", false, "雷电频率"),
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
+             Param("thinGlassApproximation", "boolean", false, "薄板玻璃近似：薄壳只透射与吸收，不按界面法线折射"),
+             Param("thinGlassMaxThickness", "number", false, "薄板判定的厚度上限（世界格），0 关闭判定"),
              Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
              Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
              Param("softFillEnabled", "boolean", false, "是否启用环境柔光（对应 MagicaVoxel 的 Area 灯）"),
@@ -156,6 +175,8 @@ internal sealed partial class ImGuiEditorWindow
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",
             [.. TargetIdOrName, Param("scaleX", "number", true, "X 轴倍率"),
              Param("scaleY", "number", true, "Y 轴倍率"), Param("scaleZ", "number", true, "Z 轴倍率")]),
+        new("model.mirrorX", "模型", "设置 X 镜像", "绕模型局部 X 轴镜像；缩放须为 1，可撤销",
+            [.. TargetIdOrName, Param("enabled", "boolean", true, "是否镜像")]),
         new("timeline.list", "时间轴", "列出时间轴", "列出Assets目录下的时间轴资产", []),
         new("timeline.get", "时间轴", "读取时间轴", "读取一个时间轴资产", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径")]),
         new("timeline.create", "时间轴", "新建时间轴", "创建默认时间轴资产，不覆盖已有文件", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径"), Param("name", "string", false, "时间轴名称")]),
@@ -245,6 +266,7 @@ internal sealed partial class ImGuiEditorWindow
             "camera.setTransform" => SetCameraTransform(payload),
             "camera.setParams" => SetCameraParameters(payload),
             "camera.setActive" => SetActiveCamera(payload),
+            "view.setCamera" => SetViewportCamera(payload),
             "material.list" => ListMaterials(),
             "material.get" => GetMaterial(payload),
             "material.create" => CreateMaterial(payload),
@@ -258,6 +280,7 @@ internal sealed partial class ImGuiEditorWindow
             "render.settings.set" => ApplyRenderSettings(payload),
             "render.resetAccumulation" => ResetRenderAccumulation(),
             "model.scale" => SetModelScale(payload),
+            "model.mirrorX" => SetModelMirrorX(payload),
             "timeline.list" => ListTimelineAssets(),
             "timeline.get" => GetTimelineAsset(payload),
             "timeline.create" => CreateTimelineAsset(payload),
@@ -679,7 +702,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 var data = SceneComponentTypes.ReadCamera(item.Components.First(SceneComponentTypes.IsCamera));
                 var free = item.Transform.Free;
-                var forward = NumVector3.Transform(NumVector3.UnitZ, free.Rotation);
+                // 相机朝自身 -Z 方向看，这里取负 Z 才是真实的注视方向
+                var forward = NumVector3.Transform(-NumVector3.UnitZ, free.Rotation);
                 return new
                 {
                     id = item.Id.ToString(),
@@ -775,6 +799,38 @@ internal sealed partial class ImGuiEditorWindow
         _pipeline?.ResetAccumulation();
         _accumulationSignature = string.Empty;
         return new { activeId = target.Id.ToString(), name = target.Name };
+    });
+
+    /// <summary>
+    /// 把视口轨道相机直接放到指定位姿，供脚本取图与画面对比
+    /// </summary>
+    /// <param name="arguments">position、target 与可选 fieldOfView</param>
+    /// <returns>实际生效的机位、注视点与视场角</returns>
+    private object SetViewportCamera(JsonElement arguments) => RunOnUi(() =>
+    {
+        var position = ReadVector(arguments, "position") ?? throw new ArgumentException("缺少 position");
+        var lookAt = ReadVector(arguments, "target") ?? throw new ArgumentException("缺少 target");
+        var eye = new System.Numerics.Vector3((float)position[0], (float)position[1], (float)position[2]);
+        var target = new System.Numerics.Vector3((float)lookAt[0], (float)lookAt[1], (float)lookAt[2]);
+        var delta = eye - target;
+        var distance = MathF.Max(delta.Length(), 0.01F);
+        var direction = delta / distance;
+        _sceneOrbitPitch = Math.Clamp(MathF.Asin(Math.Clamp(direction.Y, -1F, 1F)), -1.35F, 1.35F);
+        _sceneOrbitYaw = MathF.Atan2(direction.X, direction.Z);
+        _sceneCameraDistance = distance;
+        _scenePan = new System.Numerics.Vector2(target.X, target.Z);
+        _sceneFreeMoveHeight = target.Y;
+        if (ReadNumber(arguments, "fieldOfView") is { } fieldOfView)
+            _sceneFieldOfView = Math.Clamp((float)fieldOfView, 20F, 120F);
+        _renderOrbitAnchor = null;
+        _accumulationSignature = string.Empty;
+        _pipeline?.ResetAccumulation();
+        return new
+        {
+            position = new[] { eye.X, eye.Y, eye.Z },
+            target = new[] { target.X, target.Y, target.Z },
+            fieldOfView = _sceneFieldOfView,
+        };
     });
 
     private object ListTimelineAssets() => RunOnUi(() =>
@@ -1025,6 +1081,19 @@ internal sealed partial class ImGuiEditorWindow
             ambientOcclusion = settings.AmbientOcclusionEnabled,
             aoStrength = settings.AoStrength,
             fogDensity = settings.FogDensity,
+            fogHeight = settings.FogHeight,
+            fogHeightFalloff = settings.FogHeightFalloff,
+            fogAnisotropy = settings.FogAnisotropy,
+            fogSunScatterStrength = settings.FogSunScatterStrength,
+            fogSunScatterColor = settings.FogSunScatterColor,
+            fogAlbedo = settings.FogAlbedo,
+            fogInscatterStrength = settings.FogInscatterStrength,
+            fogSkyFogStrength = settings.FogSkyFogStrength,
+            fogVolumetricSteps = settings.FogVolumetricSteps,
+            fogViewDistance = settings.FogViewDistance,
+            fogNoiseStrength = settings.FogNoiseStrength,
+            fogNoiseScale = settings.FogNoiseScale,
+            fogNoiseSpeed = settings.FogNoiseSpeed,
              fogStart = settings.FogStart,
              fogSkyBlend = settings.FogSkyBlend,
              fogMaxOpacity = settings.FogMaxOpacity,
@@ -1049,6 +1118,8 @@ internal sealed partial class ImGuiEditorWindow
              weatherLightning = settings.WeatherLightningFrequency,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
+            thinGlassApproximation = settings.ThinGlassApproximation,
+            thinGlassMaxThickness = settings.ThinGlassMaxThickness,
             emissiveIntensity = settings.EmissiveIntensity,
             emissiveVoxels = settings.EmissiveVoxels,
             softFillEnabled = settings.SoftFillEnabled,
@@ -1099,6 +1170,19 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "realtimeTemporalWeight") is { } temporal)
             settings.RealtimeTemporalWeight = (float)temporal;
          if (ReadNumber(arguments, "fogDensity") is { } fog) settings.FogDensity = (float)fog;
+         if (ReadNumber(arguments, "fogHeight") is { } fogHeight) settings.FogHeight = (float)fogHeight;
+         if (ReadNumber(arguments, "fogHeightFalloff") is { } fogFalloff) settings.FogHeightFalloff = (float)fogFalloff;
+         if (ReadNumber(arguments, "fogAnisotropy") is { } fogAnisotropy) settings.FogAnisotropy = (float)fogAnisotropy;
+         if (ReadNumber(arguments, "fogSunScatterStrength") is { } fogSunStrength) settings.FogSunScatterStrength = (float)fogSunStrength;
+         if (ReadColor(arguments, "fogSunScatterColor") is { } fogSunColor) settings.FogSunScatterColor = fogSunColor;
+         if (ReadNumber(arguments, "fogAlbedo") is { } fogAlbedo) settings.FogAlbedo = (float)fogAlbedo;
+         if (ReadNumber(arguments, "fogInscatterStrength") is { } fogInscatter) settings.FogInscatterStrength = (float)fogInscatter;
+         if (ReadNumber(arguments, "fogSkyFogStrength") is { } fogSkyFog) settings.FogSkyFogStrength = (float)fogSkyFog;
+         if (ReadNumber(arguments, "fogVolumetricSteps") is { } fogSteps) settings.FogVolumetricSteps = (int)fogSteps;
+         if (ReadNumber(arguments, "fogViewDistance") is { } fogDistance) settings.FogViewDistance = (float)fogDistance;
+         if (ReadNumber(arguments, "fogNoiseStrength") is { } fogNoise) settings.FogNoiseStrength = (float)fogNoise;
+         if (ReadNumber(arguments, "fogNoiseScale") is { } fogNoiseScale) settings.FogNoiseScale = (float)fogNoiseScale;
+         if (ReadNumber(arguments, "fogNoiseSpeed") is { } fogNoiseSpeed) settings.FogNoiseSpeed = (float)fogNoiseSpeed;
          if (ReadNumber(arguments, "fogStart") is { } fogStart) settings.FogStart = (float)fogStart;
          if (ReadNumber(arguments, "fogSkyBlend") is { } fogSkyBlend) settings.FogSkyBlend = (float)fogSkyBlend;
          if (ReadNumber(arguments, "fogMaxOpacity") is { } fogMaxOpacity) settings.FogMaxOpacity = (float)fogMaxOpacity;
@@ -1123,6 +1207,10 @@ internal sealed partial class ImGuiEditorWindow
          if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;
+        if (ReadBoolean(arguments, "thinGlassApproximation") is { } thinGlass)
+            settings.ThinGlassApproximation = thinGlass;
+        if (ReadNumber(arguments, "thinGlassMaxThickness") is { } thinGlassThickness)
+            settings.ThinGlassMaxThickness = (float)thinGlassThickness;
         if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
         if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
         if (ReadBoolean(arguments, "softFillEnabled") is { } softFill) settings.SoftFillEnabled = softFill;
@@ -1163,6 +1251,17 @@ internal sealed partial class ImGuiEditorWindow
         ApplyModelScale(target, (float)scaleX, (float)scaleY, (float)scaleZ);
         MarkSceneDocumentDirty();
         return DescribeSceneObject(target);
+    });
+
+    private object SetModelMirrorX(JsonElement arguments) => RunOnUi(() =>
+    {
+        var target = RequireObject(arguments);
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel)
+            ?? throw new InvalidOperationException("对象没有体素模型组件");
+        var enabled = ReadBoolean(arguments, "enabled") ?? throw new ArgumentException("缺少 enabled");
+        if (SceneComponentTypes.ReadVoxelModel(component).MirrorX != enabled)
+            MirrorModelLocalX(target, component, enabled);
+        return new { enabled = SceneComponentTypes.ReadVoxelModel(component).MirrorX };
     });
 
     private static readonly (string Id, string Title)[] PanelIds =

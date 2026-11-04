@@ -81,6 +81,17 @@ public sealed class BrickResidency
     public int OccupiedCount { get; private set; }
 
     /// <summary>
+    /// 为硬件求交生成保留池索引的快照；空槽必须清零，因为增量更新后它可能仍保存旧体素。
+    /// </summary>
+    internal VoxelGpuCell[] CreateHardwareCellSnapshot()
+    {
+        var snapshot = new VoxelGpuCell[_cells.Length];
+        foreach (var slot in _slots)
+            Array.Copy(_cells, slot.CellBase, snapshot, slot.CellBase, slot.CellCount);
+        return snapshot;
+    }
+
+    /// <summary>
     /// 发光图元数
     /// </summary>
     public int EmissiveCount => _emissive;

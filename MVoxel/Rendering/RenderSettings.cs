@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -51,9 +51,9 @@ public enum SunShadowMethod
 {
     /// <summary>随机分层采样，路径追踪按样本、实时按帧累积收敛，最终画质最好</summary>
     Progressive = 0,
-    /// <summary>高密度确定性圆盘面积积分，单帧平滑且静止逐帧一致</summary>
+    /// <summary>独立太阳可见度及遮挡距离的屏幕空间半影重建。</summary>
     Reconstructed = 1,
-    // ShadowMap 是上一版预留的旧名称，现为低采样确定性面积积分（快速预览）；保留名称只为兼容已保存的项目
+    /// <summary>太阳正交深度图与 PCSS 搜索、过滤。</summary>
     ShadowMap = 2,
 }
 
@@ -131,7 +131,7 @@ public sealed class RenderSettings
     public int ShadowSamples = 8;
     /// <summary>实时模式出片优先的静止累积帧数。</summary>
     public int SunAccumulationFrames = 128;
-    /// <summary>旧版阴影贴图精度字段，只为兼容已保存项目保留，当前方案不再使用</summary>
+    /// <summary>PCSS 太阳阴影贴图边长。</summary>
     public int SunShadowMapResolution = 1024;
 
     /// <summary>
@@ -164,6 +164,7 @@ public sealed class RenderSettings
     public float RealtimeAntiAliasingSpread = 1F;
     public float FxaaThreshold = .125F;
     public float FxaaStrength = .75F;
+    public float WaterFootprintFiltering = 1F;
     public float AoStrength = 0.85F;
 
     /// <summary>
@@ -305,6 +306,33 @@ public sealed class RenderSettings
     public float FogStart;
     public float FogSkyBlend = 0.55F;
     public float FogMaxOpacity = 0.92F;
+
+    /// <summary>雾层基准高度（世界格坐标 Y），密度在该高度处等于雾浓度</summary>
+    public float FogHeight;
+    /// <summary>密度随高度的指数衰减系数，0 表示均匀雾</summary>
+    public float FogHeightFalloff;
+    /// <summary>Henyey–Greenstein 相函数各向异性 g，正值表示前向散射</summary>
+    public float FogAnisotropy = 0.6F;
+    /// <summary>太阳方向内散射强度</summary>
+    public float FogSunScatterStrength = 1F;
+    /// <summary>太阳内散射颜色（sRGB 显示值，作为太阳光的色比乘子）</summary>
+    public Vector3 FogSunScatterColor = new(1F, 0.9F, 0.75F);
+    /// <summary>单次散射反照率，1 为纯散射雾、0 为纯吸收雾</summary>
+    public float FogAlbedo = 1F;
+    /// <summary>雾内散射整体亮度倍率</summary>
+    public float FogInscatterStrength = 1F;
+    /// <summary>天空与背景融入雾色的强度，控制远景地平线的衔接</summary>
+    public float FogSkyFogStrength = 0.55F;
+    /// <summary>实时渲染的体积步进采样数，0 使用解析高度雾积分</summary>
+    public int FogVolumetricSteps;
+    /// <summary>体积雾参与计算的最远距离，0 表示跟随命中距离</summary>
+    public float FogViewDistance;
+    /// <summary>密度噪声起伏强度，0 为均匀雾</summary>
+    public float FogNoiseStrength;
+    /// <summary>密度噪声空间频率</summary>
+    public float FogNoiseScale = 0.035F;
+    /// <summary>密度噪声随风漂移速度</summary>
+    public float FogNoiseSpeed = 0.6F;
 
     // 无限水面；波纹改变表面法线，平面高度保持稳定。
     public bool ShowWater;
@@ -479,6 +507,19 @@ public sealed class RenderSettings
     public float TransmissiveAbsorption = 1.0F;
 
     /// <summary>
+    /// 薄板玻璃近似：壁厚不超过阈值的透明薄壳只透射与吸收，不按界面法线折射。
+    /// 体素化的圆柱壳/球壳每一格台阶都有独立法线，逐格折射会把它们放大成棱镜条纹，
+    /// 而真实的窗玻璃、灯罩玻璃是薄板，本身不该聚焦成像。
+    /// </summary>
+    public bool ThinGlassApproximation = true;
+
+    /// <summary>
+    /// 薄板判定的厚度上限（世界格）。沿入射方向穿过的同种介质长度不超过该值即视为薄板；
+    /// 0 表示关闭判定，所有介质仍按体折射处理。
+    /// </summary>
+    public float ThinGlassMaxThickness = 2F;
+
+    /// <summary>
     /// 景深开关
     /// </summary>
     public bool DepthOfField;
@@ -545,18 +586,12 @@ public sealed class RenderSettings
 
     /// <summary>
     /// 创建渲染设置控件交互期间使用的 GPU 参数副本。相机导航不使用此副本；
-    /// 编辑器控件拖动时临时降低单帧路径复杂度，停止编辑后恢复完整设置。
+    /// 编辑器控件拖动时每次提交一个路径样本，保留所选光照与后处理。
     /// </summary>
     internal RenderSettings CreateInteractionPreview()
     {
         var preview = (RenderSettings)MemberwiseClone();
         preview.PathSamplesPerFrame = 1;
-        preview.MaxBounces = Math.Min(preview.MaxBounces, 2);
-        preview.ShadowSamples = 1;
-        preview.ShadowSoftness = 0F;
-        preview.AmbientOcclusionEnabled = false;
-        preview.SunDirectLighting = false;
-        preview.BloomEnabled = false;
         preview.SceneLod = SceneLod.Clone();
         preview.RenderLod = RenderLod.Clone();
         return preview;
@@ -573,10 +608,7 @@ public sealed class RenderSettings
         if (!PathTracingEnabled)
         {
             preview.AoSamples = Math.Min(AoSamples, LargeSceneAoSampleLimit(worksetCells));
-            // 阴影射线是 any-hit 短路，成本远低于 AO/间接光射线。压到 1~3 条只会
-            // 留下 2~4 档可见度、在半影里形成肉眼可辨的亮度台阶，因此给出保底档位。
             // 太阳质量由用户选择，不随工作集规模自动降低。
-            if (worksetCells > 700_000) preview.AmbientOcclusionEnabled = false;
         }
 
         preview.SceneLod = SceneLod.Clone();
@@ -698,6 +730,19 @@ public sealed class RenderSettings
         FogStart = Math.Clamp(FogStart, 0F, 100000F);
         FogSkyBlend = Math.Clamp(FogSkyBlend, 0F, 1F);
         FogMaxOpacity = Math.Clamp(FogMaxOpacity, 0F, 1F);
+        FogHeight = Math.Clamp(FogHeight, -100000F, 100000F);
+        FogHeightFalloff = Math.Clamp(FogHeightFalloff, 0F, 0.2F);
+        FogAnisotropy = Math.Clamp(FogAnisotropy, -0.95F, 0.95F);
+        FogSunScatterStrength = Math.Clamp(FogSunScatterStrength, 0F, 4F);
+        FogSunScatterColor = ClampChannel(FogSunScatterColor);
+        FogAlbedo = Math.Clamp(FogAlbedo, 0F, 1F);
+        FogInscatterStrength = Math.Clamp(FogInscatterStrength, 0F, 4F);
+        FogSkyFogStrength = Math.Clamp(FogSkyFogStrength, 0F, 1F);
+        FogVolumetricSteps = Math.Clamp(FogVolumetricSteps, 0, 64);
+        FogViewDistance = Math.Clamp(FogViewDistance, 0F, 100000F);
+        FogNoiseStrength = Math.Clamp(FogNoiseStrength, 0F, 1F);
+        FogNoiseScale = Math.Clamp(FogNoiseScale, 0.001F, 1F);
+        FogNoiseSpeed = Math.Clamp(FogNoiseSpeed, 0F, 4F);
         WaterHeight = Math.Clamp(WaterHeight, -100000F, 100000F);
         WaterWaveSize = Math.Clamp(WaterWaveSize, 0F, 4F);
         WaterWaveLength = Math.Clamp(WaterWaveLength, 0.1F, 1024F);
@@ -730,6 +775,7 @@ public sealed class RenderSettings
         PathSpecularF0 = Math.Clamp(PathSpecularF0, 0F, 0.6F);
         EmissiveIntensity = Math.Clamp(EmissiveIntensity, 0F, 64F);
         TransmissiveAbsorption = Math.Clamp(TransmissiveAbsorption, 0F, 8F);
+        ThinGlassMaxThickness = Math.Clamp(ThinGlassMaxThickness, 0F, 16F);
         PathDenoiseStrength = Math.Clamp(PathDenoiseStrength, 0F, 1F);
         BloomIntensity = Math.Clamp(BloomIntensity, 0F, 2F);
         BloomThreshold = Math.Clamp(BloomThreshold, 0F, 8F);
@@ -827,6 +873,18 @@ public sealed class RenderSettings
         FogStart = Safe(FogStart, 0F);
         FogSkyBlend = Safe(FogSkyBlend, 0.55F);
         FogMaxOpacity = Safe(FogMaxOpacity, 0.92F);
+        FogHeight = Safe(FogHeight, 0F);
+        FogHeightFalloff = Safe(FogHeightFalloff, 0F);
+        FogAnisotropy = Safe(FogAnisotropy, 0.6F);
+        FogSunScatterStrength = Safe(FogSunScatterStrength, 1F);
+        FogSunScatterColor = SafeChannel(FogSunScatterColor, new Vector3(1F, 0.9F, 0.75F));
+        FogAlbedo = Safe(FogAlbedo, 1F);
+        FogInscatterStrength = Safe(FogInscatterStrength, 1F);
+        FogSkyFogStrength = Safe(FogSkyFogStrength, 0.55F);
+        FogViewDistance = Safe(FogViewDistance, 0F);
+        FogNoiseStrength = Safe(FogNoiseStrength, 0F);
+        FogNoiseScale = Safe(FogNoiseScale, 0.035F);
+        FogNoiseSpeed = Safe(FogNoiseSpeed, 0.6F);
         WaterHeight = Safe(WaterHeight, 0F);
         WaterWaveSize = Safe(WaterWaveSize, 0.35F);
         WaterWaveLength = Safe(WaterWaveLength, 16F);
@@ -857,6 +915,7 @@ public sealed class RenderSettings
         PathSpecularF0 = Safe(PathSpecularF0, 0.04F);
         EmissiveIntensity = Safe(EmissiveIntensity, 12F);
         TransmissiveAbsorption = Safe(TransmissiveAbsorption, 1F);
+        ThinGlassMaxThickness = Safe(ThinGlassMaxThickness, 2F);
         PathDenoiseStrength = Safe(PathDenoiseStrength, 0.65F);
         BloomIntensity = Safe(BloomIntensity, 0.35F);
         BloomThreshold = Safe(BloomThreshold, 1F);

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,12 +15,12 @@ internal static unsafe class VulkanShaderCompiler
     /// <summary>
     /// 把 GLSL 源码编译为 Vulkan 可加载的 SPIR-V 字节码
     /// </summary>
-    internal static uint[] Compile(string source, ShaderKind shaderKind, string sourceName, bool rayTracing = false)
+    internal static uint[] Compile(string source, ShaderKind shaderKind, string sourceName, bool rayTracing = false, bool vulkan11 = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(source);
         ArgumentException.ThrowIfNullOrEmpty(sourceName);
         byte[] sourceBytes = Encoding.UTF8.GetBytes(source);
-        var cachePath = GetCachePath(sourceBytes, sourceName, shaderKind, rayTracing);
+        var cachePath = GetCachePath(sourceBytes, sourceName, shaderKind, rayTracing, vulkan11);
         if (TryReadCache(cachePath, out var cached))
         {
             MVoxelLog.Info($"Vulkan Shader SPIR-V 缓存命中：{sourceName}");
@@ -45,7 +45,7 @@ internal static unsafe class VulkanShaderCompiler
         try
         {
             compilerApi.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan,
-                (uint)(rayTracing ? EnvVersion.Vulkan12 : EnvVersion.Vulkan10));
+                (uint)(rayTracing ? (vulkan11 ? EnvVersion.Vulkan11 : EnvVersion.Vulkan12) : EnvVersion.Vulkan10));
             // 硬件 RT 扩展需要 SPIR-V 1.4，普通 Compute 保持基础目标版本
             compilerApi.CompileOptionsSetTargetSpirv(options,
                 rayTracing ? SpirvVersion.Shaderc14 : SpirvVersion.Shaderc10);
@@ -100,11 +100,11 @@ internal static unsafe class VulkanShaderCompiler
         }
     }
 
-    private static string GetCachePath(byte[] sourceBytes, string sourceName, ShaderKind shaderKind, bool rayTracing)
+    private static string GetCachePath(byte[] sourceBytes, string sourceName, ShaderKind shaderKind, bool rayTracing, bool vulkan11)
     {
         var sourceHash = Convert.ToHexString(SHA256.HashData(sourceBytes));
         var compilerVersion = typeof(Shaderc).Assembly.GetName().Version?.ToString() ?? "unknown";
-        var identity = $"MVoxel-SPIRV-v1|{compilerVersion}|{shaderKind}|{rayTracing}|{sourceName}|{sourceHash}";
+        var identity = $"MVoxel-SPIRV-v1|{compilerVersion}|{shaderKind}|{rayTracing}|{vulkan11}|{sourceName}|{sourceHash}";
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         return Path.Combine(AppPaths.ShaderCacheDirectory, key + ".spv");
     }

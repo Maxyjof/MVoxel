@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -25,6 +25,12 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private const int IndicesPerVoxel = 36;
     private const int PrimitivesPerVoxel = 12;
     private const int CellStride = VulkanVoxelRenderPipeline.PackedCellSize;
+    private static readonly uint[] BoxTriangleIndices =
+    [
+        0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
+        0, 1, 5, 0, 5, 4, 3, 7, 6, 3, 6, 2,
+        0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
+    ];
 
     private readonly VulkanWindowContext _context;
     private readonly VulkanImGuiRenderer _imguiRenderer;
@@ -33,7 +39,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private readonly KhrAccelerationStructure _accelerationApi;
     private readonly KhrRayTracingPipeline _rayTracingApi;
     private readonly KhrBufferDeviceAddress _addressApi;
+    private readonly bool _coreBufferDeviceAddress;
     private readonly PhysicalDeviceRayTracingPipelinePropertiesKHR _properties;
+    private readonly PhysicalDeviceAccelerationStructurePropertiesKHR _accelerationProperties;
 
     /// <summary>
     /// 加速结构构建 scratch 地址要求的对齐字节数
@@ -94,7 +102,10 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _accelerationApi = new KhrAccelerationStructure(_api.Context);
         _rayTracingApi = new KhrRayTracingPipeline(_api.Context);
         _addressApi = new KhrBufferDeviceAddress(_api.Context);
-        _properties = QueryProperties(out _scratchAlignment);
+        PhysicalDeviceProperties deviceProperties = default;
+        _api.GetPhysicalDeviceProperties(context.PhysicalDevice, &deviceProperties);
+        _coreBufferDeviceAddress = deviceProperties.ApiVersion >= Vk.Version12;
+        _properties = QueryProperties(out _accelerationProperties, out _scratchAlignment);
     }
 
     /// <summary>
@@ -290,15 +301,21 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             return false;
         }
 
+        if (!FitsAccelerationLimits(cells.Count))
+        {
+            _lastError = "场景超过此设备的加速结构容量，已回退软件遍历";
+            return false;
+        }
+
         if (_sourceVersion == sourceVersion && _tlas.Handle != 0) return true;
         try
         {
             _lastError = null;
             // 几何顺序必须与 Compute 的 binding 0 完全一致，否则命中图元换算出的
             // 半透明标记会错位，阴影就会错误地穿过水面或玻璃
-            _api.DeviceWaitIdle(_device);
+            Check(_api.DeviceWaitIdle(_device), "等待硬件阴影加速结构重建");
             DestroyAccelerationResources();
-            CreateGeometryBuffers(cells);
+            CreateGeometryBuffers(cells, includeCellBuffer: false);
             CreateBlas(cells.Count);
             CreateTlas();
             _sourceVersion = sourceVersion;
@@ -307,6 +324,23 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         catch (Exception exception)
         {
             _lastError = exception.ToString();
+            if (_context.IsDeviceLost || _lastError.Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
+            {
+                _context.MarkDeviceLost();
+                throw;
+            }
+            // 立即提交中途失败时，先确认没有在途构建再释放半成品。
+            var idleResult = _api.DeviceWaitIdle(_device);
+            if (idleResult == Result.ErrorDeviceLost)
+            {
+                _context.MarkDeviceLost();
+                throw new InvalidOperationException("硬件阴影失败后等待设备：ErrorDeviceLost", exception);
+            }
+            if (idleResult == Result.Success)
+            {
+                DestroyScratch();
+                DestroyAccelerationResources();
+            }
             MVoxelLog.Error("创建硬件光追加速结构失败，阴影回退 Compute", exception);
             return false;
         }
@@ -319,9 +353,11 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private void EnsureAccelerationResources(VoxelGpuWorkset workset)
     {
         if (_sourceVersion == workset.SourceVersion && IsReady) return;
+        if (!FitsAccelerationLimits(workset.Cells.Count))
+            throw new InvalidOperationException("场景超过此设备的加速结构容量");
         _api.DeviceWaitIdle(_device);
         DestroyAccelerationResources();
-        CreateGeometryBuffers(workset.Cells);
+        CreateGeometryBuffers(workset.Cells, includeCellBuffer: true);
         CreateBlas(workset.Cells.Count);
         CreateTlas();
         _sourceVersion = workset.SourceVersion;
@@ -331,11 +367,12 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// 创建每个体素的立方体三角形和颜色缓冲
     /// </summary>
     /// <param name="cells">与 Compute 着色器同序的体素列表</param>
-    private void CreateGeometryBuffers(IReadOnlyList<VoxelGpuCell> cells)
+    /// <param name="includeCellBuffer">独立 RT Pipeline 需要单独的体素缓冲；Ray Query 复用 Compute 缓冲。</param>
+    private void CreateGeometryBuffers(IReadOnlyList<VoxelGpuCell> cells, bool includeCellBuffer)
     {
         var vertices = new float[checked(cells.Count * VerticesPerVoxel * 3)];
         var indices = new uint[checked(cells.Count * IndicesPerVoxel)];
-        var packed = new byte[checked(cells.Count * CellStride)];
+        var packed = includeCellBuffer ? new byte[checked(cells.Count * CellStride)] : null;
         var vertexOffset = 0;
         var indexOffset = 0;
         for (var cellIndex = 0; cellIndex < cells.Count; cellIndex++)
@@ -347,21 +384,16 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             var ex = (float)cell.ExtentX;
             var ey = (float)cell.ExtentY;
             var ez = (float)cell.ExtentZ;
-            var points = new[]
+            for (var vertex = 0; vertex < VerticesPerVoxel; vertex++)
             {
-                x, y, z, x + ex, y, z, x + ex, y + ey, z, x, y + ey, z,
-                x, y, z + ez, x + ex, y, z + ez, x + ex, y + ey, z + ez, x, y + ey, z + ez,
-            };
-            for (var pointIndex = 0; pointIndex < points.Length; pointIndex++) vertices[vertexOffset++] = points[pointIndex];
+                vertices[vertexOffset++] = x + (vertex is 1 or 2 or 5 or 6 ? ex : 0F);
+                vertices[vertexOffset++] = y + (vertex is 2 or 3 or 6 or 7 ? ey : 0F);
+                vertices[vertexOffset++] = z + (vertex >= 4 ? ez : 0F);
+            }
             var baseVertex = (uint)(cellIndex * VerticesPerVoxel);
-            var localIndices = new uint[]
-            {
-                0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
-                0, 1, 5, 0, 5, 4, 3, 7, 6, 3, 6, 2,
-                0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
-            };
-            for (var index = 0; index < localIndices.Length; index++) indices[indexOffset++] = baseVertex + localIndices[index];
-            WritePackedCell(packed.AsSpan(cellIndex * CellStride, CellStride), cell);
+            for (var index = 0; index < BoxTriangleIndices.Length; index++)
+                indices[indexOffset++] = baseVertex + BoxTriangleIndices[index];
+            if (packed is not null) WritePackedCell(packed.AsSpan(cellIndex * CellStride, CellStride), cell);
         }
 
         _vertexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(vertices.AsSpan()),
@@ -370,9 +402,10 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _indexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(indices.AsSpan()),
             (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
             out _indexMemory);
-        _cellBuffer = CreateHostBuffer(packed,
-            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
-            out _cellMemory);
+        if (packed is not null)
+            _cellBuffer = CreateHostBuffer(packed,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+                out _cellMemory);
     }
 
     /// <summary>
@@ -464,7 +497,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 DstAccessMask = AccessFlags.AccelerationStructureReadBitKhr
             };
             _api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.AccelerationStructureBuildBitKhr,
-                PipelineStageFlags.RayTracingShaderBitKhr, 0, 1, in barrier, 0, null, 0, null);
+                PipelineStageFlags.AccelerationStructureBuildBitKhr | PipelineStageFlags.ComputeShaderBit |
+                    (_context.SupportsHardwareRayTracing ? PipelineStageFlags.RayTracingShaderBitKhr : 0),
+                0, 1, in barrier, 0, null, 0, null);
         });
         DestroyScratch();
     }
@@ -480,8 +515,11 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         Span<byte> instance = stackalloc byte[64];
         var transform = new float[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
         MemoryMarshal.AsBytes(transform.AsSpan()).CopyTo(instance);
-        MemoryMarshal.Write(instance[48..52], 0U);
-        MemoryMarshal.Write(instance[52..56], 0xFFU);
+        // VkAccelerationStructureInstanceKHR：第一个 DWORD 的高 8 位是 mask，
+        // 第二个 DWORD 是 SBT 偏移（低 24 位）与实例标志（高 8 位）。
+        // mask=0 会让所有使用 0xFF 的射线完全看不到该实例。
+        MemoryMarshal.Write(instance[48..52], 0xFF000000U);
+        MemoryMarshal.Write(instance[52..56], 0U);
         MemoryMarshal.Write(instance[56..64], GetAddress(_blas));
         UploadMapped(_instanceMemory, instance);
 
@@ -539,7 +577,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 DstAccessMask = AccessFlags.AccelerationStructureReadBitKhr
             };
             _api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.AccelerationStructureBuildBitKhr,
-                PipelineStageFlags.RayTracingShaderBitKhr, 0, 1, in barrier, 0, null, 0, null);
+                PipelineStageFlags.AccelerationStructureBuildBitKhr | PipelineStageFlags.ComputeShaderBit |
+                    (_context.SupportsHardwareRayTracing ? PipelineStageFlags.RayTracingShaderBitKhr : 0),
+                0, 1, in barrier, 0, null, 0, null);
         });
         DestroyScratch();
     }
@@ -559,9 +599,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
 
         var modules = new[]
         {
-            CreateShaderModule(VulkanShaderCompiler.Compile(RaygenShader, ShaderKind.RaygenShader, "MVoxel.HardwareRt.rgen", true)),
-            CreateShaderModule(VulkanShaderCompiler.Compile(MissShader, ShaderKind.MissShader, "MVoxel.HardwareRt.rmiss", true)),
-            CreateShaderModule(VulkanShaderCompiler.Compile(ClosestHitShader, ShaderKind.ClosesthitShader, "MVoxel.HardwareRt.rchit", true)),
+            CreateShaderModule(VulkanShaderCompiler.Compile(RaygenShader, ShaderKind.RaygenShader, "MVoxel.HardwareRt.rgen", true, _context.HardwareShadersTargetVulkan11)),
+            CreateShaderModule(VulkanShaderCompiler.Compile(MissShader, ShaderKind.MissShader, "MVoxel.HardwareRt.rmiss", true, _context.HardwareShadersTargetVulkan11)),
+            CreateShaderModule(VulkanShaderCompiler.Compile(ClosestHitShader, ShaderKind.ClosesthitShader, "MVoxel.HardwareRt.rchit", true, _context.HardwareShadersTargetVulkan11)),
         };
         nint[] names = { SilkMarshal.StringToPtr("main"), SilkMarshal.StringToPtr("main"), SilkMarshal.StringToPtr("main") };
         try
@@ -812,16 +852,28 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// 查询设备 RT 管线对 SBT 的对齐约束
     /// </summary>
     /// <returns>设备 RT 属性</returns>
-    private PhysicalDeviceRayTracingPipelinePropertiesKHR QueryProperties(out ulong scratchAlignment)
+    private bool FitsAccelerationLimits(int cellCount) =>
+        (ulong)cellCount * PrimitivesPerVoxel <= _accelerationProperties.MaxPrimitiveCount &&
+        _accelerationProperties.MaxGeometryCount >= 1 && _accelerationProperties.MaxInstanceCount >= 1;
+
+    private PhysicalDeviceRayTracingPipelinePropertiesKHR QueryProperties(
+        out PhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties, out ulong scratchAlignment)
     {
         PhysicalDeviceProperties2 properties = new() { SType = StructureType.PhysicalDeviceProperties2 };
         PhysicalDeviceRayTracingPipelinePropertiesKHR rayTracing = new() { SType = StructureType.PhysicalDeviceRayTracingPipelinePropertiesKhr };
         PhysicalDeviceAccelerationStructurePropertiesKHR acceleration = new() { SType = StructureType.PhysicalDeviceAccelerationStructurePropertiesKhr };
-        properties.PNext = &rayTracing;
-        rayTracing.PNext = &acceleration;
+        if (_context.SupportsHardwareRayTracing)
+        {
+            properties.PNext = &rayTracing;
+            rayTracing.PNext = &acceleration;
+        }
+        else properties.PNext = &acceleration;
         _api.GetPhysicalDeviceProperties2(_context.PhysicalDevice, &properties);
         // scratch 设备地址必须按该对齐值对齐，部分驱动（含 AMD）会对未对齐地址直接报设备丢失
         scratchAlignment = Math.Max(acceleration.MinAccelerationStructureScratchOffsetAlignment, 16U);
+        // 不保留查询时指向栈上结构的 pNext 指针。
+        acceleration.PNext = null;
+        accelerationProperties = acceleration;
         return rayTracing;
     }
 
@@ -835,8 +887,23 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private VkBuffer CreateHostBuffer(ReadOnlySpan<byte> data, BufferUsageFlags usage, out DeviceMemory memory)
     {
         var buffer = CreateDeviceBuffer((ulong)Math.Max(data.Length, 1), usage, out memory, hostVisible: true);
-        UploadMapped(memory, data);
-        return buffer;
+        try
+        {
+            UploadMapped(memory, data);
+            return buffer;
+        }
+        catch (Exception exception)
+        {
+            if (exception.ToString().Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
+                _context.MarkDeviceLost();
+            if (!_context.IsDeviceLost)
+            {
+                _api.DestroyBuffer(_device, buffer, null);
+                _api.FreeMemory(_device, memory, null);
+            }
+            memory = default;
+            throw;
+        }
     }
 
     /// <summary>
@@ -853,10 +920,26 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         BufferCreateInfo info = new() { SType = StructureType.BufferCreateInfo, Size = Math.Max(size, 1), Usage = usage, SharingMode = SharingMode.Exclusive };
         VkBuffer buffer = default;
         Check(_api.CreateBuffer(_device, in info, null, out buffer), "创建硬件 RT 缓冲");
-        _api.GetBufferMemoryRequirements(_device, buffer, out var requirements);
-        memory = AllocateMemory(requirements, hostVisible ? MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit : MemoryPropertyFlags.DeviceLocalBit);
-        Check(_api.BindBufferMemory(_device, buffer, memory, 0), "绑定硬件 RT 缓冲");
-        return buffer;
+        memory = default;
+        try
+        {
+            _api.GetBufferMemoryRequirements(_device, buffer, out var requirements);
+            memory = AllocateMemory(requirements, hostVisible ? MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit : MemoryPropertyFlags.DeviceLocalBit, deviceAddress: true);
+            Check(_api.BindBufferMemory(_device, buffer, memory, 0), "绑定硬件 RT 缓冲");
+            return buffer;
+        }
+        catch (Exception exception)
+        {
+            if (exception.ToString().Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
+                _context.MarkDeviceLost();
+            if (!_context.IsDeviceLost)
+            {
+                _api.DestroyBuffer(_device, buffer, null);
+                if (memory.Handle != 0) _api.FreeMemory(_device, memory, null);
+            }
+            memory = default;
+            throw;
+        }
     }
 
     /// <summary>
@@ -914,7 +997,10 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private ulong GetAddress(VkBuffer buffer)
     {
         BufferDeviceAddressInfo info = new() { SType = StructureType.BufferDeviceAddressInfo, Buffer = buffer };
-        return _addressApi.GetBufferDeviceAddress(_device, in info);
+        // 1.2 核心 BDA 设备不要求启用 KHR 扩展，须调用核心入口；1.1 走扩展入口。
+        return _coreBufferDeviceAddress
+            ? _api.GetBufferDeviceAddress(_device, in info)
+            : _addressApi.GetBufferDeviceAddress(_device, in info);
     }
 
     /// <summary>
@@ -934,7 +1020,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// <param name="requirements">资源内存需求</param>
     /// <param name="properties">目标内存属性</param>
     /// <returns>设备内存</returns>
-    private DeviceMemory AllocateMemory(MemoryRequirements requirements, MemoryPropertyFlags properties)
+    private DeviceMemory AllocateMemory(MemoryRequirements requirements, MemoryPropertyFlags properties, bool deviceAddress = false)
     {
         PhysicalDeviceMemoryProperties memoryProperties = default;
         _api.GetPhysicalDeviceMemoryProperties(_context.PhysicalDevice, &memoryProperties);
@@ -947,7 +1033,13 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 (type.PropertyFlags & properties) == properties) break;
         }
         if (index >= memoryProperties.MemoryTypeCount) throw new InvalidOperationException($"没有满足硬件 RT 内存属性的 Vulkan 内存类型：{properties}");
+        MemoryAllocateFlagsInfo addressFlags = new()
+        {
+            SType = StructureType.MemoryAllocateFlagsInfo,
+            Flags = MemoryAllocateFlags.DeviceAddressBit
+        };
         MemoryAllocateInfo info = new() { SType = StructureType.MemoryAllocateInfo, AllocationSize = requirements.Size, MemoryTypeIndex = index };
+        if (deviceAddress) info.PNext = &addressFlags;
         DeviceMemory memory = default;
         Check(_api.AllocateMemory(_device, in info, null, out memory), "分配硬件 RT 内存");
         return memory;
@@ -993,10 +1085,11 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// </summary>
     private void DestroyAccelerationResources()
     {
-        if (_blas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _blas, null);
+        // TLAS 持有 BLAS 的设备地址，按依赖关系先释放上层。
         if (_tlas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _tlas, null);
-        DestroyBuffer(ref _blasBuffer, ref _blasMemory);
+        if (_blas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _blas, null);
         DestroyBuffer(ref _tlasBuffer, ref _tlasMemory);
+        DestroyBuffer(ref _blasBuffer, ref _blasMemory);
         DestroyBuffer(ref _vertexBuffer, ref _vertexMemory);
         DestroyBuffer(ref _indexBuffer, ref _indexMemory);
         DestroyBuffer(ref _cellBuffer, ref _cellMemory);
@@ -1103,8 +1196,58 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             vec3 direction = normalize(vec3(p[4], p[5], p[6]) +
                 vec3(p[8], p[9], p[10]) * uv.x * size.x / focal -
                 vec3(p[12], p[13], p[14]) * uv.y * size.y / focal);
-            payload = vec4(p[98], p[99], p[100], 1.0);
+            payload = vec4(p[98], p[99], p[100], -1.0);
             traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, p[96], direction, p[97], 0);
+            // 硬件光追旁路只输出基色，但仍要应用与 Compute 路径同一套解析高度雾，
+            // 避免切换渲染方式时雾突然消失。槽位与 VoxelRenderParameters 对应：
+            // 48..50 雾色, 51 浓度, 152 起始距离, 153 天空混合, 154 最大不透明度,
+            // 194 基准高度, 195 高度衰减, 196 各向异性, 197 太阳强度, 198..200 太阳色,
+            // 201 反照率, 202 内散射亮度, 203 天空雾强度, 205 体积距离。
+            if (p[51] > 0.0)
+            {
+                float sigma = p[51];
+                float b = max(p[195], 0.0);
+                vec3 sunDirection = normalize(vec3(p[24], p[25], p[26]));
+                float t0 = clamp(p[152], 0.0, max(payload.a, 0.0));
+                float t1 = payload.a >= 0.0
+                    ? (p[205] > 0.0 ? min(payload.a, p[205]) : payload.a)
+                    : (p[205] > 0.0 ? p[205] : min(4096.0, 3.0 / max(sigma, 0.00001)));
+                float strength = payload.a >= 0.0 ? 1.0 : clamp(p[203], 0.0, 1.0);
+                if (t1 > t0 && strength > 0.0)
+                {
+                    float segmentLength = t1 - t0;
+                    float tau;
+                    if (b <= 0.000001)
+                    {
+                        tau = sigma * segmentLength;
+                    }
+                    else
+                    {
+                        // 世界 Y = p[1] + direction.y * t（AS 中的体素坐标已减去区域最小角）
+                        float h0 = (p[1] - p[194]) * b;
+                        float k = b * direction.y;
+                        float base = sigma * exp(-clamp(h0, -2.0, 32.0));
+                        float x = -k * segmentLength;
+                        float ratio = abs(x) < 0.01
+                            ? 1.0 + x * 0.5 + x * x / 6.0
+                            : (exp(clamp(x, -20.0, 20.0)) - 1.0) / x;
+                        tau = max(0.0, base * segmentLength * ratio * exp(clamp(-k * t0, -20.0, 20.0)));
+                    }
+                    float amount = clamp((1.0 - exp(-tau)) * strength, 0.0, clamp(p[154], 0.0, 1.0));
+                    vec3 fogColor = mix(vec3(p[98], p[99], p[100]), vec3(p[48], p[49], p[50]),
+                        clamp(p[153], 0.0, 1.0)) * max(p[202], 0.0);
+                    if (p[33] > 0.5 && p[197] > 0.0)
+                    {
+                        float g = clamp(p[196], -0.95, 0.95);
+                        float denominator = max(1.0 + g * g - 2.0 * g * dot(direction, sunDirection), 0.0001);
+                        float gain = min((1.0 - g * g) / (denominator * sqrt(denominator)), 8.0);
+                        fogColor += vec3(p[198], p[199], p[200]) * vec3(p[28], p[29], p[30])
+                            * (p[27] * p[197] * 0.15) * gain;
+                    }
+                    fogColor *= clamp(p[201], 0.0, 1.0);
+                    payload = vec4(mix(payload.rgb, fogColor, amount), 1.0);
+                }
+            }
             imageStore(outputImage, pixel, payload);
         }
         """;
@@ -1114,7 +1257,8 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         #extension GL_EXT_ray_tracing : require
         layout(set = 0, binding = 2, std430) readonly buffer Parameters { float p[]; };
         layout(location = 0) rayPayloadInEXT vec4 payload;
-        void main() { payload = vec4(p[98], p[99], p[100], 1.0); }
+        // alpha < 0 表示未命中，由 raygen 按天空雾强度处理背景
+        void main() { payload = vec4(p[98], p[99], p[100], -1.0); }
         """;
 
     private const string ClosestHitShader = """
@@ -1126,7 +1270,8 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         void main()
         {
             uint voxelIndex = gl_PrimitiveID / 12u;
-            payload = cells[voxelIndex].color;
+            // alpha 携带命中距离，供 raygen 计算距离雾
+            payload = vec4(cells[voxelIndex].color.rgb, gl_HitTEXT);
         }
         """;
 }

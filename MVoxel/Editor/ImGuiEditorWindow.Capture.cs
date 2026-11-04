@@ -8,6 +8,10 @@ internal sealed partial class ImGuiEditorWindow
     private readonly ConcurrentDictionary<string, string> _captureResults = new();
     private string? _capturePath;
     private int _captureFrames;
+    private bool _captureRendered;
+    private float? _captureRain, _captureSnow, _captureHeat;
+    private float? _captureWaterFiltering;
+    private bool? _captureHardwareAcceleration;
     private MVoxel.Rendering.RenderSettings? _captureRenderSettings;
     private int _captureSamples;
     private int _captureWidth, _captureHeight;
@@ -24,6 +28,29 @@ internal sealed partial class ImGuiEditorWindow
         if ((width != 0 || height != 0) && (width is < 16 or > 8192 || height is < 16 or > 8192))
             throw new ArgumentException("截图宽高必须同时指定，且在16–8192之间");
         var samples = arguments.TryGetProperty("samples", out var sampleValue) ? sampleValue.GetInt32() : 128;
+        var pathTracing = !arguments.TryGetProperty("pathTracing", out var pathValue) || pathValue.GetBoolean();
+        bool? hardwareAcceleration = arguments.TryGetProperty("hardwareAcceleration", out var hardwareValue)
+            ? hardwareValue.GetBoolean() : null;
+        float? ReadWeather(string key)
+        {
+            if (!arguments.TryGetProperty(key, out var value)) return null;
+            var result = value.GetSingle();
+            if (!float.IsFinite(result) || result < 0F || result > 1F) throw new ArgumentException($"{key} 必须在 0–1 之间");
+            return result;
+        }
+        var rain = ReadWeather("rain");
+        var snow = ReadWeather("snow");
+        var heat = ReadWeather("heatHaze");
+        float? waterFiltering = arguments.TryGetProperty("waterFiltering", out var filterValue) ? filterValue.GetSingle() : null;
+        if (waterFiltering.HasValue && (!float.IsFinite(waterFiltering.Value) || waterFiltering.Value < 0F || waterFiltering.Value > 2F))
+            throw new ArgumentException("waterFiltering 必须在 0–2 之间");
+        MVoxel.Rendering.SunShadowMethod? sunMethod = null;
+        if (arguments.TryGetProperty("sunShadowMethod", out var sunValue))
+        {
+            if (!Enum.TryParse<MVoxel.Rendering.SunShadowMethod>(sunValue.GetString(), true, out var parsed) ||
+                !Enum.IsDefined(parsed)) throw new ArgumentException("太阳阴影方案无效");
+            sunMethod = parsed;
+        }
         if (samples is < 1 or > 16384) throw new ArgumentException("截图样本数必须在 1–16384 之间");
         var timeout = arguments.TryGetProperty("timeoutSeconds", out var timeoutValue) ? timeoutValue.GetInt32() : 300;
         if (timeout is < 1 or > 600) throw new ArgumentException("截图超时必须在 1–600 秒之间");
@@ -71,10 +98,20 @@ internal sealed partial class ImGuiEditorWindow
                 _accumulationSignature = string.Empty;
             }
             _capturePath = path;
+            _captureRain = rain; _captureSnow = snow; _captureHeat = heat;
+            _captureWaterFiltering = waterFiltering;
+            _captureHardwareAcceleration = hardwareAcceleration;
             // 截图必须使用真正参与渲染的有效设置：项目配置与场景环境合并后的结果，
             // 直接用 _renderSettings 会漏掉场景环境对天空、雾、地面等字段的覆盖
             _captureRenderSettings = ResolveRenderSettings(GetActiveRenderCameraObject()).CloneForExport();
-            _captureRenderSettings.PathTracingEnabled = true;
+            _captureRenderSettings.PathTracingEnabled = pathTracing;
+            if (hardwareAcceleration.HasValue)
+            {
+                _captureRenderSettings.HardwareRayTracingAuto = false;
+                _captureRenderSettings.UseHardwareRayTracing = hardwareAcceleration.Value;
+                _captureRenderSettings.ForceComputePath = false;
+            }
+            if (sunMethod.HasValue) _captureRenderSettings.SunShadowMethod = sunMethod.Value;
             _captureRenderSettings.PathSamplesPerFrame = 1;
             _captureRenderSettings.PathMaxAccumulatedSamples = Math.Max(16, samples);
             if (direct.HasValue) _captureRenderSettings.EmissiveDirectSampling = direct.Value;
@@ -86,6 +123,7 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
             _captureFrames = 0;
+            _captureRendered = false;
             _requestedCenterTab = 1;
         });
         return new { queued = true, path };
@@ -108,17 +146,23 @@ internal sealed partial class ImGuiEditorWindow
             FinishCapture();
             return;
         }
-        if (_centerTab != 1 || _pipeline?.CanSaveDisplayPng != true)
+        if (_centerTab != 1 || !_captureRendered || _pipeline?.CanSaveDisplayPng != true)
         {
             return;
         }
-        if (_pipeline.AccumulatedSamples < _captureSamples) return;
+        if (_captureRenderSettings is not { } settings) return;
+        if (settings.PathTracingEnabled && _pipeline.AccumulatedSamples < _captureSamples) return;
+        if (!settings.PathTracingEnabled && settings.SunEnabled &&
+            settings.SunShadowMethod == MVoxel.Rendering.SunShadowMethod.Progressive &&
+            settings.ShadowSoftness > 0.0001F &&
+            _pipeline.RealtimeConvergedFrames < Math.Max(0, settings.SunAccumulationFrames - 1)) return;
         try
         {
             if (File.Exists(path)) throw new IOException("截图文件已存在");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var saved = _pipeline.SaveDisplayPng(path);
             _captureMetadata[path] = new { samples = _pipeline.AccumulatedSamples,
+                pathTracing = settings.PathTracingEnabled, realtimeFrames = settings.PathTracingEnabled ? 0 : _pipeline.RealtimeConvergedFrames + 1,
                 width = _pipeline.OutputWidth, height = _pipeline.OutputHeight,
                 directSampling = _captureRenderSettings!.EmissiveDirectSampling,
                 lightTree = _captureRenderSettings.EmissiveLightTree,
@@ -127,6 +171,13 @@ internal sealed partial class ImGuiEditorWindow
                 skyAmbient = _captureRenderSettings.SkyAmbient,
                 emissiveIntensity = _captureRenderSettings.EmissiveIntensity,
                 sunEnabled = _captureRenderSettings.SunEnabled,
+                rain = _captureRain, snow = _captureSnow, heatHaze = _captureHeat,
+                waterFiltering = _captureWaterFiltering,
+                sunShadowMethod = settings.SunShadowMethod.ToString(),
+                sunShadowFallback = _pipeline.SunShadowFallbackReason,
+                hardwareRayQueryActive = _pipeline.HardwareShadowsActive,
+                hardwareAccelerationRequested = _captureHardwareAcceleration,
+                hardwareRayQueryStatus = _pipeline.HardwareShadowStatus,
                 emissiveFaces = _pipeline.EmissiveFaceCount,
                 lightTreeNodes = _pipeline.EmissiveTreeNodeCount,
                 indexSyncCpuMs = _pipeline.EmissiveSyncMilliseconds };
@@ -140,6 +191,9 @@ internal sealed partial class ImGuiEditorWindow
     {
         _capturePath = null;
         _captureRenderSettings = null;
+        _captureRain = null; _captureSnow = null; _captureHeat = null;
+        _captureWaterFiltering = null;
+        _captureHardwareAcceleration = null;
         _accumulationSignature = string.Empty;
     }
 }

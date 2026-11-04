@@ -117,6 +117,15 @@ internal sealed partial class ImGuiEditorWindow
             DrawProbeVolumeBox(drawList, origin, size, camera, pivot, probe, probe.Editing);
         }
 
+        var selectionComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsVoxelSelection);
+        if (selectionComponent is not null)
+        {
+            // 旧场景的世界坐标范围在这里也先迁移成局部坐标，避免检查器没打开时框画偏
+            MigrateVoxelSelectionToLocal(selected, selectionComponent);
+            DrawVoxelSelectionGizmo(drawList, origin, size, camera, selected,
+                SceneComponentTypes.ReadVoxelSelection(selectionComponent));
+        }
+
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
@@ -563,6 +572,7 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
         }
+        if (TryBeginVoxelSelectionGizmoDrag(mouse, origin, size, camera, selected)) return true;
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
@@ -653,6 +663,7 @@ internal sealed partial class ImGuiEditorWindow
         var selected = GetSelectedSceneObject();
         if (selected is null) return;
         var mouse = ImGui.GetIO().MousePos;
+        if (UpdateVoxelSelectionGizmoDrag(origin, size, camera, selected)) return;
         if (_sceneGizmoDragProbe)
         {
             var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
@@ -799,6 +810,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         var selected = GetSelectedSceneObject();
         _sceneGizmoDragging = false;
+        _voxelSelectionGizmoDragging = false;
         if (selected is null)
         {
             _sceneGizmoDragRange = false;
@@ -898,6 +910,42 @@ internal sealed partial class ImGuiEditorWindow
         if (MathF.Abs(determinant) < .0001F) return Vector3.Zero;
         var (axisU, axisV) = AxisPlane(_sceneGizmoDragPlane);
         return axisU * ((d.X * v.Y - d.Y * v.X) / determinant) + axisV * ((u.X * d.Y - u.Y * d.X) / determinant);
+    }
+
+    /// <summary>绕局部 X 轴对应的世界轴镜像对象体素，保留材质并支持撤销。</summary>
+    private void MirrorModelLocalX(SceneObject sceneObject, ComponentRecord component, bool mirrored)
+    {
+        if (_worldLoadFailed)
+        {
+            SetStatus("场景体素尚未安全加载，不能镜像模型");
+            return;
+        }
+        if (sceneObject.Transform.Mode != TransformMode.Grid ||
+            !TryGetObjectCellBounds(sceneObject, out var minimum, out var maximum))
+        {
+            SetStatus("当前模型没有可镜像的体素");
+            return;
+        }
+        if (!IsAtBaseScale(sceneObject))
+        {
+            SetStatus("请先将模型缩放恢复为 1，再进行镜像");
+            return;
+        }
+        var rotation = sceneObject.Transform.Grid.Rotation;
+        var axis = rotation[0, 0] != 0 ? 0 : rotation[1, 0] != 0 ? 1 : 2;
+        var command = _objectVoxels.CreateTransform(sceneObject.Id, "镜像模型", coordinate => axis switch
+        {
+            0 => new VoxelCoord64(minimum.X + maximum.X - coordinate.X, coordinate.Y, coordinate.Z),
+            1 => new VoxelCoord64(coordinate.X, minimum.Y + maximum.Y - coordinate.Y, coordinate.Z),
+            _ => new VoxelCoord64(coordinate.X, coordinate.Y, minimum.Z + maximum.Z - coordinate.Z),
+        }, ObjectEditCallback(sceneObject.Id, forward =>
+            SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with
+            { MirrorX = forward ? mirrored : !mirrored })));
+        _voxelHistory.Execute(command);
+        InvalidateScaleBase(sceneObject.Id);
+        MarkSceneDocumentDirty();
+        ResetAfterVoxelTransform();
+        SetStatus(mirrored ? "已镜像模型" : "已取消模型镜像");
     }
 
     /// <summary>平移格变换模型的所有体素，并同步对象原点</summary>

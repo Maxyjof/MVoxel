@@ -692,7 +692,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
         var path = arguments.GetProperty("path").GetString();
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("项目路径不能为空");
-        RequestOpenProject(path);
+        var saveBeforeSwitch = arguments.TryGetProperty("saveBeforeSwitch", out var saveValue) &&
+            saveValue.ValueKind == JsonValueKind.True;
+        _pendingActions.Enqueue(() =>
+        {
+            if (saveBeforeSwitch && _project is not null)
+            {
+                if (_sceneDocumentDirty) SaveProject();
+                if (_generatorDirty) SaveGeneratorSource();
+                if (_sceneDocumentDirty || _generatorDirty)
+                {
+                    SetStatus("保存未完成，已取消项目切换");
+                    return;
+                }
+            }
+            BeginOpenProject(path, fromWelcome: false);
+        });
         return new { queued = true, path };
     }
 
@@ -2976,7 +2991,7 @@ DockId=0x6A3C3007,0
         try
         {
             var settings = _activeExport.Settings;
-            if (_activeExport.TimelineAsset is { } timelineAsset)
+            if (!_activeExport.TimelineApplied && _activeExport.TimelineAsset is { } timelineAsset)
             {
                 if (!ApplyTimelineFrame(timelineAsset, _activeExport.TimelineFrame))
                 {
@@ -2985,6 +3000,7 @@ DockId=0x6A3C3007,0
                     return;
                 }
                 _activeExport.World = GetRenderWorld(_activeExport.CullingMask ?? uint.MaxValue);
+                _activeExport.TimelineApplied = true;
             }
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
@@ -3010,7 +3026,12 @@ DockId=0x6A3C3007,0
                 return;
             }
 
-            var finished = !settings.PathTracingEnabled || pipeline.AccumulatedSamples >= settings.PathMaxAccumulatedSamples;
+            // 渐进太阳阴影在实时模式下也需要多帧，不能导出首帧的随机估计。
+            var progressiveSunExport = !settings.PathTracingEnabled && settings.SunEnabled &&
+                settings.SunShadowMethod == SunShadowMethod.Progressive && settings.ShadowSoftness > 0.0001F;
+            var finished = settings.PathTracingEnabled
+                ? pipeline.AccumulatedSamples >= settings.PathMaxAccumulatedSamples
+                : !progressiveSunExport || pipeline.RealtimeConvergedFrames >= Math.Max(0, settings.SunAccumulationFrames - 1);
             if (!finished) return;
             Directory.CreateDirectory(Path.GetDirectoryName(_activeExport.Path)!);
             var saved = _activeExport.Format == ExportImageFormat.Hdr
@@ -3211,6 +3232,7 @@ DockId=0x6A3C3007,0
         internal string? CameraName { get; set; }
         internal string? TimelineAsset { get; init; }
         internal int TimelineFrame { get; init; }
+        internal bool TimelineApplied { get; set; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
         internal SceneCamera? Camera { get; init; }
@@ -3391,7 +3413,14 @@ DockId=0x6A3C3007,0
     private float ExportProgress(ExportJob job)
     {
         if (_exportPipeline is null) return 0F;
-        if (!job.Settings.PathTracingEnabled) return 1F;
+        if (!job.Settings.PathTracingEnabled)
+        {
+            var settings = job.Settings;
+            if (!settings.SunEnabled || settings.SunShadowMethod != SunShadowMethod.Progressive ||
+                settings.ShadowSoftness <= 0.0001F) return 1F;
+            return Math.Clamp((float)(_exportPipeline.RealtimeConvergedFrames + 1) /
+                Math.Max(1, settings.SunAccumulationFrames), 0F, 1F);
+        }
         if (job.Settings.PathMaxAccumulatedSamples <= 0) return 0F;
         return Math.Clamp((float)_exportPipeline.AccumulatedSamples / job.Settings.PathMaxAccumulatedSamples, 0F, 1F);
     }
@@ -3709,6 +3738,7 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.WindReceiver => SceneComponentTypes.CreateWindReceiver(new WindReceiverComponentData()),
                         SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
+                        SceneComponentTypes.VoxelSelection => CreateVoxelSelectionForObject(selectedObject),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     });
                     MarkSceneDocumentDirty();
@@ -3847,6 +3877,13 @@ DockId=0x6A3C3007,0
         else if (SceneComponentTypes.IsVoxelModel(component))
         {
             SceneComponentTypes.WriteVoxelModel(component, VoxelModelComponentData.Default);
+        }
+        else if (SceneComponentTypes.IsVoxelSelection(component))
+        {
+            SceneComponentTypes.WriteVoxelSelection(component, VoxelSelectionComponentData.Default);
+            _voxelSelectionCells = [];
+            _voxelSelectionObjectId = StableId.Empty;
+            _voxelSelectionSignature = string.Empty;
         }
         else
         {
@@ -4000,6 +4037,11 @@ DockId=0x6A3C3007,0
             }
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅编辑此模型的体素；再次点击退出绘制模式。");
             var data = SceneComponentTypes.ReadVoxelModel(component);
+            var mirrored = data.MirrorX;
+            BeginInspectorField("镜像 X", "绕模型局部 X 轴的包围盒中心翻转体素；操作可撤销，编辑共享资产时保留原始资产。请先将模型缩放恢复为 1。");
+            if (ImGui.Checkbox("##VoxelMirrorX", ref mirrored))
+                MirrorModelLocalX(selectedObject, component, mirrored);
+            data = SceneComponentTypes.ReadVoxelModel(component);
             BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。右键内嵌数据可提取。");
             var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
                 (EmbeddedVoxelData.HasData(component) || _objectVoxels.GetOrCreate(selectedObject.Id).OccupiedVoxelCount > 0);
@@ -4047,6 +4089,12 @@ DockId=0x6A3C3007,0
             {
                 ApplyVoxelModelReference(selectedObject, component, model);
             }
+            return;
+        }
+
+        if (SceneComponentTypes.IsVoxelSelection(component))
+        {
+            DrawVoxelSelectionComponent(selectedObject, component);
             return;
         }
 
@@ -4247,6 +4295,10 @@ DockId=0x6A3C3007,0
                 BeginInspectorField("平滑强度", "控制边缘平滑的混合比例。");
                 if (ImGui.DragFloat("##FxaaStrength", ref strength, .01F, 0F, 1F)) { data = data with { FxaaStrength = strength }; changed = true; }
             }
+            var waterFiltering = data.WaterFootprintFiltering;
+            BeginInspectorField("水面斜视过滤", "按相机像素在水面上的方向和大小过滤高频波纹，减轻远处闪烁和条纹；适用于程序化水面，不是纹理采样器的各向异性倍数。");
+            if (ImGui.DragFloat("##WaterFootprintFiltering", ref waterFiltering, .02F, 0F, 2F, "%.2f"))
+            { data = data with { WaterFootprintFiltering = waterFiltering }; changed = true; }
             var postProcess = data.PostProcess?.Clone() ?? CameraPostProcessStack.Default;
             if (ImGui.CollapsingHeader("相机后处理", ImGuiTreeNodeFlags.DefaultOpen))
             {
@@ -4936,7 +4988,7 @@ DockId=0x6A3C3007,0
             }
             if (directories.Length == 0) ImGui.TextDisabled("当前文件夹没有可浏览的子文件夹");
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
             ImGui.TextColored(ToColor(EditorPalette.Error), "无法读取当前文件夹：" + exception.Message);
         }

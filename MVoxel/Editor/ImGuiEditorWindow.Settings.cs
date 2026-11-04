@@ -1,4 +1,4 @@
-using ImGuiNET;
+﻿using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
@@ -696,7 +696,7 @@ internal sealed partial class ImGuiEditorWindow
                     : "使用 CPU 计算，适合调试或没有可用显卡时使用");
                 // 硬件加速默认跟随设备能力；用户手动关闭后本项目记住“关闭”，
                 // 设备不支持时整项灰显并且不能被误点成开启
-                var hardwareAvailable = _vulkan?.SupportsHardwareRayQuery == true;
+                var hardwareAvailable = !settings.ForceComputePath && _vulkan?.SupportsHardwareRayQuery == true;
                 var hardwareRayTracing = settings.HardwareRayTracingAuto
                     ? hardwareAvailable : settings.UseHardwareRayTracing;
                 var hardwareDisabled = settings.Backend == RenderBackend.Cpu || !hardwareAvailable;
@@ -710,14 +710,16 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.EndDisabled();
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
-                    ImGui.SetTooltip(hardwareAvailable
-                        ? "默认自动开启：检测到设备支持 ray query 时，太阳阴影的求交交给硬件光追，光照、后处理和三种太阳方案与 Compute 路径完全一致；关闭后只把这项选择记在本项目，不影响其他项目"
-                        : "当前显卡或驱动没有 ray query 硬件光追能力，这项会灰显；渲染自动使用 Compute 路径，所有效果仍完整保留");
+                    var description = hardwareAvailable
+                        ? "默认按设备能力自动启用 Ray Query，加速部分体素和太阳遮挡求交；光照、后处理和三种太阳方案使用共用管线。工作集过大、持续编辑或初始化失败时会使用软件 BVH。关闭后只影响本项目。"
+                        : "当前设备未启用 Ray Query，或已选择强制 Compute；渲染使用软件 BVH。若刚关闭强制 Compute，需重建设备或重启编辑器后才能检测并启用。";
+                    if (_pipeline is not null) description += "\n当前渲染视口：" + _pipeline.HardwareShadowStatus;
+                    ImGui.SetTooltip(description);
                 }
         });
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "世界环境", () => DrawEnvironmentSection(settings));
+        DrawRenderSettingsAccordion("environment", "环境配置", () => DrawEnvironmentSection(settings));
 
         DrawRenderSettingsAccordion("color", "色彩输出", () =>
         {
@@ -766,6 +768,10 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("材质金属度", ref settings.PathMetalness, 0F, 1F, "%.2f");
                 SliderFloat("介电反射率 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
                 SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
+                ImGui.Checkbox("薄板玻璃近似", ref settings.ThinGlassApproximation);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射，避免体素化圆柱壳产生棱镜条纹。");
+                SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值即按薄板处理；0 表示关闭判定。");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");

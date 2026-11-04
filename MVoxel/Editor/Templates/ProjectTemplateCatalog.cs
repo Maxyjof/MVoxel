@@ -338,6 +338,12 @@ public static class ProjectTemplateCatalog
         var safeName = ToSafeFileName(modelName);
         var multiple = document.Instances.Count > 1 || document.Models.Count > 1;
         var materialSlots = WriteVoxMaterials(project, document, safeName, modelName);
+        // _trans 大于 0 的槽在渲染时要走半透明分支，体素标志必须同步，
+        // 否则玻璃材质资产虽然写对了，几何仍是实心，透射与折射都不会发生。
+        var translucentSlots = document.Materials
+            .Where(material => material.Transmission > 0F)
+            .Select(material => material.Id)
+            .ToHashSet();
 
         report?.Invoke("正在写入项目体素资产…", .82F, true);
         // 一个模型写一份资产，多个实例共享同一份，和 MagicaVoxel 的 Reference 语义一致
@@ -348,7 +354,7 @@ public static class ProjectTemplateCatalog
         {
             var key = (instance.ModelIndex, instance.Rotation);
             if (baked.ContainsKey(key)) continue;
-            var world = BuildModelWorld(document.Models[instance.ModelIndex], materialSlots, instance.Rotation);
+            var world = BuildModelWorld(document.Models[instance.ModelIndex], materialSlots, translucentSlots, instance.Rotation);
             var fileName = (multiple ? $"{safeName}_{baked.Count + 1}" : safeName) + ".mvmodel";
             var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
@@ -499,13 +505,19 @@ public static class ProjectTemplateCatalog
 
 
     private static VoxelWorld BuildModelWorld(VoxModel model, IReadOnlyDictionary<int, string> materialSlots,
-        VoxTransform rotation)
+        IReadOnlySet<int> translucentSlots, VoxTransform rotation)
     {
         var world = new VoxelWorld();
         foreach (var voxel in model.Voxels)
+        {
+            // MagicaVoxel 的半透明写在 MATL 的 _trans 里，调色板 alpha 基本都是 255。
+            // 只按 alpha 判断会把玻璃导入成实心体素：渲染端不会走半透明分支，
+            // 材质资产里的 opacity / ior 全部失效，被玻璃罩住的灯芯也就看不见了。
+            var translucent = voxel.Color.A < 255 || translucentSlots.Contains(voxel.PaletteIndex);
             world.Set(rotation.Apply(new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y)), new VoxelValue(voxel.Color,
                 materialSlots.ContainsKey(voxel.PaletteIndex) ? checked((ushort)voxel.PaletteIndex) : (ushort)0,
-                voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
+                translucent ? VoxelFlags.Translucent : VoxelFlags.None));
+        }
         return world;
     }
 

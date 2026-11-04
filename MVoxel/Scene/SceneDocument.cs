@@ -529,6 +529,8 @@ public static class SceneValidation
                 errors.Add($"对象“{sceneObject.Name}”包含重复的风力接收器组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsAnimation) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的动画组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsVoxelSelection) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的体素框选组件");
         }
 
         return errors;
