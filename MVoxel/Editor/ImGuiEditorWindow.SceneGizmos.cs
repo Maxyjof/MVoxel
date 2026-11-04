@@ -199,6 +199,27 @@ internal sealed partial class ImGuiEditorWindow
             var center = position + forward * range;
             DrawWorldCircle(drawList, origin, size, camera, center, right, up, outerRadius, packed, width);
         }
+        else if (data.Shape == LightShape.Area)
+        {
+            // 面积灯画成矩形线框，朝向与渲染端一致：右轴由朝向叉乘世界向上得到
+            var forward = GetObjectWorldForward(sceneObject);
+            var right = Vector3.Cross(forward, Vector3.UnitY);
+            if (right.LengthSquared < 0.0001F) right = Vector3.UnitX;
+            right = Vector3.Normalize(right);
+            var up = Vector3.Normalize(Vector3.Cross(right, forward));
+            var halfWidth = MathF.Max(0.05F, data.AreaWidth * 0.5F);
+            var halfHeight = MathF.Max(0.05F, data.AreaHeight * 0.5F);
+            var corner00 = position - right * halfWidth - up * halfHeight;
+            var corner10 = position + right * halfWidth - up * halfHeight;
+            var corner11 = position + right * halfWidth + up * halfHeight;
+            var corner01 = position - right * halfWidth + up * halfHeight;
+            DrawWorldLine(drawList, origin, size, camera, corner00, corner10, packed, width);
+            DrawWorldLine(drawList, origin, size, camera, corner10, corner11, packed, width);
+            DrawWorldLine(drawList, origin, size, camera, corner11, corner01, packed, width);
+            DrawWorldLine(drawList, origin, size, camera, corner01, corner00, packed, width);
+            // 发光方向：从灯面中心沿传播方向画一小段，方便判断正反面
+            DrawWorldLine(drawList, origin, size, camera, position, position + forward * 6F, packed, width);
+        }
         else
         {
             var forward = GetObjectWorldForward(sceneObject);

@@ -1296,6 +1296,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
             if (ImGui.MenuItem("添加聚光灯", enabled: _project is not null)) CreateLightObject(LightShape.Spot);
             if (ImGui.MenuItem("添加方向光", enabled: _project is not null)) CreateLightObject(LightShape.Directional);
+            if (ImGui.MenuItem("添加面积灯", enabled: _project is not null)) CreateLightObject(LightShape.Area);
             ImGui.Separator();
             ImGui.TextDisabled("度量与诊断");
             if (ImGui.MenuItem("体素度量", null, ref _showVoxelMeasurements)) _measurementRefreshSeconds = 1F;

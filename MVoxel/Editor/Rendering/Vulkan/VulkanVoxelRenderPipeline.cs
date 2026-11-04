@@ -138,7 +138,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private DeviceMemory _sceneLightMemory;
     private int _sceneLightCount;
     private float[]? _sceneLightPacked;
-    private const int SceneLightFloatsPerLight = 20;
+    // 7 个 vec4：位置/类型、方向/启用、颜色/强度、范围/聚光、配光、
+    // 面积灯右轴/半宽、面积灯上轴/半高
+    private const int SceneLightFloatsPerLight = 28;
     private const int SceneLightBufferBytes = SceneLight.Capacity * SceneLightFloatsPerLight * sizeof(float);
 
     // 分块提交环形队列：每槽拥有独立的参数缓冲、命令缓冲、栅栏与描述符集，
@@ -726,6 +728,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             packed[offset + 14] = light.InnerSpotAngleDegrees;
             packed[offset + 15] = light.CastShadows ? 1F : 0F;
             packed[offset + 16] = Math.Clamp(light.Profile, 0, 3);
+            packed[offset + 17] = 0F;
+            packed[offset + 18] = 0F;
+            packed[offset + 19] = 0F;
+            packed[offset + 20] = light.Right.X;
+            packed[offset + 21] = light.Right.Y;
+            packed[offset + 22] = light.Right.Z;
+            packed[offset + 23] = light.HalfWidth;
+            packed[offset + 24] = light.Up.X;
+            packed[offset + 25] = light.Up.Y;
+            packed[offset + 26] = light.Up.Z;
+            packed[offset + 27] = light.HalfHeight;
             packedCount++;
         }
 
@@ -3000,6 +3013,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             vec4 rangeSpot;
             // x 为配光曲线预设（0 默认，1 窄束，2 宽束，3 蝴蝶结）
             vec4 profileExtra;
+            // xyz 为面积灯右轴，w 为半宽
+            vec4 areaRight;
+            // xyz 为面积灯上轴，w 为半高
+            vec4 areaUp;
         };
 
         layout(set = 0, binding = 9, std430) readonly buffer SceneLightBuffer
@@ -3583,10 +3600,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 求第 index 盏本地光源对表面的入射方向与已含强度、衰减的辐照颜色。
-        // 阴影是硬阴影：从着色点向光源投射一条遮挡射线，命中体素即返回 false；
-        // 本地光源没有面积参数，因此不做软阴影
+        // 点光与聚光按距离平方衰减并投射一条硬阴影射线；面积灯在矩形上采样一点，
+        // 采样点随样本变化，半影靠多帧累积自然形成
         bool SceneLightSample(int index, vec3 hitPoint, vec3 hitNormal,
-            out vec3 lightDirection, out vec3 radiance)
+            out vec3 lightDirection, out vec3 radiance, inout uint state)
         {
             SceneLightData light = sceneLights[index];
             lightDirection = vec3(0.0, 1.0, 0.0);
@@ -3599,6 +3616,28 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             {
                 // Direction 是光线传播方向，表面指向光源要取反
                 lightDirection = normalize(-light.directionEnabled.xyz);
+            }
+            else if (kind == 3)
+            {
+                // 面积灯：在矩形面上均匀采一点。面积灯没有范围窗口，
+                // 衰减完全由采样点到表面的几何关系决定
+                vec3 right = normalize(light.areaRight.xyz);
+                vec3 up = normalize(light.areaUp.xyz);
+                float halfWidth = max(light.areaRight.w, 0.0);
+                float halfHeight = max(light.areaUp.w, 0.0);
+                float area = max(4.0 * halfWidth * halfHeight, 1e-6);
+                vec3 samplePoint = light.positionKind.xyz
+                    + (Random(state) * 2.0 - 1.0) * right * halfWidth
+                    + (Random(state) * 2.0 - 1.0) * up * halfHeight;
+                vec3 offset = samplePoint - hitPoint;
+                float distanceSquared = max(dot(offset, offset), 1e-4);
+                lightDirection = offset * inversesqrt(distanceSquared);
+                shadowDistance = sqrt(distanceSquared) - 0.05;
+                // 发光面法线与传播方向相反，只从正面发光
+                float cosLight = dot(normalize(light.directionEnabled.xyz), -lightDirection);
+                if (cosLight <= 0.0) return false;
+                // 与自发光面光源同口径：入射辐亮度 × 面积 × cos / (π d²)
+                attenuation = area * cosLight / (3.14159265 * distanceSquared);
             }
             else
             {
@@ -3619,8 +3658,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
             }
 
-            // 配光曲线预设：围绕对象朝向的轴向亮度分布，模拟常见的 IES 轮廓
-            if (kind != 0)
+            // 配光曲线预设：围绕对象朝向的轴向亮度分布，模拟常见的 IES 轮廓。
+            // 面积灯本身有明确朝向，不套用点光的配光曲线
+            if (kind != 0 && kind != 3)
             {
                 int profile = int(light.profileExtra.x + 0.5);
                 if (profile > 0)
@@ -3641,7 +3681,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 light.colorIntensity.w <= 0.0 ||
                 all(lessThanEqual(light.colorIntensity.rgb, vec3(0.0)))) return false;
 
-            if (light.rangeSpot.w > 0.5 && shadowDistance > 0.0)
+            // 面积灯没有点光源那种"是否投射阴影"的余地：采样点被遮挡就该判黑，
+            // 否则整块灯板会穿墙漏光，因此面积灯始终投射遮挡射线
+            if ((light.rangeSpot.w > 0.5 || kind == 3) && shadowDistance > 0.0)
             {
                 // 沿法线离开表面半个体素，避免阴影射线从实体内部出发命中自身
                 vec3 shadowOrigin = hitPoint + normalize(hitNormal) * 0.05 + lightDirection * 0.02;
@@ -3654,7 +3696,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 场景本地光源对表面的直接光辐照度（未乘 BRDF），光源数为 0 时返回零向量
-        vec3 SceneLocalLightIrradiance(vec3 hitPoint, vec3 hitNormal)
+        vec3 SceneLocalLightIrradiance(vec3 hitPoint, vec3 hitNormal, inout uint state)
         {
             int lightCount = clamp(int(values[P_SCENE_LIGHT_COUNT]), 0, SCENE_LIGHT_CAPACITY);
             vec3 irradiance = vec3(0.0);
@@ -3663,7 +3705,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 if (index >= lightCount) break;
                 vec3 lightDirection;
                 vec3 radiance;
-                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance)) continue;
+                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance, state)) continue;
                 irradiance += radiance * max(dot(hitNormal, lightDirection), 0.0);
             }
             return irradiance;
@@ -3794,7 +3836,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
             // 场景本地光源直接光，只有启用且强度大于 0 的光源参与；
             // 光源数为 0 时辐照度为零向量，输出与改动前一致
-            diffuse += baseColor * SceneLocalLightIrradiance(hitPoint, hitNormal);
+            diffuse += baseColor * SceneLocalLightIrradiance(hitPoint, hitNormal, state);
 
             float metallic = clamp(material.scalars.y >= 0.0 ? material.scalars.y : values[74], 0.0, 1.0);
             float roughness = clamp(material.scalars.x >= 0.0 ? material.scalars.x : values[73], 0.04, 1.0);
@@ -3861,7 +3903,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         // 场景本地光源在路径追踪中的直接光响应，复用太阳表面响应保持材质一致
         vec3 SceneLocalLightResponse(vec3 hitPoint, vec3 hitNormal, vec3 viewDirection,
-            vec3 baseColor, float metalness, float roughness)
+            vec3 baseColor, float metalness, float roughness, inout uint state)
         {
             int lightCount = clamp(int(values[P_SCENE_LIGHT_COUNT]), 0, SCENE_LIGHT_CAPACITY);
             vec3 response = vec3(0.0);
@@ -3870,23 +3912,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 if (index >= lightCount) break;
                 vec3 lightDirection;
                 vec3 radiance;
-                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance)) continue;
+                if (!SceneLightSample(index, hitPoint, hitNormal, lightDirection, radiance, state)) continue;
                 response += SunSurfaceResponse(baseColor, metalness, roughness,
                     hitNormal, viewDirection, lightDirection) * radiance;
             }
             return response;
         }
 
-        // 面积补光的直接光采样：矩形均匀采样一条阴影射线，
+        // 环境柔光的直接光采样：矩形均匀采样一条阴影射线，
         // 对应 MagicaVoxel Render 面板的 Area 灯；补光板是虚拟光源，
         // 不参与几何求交，因此不会和 BSDF 采样重复计能
-        vec3 AreaFillResponse(vec3 hitPoint, vec3 hitNormal, vec3 viewDirection,
+        vec3 SoftFillResponse(vec3 hitPoint, vec3 hitNormal, vec3 viewDirection,
             vec3 baseColor, float metalness, float roughness, inout uint state)
         {
-            if (values[P_AREA_ENABLED] < 0.5 || values[P_AREA_INTENSITY] <= 0.0) return vec3(0.0);
-            vec3 center = vec3(values[P_AREA_CX], values[P_AREA_CY], values[P_AREA_CZ]);
-            vec3 halfU = vec3(values[P_AREA_UX], values[P_AREA_UY], values[P_AREA_UZ]);
-            vec3 halfV = vec3(values[P_AREA_VX], values[P_AREA_VY], values[P_AREA_VZ]);
+            if (values[P_SOFT_ENABLED] < 0.5 || values[P_SOFT_INTENSITY] <= 0.0) return vec3(0.0);
+            vec3 center = vec3(values[P_SOFT_CX], values[P_SOFT_CY], values[P_SOFT_CZ]);
+            vec3 halfU = vec3(values[P_SOFT_UX], values[P_SOFT_UY], values[P_SOFT_UZ]);
+            vec3 halfV = vec3(values[P_SOFT_VX], values[P_SOFT_VY], values[P_SOFT_VZ]);
             vec3 lightNormal = cross(halfU, halfV);
             float area = length(lightNormal) * 4.0;
             if (area <= 1e-6) return vec3(0.0);
@@ -3912,8 +3954,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (TraceClosestWithin(hitPoint + hitNormal * 0.002, direction, shadowDistance,
                 shadowNormal, shadowColor, shadowFlags, shadowSlot, shadowCell, shadowExtent,
                 false, max(distance - 0.002, 0.0), true)) return vec3(0.0);
-            vec3 emission = SrgbToLinear(clamp(vec3(values[P_AREA_R], values[P_AREA_G],
-                values[P_AREA_B]), vec3(0.0), vec3(1.0))) * values[P_AREA_INTENSITY];
+            vec3 emission = SrgbToLinear(clamp(vec3(values[P_SOFT_R], values[P_SOFT_G],
+                values[P_SOFT_B]), vec3(0.0), vec3(1.0))) * values[P_SOFT_INTENSITY];
             return emission * SunSurfaceResponse(baseColor, metalness, roughness,
                 hitNormal, viewDirection, direction) / (3.14159265 * pdf);
         }
@@ -4412,11 +4454,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 // 因此不受太阳直接光开关影响；该开关只控制太阳直接采样，
                 // 本地光源目前只做硬阴影，太阳继续使用软阴影
                 radiance += throughput * SceneLocalLightResponse(hitPoint, hitNormal,
-                    -rayDirection, hitLinearColor, metalness, roughness);
+                    -rayDirection, hitLinearColor, metalness, roughness, state);
 
-                // 面积补光只做直接光采样：补光板是虚拟光源，路径不会命中它，
+                // 环境柔光只做直接光采样：补光板是虚拟光源，路径不会命中它，
                 // 因此不存在与 BSDF 采样重复计能的问题
-                radiance += throughput * AreaFillResponse(hitPoint, hitNormal, -rayDirection,
+                radiance += throughput * SoftFillResponse(hitPoint, hitNormal, -rayDirection,
                     hitLinearColor, metalness, roughness, state);
 
                 vec3 samplingOrigin = hitPoint + hitNormal * 0.002;

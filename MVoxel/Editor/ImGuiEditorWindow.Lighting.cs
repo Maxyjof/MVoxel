@@ -21,10 +21,10 @@ internal sealed partial class ImGuiEditorWindow
         var data = SceneComponentTypes.ReadLight(component);
         var changed = false;
         var shape = (int)data.Shape;
-        BeginInspectorField("类型", "点光向四周发光，聚光按角度范围照射，方向光按对象朝向平行照射。");
-        if (ImGui.Combo("##LightShape", ref shape, "点光\0聚光\0方向光\0", 3))
+        BeginInspectorField("类型", "点光向四周发光，聚光按角度范围照射，方向光按对象朝向平行照射，面积灯按对象朝向展开一块矩形发光面。");
+        if (ImGui.Combo("##LightShape", ref shape, "点光\0聚光\0方向光\0面积灯\0", 4))
         {
-            data = data with { Shape = (LightShape)Math.Clamp(shape, 0, 2) };
+            data = data with { Shape = (LightShape)Math.Clamp(shape, 0, 3) };
             changed = true;
         }
 
@@ -36,7 +36,7 @@ internal sealed partial class ImGuiEditorWindow
             changed = true;
         }
 
-        BeginInspectorField("强度", "灯光强度，点光与聚光按距离衰减。");
+        BeginInspectorField("强度", "灯光强度。点光与聚光按距离平方衰减；面积灯按发光面辐亮度计，尺寸固定时数值越大越亮。");
         var intensity = data.Intensity;
         if (ImGui.DragFloat("##LightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f"))
         {
@@ -51,6 +51,25 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.DragFloat("##LightRange", ref range, 0.25F, 0.01F, 100000F, "%.2f"))
             {
                 data = data with { Range = range };
+                changed = true;
+            }
+        }
+
+        if (data.Shape == LightShape.Area)
+        {
+            BeginInspectorField("宽度", "面积灯矩形面的宽度；对象朝向决定发光面方向，尺寸越大阴影越柔。");
+            var areaWidth = data.AreaWidth;
+            if (ImGui.DragFloat("##LightAreaWidth", ref areaWidth, 0.25F, 0.1F, 4096F, "%.2f"))
+            {
+                data = data with { AreaWidth = areaWidth };
+                changed = true;
+            }
+
+            BeginInspectorField("高度", "面积灯矩形面的高度。");
+            var areaHeight = data.AreaHeight;
+            if (ImGui.DragFloat("##LightAreaHeight", ref areaHeight, 0.25F, 0.1F, 4096F, "%.2f"))
+            {
+                data = data with { AreaHeight = areaHeight };
                 changed = true;
             }
         }
@@ -74,15 +93,24 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        BeginInspectorField("阴影", "让点光、聚光或方向光在体素上投射硬阴影；阴影采样会增加渲染开销。");
-        var shadows = data.CastShadows;
-        if (ImGui.Checkbox("投射阴影##LightShadows", ref shadows))
+        if (data.Shape == LightShape.Area)
         {
-            data = data with { CastShadows = shadows };
-            changed = true;
+            ImGui.TextDisabled("面积灯始终投射遮挡射线");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("矩形发光面的每个采样点都要做可见性测试，关掉阴影会让整块灯板穿墙漏光，因此面积灯不提供关闭开关。");
+        }
+        else
+        {
+            BeginInspectorField("阴影", "让点光、聚光、方向光或面积灯在体素上投射阴影；面积灯的半影由多次采样累积形成，会增加渲染开销。");
+            var shadows = data.CastShadows;
+            if (ImGui.Checkbox("投射阴影##LightShadows", ref shadows))
+            {
+                data = data with { CastShadows = shadows };
+                changed = true;
+            }
         }
 
-        if (data.Shape != LightShape.Directional)
+        if (data.Shape != LightShape.Directional && data.Shape != LightShape.Area)
         {
             BeginInspectorField("配光曲线", "围绕灯光朝向的亮度分布：窄束、宽束和蝴蝶结用于模拟常见 IES 轮廓。");
             var profile = (int)data.Profile;
@@ -111,6 +139,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             LightShape.Spot => "聚光灯",
             LightShape.Directional => "方向光",
+            LightShape.Area => "面积灯",
             _ => "点光源",
         };
         var baseName = name;
@@ -278,14 +307,26 @@ internal sealed partial class ImGuiEditorWindow
             {
                 LightShape.Spot => SceneLightKind.Spot,
                 LightShape.Directional => SceneLightKind.Directional,
+                LightShape.Area => SceneLightKind.Area,
                 _ => SceneLightKind.Point,
             };
+            // 面积灯用对象朝向展开矩形：右轴与世界向上叉乘得到，退化时退回 X 轴，
+            // 上轴再由右轴与朝向叉乘，保证三条轴单位正交
+            var forward = new System.Numerics.Vector3(direction.X, direction.Y, direction.Z);
+            if (forward.LengthSquared() < 1e-8F) forward = new System.Numerics.Vector3(0F, -1F, 0F);
+            forward = System.Numerics.Vector3.Normalize(forward);
+            var right = System.Numerics.Vector3.Cross(forward, System.Numerics.Vector3.UnitY);
+            if (right.LengthSquared() < 1e-6F) right = System.Numerics.Vector3.UnitX;
+            right = System.Numerics.Vector3.Normalize(right);
+            var up = System.Numerics.Vector3.Normalize(System.Numerics.Vector3.Cross(right, forward));
             result.Add(new SceneLight(
                 new System.Numerics.Vector3(position.X, position.Y, position.Z),
                 new System.Numerics.Vector3(direction.X, direction.Y, direction.Z),
                 new System.Numerics.Vector3(color.X, color.Y, color.Z),
                 data.Intensity, data.Range, data.SpotAngleDegrees, data.InnerSpotAngleDegrees,
-                kind, Enabled: true, CastShadows: data.CastShadows, Profile: (int)data.Profile));
+                kind, Enabled: true, CastShadows: data.CastShadows, Profile: (int)data.Profile,
+                Right: right, Up: up,
+                HalfWidth: data.AreaWidth * 0.5F, HalfHeight: data.AreaHeight * 0.5F));
             if (result.Count >= SceneLight.Capacity) break;
         }
 

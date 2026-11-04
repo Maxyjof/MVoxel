@@ -21,6 +21,11 @@ public enum SceneLightKind
     /// 聚光，在点光基础上按内外角做圆锥衰减
     /// </summary>
     Spot = 2,
+
+    /// <summary>
+    /// 面积灯，在矩形发光面上均匀采样，用采样点做直接光与阴影
+    /// </summary>
+    Area = 3,
 }
 
 /// <summary>
@@ -54,7 +59,11 @@ public readonly record struct SceneLight(
     SceneLightKind Kind = SceneLightKind.Point,
     bool Enabled = true,
     bool CastShadows = false,
-    int Profile = 0)
+    int Profile = 0,
+    Vector3 Right = default,
+    Vector3 Up = default,
+    float HalfWidth = 0F,
+    float HalfHeight = 0F)
 {
     /// <summary>
     /// 渲染管线支持的本地光源数量上限
@@ -98,9 +107,12 @@ public readonly record struct SceneLight(
         var spotAngle = ClampSpotAngle(SpotAngleDegrees);
         var innerSpot = Math.Min(ClampSpotAngle(InnerSpotAngleDegrees), spotAngle);
         var kind = Enum.IsDefined(Kind) ? Kind : SceneLightKind.Point;
+        var right = NormalizeDirection(Right);
+        var up = NormalizeDirection(Up);
         return new SceneLight(SanitizePosition(Position), NormalizeDirection(Direction),
             color, intensity, range, spotAngle, innerSpot, kind, Enabled, CastShadows,
-            Math.Clamp(Profile, 0, 3));
+            Math.Clamp(Profile, 0, 3), right, up,
+            ClampFinite(HalfWidth, 0F, 0F, 4096F), ClampFinite(HalfHeight, 0F, 0F, 4096F));
     }
 
     /// <summary>

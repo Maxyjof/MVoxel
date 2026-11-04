@@ -18,7 +18,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (ImGui.BeginMenu("光源"))
         {
-            foreach (var (name, shape) in new[] { ("点光源", LightShape.Point), ("聚光灯", LightShape.Spot), ("方向光", LightShape.Directional) })
+            foreach (var (name, shape) in new[] { ("点光源", LightShape.Point), ("聚光灯", LightShape.Spot), ("方向光", LightShape.Directional), ("面积灯", LightShape.Area) })
                 if (ImGui.MenuItem(name))
                 {
                     var item = CreateHierarchyObject(name, parent, false);

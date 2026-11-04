@@ -273,7 +273,9 @@ public static class SceneComponentTypes
             ReadFloat(data, "innerSpotAngleDegrees", 25F),
             data.TryGetProperty("castShadows", out var shadows) &&
             shadows.ValueKind == JsonValueKind.True,
-            profile).Normalize();
+            profile,
+            ReadFloat(data, "areaWidth", 32F),
+            ReadFloat(data, "areaHeight", 32F)).Normalize();
     }
 
     /// <summary>
@@ -492,6 +494,8 @@ public enum LightShape
     Point,
     Spot,
     Directional,
+    /// <summary>面积灯：按对象朝向展开的矩形发光面，尺寸用宽高两个世界单位值</summary>
+    Area,
 }
 
 public sealed record SceneComponentDefinition(string TypeId, string DisplayName, string Category, bool BuiltIn);
@@ -520,7 +524,9 @@ public readonly record struct LightComponentData(
     float SpotAngleDegrees,
     float InnerSpotAngleDegrees,
     bool CastShadows,
-    LightProfile Profile = LightProfile.Default)
+    LightProfile Profile = LightProfile.Default,
+    float AreaWidth = 32F,
+    float AreaHeight = 32F)
 {
     public static LightComponentData Default => new(LightShape.Point, 1F, 1F, 1F, 1F, 32F, 45F, 25F, false);
 
@@ -542,7 +548,9 @@ public readonly record struct LightComponentData(
             Math.Clamp(float.IsFinite(ColorG) ? ColorG : 1F, 0F, 1F),
             Math.Clamp(float.IsFinite(ColorB) ? ColorB : 1F, 0F, 1F),
             range, outer, inner, CastShadows,
-            Enum.IsDefined(Profile) ? Profile : LightProfile.Default);
+            Enum.IsDefined(Profile) ? Profile : LightProfile.Default,
+            Math.Clamp(float.IsFinite(AreaWidth) ? AreaWidth : 32F, 0.1F, 4096F),
+            Math.Clamp(float.IsFinite(AreaHeight) ? AreaHeight : 32F, 0.1F, 4096F));
     }
 }
 

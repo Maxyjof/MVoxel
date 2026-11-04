@@ -126,12 +126,12 @@ public sealed class VoxelRenderParameters
     public const int SunShadowMethod = 170, SunShadowPass = 171, SunShadowMapResolution = 172;
     public const int SunMapCenterX = 173, SunMapCenterY = 174, SunMapCenterZ = 175, SunMapRadius = 176;
     public const int SunRealtimeFrames = 177;
-    /// <summary>面积补光开关、中心、两条半边向量、颜色与强度</summary>
-    public const int AreaFillEnabled = 178;
-    public const int AreaFillCenterX = 179, AreaFillCenterY = 180, AreaFillCenterZ = 181;
-    public const int AreaFillRightX = 182, AreaFillRightY = 183, AreaFillRightZ = 184;
-    public const int AreaFillUpX = 185, AreaFillUpY = 186, AreaFillUpZ = 187;
-    public const int AreaFillR = 188, AreaFillG = 189, AreaFillB = 190, AreaFillIntensity = 191;
+    /// <summary>环境柔光开关、中心、两条半边向量、颜色与强度</summary>
+    public const int SoftFillEnabled = 178;
+    public const int SoftFillCenterX = 179, SoftFillCenterY = 180, SoftFillCenterZ = 181;
+    public const int SoftFillRightX = 182, SoftFillRightY = 183, SoftFillRightZ = 184;
+    public const int SoftFillUpX = 185, SoftFillUpY = 186, SoftFillUpZ = 187;
+    public const int SoftFillR = 188, SoftFillG = 189, SoftFillB = 190, SoftFillIntensity = 191;
     public const int SlotCount = 192;
 
     /// <summary>
@@ -146,11 +146,11 @@ public sealed class VoxelRenderParameters
             ("P_SUN_MAP_SIZE", SunShadowMapResolution), ("P_SUN_MAP_X", SunMapCenterX),
             ("P_SUN_MAP_Y", SunMapCenterY), ("P_SUN_MAP_Z", SunMapCenterZ),
             ("P_SUN_MAP_RADIUS", SunMapRadius), ("P_SUN_REALTIME_FRAMES", SunRealtimeFrames),
-            ("P_AREA_ENABLED", AreaFillEnabled), ("P_AREA_INTENSITY", AreaFillIntensity),
-            ("P_AREA_R", AreaFillR), ("P_AREA_G", AreaFillG), ("P_AREA_B", AreaFillB),
-            ("P_AREA_CX", AreaFillCenterX), ("P_AREA_CY", AreaFillCenterY), ("P_AREA_CZ", AreaFillCenterZ),
-            ("P_AREA_UX", AreaFillRightX), ("P_AREA_UY", AreaFillRightY), ("P_AREA_UZ", AreaFillRightZ),
-            ("P_AREA_VX", AreaFillUpX), ("P_AREA_VY", AreaFillUpY), ("P_AREA_VZ", AreaFillUpZ),
+            ("P_SOFT_ENABLED", SoftFillEnabled), ("P_SOFT_INTENSITY", SoftFillIntensity),
+            ("P_SOFT_R", SoftFillR), ("P_SOFT_G", SoftFillG), ("P_SOFT_B", SoftFillB),
+            ("P_SOFT_CX", SoftFillCenterX), ("P_SOFT_CY", SoftFillCenterY), ("P_SOFT_CZ", SoftFillCenterZ),
+            ("P_SOFT_UX", SoftFillRightX), ("P_SOFT_UY", SoftFillRightY), ("P_SOFT_UZ", SoftFillRightZ),
+            ("P_SOFT_VX", SoftFillUpX), ("P_SOFT_VY", SoftFillUpY), ("P_SOFT_VZ", SoftFillUpZ),
             ("P_CAM_X", CamX), ("P_CAM_Y", CamY), ("P_CAM_Z", CamZ), ("P_FOCAL", Focal),
             ("P_FWD_X", ForwardX), ("P_FWD_Y", ForwardY), ("P_FWD_Z", ForwardZ), ("P_FRAME", Frame),
             ("P_RIGHT_X", RightX), ("P_RIGHT_Y", RightY), ("P_RIGHT_Z", RightZ), ("P_VIEW_W", ViewWidth),
@@ -335,14 +335,14 @@ public sealed class VoxelRenderParameters
         parameters[GroundB] = settings.GroundColor.Z;
         parameters[NearFade] = settings.NearFade;
 
-        // 面积补光按相机朝向摆在模型前方，尺寸与距离跟随场景包围盒，
+        // 环境柔光按相机朝向摆在模型前方，尺寸与距离跟随场景包围盒，
         // 因此换场景不用手调坐标；法线由两条半边向量的叉积得到，指向场景
-        bool areaFill = settings.AreaFillEnabled && settings.AreaFillIntensity > 0F;
-        parameters[AreaFillEnabled] = areaFill ? 1F : 0F;
-        parameters[AreaFillIntensity] = settings.AreaFillIntensity;
-        parameters[AreaFillR] = settings.AreaFillColor.X;
-        parameters[AreaFillG] = settings.AreaFillColor.Y;
-        parameters[AreaFillB] = settings.AreaFillColor.Z;
+        bool areaFill = settings.SoftFillEnabled && settings.SoftFillIntensity > 0F;
+        parameters[SoftFillEnabled] = areaFill ? 1F : 0F;
+        parameters[SoftFillIntensity] = settings.SoftFillIntensity;
+        parameters[SoftFillR] = settings.SoftFillColor.X;
+        parameters[SoftFillG] = settings.SoftFillColor.Y;
+        parameters[SoftFillB] = settings.SoftFillColor.Z;
         if (areaFill)
         {
             var extent = MathF.Max(1F, MathF.Sqrt(
@@ -358,20 +358,20 @@ public sealed class VoxelRenderParameters
             var towardCamera = frame.CameraPosition - sceneCenter;
             if (towardCamera.LengthSquared() < 1e-6F) towardCamera = -frame.CameraForward;
             towardCamera = System.Numerics.Vector3.Normalize(towardCamera);
-            var center = sceneCenter + towardCamera * (extent * settings.AreaFillDistance);
-            var halfU = frame.CameraRight * (extent * settings.AreaFillSize);
+            var center = sceneCenter + towardCamera * (extent * settings.SoftFillDistance);
+            var halfU = frame.CameraRight * (extent * settings.SoftFillSize);
             // 第二条半边取向下的反方向，使叉积得到的法线朝向场景而不是背对场景，
             // 否则补光板整面都会因为背面判定被丢弃
-            var halfV = -frame.CameraUp * (extent * settings.AreaFillSize);
-            parameters[AreaFillCenterX] = center.X;
-            parameters[AreaFillCenterY] = center.Y;
-            parameters[AreaFillCenterZ] = center.Z;
-            parameters[AreaFillRightX] = halfU.X;
-            parameters[AreaFillRightY] = halfU.Y;
-            parameters[AreaFillRightZ] = halfU.Z;
-            parameters[AreaFillUpX] = halfV.X;
-            parameters[AreaFillUpY] = halfV.Y;
-            parameters[AreaFillUpZ] = halfV.Z;
+            var halfV = -frame.CameraUp * (extent * settings.SoftFillSize);
+            parameters[SoftFillCenterX] = center.X;
+            parameters[SoftFillCenterY] = center.Y;
+            parameters[SoftFillCenterZ] = center.Z;
+            parameters[SoftFillRightX] = halfU.X;
+            parameters[SoftFillRightY] = halfU.Y;
+            parameters[SoftFillRightZ] = halfU.Z;
+            parameters[SoftFillUpX] = halfV.X;
+            parameters[SoftFillUpY] = halfV.Y;
+            parameters[SoftFillUpZ] = halfV.Z;
         }
 
         parameters[SkyTopR] = settings.SkyTop.X;
