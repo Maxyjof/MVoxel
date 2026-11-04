@@ -14,7 +14,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!_showEnvironmentWindow) return;
         var open = _showEnvironmentWindow;
         ImGui.SetNextWindowSize(new Vector2(520F, 620F), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("环境##EnvironmentWindow", ref open, PanelWindowFlags))
+        if (ImGui.Begin("环境配置##EnvironmentWindow", ref open, PanelWindowFlags))
         {
             ImGui.TextDisabled("当前场景唯一环境配置");
             ImGui.SameLine();

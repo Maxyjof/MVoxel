@@ -2924,7 +2924,6 @@ internal sealed partial class ImGuiEditorWindow
                 "不降低场景窗口或渲染窗口的分辨率，也不影响导出质量。");
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "环境配置", () => DrawEnvironmentSection(settings));
         DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
         DrawRenderSettingsAccordion("color", "色彩输出", () => DrawPostSection(settings));
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
@@ -3112,7 +3111,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SeparatorText("雾气");
         DrawColorSlider("雾颜色", ref settings.FogColor);
         SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.05F, "%.4f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("消光系数，实时渲染与路径追踪共用；高度分布、太阳散射、噪声与体积质量等完整参数在「环境」窗口的雾气分组中调整。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("消光系数，实时渲染与路径追踪共用；高度分布、太阳散射、噪声与体积质量等完整参数在独立的「环境配置」窗口中调整。");
         SliderFloat("雾起始距离", ref settings.FogStart, 0F, 100000F, "%.0f 格");
         SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
         SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");

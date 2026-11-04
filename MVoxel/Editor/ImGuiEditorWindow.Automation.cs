@@ -184,7 +184,7 @@ internal sealed partial class ImGuiEditorWindow
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
         new("ui.openRenderSection", "界面", "展开渲染配置分组", "打开渲染配置面板并独占展开指定分组，供截图与文档取证使用",
-            [Param("section", "string", true, "分组标识：backend/lighting/environment/palette/color/path/material/camera/performance/lod")]),
+            [Param("section", "string", true, "分组标识：lighting/palette/color/path/material/camera/lod；environment 会打开独立的环境配置窗口")]),
         new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
             [Param("enabled", "boolean", true, "是否开启")]),
         new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
@@ -1395,6 +1395,13 @@ internal sealed partial class ImGuiEditorWindow
     private object OpenRenderSection(JsonElement arguments) => RunOnUi(() =>
     {
         var section = ReadString(arguments, "section") ?? throw new ArgumentException("缺少 section");
+        // 环境是独立窗口，不在渲染配置里，定位到它时直接打开那个窗口
+        if (string.Equals(section, "environment", StringComparison.Ordinal))
+        {
+            _showEnvironmentWindow = true;
+            return new { section, visible = true, window = "environment" };
+        }
+
         _showRenderConfig = true;
         _requestedRenderSettingsSection = section;
         return new { section, visible = true };

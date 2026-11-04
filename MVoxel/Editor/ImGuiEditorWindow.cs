@@ -1207,7 +1207,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
-                if (ImGui.MenuItem("环境")) _showEnvironmentWindow = true;
+                if (ImGui.MenuItem("环境配置")) _showEnvironmentWindow = true;
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
                 if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
                 if (ImGui.MenuItem("时间轴")) _showTimelineWindow = true;
@@ -4610,8 +4610,15 @@ DockId=0x6A3C3007,0
     private void DrawConfigurationPanel()
     {
         DrawSettingsPageHeader("视口渲染", "当前项目值 · 实时生效");
-        if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
+        // 环境是独立窗口，渲染配置只放一个入口按钮，不重复它的参数
+        var halfButton = (ImGui.GetContentRegionAvail().X - ImGui.GetStyle().ItemSpacing.X) * 0.5F;
+        if (ImGui.Button("打开完整设置", new Vector2(halfButton, 32F)))
             OpenSettings(1, 1, "project.visual.render");
+        ImGui.SameLine();
+        if (ImGui.Button("环境配置…", new Vector2(halfButton, 32F)))
+            _showEnvironmentWindow = true;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("打开独立的环境配置窗口：天空与地面、水面、天气、雾气（含高度雾、噪声与散射）");
 
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
