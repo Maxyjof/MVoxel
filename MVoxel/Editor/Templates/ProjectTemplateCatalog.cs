@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text.Json;
 using MVoxel.Core;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
@@ -401,20 +402,14 @@ public static class ProjectTemplateCatalog
         var directory = Path.Combine(project.AssetsPath, "Materials");
         Directory.CreateDirectory(directory);
         // MagicaVoxel 导出的 .vox 常把整张调色板逐格写成 MATL，其中大量条目参数完全相同；
-        // 按定义内容去重，相同定义共用一个资产，避免一个房间生成两百多个一样的材质文件
+        // 去重键必须用“生成的材质资产内容”而不是原始 MATL 字段：原始字段里
+        // weight 之类不进资产，按原始字段比较会留下内容一模一样的重复文件
         var sharedByDefinition = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var source in document.Materials)
         {
             var slot = source.Id;
             if (slot is <= 0 or > ushort.MaxValue)
                 throw new InvalidDataException($"导入材质槽超出1到65535范围：{slot}");
-            var signature = string.Join('|', source.Type, source.Weight, source.Roughness,
-                source.Specular, source.Ior, source.Absorption, source.Flux);
-            if (sharedByDefinition.TryGetValue(signature, out var sharedPath))
-            {
-                bindings[slot] = sharedPath;
-                continue;
-            }
 
             var asset = MaterialAsset.CreateDefault($"{modelName} 材质 {slot}");
             if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
@@ -438,6 +433,16 @@ public static class ProjectTemplateCatalog
                     break;
             }
 
+            var savedName = asset.Name;
+            asset.Name = string.Empty;
+            var signature = JsonSerializer.Serialize(asset, MaterialSignatureJsonOptions);
+            asset.Name = savedName;
+            if (sharedByDefinition.TryGetValue(signature, out var sharedPath))
+            {
+                bindings[slot] = sharedPath;
+                continue;
+            }
+
             var baseFileName = $"{safeName}_材质{slot:000}";
             var fileName = UniqueMaterialFileName(directory, baseFileName);
             var targetPath = Path.Combine(directory, fileName);
@@ -448,6 +453,9 @@ public static class ProjectTemplateCatalog
         }
         return bindings;
     }
+
+    /// <summary>材质去重用的序列化选项，字段与保存格式保持一致，但不缩进以便快速比较</summary>
+    private static readonly JsonSerializerOptions MaterialSignatureJsonOptions = new(JsonSerializerDefaults.Web);
 
     /// <summary>
     /// 生成不覆盖已有文件的材质资产名
