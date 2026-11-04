@@ -430,10 +430,17 @@ public static class ProjectTemplateCatalog
             if (source.Metal >= 0F) asset.Metallic = Math.Clamp(source.Metal, 0F, 1F);
             if (source.Transmission >= 0F)
                 asset.Opacity = Math.Clamp(1F - source.Transmission, 0F, 1F);
-            // 发光强度用 _emit（0 到 1）；旧文件只有 _flux 时退回通量倍率
-            if (source.Emissive > 0F) asset.EmissiveScale = Math.Clamp(source.Emissive, 0F, 32F);
-            else if (source.Type == "_emit" && source.Flux > 0F)
-                asset.EmissiveScale = Math.Clamp(source.Flux, 0F, 32F);
+            // 0.99.7 的发光由「归一化强度 _emit（0~1）」乘「通量档位 _flux（1/2/4）」得到最终光输出。
+            // 只取 _emit 会让低通量档的灯暗一个量级（room 示例 4 掉到 0.12），只取 _flux 又会把弱灯当成最亮。
+            // 两者相乘后：强灯 2~4、弱灯 0.46~0.48，同档位横向可比。
+            var emissionStrength = source.Emissive >= 0F
+                ? source.Emissive
+                : string.Equals(source.Type, "_emit", StringComparison.OrdinalIgnoreCase) ? 1F : -1F;
+            if (emissionStrength >= 0F)
+            {
+                var flux = source.Flux > 0F ? source.Flux : 1F;
+                asset.EmissiveScale = Math.Clamp(emissionStrength * flux, 0F, 32F);
+            }
             if (string.Equals(source.MediaType, "_scatter", StringComparison.OrdinalIgnoreCase))
                 asset.VolumeScattering = 1F;
 
@@ -447,7 +454,8 @@ public static class ProjectTemplateCatalog
                     asset.Ior ??= 1.5F;
                     break;
                 case "_emit":
-                    asset.EmissiveScale ??= source.Flux > 0F ? Math.Clamp(source.Flux, 0F, 32F) : 1F;
+                    // 只有连 _emit 键都没写的老文件才落到这里，按最亮处理
+                    asset.EmissiveScale ??= 1F;
                     break;
                 case "_diffuse":
                     asset.Metallic ??= 0F;
