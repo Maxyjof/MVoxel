@@ -5,7 +5,8 @@ namespace MVoxel.Rendering;
 
 /// <summary>
 /// 从完整世界提取可供直接光采样的单位面。此索引是运行时派生数据，
-/// 与渲染几何的合并及 GPU 池布局无关；暂不包含半透明发光体。
+/// 与渲染几何的合并及 GPU 池布局无关；发光体素自身带半透明标志时不在其列，
+/// 但被半透明材质包裹的发光面会被收录（MagicaVoxel 的灯多为玻璃罩内胆）。
 /// </summary>
 internal sealed class EmissiveFaceCatalog
 {
@@ -68,8 +69,10 @@ internal sealed class EmissiveFaceCatalog
             {
                 var (x, y, z) = Directions[direction];
                 var neighbor = new VoxelCoord64(voxel.X + x, voxel.Y + y, voxel.Z + z);
-                // 首版仅采样邻格完全为空的面；其余发光仍由原有命中路径处理。
-                if (!world.TryGet(neighbor, out var adjacent) || adjacent.IsEmpty)
+                // MagicaVoxel 的灯几乎总是被玻璃罩住（灯罩、窗玻璃），光源实体本身不接触空气。
+                // 只认"邻格完全为空"会让整块灯只漏出极少数无遮挡的面，屏幕上就是零星亮点；
+                // 邻格是半透明时那层玻璃本身可透光，该面同样应该参与直接光采样。
+                if (!world.TryGet(neighbor, out var adjacent) || IsTransmissive(adjacent))
                     (faces ??= new List<Face>()).Add(new Face(voxel, direction, value));
             }
         }
@@ -79,4 +82,8 @@ internal sealed class EmissiveFaceCatalog
         _chunks.Add(coordinate, result);
         FaceCount = checked(FaceCount + result.Length);
     }
+
+    /// <summary>邻格是否能让光通过：空气，或带半透明标志的玻璃类体素。</summary>
+    private static bool IsTransmissive(in VoxelValue value) =>
+        value.IsEmpty || VoxelFlags.Has(value.Flags, VoxelFlags.Translucent);
 }

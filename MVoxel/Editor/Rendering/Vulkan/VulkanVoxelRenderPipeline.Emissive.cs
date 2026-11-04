@@ -184,9 +184,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
                 ? SurfaceSamplingPdf(baseColor, metalness, roughness, normal, viewDirection, direction) : 0.0;
             float hitDistance; vec3 hitNormal; vec4 hitColor;
             uint hitFlags; uint hitSlot; ivec3 hitCell; ivec3 hitExtent;
-            // 不忽略透明介质：直连估计不承担折射与吸收，避免与介质路径重复或漏光。
+            // 玻璃对直连光按"透明遮挡跳过"处理，与太阳阴影 TraceShadow 的策略保持一致。
+            // 灯芯几乎总是被灯罩玻璃包住，若直连光被这层玻璃判黑，就会出现
+            // "发光面存在却照不亮地面"的自相矛盾：折射路径里能看见灯，直接光却漏不出去。
             if (TraceClosestWithin(origin, direction, hitDistance, hitNormal, hitColor, hitFlags,
-                hitSlot, hitCell, hitExtent, false, max(distance - 0.0001, 0.0), true)) return vec3(0.0);
+                hitSlot, hitCell, hitExtent, true, max(distance - 0.0001, 0.0), true)) return vec3(0.0);
             float scale = materialSlots[int(face.colorSlot.w)].scalars.z;
             scale = scale >= 0.0 ? scale : 1.0;
             vec3 emission = SrgbToLinear(face.colorSlot.rgb) * values[80] * scale;
