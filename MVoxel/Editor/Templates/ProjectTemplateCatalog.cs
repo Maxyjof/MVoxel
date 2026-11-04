@@ -341,20 +341,20 @@ public static class ProjectTemplateCatalog
 
         report?.Invoke("正在写入项目体素资产…", .82F, true);
         // 一个模型写一份资产，多个实例共享同一份，和 MagicaVoxel 的 Reference 语义一致
-        var assets = new string[document.Models.Count];
-        var voxelCounts = new int[document.Models.Count];
-        var worldOrigins = new VoxelCoord64[document.Models.Count];
-        for (var index = 0; index < document.Models.Count; index++)
+        // 当前对象体素加载路径只平移资产，不会在加载时应用场景旋转。
+        // 将每种模型/旋转组合烘焙为独立资产，实例仍共享相同组合。
+        var baked = new Dictionary<(int Model, VoxTransform Rotation), (string Asset, int Count, VoxelCoord64 Origin)>();
+        foreach (var instance in document.Instances)
         {
-            var world = BuildModelWorld(document.Models[index], materialSlots);
-            var fileName = (multiple ? $"{safeName}_{index + 1}" : safeName) + ".mvmodel";
+            var key = (instance.ModelIndex, instance.Rotation);
+            if (baked.ContainsKey(key)) continue;
+            var world = BuildModelWorld(document.Models[instance.ModelIndex], materialSlots, instance.Rotation);
+            var fileName = (multiple ? $"{safeName}_{baked.Count + 1}" : safeName) + ".mvmodel";
             var absolutePath = Path.Combine(project.AssetsPath, "Worlds", fileName);
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(absolutePath);
             else WriteWorldFile(absolutePath, world, handoff);
             AssetMetaStore.EnsureMeta(absolutePath);
-            assets[index] = "Assets/Worlds/" + fileName;
-            voxelCounts[index] = world.OccupiedVoxelCount;
-            worldOrigins[index] = GetWorldOrigin(world);
+            baked[key] = ("Assets/Worlds/" + fileName, world.OccupiedVoxelCount, GetWorldOrigin(world));
         }
 
         report?.Invoke("正在生成主场景…", .90F, true);
@@ -365,13 +365,14 @@ public static class ProjectTemplateCatalog
         foreach (var instance in document.Instances)
         {
             var name = document.Instances.Count == 1 ? modelName : instance.Name;
-            parts.Add(new SceneModelPart(name, "MagicaVoxel 导入", assets[instance.ModelIndex],
-                voxelCounts[instance.ModelIndex], instance.Offset + instance.Rotation.Apply(worldOrigins[instance.ModelIndex]),
-                layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, instance.Rotation,
+            var asset = baked[(instance.ModelIndex, instance.Rotation)];
+            parts.Add(new SceneModelPart(name, "MagicaVoxel 导入", asset.Asset,
+                asset.Count, instance.Offset + asset.Origin,
+                layerIndexById.GetValueOrDefault(instance.LayerId), instance.Hidden, OrthogonalRotation.Identity,
                 document.Models[instance.ModelIndex].Voxels.Select(voxel => (int)voxel.PaletteIndex)
                     .Distinct().Where(materialSlots.ContainsKey).Order()
                     .Select(slot => new MaterialSlotBinding(slot, materialSlots[slot])).ToArray()));
-            totalVoxels += voxelCounts[instance.ModelIndex];
+            totalVoxels += asset.Count;
         }
 
         var layers = document.Layers.Count == 0
@@ -380,7 +381,7 @@ public static class ProjectTemplateCatalog
         var definition = new ProjectTemplateDefinition(ProjectTemplateId.Empty, modelName,
             "由 MagicaVoxel 文件创建", "MagicaVoxel 兼容导入",
             multiple ? $"{parts.Count} 个对象" : "单模型", "继续在原生格式上编辑");
-        WriteScene(project, definition, (int)Math.Min(totalVoxels, int.MaxValue), assets[0], cameraCount: 1,
+        WriteScene(project, definition, (int)Math.Min(totalVoxels, int.MaxValue), baked.Values.First().Asset, cameraCount: 1,
             modelParts: parts, framingWorld: VoxFormat.Compose(document), layers: layers,
             materialSlots: materialSlots);
 
@@ -414,22 +415,42 @@ public static class ProjectTemplateCatalog
             var asset = MaterialAsset.CreateDefault($"{modelName} 材质 {slot}");
             if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
             if (source.Specular >= 0F) asset.Specular = Math.Clamp(source.Specular, 0F, 1F);
-            if (source.Ior > 0F) asset.Ior = Math.Clamp(source.Ior, 1F, 2.5F);
+            else if (source.SpecularLevel >= 0F) asset.Specular = Math.Clamp(source.SpecularLevel / 2F, 0F, 1F);
+
+            // 0.99.7 起 _ior 是相对 1 的偏移量（常见 0.3），真实折射率写在 _ri（常见 1.3）。
+            // 旧文件只有 _ior 时它就是折射率本身，所以仅在缺少 _ri 时按 1 + _ior 解释。
+            var refraction = source.RefractionIndex > 0F ? source.RefractionIndex
+                : source.Ior > 0F ? 1F + source.Ior : -1F;
+            if (refraction > 0F) asset.Ior = Math.Clamp(refraction, 1F, 2.5F);
+            // _d 是介质密度，与吸收步长同量纲；旧文件的 _att 优先
             if (source.Absorption >= 0F) asset.AbsorptionStep = Math.Clamp(source.Absorption, 0F, 8F);
+            else if (source.Density >= 0F) asset.AbsorptionStep = Math.Clamp(source.Density, 0F, 8F);
+
+            // 半透明与金属优先看参数化字段，_type 只作为旧文件的兜底
+            if (source.Metal >= 0F) asset.Metallic = Math.Clamp(source.Metal, 0F, 1F);
+            if (source.Transmission >= 0F)
+                asset.Opacity = Math.Clamp(1F - source.Transmission, 0F, 1F);
+            // 发光强度用 _emit（0 到 1）；旧文件只有 _flux 时退回通量倍率
+            if (source.Emissive > 0F) asset.EmissiveScale = Math.Clamp(source.Emissive, 0F, 32F);
+            else if (source.Type == "_emit" && source.Flux > 0F)
+                asset.EmissiveScale = Math.Clamp(source.Flux, 0F, 32F);
+            if (string.Equals(source.MediaType, "_scatter", StringComparison.OrdinalIgnoreCase))
+                asset.VolumeScattering = 1F;
+
             switch (source.Type.ToLowerInvariant())
             {
                 case "_metal":
-                    asset.Metallic = 1F;
+                    asset.Metallic ??= 1F;
                     break;
                 case "_glass":
-                    asset.Metallic = 0F;
+                    asset.Metallic ??= 0F;
                     asset.Ior ??= 1.5F;
                     break;
                 case "_emit":
-                    asset.EmissiveScale = source.Flux > 0F ? Math.Clamp(source.Flux, 0F, 32F) : 1F;
+                    asset.EmissiveScale ??= source.Flux > 0F ? Math.Clamp(source.Flux, 0F, 32F) : 1F;
                     break;
                 case "_diffuse":
-                    asset.Metallic = 0F;
+                    asset.Metallic ??= 0F;
                     break;
             }
 
@@ -469,11 +490,12 @@ public static class ProjectTemplateCatalog
     }
 
 
-    private static VoxelWorld BuildModelWorld(VoxModel model, IReadOnlyDictionary<int, string> materialSlots)
+    private static VoxelWorld BuildModelWorld(VoxModel model, IReadOnlyDictionary<int, string> materialSlots,
+        VoxTransform rotation)
     {
         var world = new VoxelWorld();
         foreach (var voxel in model.Voxels)
-            world.Set(new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y), new VoxelValue(voxel.Color,
+            world.Set(rotation.Apply(new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y)), new VoxelValue(voxel.Color,
                 materialSlots.ContainsKey(voxel.PaletteIndex) ? checked((ushort)voxel.PaletteIndex) : (ushort)0,
                 voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
         return world;
@@ -718,6 +740,17 @@ public static class ProjectTemplateCatalog
                     settings.RenderSettings.FogStart = 12F;
                     settings.RenderSettings.FogColor = new Vector3(.68F, .76F, .78F);
                     settings.RenderSettings.FogMaxOpacity = .8F;
+                    // 雾海群岛作为高度雾与体积散射的示范：低处浓、高处淡，
+                    // 太阳方向有前向光晕，实时通道用 8 步抖动步进得到体积光柱。
+                    settings.RenderSettings.FogHeight = 4F;
+                    settings.RenderSettings.FogHeightFalloff = .035F;
+                    settings.RenderSettings.FogAnisotropy = .7F;
+                    settings.RenderSettings.FogSunScatterStrength = 1.2F;
+                    settings.RenderSettings.FogSkyFogStrength = .65F;
+                    settings.RenderSettings.FogVolumetricSteps = 8;
+                    settings.RenderSettings.FogNoiseStrength = .35F;
+                    settings.RenderSettings.FogNoiseScale = .05F;
+                    settings.RenderSettings.FogNoiseSpeed = .4F;
                 }
                 if (id == ProjectTemplateId.WorldSunset)
                 {

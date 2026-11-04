@@ -61,22 +61,48 @@ public readonly record struct VoxModelVoxel(byte X, byte Y, byte Z, Rgba32 Color
 
 /// <summary>场景图展开后的一个模型实例：把某块网格按平移和旋转摆到世界里</summary>
 public readonly record struct VoxInstance(
-    int ModelIndex, string Name, int LayerId, bool Hidden, VoxelCoord64 Offset, OrthogonalRotation Rotation);
+    int ModelIndex, string Name, int LayerId, bool Hidden, VoxelCoord64 Offset, VoxTransform Rotation);
+
+/// <summary>VOX 使用的带符号轴置换，允许镜像；导入时烘焙进模型，不改变原生旋转约束。</summary>
+public readonly record struct VoxTransform(sbyte M00, sbyte M01, sbyte M02, sbyte M10, sbyte M11,
+    sbyte M12, sbyte M20, sbyte M21, sbyte M22)
+{
+    public static VoxTransform Identity => new(1,0,0,0,1,0,0,0,1);
+    public sbyte this[int row, int column] => (row * 3 + column) switch
+    {
+        0 => M00, 1 => M01, 2 => M02, 3 => M10, 4 => M11, 5 => M12,
+        6 => M20, 7 => M21, 8 => M22, _ => throw new ArgumentOutOfRangeException()
+    };
+    public VoxelCoord64 Apply(VoxelCoord64 p) => new(
+        M00*p.X + M01*p.Y + M02*p.Z, M10*p.X + M11*p.Y + M12*p.Z,
+        M20*p.X + M21*p.Y + M22*p.Z);
+}
 
 /// <summary>MagicaVoxel 图层：只用于分组与显隐，不承载体素数据</summary>
 public readonly record struct VoxLayer(int Id, string Name, bool Hidden);
 
 /// <summary>MagicaVoxel 材质：按调色板索引绑定，未写的字段保持 -1 表示不覆盖</summary>
 /// <param name="Id">调色板索引</param>
-/// <param name="Type">_diffuse / _metal / _glass / _emit</param>
+/// <param name="Type">_diffuse / _metal / _glass / _emit / _media</param>
 /// <param name="Weight">混合权重</param>
 /// <param name="Roughness">粗糙度，-1 表示未指定</param>
-/// <param name="Specular">镜面强度，-1 表示未指定</param>
-/// <param name="Ior">折射率，-1 表示未指定</param>
-/// <param name="Absorption">吸收系数，-1 表示未指定</param>
-/// <param name="Flux">发光强度，-1 表示未指定</param>
+/// <param name="Specular">旧版 _spec 镜面强度，-1 表示未指定</param>
+/// <param name="Ior">_ior 字段；0.99.7 起是相对 1 的偏移量，只在缺少 _ri 时按折射率解释</param>
+/// <param name="Absorption">旧版 _att 吸收系数，-1 表示未指定</param>
+/// <param name="Flux">发光通量倍率 _flux，-1 表示未指定</param>
+/// <param name="Metal">金属度 _metal，-1 表示未指定</param>
+/// <param name="Transmission">透射率 _trans/_alpha，0 不透光、1 全透光，-1 表示未指定</param>
+/// <param name="Emissive">发光强度 _emit，-1 表示未指定</param>
+/// <param name="RefractionIndex">真实折射率 _ri，-1 表示未指定</param>
+/// <param name="Density">介质密度 _d，-1 表示未指定</param>
+/// <param name="ScatterAnisotropy">散射各向异性 _g，-1 表示未指定</param>
+/// <param name="SpecularLevel">镜面档位 _sp，-1 表示未指定</param>
+/// <param name="MediaType">体积介质类型 _media_type（_scatter / _emit），未指定为 null</param>
 public readonly record struct VoxMaterial(int Id, string Type, float Weight, float Roughness,
-    float Specular, float Ior, float Absorption, float Flux);
+    float Specular, float Ior, float Absorption, float Flux,
+    float Metal = -1F, float Transmission = -1F, float Emissive = -1F,
+    float RefractionIndex = -1F, float Density = -1F, float ScatterAnisotropy = -1F,
+    float SpecularLevel = -1F, string? MediaType = null);
 
 /// <summary>解析后的 MagicaVoxel 文件：模型、实例、图层三层结构</summary>
 public sealed class VoxDocument
@@ -260,7 +286,7 @@ internal static class VoxDocumentReader
         {
             var model = models[index];
             instances.Add(new VoxInstance(index, $"模型 {index + 1}", 0, false,
-                new VoxelCoord64(offset, 0, 0), OrthogonalRotation.Identity));
+                new VoxelCoord64(offset, 0, 0), VoxTransform.Identity));
             offset += model.SizeX + 1;
         }
 
@@ -282,7 +308,7 @@ internal static class VoxDocumentReader
 
         var instances = new List<VoxInstance>();
         var visiting = new HashSet<int>();
-        void Walk(int nodeId, VoxelCoord64 offset, OrthogonalRotation rotation, int layerId, bool hidden,
+        void Walk(int nodeId, VoxelCoord64 offset, VoxTransform rotation, int layerId, bool hidden,
             string? branchName)
         {
             if (instances.Count >= MaximumModels * 64) throw new InvalidDataException("VOX 实例数量超过上限。");
@@ -325,7 +351,7 @@ internal static class VoxDocumentReader
             }
         }
 
-        foreach (var root in roots) Walk(root, VoxelCoord64.Zero, OrthogonalRotation.Identity, 0, false, null);
+        foreach (var root in roots) Walk(root, VoxelCoord64.Zero, VoxTransform.Identity, 0, false, null);
         return instances;
     }
 
@@ -333,30 +359,52 @@ internal static class VoxDocumentReader
         layers.TryGetValue(layerId, out var layer) && layer.Hidden;
 
     /// <summary>两个带符号置换矩阵相乘，结果仍是带符号置换矩阵</summary>
-    private static OrthogonalRotation Multiply(OrthogonalRotation a, OrthogonalRotation b)
+    private static VoxTransform Multiply(VoxTransform a, VoxTransform b)
     {
         sbyte Element(int row, int column) => (sbyte)(a[row, 0] * b[0, column] +
             a[row, 1] * b[1, column] + a[row, 2] * b[2, column]);
-        return new OrthogonalRotation(Element(0, 0), Element(0, 1), Element(0, 2),
+        return new VoxTransform(Element(0, 0), Element(0, 1), Element(0, 2),
             Element(1, 0), Element(1, 1), Element(1, 2), Element(2, 0), Element(2, 1), Element(2, 2));
     }
 
     /// <summary>
     /// 读取 MATL：材质按调色板索引绑定。数值写在 STRING 里是 ASCII 文本，
     /// 也有实现写 4 字节 float，两种都要认。
+    /// 0.99.7 起材质改成参数化字段：金属用 _metal、半透明用 _trans/_alpha、发光强度用 _emit、
+    /// 真实折射率用 _ri；_type 只在少数显式材质上出现，_ior 退化为相对 1 的偏移量。
     /// </summary>
     private static void ReadMaterial(BinaryReader reader, long contentEnd, List<VoxMaterial> materials)
     {
         var id = reader.ReadInt32();
         var properties = ReadDictionary(reader, contentEnd);
-        var type = ReadText(properties, "_type") ?? "_diffuse";
+        var metal = ReadNumber(properties, "_metal", -1F);
+        var transmission = ReadNumber(properties, "_trans", ReadNumber(properties, "_alpha", -1F));
+        var emissive = ReadNumber(properties, "_emit", -1F);
+        var mediaType = ReadText(properties, "_media_type");
+        var type = ReadText(properties, "_type") ?? InferMaterialType(metal, transmission, emissive, mediaType);
         materials.Add(new VoxMaterial(id, type,
             ReadNumber(properties, "_weight", 1F),
             ReadNumber(properties, "_rough", -1F),
             ReadNumber(properties, "_spec", -1F),
             ReadNumber(properties, "_ior", -1F),
             ReadNumber(properties, "_att", -1F),
-            ReadNumber(properties, "_flux", -1F)));
+            ReadNumber(properties, "_flux", -1F),
+            metal, transmission, emissive,
+            ReadNumber(properties, "_ri", -1F),
+            ReadNumber(properties, "_d", -1F),
+            ReadNumber(properties, "_g", -1F),
+            ReadNumber(properties, "_sp", -1F),
+            mediaType));
+    }
+
+    /// <summary>没有 _type 时按参数推断材质类别，顺序按视觉特征从强到弱</summary>
+    private static string InferMaterialType(float metal, float transmission, float emissive, string? mediaType)
+    {
+        if (metal > 0F) return "_metal";
+        if (!string.IsNullOrWhiteSpace(mediaType)) return "_media";
+        if (emissive > 0F) return "_emit";
+        if (transmission > 0F && transmission < 1F) return "_glass";
+        return "_diffuse";
     }
 
     /// <summary>字典里的数值既可能是 ASCII 文本，也可能是打包的 4 字节 float</summary>
@@ -379,7 +427,7 @@ internal static class VoxDocumentReader
         var layerId = reader.ReadInt32();
         var frames = reader.ReadInt32();
         VoxelCoord64 offset = VoxelCoord64.Zero;
-        var rotation = OrthogonalRotation.Identity;
+        var rotation = VoxTransform.Identity;
         if (frames > 0)
         {
             var frame = ReadDictionary(reader, contentEnd);
@@ -462,20 +510,20 @@ internal static class VoxDocumentReader
     }
 
     /// <summary>_r 是一个字节编码的行主序置换矩阵，这里换算到交换 Y/Z 后的坐标系</summary>
-    private static OrthogonalRotation ReadRotation(Dictionary<string, byte[]> attributes)
+    private static VoxTransform ReadRotation(Dictionary<string, byte[]> attributes)
     {
-        if (!attributes.TryGetValue("_r", out var value)) return OrthogonalRotation.Identity;
+        if (!attributes.TryGetValue("_r", out var value)) return VoxTransform.Identity;
         var text = Encoding.UTF8.GetString(value);
         byte bits;
         if (!byte.TryParse(text, out bits))
         {
-            if (value.Length != 1) return OrthogonalRotation.Identity;
+            if (value.Length != 1) return VoxTransform.Identity;
             bits = value[0];
         }
         var rows = new int[3];
         rows[0] = bits & 3;
         rows[1] = (bits >> 2) & 3;
-        if (rows[0] > 2 || rows[1] > 2 || rows[0] == rows[1]) return OrthogonalRotation.Identity;
+        if (rows[0] > 2 || rows[1] > 2 || rows[0] == rows[1]) return VoxTransform.Identity;
         rows[2] = 3 - rows[0] - rows[1];
         var matrix = new sbyte[3, 3];
         for (var row = 0; row < 3; row++)
@@ -489,20 +537,20 @@ internal static class VoxDocumentReader
                 (row == 0 ? -1 : 1) * (column == 0 ? -1 : 1));
         for (var row = 0; row < 3; row++)
         for (var column = 0; column < 3; column++)
-            if (result[row, column] != 0 && Math.Abs(result[row, column]) != 1) return OrthogonalRotation.Identity;
+            if (result[row, column] != 0 && Math.Abs(result[row, column]) != 1) return VoxTransform.Identity;
         try
         {
-            return new OrthogonalRotation(result[0, 0], result[0, 1], result[0, 2],
+            return new VoxTransform(result[0, 0], result[0, 1], result[0, 2],
                 result[1, 0], result[1, 1], result[1, 2], result[2, 0], result[2, 1], result[2, 2]);
         }
         catch (ArgumentException)
         {
-            return OrthogonalRotation.Identity;
+            return VoxTransform.Identity;
         }
     }
 
     private readonly record struct TransitionNode(int ChildId, int? LayerId, string? Name, bool Hidden,
-        VoxelCoord64 Offset, OrthogonalRotation Rotation);
+        VoxelCoord64 Offset, VoxTransform Rotation);
 
     private readonly record struct GroupNode(IReadOnlyList<int> Children);
 
