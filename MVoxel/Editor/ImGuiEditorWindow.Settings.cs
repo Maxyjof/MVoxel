@@ -803,6 +803,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("对焦距离", ref settings.FocusDistance, 1F, 256F, "%.1f 格");
         });
 
+        _requestedRenderSettingsSection = null;
         ImGui.PopID();
     }
 

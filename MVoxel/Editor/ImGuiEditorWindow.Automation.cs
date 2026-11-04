@@ -183,6 +183,8 @@ internal sealed partial class ImGuiEditorWindow
 
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
+        new("ui.openRenderSection", "界面", "展开渲染配置分组", "打开渲染配置面板并独占展开指定分组，供截图与文档取证使用",
+            [Param("section", "string", true, "分组标识：backend/lighting/environment/palette/color/path/material/camera/performance/lod")]),
         new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
             [Param("enabled", "boolean", true, "是否开启")]),
         new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
@@ -297,6 +299,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
             "perf.stats" => DescribePerformanceStats(),
             "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
+            "ui.openRenderSection" => OpenRenderSection(payload),
             "ui.status" => new { status = _statusText },
             "project.info" => DescribeProject(),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{commandId}"),
@@ -1381,6 +1384,20 @@ internal sealed partial class ImGuiEditorWindow
         var visible = ReadBoolean(arguments, "visible") ?? throw new ArgumentException("缺少 visible");
         SetPanelVisible(id, visible);
         return new { panel = id, visible };
+    });
+
+    /// <summary>
+    /// 展开渲染配置里的指定分组：先打开面板，再把定位请求交给下一帧的折叠头绘制，
+    /// 该请求会让目标分组展开、其余分组收起，方便脚本稳定截取单个分组。
+    /// </summary>
+    /// <param name="arguments">命令参数，section 取分组标识</param>
+    /// <returns>接受的分组标识与面板可见状态</returns>
+    private object OpenRenderSection(JsonElement arguments) => RunOnUi(() =>
+    {
+        var section = ReadString(arguments, "section") ?? throw new ArgumentException("缺少 section");
+        _showRenderConfig = true;
+        _requestedRenderSettingsSection = section;
+        return new { section, visible = true };
     });
 
     private object DescribeProject()

@@ -2924,6 +2924,8 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("camera", "相机", () => DrawCameraSection(settings));
         DrawRenderSettingsAccordion("lod", "LOD", () => DrawLodSection(settings));
         DrawRenderSettingsAccordion("performance", "性能", () => DrawPerformanceSection(settings));
+        // 所有分组绘制完才清空定位请求，保证“独占展开”对同一次绘制里的每个分组都生效
+        _requestedRenderSettingsSection = null;
         SaveEditableRenderSettings(settings, before);
     }
 
@@ -2936,8 +2938,12 @@ internal sealed partial class ImGuiEditorWindow
         // render-settings group therefore starts collapsed after this UI redesign.
         ImGui.PushID($"render-accordion-v2-{id}");
         var flags = ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanAvailWidth;
-        if (string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
-            ImGui.SetNextItemOpen(true, ImGuiCond.Always);
+        // 有明确的定位请求时独占展开：其它分组强制收起，避免多个分组同时展开把
+        // 目标分组推出可视区（文档截图与自动化定位都依赖这一点）
+        if (_requestedRenderSettingsSection is not null)
+            ImGui.SetNextItemOpen(
+                string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal),
+                ImGuiCond.Always);
         var open = ImGui.CollapsingHeader(title, flags);
         if (open)
         {
@@ -2947,8 +2953,6 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.PopID();
-        if (string.Equals(_requestedRenderSettingsSection, id, StringComparison.Ordinal))
-            _requestedRenderSettingsSection = null;
     }
 
     private static void DrawColorSlider(string label, ref NumVector3 linearColor)
