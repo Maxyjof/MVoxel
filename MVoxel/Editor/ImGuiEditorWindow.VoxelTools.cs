@@ -2915,6 +2915,14 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("已恢复默认渲染参数");
         }
 
+        // 视口性能只有一项，做成顶部常驻开关，避免单独占一个只剩一行的折叠分组
+        ImGui.SameLine();
+        Toggle("自动性能优化", ref _settingsToggleAutoPerformance,
+            value => settings.AutoPerformanceScaling = value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("仅限制大型场景视口内的实时 AO 与阴影采样（超过 70 万格关闭实时 AO）；" +
+                "不降低场景窗口或渲染窗口的分辨率，也不影响导出质量。");
+
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
         DrawRenderSettingsAccordion("environment", "环境配置", () => DrawEnvironmentSection(settings));
         DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
@@ -2922,8 +2930,7 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
         DrawRenderSettingsAccordion("material", "全局材质", () => DrawGlobalMaterialSection(settings));
         DrawRenderSettingsAccordion("camera", "相机", () => DrawCameraSection(settings));
-        DrawRenderSettingsAccordion("lod", "LOD", () => DrawLodSection(settings));
-        DrawRenderSettingsAccordion("performance", "性能", () => DrawPerformanceSection(settings));
+        DrawRenderSettingsAccordion("lod", "距离 LOD", () => DrawLodSection(settings));
         // 所有分组绘制完才清空定位请求，保证“独占展开”对同一次绘制里的每个分组都生效
         _requestedRenderSettingsSection = null;
         SaveEditableRenderSettings(settings, before);
@@ -3190,9 +3197,9 @@ internal sealed partial class ImGuiEditorWindow
         });
         SliderInt("每帧样本数", ref settings.PathSamplesPerFrame, 1, 8);
         SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192, "%d spp");
-        SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f");
+        SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f×");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("仅在你主动调整时改变路径追踪视口分辨率；1.00 为完整窗口分辨率。相机交互和大型场景优化不会自动降低分辨率。");
+            ImGui.SetTooltip("仅在你主动调整时改变路径追踪视口分辨率；1.00× 为完整窗口分辨率。相机交互和大型场景优化不会自动降低分辨率。");
         SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
         SliderFloat("光线终止阈值（RR）", ref settings.RussianRouletteThreshold, 0.0005F, 0.05F, "%.4f");
         if (ImGui.IsItemHovered())
@@ -3236,16 +3243,6 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("对焦距离##dof", ref settings.FocusDistance, 1F, 256F, "%.1f");
     }
 
-    private void DrawPerformanceSection(RenderSettings settings)
-    {
-        ImGui.SeparatorText("大型场景视口优化");
-        Toggle("自动性能优化（仅视口）", ref _settingsToggleAutoPerformance,
-            value => settings.AutoPerformanceScaling = value);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("只限制大型场景的实时 AO、阴影采样；不会降低场景窗口或渲染窗口的像素分辨率，也不会影响导出质量。");
-        ImGui.TextWrapped("保持完整像素分辨率；大型工作集自动限制实时 AO/阴影采样，超过 70 万格时关闭实时 AO。相机交互不使用低分辨率放大。");
-    }
-
     /// <summary>
     /// 绘制距离 LOD 配置区：场景窗口与渲染窗口各一份，默认关闭，
     /// 可调整级数与每级生效距离
@@ -3253,7 +3250,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="settings">目标渲染设置</param>
     private void DrawLodSection(RenderSettings settings)
     {
-        ImGui.SeparatorText("距离 LOD（场景窗口与渲染窗口各一份，默认关闭）");
+        ImGui.TextDisabled("场景窗口与渲染窗口各一份，默认关闭。");
         DrawLodGroup("场景窗口", settings.SceneLod);
         DrawLodGroup("渲染窗口", settings.RenderLod);
     }

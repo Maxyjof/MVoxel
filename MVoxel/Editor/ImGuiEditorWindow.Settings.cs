@@ -754,7 +754,7 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("导出时每帧写入的路径样本数。渲染窗口的交互预览固定每帧 1 个样本，避免整帧路径追踪把编辑器拖到十几帧；累积样本上限和最终画质不变。");
                 SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192);
-                SliderFloat("内部渲染分辨率", ref settings.ResolutionScale, 0.25F, 1F, "%.2fx");
+                SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f×");
                 SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
                 SliderFloat("俄罗斯轮盘阈值", ref settings.RussianRouletteThreshold, 0.0005F, 0.05F, "%.4f");
                 SliderFloat("辐射度截断", ref settings.RadianceClamp, 1F, 200F, "%.1f");

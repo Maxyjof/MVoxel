@@ -4612,7 +4612,6 @@ DockId=0x6A3C3007,0
         DrawSettingsPageHeader("视口渲染", "当前项目值 · 实时生效");
         if (ImGui.Button("打开完整设置", new Vector2(-1F, 32F)))
             OpenSettings(1, 1, "project.visual.render");
-        DrawLodSection(_renderSettings);
 
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
