@@ -11,7 +11,7 @@ namespace MVoxel.Scene;
 /// <summary>
 /// MVoxel 内置场景组件的类型标识与数据读写入口
 /// </summary>
-public static class SceneComponentTypes
+public static partial class SceneComponentTypes
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions FieldJsonOptions = new(JsonSerializerDefaults.Web) { IncludeFields = true };
@@ -40,8 +40,13 @@ public static class SceneComponentTypes
     public const string WindField = "mvoxel.windfield";
     /// <summary>风力接收器组件的稳定类型标识</summary>
     public const string WindReceiver = "mvoxel.windreceiver";
+    /// <summary>积水和积雪投射组件的稳定标识。</summary>
+    public const string PuddleDecal = "mvoxel.puddledecal";
+    public const string SnowDecal = "mvoxel.snowdecal";
     /// <summary>体素框选组件的稳定类型标识</summary>
     public const string VoxelSelection = "mvoxel.voxelselection";
+    /// <summary>曲线渲染器组件的稳定类型标识</summary>
+    public const string CurveRenderer = "mvoxel.curverenderer";
 
     /// <summary>动画组件的稳定类型标识</summary>
     public const string Animation = "mvoxel.animation";
@@ -51,12 +56,16 @@ public static class SceneComponentTypes
         new(Transform, "变换", "基础", true),
         new(VoxelModel, "模型", "体素", true),
         new(VoxelSelection, "体素框选", "体素", true),
+        new(CurveRenderer, "曲线渲染器", "体素", true),
+        new(TreeGenerator, "树生成器", "体素", true),
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
         new(PostProcessOverride, "局部后处理覆盖", "环境交互", true),
         new(WindField, "局部风场", "环境交互", true),
         new(WindReceiver, "风力接收器", "环境交互", true),
+        new(PuddleDecal, "积水投射", "环境交互", true),
+        new(SnowDecal, "积雪投射", "环境交互", true),
         new(Animation, "动画", "动画", true),
     ];
 
@@ -99,6 +108,38 @@ public static class SceneComponentTypes
 
     public static bool IsWindField(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, WindField, StringComparison.Ordinal);
     public static bool IsWindReceiver(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, WindReceiver, StringComparison.Ordinal);
+    public static bool IsPuddleDecal(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, PuddleDecal, StringComparison.Ordinal);
+    public static bool IsSnowDecal(ComponentRecord? component) => component is not null && string.Equals(component.TypeId, SnowDecal, StringComparison.Ordinal);
+    public static bool IsSurfaceDeposit(ComponentRecord? component) => IsPuddleDecal(component) || IsSnowDecal(component);
+
+    public static ComponentRecord CreatePuddleDecal() => new()
+    {
+        TypeId = PuddleDecal, SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(SurfaceDepositComponentData.CreatePuddle().Normalize(), FieldJsonOptions),
+    };
+
+    public static ComponentRecord CreateSnowDecal() => new()
+    {
+        TypeId = SnowDecal, SchemaVersion = 1,
+        Data = JsonSerializer.SerializeToElement(SurfaceDepositComponentData.CreateSnow().Normalize(), FieldJsonOptions),
+    };
+
+    public static SurfaceDepositComponentData ReadSurfaceDeposit(ComponentRecord component)
+    {
+        if (!IsSurfaceDeposit(component)) throw new ArgumentException("组件记录不是积水或积雪投射组件", nameof(component));
+        return component.Data.ValueKind == JsonValueKind.Object
+            ? component.Data.Deserialize<SurfaceDepositComponentData>(FieldJsonOptions)?.Normalize() ?? DefaultSurfaceDeposit(component)
+            : DefaultSurfaceDeposit(component);
+    }
+
+    public static void WriteSurfaceDeposit(ComponentRecord component, SurfaceDepositComponentData data)
+    {
+        if (!IsSurfaceDeposit(component)) throw new ArgumentException("组件记录不是积水或积雪投射组件", nameof(component));
+        component.Data = MergeComponentData(component.Data, JsonSerializer.SerializeToElement(data.Normalize(), FieldJsonOptions));
+    }
+
+    private static SurfaceDepositComponentData DefaultSurfaceDeposit(ComponentRecord component) =>
+        IsSnowDecal(component) ? SurfaceDepositComponentData.CreateSnow() : SurfaceDepositComponentData.CreatePuddle();
 
     public static ComponentRecord CreateWindField(WindFieldComponentData data) => new()
     {
@@ -229,7 +270,18 @@ public static class SceneComponentTypes
             ReadString(data, "sortingLayer", "默认"),
             data.TryGetProperty("sortingOrder", out var order) && order.TryGetInt32(out var orderValue) ? orderValue : 0,
             ReadMaterialSlots(data),
-            data.TryGetProperty("mirrorX", out var mirrorX) && mirrorX.ValueKind == JsonValueKind.True);
+            data.TryGetProperty("mirrorX", out var mirrorX) && mirrorX.ValueKind == JsonValueKind.True,
+            ReadString(data, "sourceSegment"),
+            ReadVoxelSourceOrigin(data));
+    }
+
+    private static VoxelCoord64? ReadVoxelSourceOrigin(JsonElement data)
+    {
+        if (!data.TryGetProperty("sourceOrigin", out var value) || value.ValueKind != JsonValueKind.Object ||
+            !value.TryGetProperty("x", out var x) || !x.TryGetInt64(out var px) ||
+            !value.TryGetProperty("y", out var y) || !y.TryGetInt64(out var py) ||
+            !value.TryGetProperty("z", out var z) || !z.TryGetInt64(out var pz)) return null;
+        return new VoxelCoord64(px, py, pz);
     }
 
     /// <summary>
@@ -526,7 +578,7 @@ public readonly record struct VoxelModelComponentData(
     string Model, string Part, int VoxelCount, string Template,
     float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
     string SortingLayer = "默认", int SortingOrder = 0,
-    MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false)
+    MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false, string SourceSegment = "", VoxelCoord64? SourceOrigin = null)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }

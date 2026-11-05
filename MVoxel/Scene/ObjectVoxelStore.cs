@@ -70,6 +70,20 @@ internal sealed class ObjectVoxelStore
         _objects[id] = world.Clone();
     }
 
+    /// <summary>
+    /// 直接接管一份刚刚构建好的体素世界，不做复制
+    /// </summary>
+    /// <remarks>
+    /// 只用于调用方已经拥有独享所有权的新世界，例如曲线渲染器每次重新生成的体素
+    /// </remarks>
+    /// <param name="id">对象标识</param>
+    /// <param name="world">新的体素世界</param>
+    internal void AssignWorld(StableId id, VoxelWorld world)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        _objects[id] = world;
+    }
+
     internal bool TryGetWorld(StableId id, out VoxelWorld world) => _objects.TryGetValue(id, out world!);
 
     internal bool Remove(StableId id) => _objects.Remove(id);
@@ -129,15 +143,35 @@ internal sealed class ObjectVoxelStore
             if (!visited.Add(item.Id)) return;
             var visible = ancestorsVisible && item.Visible;
             var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-            if (visible && component is { Enabled: true } &&
+            var generated = component is null
+                ? item.Components.FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsGeneratedVoxelComponent(item))
+                : null;
+            if (visible && (component is { Enabled: true } || generated is not null) &&
                 RenderWorldComposer.LayerAllowed(cameraMask, item.LayerIndex) &&
                 (!useSceneVisibility || scene.IsLayerVisible(item.LayerIndex)))
             {
-                var data = SceneComponentTypes.ReadVoxelModel(component);
+                string sortingLayerName;
+                int sortingOrder;
+                if (component is not null)
+                {
+                    var data = SceneComponentTypes.ReadVoxelModel(component);
+                    sortingLayerName = data.SortingLayer;
+                    sortingOrder = data.SortingOrder;
+                }
+                else if (SceneComponentTypes.IsTreeGenerator(generated))
+                {
+                    // 树生成器的体素由组件隐藏生成，排序参数与模型组件同名
+                    SceneComponentTypes.ReadTreeSorting(generated!, out sortingLayerName, out sortingOrder);
+                }
+                else
+                {
+                    SceneComponentTypes.ReadCurveSorting(generated!, out sortingLayerName, out sortingOrder);
+                }
+
                 var layer = scene.SortingLayerNames.FindIndex(name =>
-                    string.Equals(name, data.SortingLayer, StringComparison.Ordinal));
+                    string.Equals(name, sortingLayerName, StringComparison.Ordinal));
                 if (layer < 0) layer = scene.SortingLayerNames.IndexOf("默认");
-                entries.Add(new ObjectVoxelRenderEntry(item.Id, Math.Max(0, layer), data.SortingOrder));
+                entries.Add(new ObjectVoxelRenderEntry(item.Id, Math.Max(0, layer), sortingOrder));
             }
             foreach (var child in byParent[item.Id]) Visit(child, visible);
         }
@@ -151,6 +185,42 @@ internal sealed class ObjectVoxelStore
     internal VoxelWorld Compose(SceneDocument scene, uint cameraMask, bool useSceneVisibility,
         CancellationToken cancellation = default, Func<StableId, VoxelValue, VoxelValue>? remap = null) =>
         Compose(GetVisibleEntries(scene, cameraMask, useSceneVisibility), cancellation, remap);
+
+    /// <summary>
+    /// 构建渲染表面接收图层快照。排序与 Compose 一致，重叠位置以后绘制对象为准；
+    /// 图层只存在于此临时映射中，不写入体素值或原生资产。
+    /// </summary>
+    internal Dictionary<VoxelCoord64, byte> CaptureReceiverLayers(SceneDocument scene, uint cameraMask,
+        bool useSceneVisibility, CancellationToken cancellation = default)
+    {
+        var layers = scene.Objects.ToDictionary(item => item.Id, item => item.LayerIndex);
+        var result = new Dictionary<VoxelCoord64, byte>();
+        var entries = GetVisibleEntries(scene, cameraMask, useSceneVisibility);
+        var sources = new Dictionary<StableId, (VoxelWorld World, int Version)>();
+        foreach (var entry in entries)
+            if (_objects.TryGetValue(entry.ObjectId, out var source))
+                sources.TryAdd(entry.ObjectId, (source, source.ContentVersion));
+        foreach (var entry in entries.Select((value, index) => (value, index))
+                     .OrderBy(item => item.value.SortingLayer)
+                     .ThenBy(item => item.value.SortingOrder)
+                     .ThenBy(item => item.index))
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (!layers.TryGetValue(entry.value.ObjectId, out var layer) || layer is < 0 or >= 32 ||
+                !sources.TryGetValue(entry.value.ObjectId, out var source)) continue;
+            var processed = 0;
+            foreach (var (coordinate, _) in source.World.EnumerateOccupied())
+            {
+                if ((processed++ & 4095) == 0) cancellation.ThrowIfCancellationRequested();
+                result[coordinate] = (byte)layer;
+            }
+        }
+        foreach (var (id, source) in sources)
+            if (!_objects.TryGetValue(id, out var current) || !ReferenceEquals(current, source.World) ||
+                current.ContentVersion != source.Version)
+                throw new InvalidOperationException("接收图层快照构建期间体素数据发生变化，请重新构建");
+        return result;
+    }
 
     /// <summary>
     /// 查询指定位置最终可见的对象和体素，与合成顺序保持一致

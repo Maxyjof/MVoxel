@@ -106,7 +106,10 @@ internal sealed partial class ImGuiEditorWindow
             drawList.AddLine(marker - new Vector2(0F, 3F), marker + new Vector2(0F, 3F), color);
             if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 8F) ImGui.SetTooltip(sceneObject.Name);
         }
+        DrawCurveRendererOverlays(drawList, origin, size, camera, selected);
         if (selected is null) return;
+        foreach (var component in selected.Components.Where(item => item.Enabled && SceneComponentTypes.IsSurfaceDeposit(item)))
+            DrawSurfaceDepositBox(drawList, origin, size, camera, selected, component);
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = Math.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
@@ -126,6 +129,8 @@ internal sealed partial class ImGuiEditorWindow
                 SceneComponentTypes.ReadVoxelSelection(selectionComponent));
         }
 
+        // 曲线编辑期间不叠对象变换手柄，避免和曲线控制点的点击区域互相抢输入
+        if (IsCurveEditing(selected)) return;
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
@@ -138,6 +143,30 @@ internal sealed partial class ImGuiEditorWindow
                 DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
                 break;
         }
+    }
+
+    private void DrawSurfaceDepositBox(ImDrawListPtr drawList, Vector2 origin, Vector2 size,
+        SceneCamera camera, SceneObject owner, ComponentRecord component)
+    {
+        var data = SceneComponentTypes.ReadSurfaceDeposit(component);
+        if (!data.Enabled) return;
+        var matrix = SurfaceDepositWorld(owner, data);
+        Span<Vector3> points = stackalloc Vector3[8];
+        for (var index = 0; index < points.Length; index++)
+        {
+            var local = new System.Numerics.Vector3(
+                ((index & 1) == 0 ? -.5F : .5F) * data.Size.X,
+                ((index & 2) == 0 ? -.5F : .5F) * data.Size.Y,
+                ((index & 4) == 0 ? -.5F : .5F) * data.Size.Z);
+            var world = System.Numerics.Vector3.Transform(local, matrix);
+            points[index] = new Vector3(world.X, world.Y, world.Z);
+        }
+        var color = ToPackedColor(SceneComponentTypes.IsSnowDecal(component)
+            ? Color.FromArgb(220, 190, 225, 255) : Color.FromArgb(220, 90, 185, 245));
+        for (var index = 0; index < points.Length; index++)
+            for (var axis = 0; axis < 3; axis++)
+                if ((index & (1 << axis)) == 0)
+                    DrawWorldLine(drawList, origin, size, camera, points[index], points[index | (1 << axis)], color, 1.5F);
     }
 
     private static void DrawSceneLightIcon(ImDrawListPtr draw, Vector2 center, uint color)
@@ -493,6 +522,13 @@ internal sealed partial class ImGuiEditorWindow
         if (_historyConfirmation is not null) return false;
         if (_project is null || _sceneDocument is null) return false;
         var mouse = ImGui.GetIO().MousePos;
+        if (_curveGizmoDragging)
+        {
+            UpdateCurveGizmoDrag(origin, size, camera);
+            if (!ImGui.IsMouseDown(ImGuiMouseButton.Left)) EndCurveGizmoDrag();
+            return true;
+        }
+
         if (_sceneGizmoDragging)
         {
             UpdateSceneGizmoDrag(origin, size, camera);
@@ -501,6 +537,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (!ImGui.IsMouseHoveringRect(origin, origin + size) || orientationGizmoHovered) return false;
+        if (HandleCurveDeleteKey()) return true;
         if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left)) return false;
 
         var selected = GetSelectedSceneObject();
@@ -522,6 +559,8 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
         }
+
+        if (HandleCurveGizmoInput(mouse, origin, size, camera)) return true;
 
         foreach (var sceneObject in _sceneDocument.Objects)
         {
@@ -971,6 +1010,14 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>按世界轴把模型绕自身包围盒中心旋转 90 度</summary>
     private void RotateModelObjectBy90(SceneObject sceneObject, int axisIndex)
     {
+        // 曲线对象的体素由曲线推算，直接转体素会在下次重建时被覆盖，改为旋转曲线点后重建
+        if (sceneObject.Components.Any(SceneComponentTypes.IsCurveRenderer) &&
+            !sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel))
+        {
+            RotateCurveObjectBy90(sceneObject, axisIndex);
+            return;
+        }
+
         if (!TryGetObjectCellBounds(sceneObject, out var minimum, out var maximum)) return;
         var pivot = new Vector3(
             (minimum.X + maximum.X) * 0.5F, (minimum.Y + maximum.Y) * 0.5F, (minimum.Z + maximum.Z) * 0.5F);

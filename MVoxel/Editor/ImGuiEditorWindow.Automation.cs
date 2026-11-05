@@ -60,9 +60,10 @@ internal sealed partial class ImGuiEditorWindow
              Param("rotation", "number[3]", false, "欧拉角 x/y/z，单位为度")]),
         new("scene.select", "场景", "选中对象", "选中对象并打开检查器，等同在层级里点选",
             TargetIdOrName),
-        new("scene.components.get", "环境交互", "读取环境交互组件", "读取对象上的局部后处理覆盖、局部风场和风力接收器参数", [.. TargetIdOrName]),
-        new("scene.components.set", "环境交互", "写入环境交互组件", "创建或更新对象上的局部后处理覆盖、局部风场和风力接收器参数", [.. TargetIdOrName,
-             Param("postProcessOverride", "object", false, "局部后处理覆盖字段"), Param("windField", "object", false, "局部风场字段"), Param("windReceiver", "object", false, "风力接收器字段")]),
+        new("scene.components.get", "环境交互", "读取环境交互组件", "读取对象上的局部后处理、风场、风力接收器、积水和积雪投射参数", [.. TargetIdOrName]),
+        new("scene.components.set", "环境交互", "写入环境交互组件", "创建或更新对象上的环境交互组件参数", [.. TargetIdOrName,
+             Param("postProcessOverride", "object", false, "局部后处理覆盖字段"), Param("windField", "object", false, "局部风场字段"), Param("windReceiver", "object", false, "风力接收器字段"),
+             Param("puddleDecal", "object", false, "积水投射字段"), Param("snowDecal", "object", false, "积雪投射字段")]),
         new("layer.list", "图层", "列出图层", "列出全部图层名称与显隐状态", []),
         new("layer.create", "图层", "新建图层", "追加一个新图层并返回索引",
             [Param("name", "string", true, "图层名称")]),
@@ -160,6 +161,8 @@ internal sealed partial class ImGuiEditorWindow
               Param("weatherRain", "number", false, "降雨强度"), Param("weatherSnow", "number", false, "降雪强度"),
               Param("weatherStorm", "number", false, "雷暴强度"), Param("weatherHeatHaze", "number", false, "热浪折射散射"),
               Param("weatherLightning", "number", false, "雷电频率"),
+              Param("weatherSeed", "number", false, "天气随机种子，0 至 65535"),
+              Param("weatherViewDistance", "number", false, "雨雪可见距离（世界单位，1 至 256）"),
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("thinGlassApproximation", "boolean", false, "薄板玻璃近似：薄壳只透射与吸收，不按界面法线折射"),
              Param("thinGlassMaxThickness", "number", false, "薄板判定的厚度上限（世界格），0 关闭判定"),
@@ -180,9 +183,74 @@ internal sealed partial class ImGuiEditorWindow
         new("timeline.list", "时间轴", "列出时间轴", "列出Assets目录下的时间轴资产", []),
         new("timeline.get", "时间轴", "读取时间轴", "读取一个时间轴资产", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径")]),
         new("timeline.create", "时间轴", "新建时间轴", "创建默认时间轴资产，不覆盖已有文件", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径"), Param("name", "string", false, "时间轴名称")]),
+        new("timeline.set", "时间轴", "写入时间轴", "用给出的时间轴对象替换窗口内容，可保存为资产；覆盖其他已有资产需显式确认",
+            [Param("timeline", "object", true, "时间轴对象，结构同 timeline.get 返回的 timeline"),
+             Param("path", "string", false, "相对Assets目录的.mvtimeline.json路径，省略时只改窗口内容"),
+             Param("save", "boolean", false, "是否写入资产，默认 true；没有 path 时写回当前资产"),
+             Param("overwrite", "boolean", false, "目标已存在且不是当前资产时需显式传 true")]),
+        new("timeline.update", "时间轴", "局部更新时间轴", "改帧率、总时长与名称，或整体替换、追加、按索引删除三类轨道",
+            [Param("frameRate", "integer", false, "帧率 1–240"), Param("lengthFrames", "integer", false, "总帧数"),
+             Param("durationSeconds", "number", false, "总时长秒数，按当前帧率换算总帧数"),
+             Param("name", "string", false, "时间轴名称"),
+             Param("activationRanges", "object[]", false, "整体替换对象启用轨道"),
+             Param("clips", "object[]", false, "整体替换动画片段轨道"),
+             Param("events", "object[]", false, "整体替换条件事件轨道"),
+             Param("addActivation", "object", false, "追加一条对象启用轨道"),
+             Param("addClip", "object", false, "追加一条动画片段轨道"),
+             Param("addEvent", "object", false, "追加一条条件事件"),
+             Param("removeActivation", "integer", false, "按索引删除对象启用轨道，从 0 开始"),
+             Param("removeClip", "integer", false, "按索引删除动画片段轨道"),
+             Param("removeEvent", "integer", false, "按索引删除条件事件"),
+             Param("save", "boolean", false, "是否写回当前资产，默认 false"),
+             Param("path", "string", false, "另存到该资产路径"),
+             Param("overwrite", "boolean", false, "目标已存在且不是当前资产时需显式传 true")]),
+        new("timeline.state", "时间轴", "读取时间轴状态", "读取窗口时间轴路径、脏标记、帧率、帧数与播放头", []),
+        new("timeline.seek", "时间轴", "定位播放头", "设置播放头帧或秒数并暂停预览，画面对齐该帧",
+            [Param("frame", "integer", false, "目标帧"), Param("seconds", "number", false, "目标秒数，按当前帧率换算")]),
+        new("timeline.play", "时间轴", "播放预览", "打开时间轴窗口并按时间轴帧率推进天气与对象轨道", []),
+        new("timeline.pause", "时间轴", "暂停预览", "停在当前帧并保持画面，不改变时间轴内容", []),
+        new("timeline.validate", "时间轴", "校验时间轴", "按视频导出同一套判定检查轨道完整性",
+            [Param("path", "string", false, "相对Assets目录的时间轴路径，省略则校验窗口内容"),
+             Param("timeline", "object", false, "直接校验给出的时间轴对象")]),
+        new("video.export", "视频", "导出视频", "按时间轴逐帧渲染并编码 MP4；先后台准备快照，再进入导出队列",
+            [Param("path", "string", true, "输出视频绝对路径，不能已存在"),
+             Param("timelinePath", "string", false, "相对Assets目录的时间轴资产，省略时用窗口当前时间轴"),
+             Param("frameRate", "integer", false, "输出帧率 1–240，默认取导出设置")]),
+        new("video.status", "视频", "读取视频导出状态", "按路径读取单个任务状态，或列出最近任务",
+            [Param("path", "string", false, "输出视频路径，省略时列出最近任务")]),
+        new("video.cancel", "视频", "取消视频导出", "取消准备、排队、渲染或编码中的视频任务",
+            [Param("path", "string", true, "输出视频路径")]),
 
         new("ui.setPanel", "界面", "开关面板", "显示或隐藏指定界面面板",
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
+        new("asset.list", "资产", "列出资产", "列出项目资产，可按目录、类型筛选并选择是否递归子目录",
+            [Param("folder", "string", false, "相对 Assets 的目录，缺省为根目录"),
+             Param("kind", "string", false, "只看某种类型：Scene/VoxelModel/Material/Palette/Timeline/AnimationClip/Generator/Document/Image 等"),
+             Param("recursive", "boolean", false, "是否递归子目录，默认 false")]),
+        new("asset.create", "资产", "新建资产", "等同资产面板右键创建：体素数据、场景、调色盘、材质、渲染预设、动画片段、时间轴、文本、Markdown 与生成器",
+            [Param("kind", "string", true,
+                 "voxel/scene/palette/material/renderpreset/animationclip/timeline/document/markdown/generator.js/generator.lua"),
+             Param("folder", "string", false, "目标目录，缺省为 Assets 根目录"),
+             Param("name", "string", false, "不含扩展名的文件名，缺省按类型自动编号")]),
+        new("asset.createFolder", "资产", "新建文件夹", "在指定目录创建资产文件夹",
+            [Param("folder", "string", false, "父目录，缺省为 Assets 根目录"), Param("name", "string", true, "文件夹名称")]),
+        new("asset.rename", "资产", "重命名资产", "重命名资产并让场景与预制体中的引用跟随；name 只给主名时自动保留原扩展名",
+            [Param("path", "string", true, "相对 Assets 的原路径"), Param("name", "string", true, "新名称")]),
+        new("asset.move", "资产", "移动资产", "把资产移动到 Assets 下的另一个目录并让引用跟随",
+            [Param("path", "string", true, "相对 Assets 的原路径"), Param("folder", "string", true, "目标目录")]),
+        new("asset.duplicate", "资产", "创建资产副本", "复制资产文件并生成独立的资源元数据，可指定目标目录",
+            [Param("path", "string", true, "相对 Assets 的原资产路径"), Param("folder", "string", false, "目标目录，缺省与原资产同目录")]),
+        new("asset.delete", "资产", "删除资产", "删除资产文件，组件中的引用保留为失效引用",
+            [Param("path", "string", true, "相对 Assets 的路径")]),
+        new("asset.references", "资产", "查询资产引用", "查询资产被当前场景对象和项目内场景、预制体文件引用的位置，删除前可据此判断断链",
+            [Param("path", "string", true, "相对 Assets 的资产路径")]),
+        new("asset.info", "资产", "读取资产信息", "读取资产类型、大小与修改时间；体素数据额外给出体素数量、包围盒、对象片段数与材质定义数",
+            [Param("path", "string", true, "相对 Assets 的资产路径")]),
+        new("asset.stage.status", "资产", "读取编辑空间状态", "返回是否在资产编辑空间、编辑的资产路径、脏标记与状态栏文本", []),
+        new("asset.stage.save", "资产", "保存编辑空间资产", "保存当前编辑空间中的资产，等价顶栏“保存资产”与 Ctrl+S", []),
+        new("asset.openStage", "资产", "打开资产编辑空间", "打开项目内体素数据或预制体的独立编辑空间",
+            [Param("path", "string", true, "相对项目 Assets 目录的资产路径")]),
+        new("asset.returnScene", "资产", "返回场景", "资产空间无未保存修改时返回原场景", []),
         new("ui.openRenderSection", "界面", "展开渲染配置分组", "打开渲染配置面板并独占展开指定分组，供截图与文档取证使用",
             [Param("section", "string", true, "分组标识：lighting/palette/color/path/material/camera/lod；environment 会打开独立的环境配置窗口")]),
         new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
@@ -198,6 +266,75 @@ internal sealed partial class ImGuiEditorWindow
             [Param("tab", "string", true, "scene 或 render")]),
         new("ui.status", "界面", "读取状态栏", "读取编辑器状态栏文本", []),
         new("project.info", "项目", "读取项目信息", "读取当前项目的路径、场景与统计", []),
+        new("scene.components.list", "场景", "列出对象组件", "列出对象上全部组件的类型、启用状态、体素数量与生成器待更新状态",
+            [.. TargetIdOrName]),
+        new("curve.get", "程序化体素", "读取曲线渲染器", "读取曲线控制点、生成参数与体素统计",
+            [.. TargetIdOrName]),
+        new("curve.set", "程序化体素", "写入曲线渲染器", "写入曲线参数或整体替换控制点，默认立即重建体素",
+            [.. TargetIdOrName,
+             Param("points", "object[]", false, "控制点数组：position/tangentIn/tangentOut/rotation 或 euler/tangentMode/width"),
+             Param("closed", "boolean", false, "是否闭合"),
+             Param("interpolation", "string", false, "Bezier 或 Linear"),
+             Param("shape", "string", false, "截面形状：Square/Round/Beads/Cross"),
+             Param("radius", "number", false, "截面半径（格）"),
+             Param("step", "number", false, "沿曲线的采样间距（格）"),
+             Param("resolution", "integer", false, "每段采样数，4 到 64"),
+             Param("color", "color", false, "体素颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
+             Param("alpha", "number", false, "体素透明度，0 到 1"),
+             Param("emissive", "boolean", false, "体素是否带自发光"),
+             Param("materialSlot", "integer", false, "生成体素的本地材质槽"),
+             Param("sortingLayer", "string", false, "排序图层"),
+             Param("sortingOrder", "integer", false, "排序顺序"),
+             Param("editing", "boolean", false, "是否处于曲线编辑模式"),
+             Param("generate", "boolean", false, "是否立即重建体素，默认 true")]),
+        new("curve.generate", "程序化体素", "重建曲线体素", "按当前曲线参数重新生成体素",
+            [.. TargetIdOrName]),
+        new("curve.create", "程序化体素", "新建曲线对象", "新建带曲线渲染器的对象并生成体素",
+            [Param("name", "string", false, "对象名称，默认“曲线渲染器”"),
+             Param("parentId", "string", false, "父对象标识，缺省挂到场景根"),
+             Param("position", "integer[3]", false, "对象格位置")]),
+        new("tree.get", "程序化体素", "读取树生成器", "读取树的风格、树干、枝条、树冠、颜色参数与体素统计",
+            [.. TargetIdOrName]),
+        new("tree.set", "程序化体素", "写入树生成器", "写入树参数，默认立即生成新树",
+            [.. TargetIdOrName,
+             Param("style", "string", false, "Broadleaf/Conifer/Bush/Palm/Willow/Cherry/Dead"),
+             Param("seed", "integer", false, "随机种子"),
+             Param("trunkHeight", "integer", false, "树干高度（格）"),
+             Param("trunkRadius", "number", false, "树干半径（格）"),
+             Param("trunkLean", "number", false, "树干倾斜角（度）"),
+             Param("trunkBend", "number", false, "树干弯曲强度 0 到 1"),
+             Param("trunkTaper", "number", false, "树干收缩比例 0 到 0.95"),
+             Param("rootFlare", "number", false, "树根外扩强度 0 到 1"),
+             Param("branchCount", "integer", false, "主枝数量 0 到 24"),
+             Param("branchLength", "number", false, "主枝长度（格）"),
+             Param("branchThickness", "number", false, "主枝粗细（格）"),
+             Param("branchAngle", "number", false, "主枝上扬角（度）"),
+             Param("branchDroop", "number", false, "枝条下垂程度 -1 到 1"),
+             Param("branchDepth", "integer", false, "分叉层数 0 到 3"),
+             Param("crownStart", "number", false, "树冠起始高度比例 0.05 到 1"),
+             Param("crownRadius", "number", false, "树冠水平半径（格）"),
+             Param("crownHeight", "number", false, "树冠高度（格）"),
+             Param("crownShape", "string", false, "Sphere/Ellipsoid/Cone/Umbrella/Layered/None"),
+             Param("leafDensity", "number", false, "树叶密度 0.05 到 1"),
+             Param("leafSize", "number", false, "叶团半径（格）"),
+             Param("barkColor", "color", false, "树皮颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
+             Param("leafColor", "color", false, "树叶主色，取值 0 到 1"),
+             Param("leaf2Color", "color", false, "树叶辅色，取值 0 到 1"),
+             Param("colorVariation", "number", false, "辅色混入比例 0 到 1"),
+             Param("emissiveLeaves", "boolean", false, "树叶是否自发光"),
+             Param("materialSlot", "integer", false, "生成体素的本地材质槽"),
+             Param("sortingLayer", "string", false, "排序图层"),
+             Param("sortingOrder", "integer", false, "排序顺序"),
+             Param("generate", "boolean", false, "是否立即生成新树，默认 true")]),
+        new("tree.generate", "程序化体素", "生成树体素", "按当前参数重新生成一棵树，替换组件里的体素数据",
+            [.. TargetIdOrName]),
+        new("tree.instantiate", "程序化体素", "实例化树为模型", "把树生成器替换成体素模型组件：之后可以进入绘制模式，撤销可恢复生成器",
+            [.. TargetIdOrName]),
+        new("tree.create", "程序化体素", "新建树对象", "新建带树生成器的对象并生成一棵树",
+            [Param("name", "string", false, "对象名称，默认“树生成器”"),
+             Param("parentId", "string", false, "父对象标识，缺省挂到场景根"),
+             Param("position", "integer[3]", false, "对象格位置"),
+             Param("style", "string", false, "树风格，默认 Broadleaf")]),
     ];
 
     /// <summary>
@@ -286,6 +423,16 @@ internal sealed partial class ImGuiEditorWindow
             "timeline.list" => ListTimelineAssets(),
             "timeline.get" => GetTimelineAsset(payload),
             "timeline.create" => CreateTimelineAsset(payload),
+            "timeline.set" => SetTimelineAsset(payload),
+            "timeline.update" => UpdateTimelineAsset(payload),
+            "timeline.state" => DescribeTimelineState(),
+            "timeline.seek" => SeekTimeline(payload),
+            "timeline.play" => SetTimelinePlaying(true),
+            "timeline.pause" => SetTimelinePlaying(false),
+            "timeline.validate" => ValidateTimelineAsset(payload),
+            "video.export" => ExportVideoFromArguments(payload),
+            "video.status" => DescribeVideoExports(payload),
+            "video.cancel" => CancelVideoExportFromArguments(payload),
 
             "perf.profile" => SetForcedProfiling(payload),
             "camera.setPostProcess" => SetCameraPostProcess(payload),
@@ -299,9 +446,51 @@ internal sealed partial class ImGuiEditorWindow
                 ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
             "perf.stats" => DescribePerformanceStats(),
             "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
+            "asset.list" => ListProjectAssets(payload),
+            "asset.create" => CreateProjectAsset(payload),
+            "asset.createFolder" => CreateProjectFolder(payload),
+            "asset.rename" => RenameProjectAsset(payload),
+            "asset.move" => MoveProjectAsset(payload),
+            "asset.delete" => DeleteProjectAsset(payload),
+            "asset.duplicate" => DuplicateProjectAsset(payload),
+            "asset.references" => DescribeAssetReferences(payload),
+            "asset.info" => DescribeAssetInfo(payload),
+            "asset.stage.status" => DescribeAssetStage(),
+            "asset.stage.save" => SaveAssetStageFromAutomation(),
+            "asset.openStage" => RunOnUi(() =>
+            {
+                var path = ReadString(payload, "path") ?? throw new ArgumentException("缺少 path");
+                if (IsAssetStage)
+                {
+                    var editingPath = _voxelStage?.RelativePath ?? _prefabStage?.RelativePath;
+                    if (string.Equals(editingPath, path, StringComparison.OrdinalIgnoreCase))
+                        return new { opened = true, name = ActiveEditingName, status = $"当前已在编辑空间打开该资产：{path}" };
+                    throw new InvalidOperationException("请先返回场景，再打开其他资产");
+                }
+                if (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) OpenPrefabAssetStage(path);
+                else OpenVoxelAssetStage(path);
+                return new { opened = IsAssetStage, name = ActiveEditingName, status = _statusText };
+            }),
+            "asset.returnScene" => RunOnUi(() =>
+            {
+                if (!IsAssetStage) return new { returned = true, status = "当前已在场景中" };
+                if (_sceneDocumentDirty) throw new InvalidOperationException("资产有未保存修改，请在编辑器中保存或放弃后返回场景");
+                if (_prefabStage is not null) ReturnFromPrefabAssetStage(); else ReturnFromVoxelAssetStage(false);
+                return new { returned = !IsAssetStage, status = _statusText };
+            }),
             "ui.openRenderSection" => OpenRenderSection(payload),
             "ui.status" => new { status = _statusText },
             "project.info" => DescribeProject(),
+            "scene.components.list" => DescribeSceneComponents(payload),
+            "curve.get" => DescribeCurveRenderer(payload),
+            "curve.set" => SetCurveRenderer(payload),
+            "curve.generate" => GenerateCurveRenderer(payload),
+            "curve.create" => CreateCurveObject(payload),
+            "tree.get" => DescribeTreeGenerator(payload),
+            "tree.set" => SetTreeGenerator(payload),
+            "tree.generate" => GenerateTreeGenerator(payload),
+            "tree.instantiate" => InstantiateTreeGenerator(payload),
+            "tree.create" => CreateTreeObject(payload),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{commandId}"),
         };
     }
@@ -417,6 +606,10 @@ internal sealed partial class ImGuiEditorWindow
             ? SceneComponentTypes.ReadWindField(windField) : null,
         windReceiver = target.Components.FirstOrDefault(SceneComponentTypes.IsWindReceiver) is { } windReceiver
             ? SceneComponentTypes.ReadWindReceiver(windReceiver) : null,
+        puddleDecal = target.Components.FirstOrDefault(SceneComponentTypes.IsPuddleDecal) is { } puddle
+            ? SceneComponentTypes.ReadSurfaceDeposit(puddle) : null,
+        snowDecal = target.Components.FirstOrDefault(SceneComponentTypes.IsSnowDecal) is { } snow
+            ? SceneComponentTypes.ReadSurfaceDeposit(snow) : null,
     };
 
 
@@ -457,7 +650,21 @@ internal sealed partial class ImGuiEditorWindow
             SceneComponentTypes.WriteWindReceiver(component, JsonSerializer.Deserialize<WindReceiverComponentData>(MergeComponentFields(component.Data, windReceiver).GetRawText(), ComponentFieldJsonOptions) ?? new WindReceiverComponentData());
             changed = true;
         }
-        if (!changed) throw new ArgumentException("至少提供postProcessOverride、windField或windReceiver中的一个对象字段");
+        foreach (var (name, isSnow) in new[] { ("puddleDecal", false), ("snowDecal", true) })
+        {
+            if (!arguments.TryGetProperty(name, out var patch) || patch.ValueKind != JsonValueKind.Object) continue;
+            var component = target.Components.FirstOrDefault(isSnow ? SceneComponentTypes.IsSnowDecal : SceneComponentTypes.IsPuddleDecal);
+            if (component is null)
+            {
+                component = isSnow ? SceneComponentTypes.CreateSnowDecal() : SceneComponentTypes.CreatePuddleDecal();
+                target.Components.Add(component);
+            }
+            var data = JsonSerializer.Deserialize<SurfaceDepositComponentData>(MergeComponentFields(component.Data, patch).GetRawText(), ComponentFieldJsonOptions)
+                ?? (isSnow ? SurfaceDepositComponentData.CreateSnow() : SurfaceDepositComponentData.CreatePuddle());
+            SceneComponentTypes.WriteSurfaceDeposit(component, data);
+            changed = true;
+        }
+        if (!changed) throw new ArgumentException("至少提供一个环境交互组件对象字段");
         MarkSceneDocumentDirty();
         return DescribeEnvironmentComponents(target);
     });
@@ -465,8 +672,19 @@ internal sealed partial class ImGuiEditorWindow
     private static JsonElement MergeComponentFields(JsonElement current, JsonElement patch)
     {
         var currentNode = current.ValueKind == JsonValueKind.Object ? JsonNode.Parse(current.GetRawText())!.AsObject() : new JsonObject();
-        foreach (var property in patch.EnumerateObject()) currentNode[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+        MergeObject(currentNode, patch);
         return JsonSerializer.SerializeToElement(currentNode, ComponentFieldJsonOptions);
+
+        static void MergeObject(JsonObject target, JsonElement update)
+        {
+            foreach (var property in update.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Object && target[property.Name] is JsonObject existing)
+                    MergeObject(existing, property.Value);
+                else
+                    target[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+            }
+        }
     }
 
     private object DescribeSceneObject(SceneObject item)
@@ -1119,6 +1337,8 @@ internal sealed partial class ImGuiEditorWindow
              weatherStorm = settings.WeatherStormIntensity,
              weatherHeatHaze = settings.WeatherHeatHaze,
              weatherLightning = settings.WeatherLightningFrequency,
+             weatherSeed = settings.WeatherSeed,
+             weatherViewDistance = settings.WeatherViewDistance,
             showGround = settings.ShowGround,
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             thinGlassApproximation = settings.ThinGlassApproximation,
@@ -1207,6 +1427,8 @@ internal sealed partial class ImGuiEditorWindow
          if (ReadNumber(arguments, "weatherStorm") is { } stormIntensity) settings.WeatherStormIntensity = (float)stormIntensity;
          if (ReadNumber(arguments, "weatherHeatHaze") is { } heatHaze) settings.WeatherHeatHaze = (float)heatHaze;
          if (ReadNumber(arguments, "weatherLightning") is { } lightningFrequency) settings.WeatherLightningFrequency = (float)lightningFrequency;
+         if (ReadNumber(arguments, "weatherSeed") is { } weatherSeed && double.IsFinite(weatherSeed)) settings.WeatherSeed = (int)Math.Clamp(weatherSeed, 0, 65535);
+         if (ReadNumber(arguments, "weatherViewDistance") is { } weatherViewDistance) settings.WeatherViewDistance = (float)weatherViewDistance;
          if (ReadBoolean(arguments, "showGround") is { } ground) settings.ShowGround = ground;
         if (ReadNumber(arguments, "transmissiveAbsorption") is { } absorption)
             settings.TransmissiveAbsorption = (float)absorption;
@@ -1398,7 +1620,7 @@ internal sealed partial class ImGuiEditorWindow
         // 环境是独立窗口，不在渲染配置里，定位到它时直接打开那个窗口
         if (string.Equals(section, "environment", StringComparison.Ordinal))
         {
-            _showEnvironmentWindow = true;
+            OpenEnvironmentWindow();
             return new { section, visible = true, window = "environment" };
         }
 

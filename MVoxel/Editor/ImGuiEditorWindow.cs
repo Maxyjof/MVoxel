@@ -72,6 +72,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
     private bool _showEnvironmentWindow;
+    private bool _focusEnvironmentWindow;
     private bool _showProbeVolumeWindow;
     private bool _showAnimationWindow;
     private bool _showTimelineWindow;
@@ -127,7 +128,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VoxelWorld _world = new();
     private Rgba32[] _palette = VoxelPalette.Build();
     private bool _paletteIsProjectLevel;
-    private readonly CommandHistory _voxelHistory = new();
+    private CommandHistory _voxelHistory = new();
     private VulkanVoxelRenderPipeline? _pipeline;
     private RenderSettings _renderSettings = new();
     private long _renderSettingsInteractionAt;
@@ -226,14 +227,20 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void RequestExit()
     {
+        if (IsAssetStage) { SetStatus("请先从资产编辑返回场景"); return; }
         if (_projectOperation.IsRunning)
         {
             SetStatus("请等待当前操作完成，或先在进度窗口取消操作，再退出");
             return;
         }
+        if (_project is not null && TimelineIsDirty)
+        {
+            ConfirmTimelineChangesBefore(RequestExit);
+            return;
+        }
         if (_project is not null && (_sceneDocumentDirty || _generatorDirty))
         {
-            _exitConfirmationRequested = true;
+            RequestExitDialog();
             return;
         }
 
@@ -241,19 +248,52 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         Close();
     }
 
+    /// <summary>请求显示退出确认框，供界面与自动化共用</summary>
+    private void RequestExitDialog()
+    {
+        _exitConfirmationRequested = true;
+        _exitDialogOpen = true;
+        _exitDialogResolved = false;
+    }
+
+    /// <summary>自动化已直接决定关闭，收起仍开着的确认框</summary>
+    private void DismissExitDialog()
+    {
+        _exitConfirmationRequested = false;
+        _exitDialogOpen = false;
+        _exitDialogResolved = true;
+    }
+
+    /// <summary>自动化已直接决定关闭项目，收起仍开着的确认框</summary>
+    private void DismissProjectCloseDialog()
+    {
+        _closeProjectDialogRequested = false;
+        _projectCloseDialogOpen = false;
+        _projectCloseDialogResolved = true;
+        _afterProjectClose = null;
+    }
+
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
+        if (IsAssetStage) { e.Cancel = true; SetStatus("请先从资产编辑返回场景"); return; }
         if (_projectOperation.IsRunning)
         {
             e.Cancel = true;
             SetStatus("请等待当前操作完成，或先取消操作，再退出");
             return;
         }
-        if (e.Cancel || _allowWindowClose || _project is null || (!_sceneDocumentDirty && !_generatorDirty)) return;
+        if (e.Cancel || _allowWindowClose || _project is null) return;
+        if (TimelineIsDirty)
+        {
+            e.Cancel = true;
+            ConfirmTimelineChangesBefore(RequestExit);
+            return;
+        }
+        if (!_sceneDocumentDirty && !_generatorDirty) return;
 
         e.Cancel = true;
-        _exitConfirmationRequested = true;
+        RequestExitDialog();
     }
 
     internal void RequestOpenProject(string path) => _pendingActions.Enqueue(() => BeginOpenProject(path, fromWelcome: false));
@@ -318,7 +358,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         base.OnUpdateFrame(args);
         var desiredTitle = _project is null ? "MVoxel 体素建模" :
-            $"MVoxel 体素建模 - {(_sceneDocumentDirty || _generatorDirty ? "*" : "")}{_project.Manifest.Name} - {Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}";
+            $"MVoxel 体素建模 - {(_sceneDocumentDirty || _generatorDirty || HasSuspendedSceneChanges ? "*" : "")}{_project.Manifest.Name} - {ActiveEditingName}";
         if (!string.Equals(Title, desiredTitle, StringComparison.Ordinal)) Title = desiredTitle;
         if (!IsFocused || !IsCapsLockEnabled())
         {
@@ -326,6 +366,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
         _controlServer?.PumpOnMainThread();
+        AdvanceTimelineWeather(args.Time);
 
         if (_project is not null && _sceneDocument is not null)
         {
@@ -417,6 +458,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     protected override void OnUnload()
     {
+        CancelVideoEncodingsAndWait();
         CloseMcImport();
         _voxelHistory.Clear();
         EndSceneMouseCapture();
@@ -513,6 +555,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 renderWorksetBuild = DescribeWorksetBuild(_pipeline),
                 performanceAnalyzerVisible = IsPerformanceAnalyzerVisible,
                 centerTab = _centerTab,
+                timeline = DescribeTimelineState(),
+                pendingDialog = DescribePendingDialog(),
+                videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
+                exportQueue = new
+                {
+                    queued = _exportQueue.Count,
+                    hasActive = _activeExport is not null,
+                    activePath = _activeExport?.Path,
+                    activeKind = _activeExport?.Video is null ? "image" : "video",
+                    encoding = _videoEncodings.Count,
+                },
                 scenePipelineAvailable = _scenePipeline?.IsAvailable ?? false,
                 renderPipelineAvailable = _pipeline?.IsAvailable ?? false,
                 sceneWorksetCells = _scenePipeline?.SyncTotalCells ?? 0,
@@ -571,6 +624,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.showWindowMenu" => RequestWindowMenu(),
             "editor.showPanelMenu" => RequestInspectorPanelMenu(),
             "editor.captureStatus" => CaptureStatus(request),
+            "editor.exportVideo" => ExportVideoFromArguments(Unwrap(request)),
+            "editor.exportStatus" => DescribeVideoExports(Unwrap(request)),
+            "editor.cancelExport" => CancelVideoExportFromArguments(Unwrap(request)),
+            "editor.pendingDialog" => DescribePendingDialog(),
+            "editor.answerDialog" => AnswerDialog(Unwrap(request)),
+            "editor.exitEditor" => QueueExitEditor(Unwrap(request)),
             "editor.selectObject" => QueueSelectObject(request),
             "editor.selection" => DescribeSelection(),
             "editor.commands" => ListEditorCommands(request),
@@ -694,6 +753,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("项目路径不能为空");
         var saveBeforeSwitch = arguments.TryGetProperty("saveBeforeSwitch", out var saveValue) &&
             saveValue.ValueKind == JsonValueKind.True;
+        var discard = ReadBoolean(arguments, "discard") ?? false;
         _pendingActions.Enqueue(() =>
         {
             if (saveBeforeSwitch && _project is not null)
@@ -706,9 +766,13 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     return;
                 }
             }
-            BeginOpenProject(path, fromWelcome: false);
+            //discard 表示明确丢弃未保存修改，跳过确认框
+            var previous = _allowProjectReplacement;
+            _allowProjectReplacement = discard;
+            try { BeginOpenProject(path, fromWelcome: false); }
+            finally { _allowProjectReplacement = previous; }
         });
-        return new { queued = true, path };
+        return new { queued = true, path, discard };
     }
 
     /// <summary>
@@ -764,19 +828,57 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     }
 
     /// <summary>
-    /// 将关闭项目操作投递到编辑器窗口线程，不替调用方保存场景。
+    /// 关闭当前项目：未保存且未明确处理时弹出界面确认框，等待 editor.answerDialog 回答
     /// </summary>
     private object QueueCloseProject(JsonElement request)
     {
         if (_project is null) return new { queued = false, alreadyClosed = true, sceneDirty = false };
+        var arguments = Unwrap(request);
+        var discard = ReadBoolean(arguments, "discard") ?? false;
+        var save = ReadBoolean(arguments, "save") ?? false;
+        if (save && discard) throw new ArgumentException("save 与 discard 不能同时为真");
+        var timelinePath = ReadString(arguments, "timelinePath");
         var sceneDirty = _sceneDocumentDirty;
-        var arguments = request.TryGetProperty("arguments", out var value) ? value : request;
-        var discard = arguments.ValueKind == JsonValueKind.Object &&
-                      arguments.TryGetProperty("discard", out var discardValue) && discardValue.GetBoolean();
-        if ((sceneDirty || _generatorDirty) && !discard)
-            return new { queued = false, alreadyClosed = false, sceneDirty, generatorDirty = _generatorDirty, requiresSave = true };
-        _pendingActions.Enqueue(CloseProject);
-        return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false };
+        var generatorDirty = _generatorDirty;
+        var timelineDirty = TimelineIsDirty;
+        if (!sceneDirty && !generatorDirty && !timelineDirty)
+        {
+            DismissProjectCloseDialog();
+            _pendingActions.Enqueue(CloseProject);
+            return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false };
+        }
+        if (discard)
+        {
+            if (timelineDirty) ResetTimelineWeather();
+            DismissProjectCloseDialog();
+            _pendingActions.Enqueue(CloseProject);
+            return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false, discarded = true };
+        }
+        if (save)
+        {
+            if (timelineDirty)
+            {
+                if (string.IsNullOrWhiteSpace(timelinePath) && string.IsNullOrWhiteSpace(_timelineAssetPath))
+                    return new
+                    {
+                        queued = false, alreadyClosed = false, sceneDirty, requiresSave = true,
+                        message = "当前是临时时间轴，请传 timelinePath 指定保存位置",
+                        pendingDialog = DescribePendingDialog(),
+                    };
+                if (!TryConfirmTimelineSave(path: timelinePath, overwrite: ReadBoolean(arguments, "overwrite") ?? false))
+                    return new { queued = false, alreadyClosed = false, sceneDirty, requiresSave = true, message = "时间轴保存未完成" };
+            }
+            SaveProject();
+            if (_generatorDirty) SaveGeneratorSource();
+            if (_sceneDocumentDirty || _generatorDirty)
+                return new { queued = false, alreadyClosed = false, sceneDirty, requiresSave = true, message = "项目保存未完成" };
+            DismissProjectCloseDialog();
+            _pendingActions.Enqueue(CloseProject);
+            return new { queued = true, alreadyClosed = false, sceneDirty, requiresSave = false, saved = true };
+        }
+        //未指定处理方式：按界面流程弹出确认框，供 MCP 读取后回答
+        RequestCloseProject();
+        return new { queued = false, alreadyClosed = false, sceneDirty, requiresSave = true, pendingDialog = DescribePendingDialog() };
     }
 
     /// <summary>
@@ -1207,7 +1309,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
-                if (ImGui.MenuItem("环境配置")) _showEnvironmentWindow = true;
+                if (ImGui.MenuItem("环境配置")) OpenEnvironmentWindow();
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
                 if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
                 if (ImGui.MenuItem("时间轴")) _showTimelineWindow = true;
@@ -1427,9 +1529,10 @@ DockId=0x6A3C3007,0
 
     private void DrawHierarchyContent()
     {
+        DrawVoxelAssetStageBar();
         ImGui.TextColored(ToColor(EditorPalette.Text), "层级");
         ImGui.SameLine();
-        ImGui.TextDisabled(_project is null ? "未打开项目" : Path.GetFileNameWithoutExtension(_activeSceneRelativePath));
+        ImGui.TextDisabled(_project is null ? "未打开项目" : ActiveEditingName);
         ImGui.SetNextItemWidth(-1F);
         ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
         ImGui.Separator();
@@ -1441,7 +1544,7 @@ DockId=0x6A3C3007,0
         {
             var objects = _sceneDocument?.Objects ?? new List<SceneObject>();
             if (_revealHierarchySelection is not null) ImGui.SetNextItemOpen(true, ImGuiCond.Always);
-            if (ImGui.TreeNodeEx($"{(_sceneDocumentDirty ? "*" : "")}{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}###ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
+            if (ImGui.TreeNodeEx($"{(_sceneDocumentDirty ? "*" : "")}{ActiveEditingName}###ActiveScene", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 if (objects.Count == 0)
                 {
@@ -1768,6 +1871,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        if (!_showHierarchy) DrawVoxelAssetStageBar();
         DrawSceneToolbar();
         DrawSceneSliceControls();
 
@@ -2472,19 +2576,25 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
+    /// 判断对象是否贡献可渲染体素：模型组件、曲线渲染器或树生成器
+    /// </summary>
+    /// <param name="sceneObject">场景对象</param>
+    /// <returns>存在启用的体素来源时为真</returns>
+    private static bool HasVoxelSource(SceneObject sceneObject) => sceneObject.Components.Any(component =>
+        component.Enabled &&
+        (SceneComponentTypes.IsVoxelModel(component) || SceneComponentTypes.IsGeneratedVoxelComponent(component)));
+
+    /// <summary>
     /// 判断体素模型对象是否允许显示
     /// </summary>
     /// <returns>允许显示时返回 true</returns>
     private bool IsVoxelWorldVisible()
     {
-        var modelObjects = _sceneDocument?.Objects
-            .Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel))
-            .ToArray();
+        var voxelObjects = _sceneDocument?.Objects.Where(HasVoxelSource).ToArray();
         var sceneObjectsById = _sceneDocument?.Objects.ToDictionary(item => item.Id);
-        return modelObjects is { Length: > 0 } && modelObjects.Any(modelObject =>
-            modelObject.Visible && IsSceneObjectAncestorsVisible(modelObject, sceneObjectsById) &&
-            (_sceneDocument?.IsLayerVisible(modelObject.LayerIndex) ?? true) && modelObject.Components.Any(component =>
-                SceneComponentTypes.IsVoxelModel(component) && component.Enabled));
+        return voxelObjects is { Length: > 0 } && voxelObjects.Any(voxelObject =>
+            voxelObject.Visible && IsSceneObjectAncestorsVisible(voxelObject, sceneObjectsById) &&
+            (_sceneDocument?.IsLayerVisible(voxelObject.LayerIndex) ?? true) && HasVoxelSource(voxelObject));
     }
 
     private static bool IsSceneObjectAncestorsVisible(SceneObject sceneObject,
@@ -2978,6 +3088,9 @@ DockId=0x6A3C3007,0
             if (_activeExport is not null)
             {
                 SetStatus($"已取消导出：{Path.GetFileName(_activeExport.Path)}");
+                //视频按整批取消，避免只停一帧后整条帧链断在半路
+                if (_activeExport.Video is { } videoBatch) AbortVideoExport(videoBatch, "已取消视频导出", failed: false);
+                else CompleteVideoFrame(_activeExport, false);
                 _activeExport = null;
             }
         }
@@ -2991,24 +3104,33 @@ DockId=0x6A3C3007,0
         try
         {
             var settings = _activeExport.Settings;
-            if (!_activeExport.TimelineApplied && _activeExport.TimelineAsset is { } timelineAsset)
+            if (pipeline.IsInitializing) return;
+            if (!_activeExport.TimelineApplied && (_activeExport.Video is not null || _activeExport.TimelineAsset is not null))
             {
-                if (!ApplyTimelineFrame(timelineAsset, _activeExport.TimelineFrame))
+                if (!CaptureTimelineExportFrame(_activeExport, _activeExport.TimelineAsset))
                 {
                     SetStatus($"时间轴帧采样失败：{Path.GetFileName(_activeExport.Path)}");
+                    CompleteVideoFrame(_activeExport, false);
                     _activeExport = null;
                     return;
                 }
-                _activeExport.World = GetRenderWorld(_activeExport.CullingMask ?? uint.MaxValue);
                 _activeExport.TimelineApplied = true;
             }
             var viewCamera = _activeExport.Camera ?? camera;
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
             var mask = _activeExport.CullingMask ?? uint.MaxValue;
-            pipeline.SetSceneLights(CollectSceneLights(mask));
+            pipeline.SetSceneLights(_activeExport.SceneLights ?? CollectSceneLights(mask));
             pipeline.SyncWorld(_activeExport.World ?? GetRenderWorld(mask), 0, settings.RenderLod,
                 new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
-            if (!pipeline.IsAvailable) return;
+            if (!pipeline.IsAvailable)
+            {
+                if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
+                return;
+            }
+            if (_activeExport.ReceiverLayers is { } receiverLayers &&
+                (_activeExport.ReceiverTable is null || _activeExport.ReceiverTable.Origin != pipeline.Workset.Origin))
+                _activeExport.ReceiverTable = SurfaceReceiverLayerTable.Build(receiverLayers, pipeline.Workset.Origin);
+            pipeline.SetSurfaceDeposits(_activeExport.SurfaceDeposits, _activeExport.ReceiverTable);
 
             size = _activeExport.Size;
             var scale = _activeExport.Scale;
@@ -3016,12 +3138,14 @@ DockId=0x6A3C3007,0
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(viewCamera, size, scale, width, height,
                 pathMode: settings.PathTracingEnabled, outlines: false, sourcePipeline: pipeline, frameSettings: settings);
+            frame = frame with { WeatherTime = _activeExport.WeatherTime, WaterTime = _activeExport.WaterTime };
             var submitted = settings.PathTracingEnabled
                 ? pipeline.RenderPathView(settings, frame, width, height)
                 : pipeline.RenderSceneView(settings, frame, width, height);
             if (!submitted)
             {
                 SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
+                CompleteVideoFrame(_activeExport, false);
                 _activeExport = null;
                 return;
             }
@@ -3041,6 +3165,7 @@ DockId=0x6A3C3007,0
                 SetStatus($"图片已导出：{Path.GetFileName(_activeExport.Path)}（剩余队列 {_exportQueue.Count}）");
             else
                 SetStatus($"导出失败：{Path.GetFileName(_activeExport.Path)}");
+            CompleteVideoFrame(_activeExport, saved);
             _activeExport = null;
             if (_activeExport is null && _exportQueue.Count == 0)
             {
@@ -3053,6 +3178,7 @@ DockId=0x6A3C3007,0
         {
             MVoxelLog.Error("导出渲染任务失败", exception);
             SetStatus($"导出失败：{exception.Message}");
+            if (_activeExport is not null) CompleteVideoFrame(_activeExport, false);
             _activeExport = null;
         }
     }
@@ -3214,6 +3340,11 @@ DockId=0x6A3C3007,0
         job.Size = exportSize;
         job.Scale = exportScale;
         job.Materials = MaterialAsset.PackTable(_runtimeMaterials);
+        job.SurfaceDeposits = CollectSurfaceDeposits(job.CullingMask ?? uint.MaxValue);
+        job.ReceiverLayers = NeedsReceiverLayers(job.SurfaceDeposits) && _sceneDocument is not null
+            ? _objectVoxels.CaptureReceiverLayers(_sceneDocument, job.CullingMask ?? uint.MaxValue, false) : null;
+        job.WeatherTime = TimelineWeatherTime;
+        job.WaterTime = _waterAnimationTime;
         job.CameraName ??= GetActiveRenderCameraObject()?.Name ?? "场景视角";
         _exportQueue.Enqueue(job);
     }
@@ -3231,11 +3362,18 @@ DockId=0x6A3C3007,0
         internal float[]? Materials { get; set; }
         internal string? CameraName { get; set; }
         internal string? TimelineAsset { get; init; }
+        internal VideoExportBatch? Video { get; init; }
         internal int TimelineFrame { get; init; }
         internal bool TimelineApplied { get; set; }
+        internal float WeatherTime { get; set; }
+        internal float WaterTime { get; set; }
+        internal IReadOnlyList<SceneLight>? SceneLights { get; set; }
+        internal float[] SurfaceDeposits { get; set; } = [];
+        internal Dictionary<VoxelCoord64, byte>? ReceiverLayers { get; set; }
+        internal SurfaceReceiverLayerTable? ReceiverTable { get; set; }
 
         /// <summary>任务专属相机；为空表示沿用渲染视图当前相机</summary>
-        internal SceneCamera? Camera { get; init; }
+        internal SceneCamera? Camera { get; set; }
 
         /// <summary>任务专属图层遮罩；有值时按该遮罩重组渲染世界</summary>
         internal uint? CullingMask { get; init; }
@@ -3301,10 +3439,10 @@ DockId=0x6A3C3007,0
             case "渲染": _centerTab = 1; DrawRenderView(); break;
             case "调色盘": DrawPaletteContents(); break;
             case "项目资产":
-                _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset,
+                _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenVoxelAssetStage, InstantiatePrefabAsset,
                     ExportVoxAsset, path => OpenGeneratorAsset(path), ExportQubicleAsset,
-                    path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count,
-                    path => _sceneDocument is null ? Array.Empty<string>() : AssetReferences.FindReferencingObjects(_sceneDocument, path).Select(item => item.Name).ToArray());
+                    path => FindOpenAssetReferenceNames(path).Count,
+                    FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene);
                 break;
             case "渲染配置": DrawConfigurationPanel(); break;
             case "生成器": DrawGeneratorToolbar(); ImGui.Separator(); DrawGeneratorEditor(); ImGui.Separator(); DrawGeneratorParameters(); DrawGeneratorMessage(); break;
@@ -3377,8 +3515,18 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        ImGui.TextDisabled($"共 {_exportQueue.Count + (_activeExport is null ? 0 : 1)} 个任务");
+        ImGui.TextDisabled($"共 {_exportQueue.Count + (_activeExport is null ? 0 : 1) + _videoEncodings.Count} 个任务");
         ImGui.Separator();
+        foreach (var encoding in _videoEncodings)
+        {
+            ImGui.PushID(encoding.Batch.OutputPath);
+            ImGui.TextWrapped($"正在编码：{encoding.Batch.OutputPath}");
+            ImGui.SameLine();
+            ImGui.BeginDisabled(encoding.Cancellation.IsCancellationRequested);
+            if (ImGui.SmallButton("取消编码")) encoding.Cancellation.Cancel();
+            ImGui.EndDisabled();
+            ImGui.PopID();
+        }
         if (_activeExport is { } active)
         {
             ImGui.TextUnformatted("正在导出");
@@ -3403,7 +3551,11 @@ DockId=0x6A3C3007,0
             ImGui.ProgressBar(0F, new Vector2(90F, 0F), "等待");
             ImGui.SameLine();
             if (ImGui.SmallButton("取消"))
-                _exportQueue = new Queue<ExportJob>(_exportQueue.Where(item => item != job));
+            {
+                CancelWaitingExportJob(job);
+                //取消视频帧会中止整批，队列已重建，这里只再确保当前项被移除
+                _exportQueue = new Queue<ExportJob>(_exportQueue.Where(item => !ReferenceEquals(item, job)));
+            }
             ImGui.PopID();
         }
         ImGui.End();
@@ -3450,7 +3602,9 @@ DockId=0x6A3C3007,0
 
         // 检查器内容必须由外层统一滚动。组件自身不能用固定高度裁剪，
         // 否则相机的图层等字段会在展开状态下直接消失。
-        if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.HorizontalScrollbar))
+        // 只用纵向滚动：检查器是纵向表单，横向滚动条会因为个别控件差一两像素就常驻，
+        // 并反过来把文本换行宽度撑大，造成右侧内容被裁掉
+        if (!ImGui.BeginChild("##InspectorScroll", Vector2.Zero, ImGuiChildFlags.None))
         {
             ImGui.EndChild();
             return;
@@ -3461,8 +3615,12 @@ DockId=0x6A3C3007,0
 
         var hasModelCameraConflict = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel) &&
                                      selectedObject.Components.Any(SceneComponentTypes.IsCamera);
+        var hasGeneratedModelConflict = selectedObject.Components.Any(SceneComponentTypes.IsGeneratedVoxelComponent) &&
+                                        selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
         if (hasModelCameraConflict)
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "警告：模型组件与相机组件不能同时挂载");
+        else if (hasGeneratedModelConflict)
+            ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "警告：模型组件与程序化生成组件不能同时挂载");
         else if (!string.IsNullOrWhiteSpace(_componentWarning))
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), $"警告：{_componentWarning}");
         var objectRowHeight = ImGui.GetFrameHeight();
@@ -3674,7 +3832,17 @@ DockId=0x6A3C3007,0
             selectedObject.Components.RemoveAt(removeComponentIndex);
             _componentWarning = null;
             MarkSceneDocumentDirty();
+            // 程序化组件删除后生成体素没有归属，一并清掉，避免留下看不见的独立世界
+            if (SceneComponentTypes.IsGeneratedVoxelComponent(removed)) RemoveGeneratedVoxelWorld(selectedObject);
             SetStatus($"已从“{selectedObject.Name}”移除{SceneComponentTypes.GetDisplayName(removed)}组件");
+        }
+
+        // 实例化会替换组件列表，放到组件循环结束后执行，避免遍历中改动集合
+        if (_pendingTreeInstantiate is { } instantiateTarget)
+        {
+            _pendingTreeInstantiate = null;
+            if (selectedObject.Components.Contains(instantiateTarget))
+                InstantiateGeneratedVoxels(selectedObject, instantiateTarget, "体素模型");
         }
 
         ImGui.Dummy(new Vector2(0F, 6F));
@@ -3710,25 +3878,37 @@ DockId=0x6A3C3007,0
                         ImGui.TextDisabled(definition.Category);
                         previousCategory = definition.Category;
                     }
+
                     var alreadyPresent = selectedObject.Components.Any(item => item.TypeId == definition.TypeId);
+                    var hasModel = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
+                    var hasCurveRenderer = selectedObject.Components.Any(SceneComponentTypes.IsCurveRenderer);
+                    var hasTreeGenerator = selectedObject.Components.Any(SceneComponentTypes.IsTreeGenerator);
                     var reason = alreadyPresent ? "同一对象不能重复添加此组件" :
                         definition.TypeId == SceneComponentTypes.VoxelModel && selectedObject.Components.Any(SceneComponentTypes.IsCamera)
                             ? "模型组件与相机组件不能同时挂载" :
-                        definition.TypeId == SceneComponentTypes.Camera && selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel)
-                            ? "相机组件与模型组件不能同时挂载" : null;
+                        definition.TypeId == SceneComponentTypes.VoxelModel && (hasCurveRenderer || hasTreeGenerator)
+                            ? "程序化生成组件已经负责产生体素，不能再挂模型组件" :
+                        definition.TypeId == SceneComponentTypes.Camera && hasModel
+                            ? "相机组件与模型组件不能同时挂载" :
+                        definition.TypeId == SceneComponentTypes.CurveRenderer && (hasModel || hasTreeGenerator)
+                            ? "曲线渲染器会自己生成体素，不能和模型或树生成器同时挂载" :
+                        definition.TypeId == SceneComponentTypes.TreeGenerator && (hasModel || hasCurveRenderer)
+                            ? "树生成器会自己生成体素，不能和模型或曲线渲染器同时挂载" : null;
                     ImGui.BeginDisabled(reason is not null);
                     var addSelected = ImGui.Selectable(definition.DisplayName);
                     ImGui.EndDisabled();
                     if (reason is not null && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip(reason);
                     if (!addSelected) continue;
                     _componentWarning = null;
-                    if (definition.TypeId == SceneComponentTypes.VoxelModel)
+                    if (definition.TypeId is SceneComponentTypes.VoxelModel or SceneComponentTypes.CurveRenderer
+                        or SceneComponentTypes.TreeGenerator)
                     {
                         selectedObject.Transform.SetGrid(selectedObject.Transform.ToGrid());
                         var transform = selectedObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
                         if (transform is not null) transform.Data = JsonSerializer.SerializeToElement(new { kind = "Grid" });
                     }
-                    selectedObject.Components.Add(definition.TypeId switch
+
+                    var addedComponent = definition.TypeId switch
                     {
                         SceneComponentTypes.Camera => SceneComponentTypes.CreateCamera(),
                         SceneComponentTypes.Light => SceneComponentTypes.CreateLight(LightComponentData.Default),
@@ -3736,11 +3916,22 @@ DockId=0x6A3C3007,0
                         SceneComponentTypes.PostProcessOverride => SceneComponentTypes.CreatePostProcessOverride(new PostProcessOverrideComponentData()),
                         SceneComponentTypes.WindField => SceneComponentTypes.CreateWindField(new WindFieldComponentData()),
                         SceneComponentTypes.WindReceiver => SceneComponentTypes.CreateWindReceiver(new WindReceiverComponentData()),
+                        SceneComponentTypes.PuddleDecal => SceneComponentTypes.CreatePuddleDecal(),
+                        SceneComponentTypes.SnowDecal => SceneComponentTypes.CreateSnowDecal(),
                         SceneComponentTypes.Animation => SceneComponentTypes.CreateAnimation(new AnimationComponentData()),
                         SceneComponentTypes.VoxelModel => SceneComponentTypes.CreateVoxelModel(string.Empty, 0, "手动添加", "模型"),
                         SceneComponentTypes.VoxelSelection => CreateVoxelSelectionForObject(selectedObject),
+                        SceneComponentTypes.CurveRenderer => SceneComponentTypes.CreateCurveRenderer(
+                            CurveRendererComponentData.CreateDefault()),
+                        SceneComponentTypes.TreeGenerator => SceneComponentTypes.CreateTreeGenerator(
+                            TreeGeneratorComponentData.Default),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
-                    });
+                    };
+                    selectedObject.Components.Add(addedComponent);
+                    if (SceneComponentTypes.IsCurveRenderer(addedComponent))
+                        InitializeCurveRendererObject(selectedObject, addedComponent);
+                    else if (SceneComponentTypes.IsTreeGenerator(addedComponent))
+                        InitializeTreeGeneratorObject(selectedObject, addedComponent);
                     MarkSceneDocumentDirty();
                 }
 
@@ -3866,6 +4057,11 @@ DockId=0x6A3C3007,0
         {
             SceneComponentTypes.WriteWindReceiver(component, new WindReceiverComponentData());
         }
+        else if (SceneComponentTypes.IsSurfaceDeposit(component))
+        {
+            SceneComponentTypes.WriteSurfaceDeposit(component, SceneComponentTypes.IsSnowDecal(component)
+                ? SurfaceDepositComponentData.CreateSnow() : SurfaceDepositComponentData.CreatePuddle());
+        }
         else if (SceneComponentTypes.IsProbeVolume(component))
         {
             SceneComponentTypes.WriteProbeVolume(component, ProbeVolumeComponentData.Default);
@@ -3884,6 +4080,17 @@ DockId=0x6A3C3007,0
             _voxelSelectionCells = [];
             _voxelSelectionObjectId = StableId.Empty;
             _voxelSelectionSignature = string.Empty;
+        }
+        else if (SceneComponentTypes.IsCurveRenderer(component))
+        {
+            SceneComponentTypes.WriteCurveRenderer(component,
+                CurveRendererComponentData.CreateDefault() with { Editing = false });
+            RebuildGeneratedVoxels(sceneObject, component, string.Empty);
+        }
+        else if (SceneComponentTypes.IsTreeGenerator(component))
+        {
+            SceneComponentTypes.WriteTreeGenerator(component, TreeGeneratorComponentData.Default);
+            RebuildGeneratedVoxels(sceneObject, component, string.Empty);
         }
         else
         {
@@ -4098,6 +4305,18 @@ DockId=0x6A3C3007,0
             return;
         }
 
+        if (SceneComponentTypes.IsCurveRenderer(component))
+        {
+            DrawCurveRendererComponent(selectedObject, component);
+            return;
+        }
+
+        if (SceneComponentTypes.IsTreeGenerator(component))
+        {
+            DrawTreeGeneratorComponent(selectedObject, component);
+            return;
+        }
+
         if (SceneComponentTypes.IsProbeVolume(component))
         {
             var data = SceneComponentTypes.ReadProbeVolume(component);
@@ -4158,6 +4377,12 @@ DockId=0x6A3C3007,0
                 _showAnimationWindow = true;
                 _animationLinkedObjectId = GetSelectedSceneObject()?.Id;
             }
+            return;
+        }
+
+        if (SceneComponentTypes.IsSurfaceDeposit(component))
+        {
+            DrawSurfaceDepositInspector(component);
             return;
         }
 
@@ -4616,7 +4841,7 @@ DockId=0x6A3C3007,0
             OpenSettings(1, 1, "project.visual.render");
         ImGui.SameLine();
         if (ImGui.Button("环境配置…", new Vector2(halfButton, 32F)))
-            _showEnvironmentWindow = true;
+            OpenEnvironmentWindow();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("打开独立的环境配置窗口：天空与地面、水面、天气、雾气（含高度雾、噪声与散射）");
 
@@ -4655,15 +4880,15 @@ DockId=0x6A3C3007,0
         }
 
         DrawPanelWindowMenu();
-        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenWorldAsset, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
+        _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenVoxelAssetStage, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
-            path => _sceneDocument is null ? 0 : AssetReferences.FindReferencingObjects(_sceneDocument, path).Count,
-            path => _sceneDocument is null ? Array.Empty<string>() : AssetReferences.FindReferencingObjects(_sceneDocument, path).Select(item => item.Name).ToArray());
+            path => FindOpenAssetReferenceNames(path).Count,
+            FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene);
         var selectedAssetPath = _assetBrowser.SelectedAssetPath;
         if (!string.Equals(selectedAssetPath, _lastAssetSelectionPath, StringComparison.OrdinalIgnoreCase))
         {
             _lastAssetSelectionPath = selectedAssetPath;
-            if (selectedAssetPath.Length > 0)
+            if (selectedAssetPath.Length > 0 && !IsAssetStage)
             {
                 _selectedSceneObjectId = null;
                 _selectedVoxel = null;
@@ -4692,13 +4917,16 @@ DockId=0x6A3C3007,0
         var newPath = change.NewRelativePath?.Replace('\\', '/');
         // 引用自动跟随：移动或重命名资产时，场景对象与预制体资产内的引用一并改写
         var updatedReferences = 0;
-        if (newPath is not null)
+        if (newPath is not null && !string.Equals(oldPath, newPath, StringComparison.Ordinal))
         {
+            UpdateEditingAssetPath(oldPath, newPath);
             if (_sceneDocument is not null)
             {
-                updatedReferences += AssetReferences.UpdateReferences(_sceneDocument, oldPath, newPath);
-                if (updatedReferences > 0) MarkSceneDocumentDirty();
+                var activeReferences = AssetReferences.UpdateReferences(_sceneDocument, oldPath, newPath);
+                updatedReferences += activeReferences;
+                if (activeReferences > 0) MarkSceneDocumentDirty();
             }
+            updatedReferences += UpdateSuspendedSceneReferences(oldPath, newPath);
 
             updatedReferences += AssetReferences.UpdateProjectReferences(
                 _project.AssetsPath, oldPath, newPath);
@@ -4706,12 +4934,12 @@ DockId=0x6A3C3007,0
                 ? $"已跟随更新 {updatedReferences} 处对 {oldPath} 的引用"
                 : $"移动完成；未发现对 {oldPath} 的引用，请检查外部引用是否断链");
         }
-        if (updatedReferences > 0) MarkSceneDocumentDirty();
-        if (string.Equals(oldPath, _activeSceneRelativePath, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(oldPath, newPath, StringComparison.Ordinal) &&
+            string.Equals(oldPath, _activeSceneRelativePath, StringComparison.OrdinalIgnoreCase))
         {
             if (newPath?.EndsWith(".mvox", StringComparison.OrdinalIgnoreCase) == true)
                 _activeSceneRelativePath = newPath;
-            MarkSceneDocumentDirty();
+            MarkSuspendedSceneDirty();
         }
         // 已载入对象是独立编辑实例，资产重命名/删除不能重新载入并丢掉未保存体素和历史。
         _pipeline?.ResetAccumulation();
@@ -4791,8 +5019,10 @@ DockId=0x6A3C3007,0
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelStatusBar", flags);
-        var exportCount = _exportQueue.Count + (_activeExport is null ? 0 : 1);
-        var saveState = _project is null ? "未打开项目" : _sceneDocumentDirty ? "未保存" : "已保存";
+        var exportCount = _exportQueue.Count + (_activeExport is null ? 0 : 1) + _videoEncodings.Count;
+        var saveState = _project is null ? "未打开项目" : IsAssetStage
+            ? $"资产{(_sceneDocumentDirty ? "未保存" : "已保存")}{(HasSuspendedSceneChanges ? " · 场景未保存" : "")}"
+            : _sceneDocumentDirty ? "未保存" : "已保存";
         var status = string.IsNullOrWhiteSpace(_statusText) ? saveState : $"{saveState} · {_statusText}";
         var statusWidth = Math.Max(1F, ImGui.GetContentRegionAvail().X - (exportCount > 0 ? 360F : 0F));
         var statusPosition = ImGui.GetCursorScreenPos();
@@ -5529,9 +5759,11 @@ DockId=0x6A3C3007,0
         _pluginCommandResults.Clear();
         _pluginCommandInputs.Clear();
         _pluginRuntime = prepared?.Runtime ?? new PluginScriptRuntime();
+        ResetTimelineWeather();
         _project = project;
         _activeSceneRelativePath = preloadedModels?.ScenePath ?? FindStartupSceneRelativePath(project);
         _assetBrowser.Reset();
+        _assetBrowser.EditingAssetPath = string.Empty;
         _voxelModelReferenceCacheRoot = null;
         _voxelModelReferenceCache = Array.Empty<string>();
         _lastAssetSelectionPath = string.Empty;
@@ -5563,6 +5795,8 @@ DockId=0x6A3C3007,0
             MVoxelLog.Info($"已套用恢复区快照：{project.Manifest.Name}，保存于 {snapshot.SavedAt:O}");
         }
         else if (prepared is null) TryRestoreRecovery(project);
+        var synchronizedPrefabs = SyncPendingPrefabRevisions();
+        if (synchronizedPrefabs > 0) MVoxelLog.Info($"已合并 {synchronizedPrefabs} 个场景预制体实例的资产更新");
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _inspectorLockedObjectId = null;
@@ -5619,6 +5853,7 @@ DockId=0x6A3C3007,0
         _renderOrbitAnchor = null;
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
+        _assetBrowser.EditingAssetPath = string.Empty;
         _lastAssetSelectionPath = string.Empty;
         _pluginCommandResults.Clear();
         _pluginCommandInputs.Clear();
@@ -5642,6 +5877,12 @@ DockId=0x6A3C3007,0
     }
 
     private bool _closeProjectDialogRequested;
+    /// <summary>退出确认框是否处于待处理状态，供自动化读取与回答</summary>
+    private bool _exitDialogOpen;
+    private bool _exitDialogResolved;
+    /// <summary>关闭或切换项目的确认框是否处于待处理状态</summary>
+    private bool _projectCloseDialogOpen;
+    private bool _projectCloseDialogResolved;
 
     private void DrawExitConfirmationDialog()
     {
@@ -5651,43 +5892,79 @@ DockId=0x6A3C3007,0
             _exitConfirmationRequested = false;
         }
 
-        if (!CenteredModal.Begin("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
-        ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。退出前要保存吗？");
-        ImGui.Spacing();
-        if (ImGui.Button("保存并退出", new Vector2(120F, 30F)))
+        if (CenteredModal.Begin("退出编辑器##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize))
         {
-            SaveProject();
-            if (_generatorDirty) SaveGeneratorSource();
-            if (!_sceneDocumentDirty && !_generatorDirty)
+            ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。退出前要保存吗？");
+            ImGui.Spacing();
+            if (ImGui.Button("保存并退出", new Vector2(120F, 30F))) ConfirmExitSave();
+            ImGui.SameLine();
+            if (ImGui.Button("不保存退出", new Vector2(120F, 30F))) ConfirmExitDiscard();
+            ImGui.SameLine();
+            if (ImGui.Button("取消", new Vector2(90F, 30F))) CancelExitConfirmation();
+            if (_exitDialogResolved)
             {
+                _exitDialogResolved = false;
                 ImGui.CloseCurrentPopup();
-                _allowWindowClose = true;
-                Close();
             }
+            ImGui.EndPopup();
         }
-        ImGui.SameLine();
-        if (ImGui.Button("不保存退出", new Vector2(120F, 30F)))
-        {
-            ImGui.CloseCurrentPopup();
-            _allowWindowClose = true;
-            Close();
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(90F, 30F))) ImGui.CloseCurrentPopup();
-        ImGui.EndPopup();
+        //按 Esc 或点外部关闭同样视为取消，避免确认状态一直挂着
+        if (_exitDialogOpen && !ImGui.IsPopupOpen("退出编辑器##UnsavedScene")) _exitDialogOpen = false;
+    }
+
+    /// <summary>保存场景与生成器源码后退出，仍有未保存内容时保持弹窗</summary>
+    private void ConfirmExitSave()
+    {
+        SaveProject();
+        if (_generatorDirty) SaveGeneratorSource();
+        if (_sceneDocumentDirty || _generatorDirty) return;
+        _exitDialogResolved = true;
+        _exitDialogOpen = false;
+        _allowWindowClose = true;
+        _pendingActions.Enqueue(Close);
+    }
+
+    /// <summary>放弃未保存内容直接退出</summary>
+    private void ConfirmExitDiscard()
+    {
+        _exitDialogResolved = true;
+        _exitDialogOpen = false;
+        _allowWindowClose = true;
+        _pendingActions.Enqueue(Close);
+    }
+
+    /// <summary>取消退出，保留当前项目</summary>
+    private void CancelExitConfirmation()
+    {
+        _exitDialogResolved = true;
+        _exitDialogOpen = false;
+        _exitConfirmationRequested = false;
     }
 
     private void RequestCloseProject()
     {
+        if (IsAssetStage) { SetStatus("请先从资产编辑返回场景"); return; }
+        if (_project is not null && TimelineIsDirty)
+        {
+            ConfirmTimelineChangesBefore(RequestCloseProject);
+            return;
+        }
         _afterProjectClose = null;
         if (_project is null) return;
         if (_sceneDocumentDirty || _generatorDirty)
         {
-            _closeProjectDialogRequested = true;
+            RequestCloseProjectDialog();
             return;
         }
 
         CloseProject();
+    }
+
+    private void RequestCloseProjectDialog()
+    {
+        _closeProjectDialogRequested = true;
+        _projectCloseDialogOpen = true;
+        _projectCloseDialogResolved = false;
     }
 
     private void DrawCloseProjectDialog()
@@ -5698,32 +5975,61 @@ DockId=0x6A3C3007,0
             _closeProjectDialogRequested = false;
         }
 
-        if (!CenteredModal.Begin("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize)) return;
-        ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。请选择如何处理这些修改。");
-        ImGui.Spacing();
-        if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
+        if (CenteredModal.Begin("关闭项目##UnsavedScene", ImGuiWindowFlags.AlwaysAutoResize))
         {
-            SaveProject();
-            if (_generatorDirty) SaveGeneratorSource();
-            if (!_sceneDocumentDirty && !_generatorDirty)
+            ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。请选择如何处理这些修改。");
+            ImGui.Spacing();
+            if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
+                ConfirmCloseProjectSave();
+            ImGui.SameLine();
+            if (ImGui.Button(_afterProjectClose is null ? "不保存关闭" : "不保存继续", new Vector2(120F, 30F)))
+                ConfirmCloseProjectDiscard();
+            ImGui.SameLine();
+            if (ImGui.Button("取消", new Vector2(90F, 30F))) CancelCloseProjectConfirmation();
+            if (_projectCloseDialogResolved)
             {
+                _projectCloseDialogResolved = false;
                 ImGui.CloseCurrentPopup();
-                CompleteProjectClose();
             }
+            ImGui.EndPopup();
         }
-        ImGui.SameLine();
-        if (ImGui.Button(_afterProjectClose is null ? "不保存关闭" : "不保存继续", new Vector2(120F, 30F)))
+        if (_projectCloseDialogOpen && !ImGui.IsPopupOpen("关闭项目##UnsavedScene"))
         {
-            ImGui.CloseCurrentPopup();
-            CompleteProjectClose();
+            _projectCloseDialogOpen = false;
+            _afterProjectClose = null;
         }
-        ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(90F, 30F))) { _afterProjectClose = null; ImGui.CloseCurrentPopup(); }
-        ImGui.EndPopup();
+    }
+
+    /// <summary>保存后关闭项目；未保存干净时保持弹窗</summary>
+    private void ConfirmCloseProjectSave()
+    {
+        SaveProject();
+        if (_generatorDirty) SaveGeneratorSource();
+        if (_sceneDocumentDirty || _generatorDirty) return;
+        _projectCloseDialogResolved = true;
+        _projectCloseDialogOpen = false;
+        CompleteProjectClose();
+    }
+
+    /// <summary>放弃修改后关闭项目或继续切换</summary>
+    private void ConfirmCloseProjectDiscard()
+    {
+        _projectCloseDialogResolved = true;
+        _projectCloseDialogOpen = false;
+        CompleteProjectClose();
+    }
+
+    /// <summary>取消关闭或切换，保留当前项目</summary>
+    private void CancelCloseProjectConfirmation()
+    {
+        _projectCloseDialogResolved = true;
+        _projectCloseDialogOpen = false;
+        _afterProjectClose = null;
     }
 
     private void SaveProject(bool automatic = false)
     {
+        if (IsAssetStage) { SaveAssetStage(); return; }
         using var historySuspended = FileEditHistory.Suspend();
         if (_project is null)
         {
@@ -5766,6 +6072,13 @@ DockId=0x6A3C3007,0
         using var historySuspended = FileEditHistory.Suspend();
         _autoSaveQueued = false;
         if (_project is null || _worldLoadFailed || !_editorSettings.AutoSave || !_sceneDocumentDirty) return;
+        if (IsAssetStage)
+        {
+            // 恢复区属于原场景，不能用资产编辑空间覆盖；仅项目自动保存模式写回资产。
+            if (_editorSettings.AutoSaveMode == AutoSaveMode.Project) SaveAssetStage();
+            _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
+            return;
+        }
         if (_editorSettings.AutoSaveMode == AutoSaveMode.Project)
         {
             SaveProject(automatic: true);
@@ -5935,6 +6248,7 @@ DockId=0x6A3C3007,0
             {
                 AssetPath = source.Prefab.AssetPath,
                 SourceId = source.Prefab.SourceId,
+                SourceRevision = source.Prefab.SourceRevision,
                 Links = new Dictionary<string, string>(source.Prefab.Links, StringComparer.Ordinal),
             };
             target.Transform = new TransformComponent(source.Transform.Mode, source.Transform.Grid, source.Transform.Free)

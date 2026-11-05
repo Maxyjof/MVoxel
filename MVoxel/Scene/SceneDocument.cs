@@ -350,6 +350,9 @@ public sealed class PrefabInstanceData
     /// </summary>
     public StableId SourceId { get; set; }
 
+    /// <summary>实例最后一次完整同步的资产修订号。</summary>
+    public long SourceRevision { get; set; }
+
     /// <summary>
     /// 实例对象 ID 到资产内来源对象 ID 的对应表，覆盖整棵实例子树
     /// </summary>
@@ -531,6 +534,17 @@ public static class SceneValidation
                 errors.Add($"对象“{sceneObject.Name}”包含重复的动画组件");
             if (sceneObject.Components.Count(SceneComponentTypes.IsVoxelSelection) > 1)
                 errors.Add($"对象“{sceneObject.Name}”包含重复的体素框选组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsCurveRenderer) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的曲线渲染器组件");
+            if (sceneObject.Components.Count(SceneComponentTypes.IsTreeGenerator) > 1)
+                errors.Add($"对象“{sceneObject.Name}”包含重复的树生成器组件");
+            if (sceneObject.Components.Any(component =>
+                    SceneComponentTypes.IsCurveRenderer(component) || SceneComponentTypes.IsTreeGenerator(component)) &&
+                sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel))
+                errors.Add($"对象“{sceneObject.Name}”不能同时挂载程序化生成组件与模型组件");
+            if (sceneObject.Components.Any(SceneComponentTypes.IsCurveRenderer) &&
+                sceneObject.Components.Any(SceneComponentTypes.IsTreeGenerator))
+                errors.Add($"对象“{sceneObject.Name}”不能同时挂载曲线渲染器与树生成器");
         }
 
         return errors;

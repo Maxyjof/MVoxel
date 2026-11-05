@@ -65,7 +65,8 @@ internal sealed partial class ImGuiEditorWindow
                 voxel.Coordinate, out var owner, out _)) return false;
         _sampledBrushColor = value.Color;
         _selectedSceneObjectId = owner;
-        _voxelEditTargetId = owner;
+        // 曲线渲染器生成的体素只用于取样颜色，不会成为绘制目标
+        _voxelEditTargetId = IsVoxelEditableObject(owner) ? owner : null;
         EnsureModelBrushMaterialTarget();
         SetModelBrushMaterialSlot(value.MaterialSlot);
         _brushEmissive = (value.Flags & (byte)MVoxel.Voxels.VoxelFlags.Emissive) != 0;

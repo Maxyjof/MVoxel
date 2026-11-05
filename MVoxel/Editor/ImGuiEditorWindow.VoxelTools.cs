@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using ImGuiNET;
@@ -154,6 +154,10 @@ internal sealed partial class ImGuiEditorWindow
         MVoxelLog.Warn($"检测到 Vulkan 设备丢失，重建渲染设备（第 {_vulkanRecoveryAttempts} 次）");
         try
         {
+            // 后台建管线仍持有旧设备；必须先等待它退出才能放弃该设备。
+            _pipeline?.Dispose();
+            _scenePipeline?.Dispose();
+            _exportPipeline?.Dispose();
             _pipeline = null;
             _scenePipeline = null;
             _exportPipeline = null;
@@ -187,7 +191,7 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin);
+    internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin, string SourceSegment = "");
 
     private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels? Models);
 
@@ -202,7 +206,8 @@ internal sealed partial class ImGuiEditorWindow
         Dictionary<StableId, VoxelWorld> ObjectWorlds, VoxelWorld? Composed, bool LoadFailed,
         bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum,
         RuntimeMaterialMap? MaterialMap = null, VoxelWorld? ViewComposed = null,
-        IReadOnlyList<MaterialAsset>? Materials = null);
+        IReadOnlyList<MaterialAsset>? Materials = null, bool SourceOriginsUpdated = false,
+        bool ProceduralVoxelsUpdated = false);
 
     /// <summary>
     /// 一个场景对象对模型资产的读取请求
@@ -232,18 +237,20 @@ internal sealed partial class ImGuiEditorWindow
         if (requests.Count == 0) return;
         var materialized = new VoxelWorld?[requests.Count];
         // 精确命中缓存（路径与原点都一致）不付解析成本，留到后面的串行复制
-        var groups = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        var groups = new Dictionary<(string Path, string Segment), List<int>>();
         for (var index = 0; index < requests.Count; index++)
         {
             var key = requests[index].Key;
             if (cache.ContainsKey(key)) continue;
-            if (!groups.TryGetValue(key.Path, out var group)) groups.Add(key.Path, group = []);
+            var groupKey = (key.Path.ToUpperInvariant(), key.SourceSegment);
+            if (!groups.TryGetValue(groupKey, out var group)) groups.Add(groupKey, group = []);
             group.Add(index);
         }
 
         var totalGroups = Math.Max(1, groups.Count);
         var completedGroups = 0;
         var progressGate = new object();
+        var objectDocuments = new System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<LargeWorldFormat.NativeObjectDocument>>(StringComparer.OrdinalIgnoreCase);
         try
         {
             Parallel.ForEach(groups, new ParallelOptions
@@ -258,7 +265,10 @@ internal sealed partial class ImGuiEditorWindow
                     // 每个资产只解析一次，同组其余对象在同一线程内位移复制，
                     // 组与组之间没有共享可变状态，只有进度计数需要加锁
                     var first = requests[group[0]];
-                    var canonical = ResolveAssetWorld(first.Key, handoff, cancellation);
+                    var canonical = first.Key.SourceSegment.Length == 0
+                        ? ResolveAssetWorld(first.Key, handoff, cancellation)
+                        : ResolveAssetSegment(first.Key, objectDocuments.GetOrAdd(first.Key.Path,
+                            path => new Lazy<LargeWorldFormat.NativeObjectDocument>(() => LargeWorldFormat.ReadObjects(path))).Value);
                     materialized[group[0]] = canonical;
                     for (var position = 1; position < group.Count; position++)
                     {
@@ -276,7 +286,7 @@ internal sealed partial class ImGuiEditorWindow
                 catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
                 {
                     markFailed();
-                    MVoxelLog.Error($"对象体素加载失败：{Path.GetFileName(entry.Key)}", exception);
+                    MVoxelLog.Error($"对象体素加载失败：{Path.GetFileName(entry.Key.Path)}", exception);
                 }
 
                 int done;
@@ -286,7 +296,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
 
                 report(new BlockingOperationProgress(
-                    $"正在读取对象体素：{Path.GetFileNameWithoutExtension(entry.Key)}（{done}/{totalGroups}）…",
+                    $"正在读取对象体素：{Path.GetFileNameWithoutExtension(entry.Key.Path)}（{done}/{totalGroups}）…",
                     .22F + .60F * done / totalGroups, true));
             });
         }
@@ -310,7 +320,10 @@ internal sealed partial class ImGuiEditorWindow
                 try
                 {
                     if (!cache.TryGetValue(request.Key, out var source))
-                        source = ResolveAssetWorld(request.Key, handoff, cancellation);
+                        source = request.Key.SourceSegment.Length == 0
+                            ? ResolveAssetWorld(request.Key, handoff, cancellation)
+                            : ResolveAssetSegment(request.Key, objectDocuments.GetOrAdd(request.Key.Path,
+                                path => new Lazy<LargeWorldFormat.NativeObjectDocument>(() => LargeWorldFormat.ReadObjects(path))).Value);
                     world = source.Clone();
                 }
                 catch (OperationCanceledException)
@@ -346,7 +359,7 @@ internal sealed partial class ImGuiEditorWindow
         IReadOnlyDictionary<string, ProjectTemplateCatalog.TemplateWorldHandoff>? handoff,
         CancellationToken cancellation)
     {
-        if (handoff is not null && handoff.TryGetValue(key.Path, out var entry))
+        if (key.SourceSegment.Length == 0 && handoff is not null && handoff.TryGetValue(key.Path, out var entry))
         {
             return entry.World.CloneShifted(
                 key.Origin.X - entry.Minimum.X,
@@ -354,7 +367,22 @@ internal sealed partial class ImGuiEditorWindow
                 key.Origin.Z - entry.Minimum.Z);
         }
 
-        return LargeWorldFormat.Read(key.Path, key.Origin, cancellation);
+        if (key.SourceSegment.Length == 0) return LargeWorldFormat.Read(key.Path, key.Origin, cancellation);
+        cancellation.ThrowIfCancellationRequested();
+        return ResolveAssetSegment(key, LargeWorldFormat.ReadObjects(key.Path));
+    }
+
+    private static VoxelWorld ResolveAssetSegment(ModelLoadKey key, LargeWorldFormat.NativeObjectDocument document)
+    {
+        var segment = document.Objects.SingleOrDefault(item => string.Equals(item.ObjectId, key.SourceSegment, StringComparison.Ordinal))
+            ?? throw new InvalidDataException($"体素资产对象不存在：{key.SourceSegment}");
+        return ResolveAssetSegment(key, segment);
+    }
+
+    private static VoxelWorld ResolveAssetSegment(ModelLoadKey key, LargeWorldFormat.NativeObjectSegment segment)
+    {
+        return segment.World.CloneShifted(checked(key.Origin.X - segment.Origin.X),
+            checked(key.Origin.Y - segment.Origin.Y), checked(key.Origin.Z - segment.Origin.Z));
     }
 
     internal static PreloadedModels PreloadProjectModels(ProjectHandle project,
@@ -374,9 +402,13 @@ internal sealed partial class ImGuiEditorWindow
         var worlds = new Dictionary<StableId, VoxelWorld>();
         var cache = modelCache ?? new Dictionary<ModelLoadKey, VoxelWorld>();
         var failed = false;
+        var originsUpdated = false;
+        var proceduralVoxelsUpdated = false;
         if (scene is not null)
         {
             using var decodePhase = StartupTimeline.Begin("预读·解码体素模型");
+            originsUpdated = SyncReferencedSegmentOrigins(project, scene, out var originFailed);
+            failed |= originFailed;
             var keys = GetObjectModelLoadKeys(project, scene).ToDictionary(item => item.ObjectId, item => item.Key);
             var objects = scene.Objects.Where(item => item.Components.Any(SceneComponentTypes.IsVoxelModel)).ToList();
             var requests = new List<ModelRequest>(objects.Count);
@@ -408,6 +440,31 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             LoadObjectWorlds(requests, worlds, cache, cancellation, report, () => failed = true, handoff);
+
+            // 程序化组件的体素藏在组件里：优先解码隐藏负载，曲线参数变了会重算，树只在点“生成”时替换
+            foreach (var item in scene.Objects)
+            {
+                var generatedComponent = SceneComponentTypes.FindGeneratedVoxelComponent(item);
+                if (generatedComponent is null) continue;
+                try
+                {
+                    if (!SceneComponentTypes.TryPrepareGeneratedVoxels(generatedComponent, ProceduralVoxelBudget,
+                            out var local, out var regenerated, out var truncated)) continue;
+                    var origin = GetObjectGridOrigin(item);
+                    worlds[item.Id] = origin == VoxelCoord64.Zero
+                        ? local
+                        : local.CloneShifted(origin.X, origin.Y, origin.Z);
+                    if (regenerated) proceduralVoxelsUpdated = true;
+                    if (truncated)
+                        MVoxelLog.Warn($"程序化对象“{item.Name}”生成的体素超过上限，已截断");
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or
+                    InvalidOperationException or OverflowException)
+                {
+                    failed = true;
+                    MVoxelLog.Error("程序化体素预读失败", exception);
+                }
+            }
         }
         cancellation.ThrowIfCancellationRequested();
         report(new BlockingOperationProgress("正在合成可见对象…", .84F, true));
@@ -457,7 +514,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         cancellation.ThrowIfCancellationRequested();
         return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum,
-            materialMap, viewComposed, materials);
+            materialMap, viewComposed, materials, originsUpdated, proceduralVoxelsUpdated);
     }
 
     /// <summary>
@@ -519,7 +576,7 @@ internal sealed partial class ImGuiEditorWindow
             _sceneValidationErrors = Scene.SceneValidation.Validate(_sceneDocument);
             foreach (var error in _sceneValidationErrors) MVoxelLog.Warn($"主场景结构校验：{error}");
         }
-        _sceneDocumentDirty = false;
+        _sceneDocumentDirty = preload?.SourceOriginsUpdated == true || preload?.ProceduralVoxelsUpdated == true;
         _renderCameraId = null;
         _renderOrbitAnchor = null;
         _renderCameraInitialFramePending = true;
@@ -550,7 +607,7 @@ internal sealed partial class ImGuiEditorWindow
             if (preload.ViewComposed is { } viewComposed)
             {
                 _composedWorlds.Insert(0,
-                    new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed));
+                    new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed, _sceneDocument));
             }
         }
         else LoadObjectVoxelWorlds(project);
@@ -654,7 +711,7 @@ internal sealed partial class ImGuiEditorWindow
                 MathF.Pow((float)(max.Y - min.Y + 1), 2) +
                 MathF.Pow((float)(max.Z - min.Z + 1), 2));
             _scenePan = center;
-            _sceneFreeMoveHeight = 0F;
+            _sceneFreeMoveHeight = (float)(min.Y / 2.0 + max.Y / 2.0 + 0.5);
             _sceneCameraDistance = Math.Clamp(diagonal * 1.15F, limits.MinimumDistance, limits.MaximumDistance);
             _sceneOrbitYaw = MathF.PI / 4F;
             _sceneOrbitPitch = 0.42F;
@@ -760,7 +817,7 @@ internal sealed partial class ImGuiEditorWindow
         for (var index = 0; index < _composedWorlds.Count; index++)
         {
             var entry = _composedWorlds[index];
-            if (entry.Mask != cullingMask || entry.Signature != signature) continue;
+            if (entry.Mask != cullingMask || entry.Signature != signature || !ReferenceEquals(entry.Scene, _sceneDocument)) continue;
             if (index > 0)
             {
                 _composedWorlds.RemoveAt(index);
@@ -781,7 +838,7 @@ internal sealed partial class ImGuiEditorWindow
             _composedWorlds.RemoveAt(_composedWorlds.Count - 1);
         }
 
-        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed));
+        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed, _sceneDocument));
         return composed;
     }
 
@@ -791,6 +848,8 @@ internal sealed partial class ImGuiEditorWindow
     private void InvalidateComposedWorldCache()
     {
         _composedWorlds.Clear();
+        _receiverLayerTables.Clear();
+        _receiverLayerCacheScene = null;
     }
 
     /// <summary>
@@ -857,6 +916,10 @@ internal sealed partial class ImGuiEditorWindow
             if (_captureRain.HasValue) settings.WeatherRainIntensity = _captureRain.Value;
             if (_captureSnow.HasValue) settings.WeatherSnowIntensity = _captureSnow.Value;
             if (_captureHeat.HasValue) settings.WeatherHeatHaze = _captureHeat.Value;
+            if (_captureStorm.HasValue) settings.WeatherStormIntensity = _captureStorm.Value;
+            if (_captureLightning.HasValue) settings.WeatherLightningFrequency = _captureLightning.Value;
+            if (_captureWeatherSeed.HasValue) settings.WeatherSeed = _captureWeatherSeed.Value;
+            if (_captureWeatherViewDistance.HasValue) settings.WeatherViewDistance = _captureWeatherViewDistance.Value;
         }
         var camera = cameraObject?.Components.FirstOrDefault(item => item.Enabled && SceneComponentTypes.IsCamera(item));
         if (camera is not null)
@@ -1056,7 +1119,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 组合世界缓存条目：同一份对象体素按不同可见性语义与图层遮罩合成出不同世界
     /// </summary>
-    private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World);
+    private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World, SceneDocument? Scene);
 
     /// <summary>按图层遮罩组成的渲染世界缓存，最近使用的排在最前面</summary>
     private readonly List<ComposedWorldEntry> _composedWorlds = new(ComposedWorldCacheCapacity);
@@ -1259,6 +1322,8 @@ internal sealed partial class ImGuiEditorWindow
             SceneComponentTypes.WriteVoxelModel(modelComponent, existing with
             {
                 Model = assetRelativePath,
+                SourceSegment = string.Empty,
+                SourceOrigin = null,
                 VoxelCount = _world.OccupiedVoxelCount,
             });
         }
@@ -1266,12 +1331,7 @@ internal sealed partial class ImGuiEditorWindow
         _sceneDocument = document;
     }
 
-    private static bool IsNativeObjectDocument(string path)
-    {
-        using var stream = File.OpenRead(path);
-        using var reader = new BinaryReader(stream);
-        return stream.Length >= 8 && reader.ReadUInt32() == 0x3158564D && reader.ReadInt32() == 4;
-    }
+    private static bool IsNativeObjectDocument(string path) => LargeWorldFormat.IsObjectDocument(path);
 
     private void ImportNativeObjectDocument(string path)
     {
@@ -1414,7 +1474,8 @@ internal sealed partial class ImGuiEditorWindow
             LoadObjectVoxelWorlds(_project);
             MarkSceneDocumentDirty();
             _selectedVoxel = null;
-            _pipeline?.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
+            if (_pipeline is { IsInitializing: false } readyPipeline)
+                readyPipeline.SyncWorld(GetRenderWorld(uint.MaxValue), GetSceneGpuCellBudget());
             _pipeline?.ResetAccumulation();
             _accumulationSignature = string.Empty;
             FrameCameraOnWorld();
@@ -1490,6 +1551,8 @@ internal sealed partial class ImGuiEditorWindow
             ScenePreview: scenePreview)
         {
             WaterTime = _waterAnimationTime,
+            WeatherTime = ReferenceEquals(framePipeline, _pipeline) && _capturePath is not null
+                ? _captureWeatherTime : TimelineWeatherTime,
             NearClip = camera.NearClip,
             FarClip = float.IsFinite(camera.FarClip) ? camera.FarClip : 100_000_000F,
         };
@@ -1545,6 +1608,8 @@ internal sealed partial class ImGuiEditorWindow
             .Append(':').Append(string.Join(",", settings.RenderLod.Distances))
             .Append(',').Append(settings.SceneBackgroundColor.X).Append(',').Append(settings.SceneBackgroundColor.Y)
             .Append(',').Append(settings.SceneBackgroundColor.Z);
+        if (_timelinePreviewScene is not null && ReferenceEquals(_sceneDocument, _timelinePreviewScene))
+            buffer.Append("|时间轴预览:").Append(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_timelinePreviewScene));
         if (GetActiveRenderCameraObject() is null)
         {
             buffer.Append("|scene:")
@@ -1587,6 +1652,9 @@ internal sealed partial class ImGuiEditorWindow
             .Append(',').Append(settings.WeatherRainIntensity).Append(',').Append(settings.WeatherSnowIntensity)
             .Append(',').Append(settings.WeatherStormIntensity).Append(',').Append(settings.WeatherHeatHaze)
             .Append(',').Append(settings.WeatherLightningFrequency)
+            .Append(',').Append(settings.WeatherSeed)
+            .Append(',').Append(settings.WeatherViewDistance)
+            .Append(',').Append(_capturePath is null ? TimelineWeatherTime : _captureWeatherTime)
             .Append(',').Append(settings.AmbientOcclusionEnabled).Append(',').Append(settings.AoStrength)
             .Append(',').Append(settings.AoPower).Append(',').Append(settings.AoSamples)
             .Append(',').Append(settings.VoxelIndirectLightStrength).Append(',').Append(settings.ProbeVolumeGiStrength)
@@ -1659,6 +1727,10 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private bool TryRenderGpuSceneView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showGeometry = true)
+        => RenderWithTimelinePreview(() => TryRenderGpuSceneViewCore(drawList, origin, size, camera, showGeometry));
+
+    private bool TryRenderGpuSceneViewCore(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
+        bool showGeometry)
     {
         if (_project is null || _gpuRenderingDisabled) return false;
         try
@@ -1672,13 +1744,22 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             var pipeline = _scenePipeline;
+            // 建管线期间先不触碰工作集缓冲，避免驱动内部锁让 UI 等待后台创建。
+            if (pipeline.IsInitializing) return false;
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
             pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 greedyMerge: false,
                 includeInterior: IsCameraInsideOccupiedVoxel(camera));
-            if (!pipeline.IsAvailable) return false;
+            if (!pipeline.IsAvailable)
+            {
+                if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
+                return false;
+            }
+            var sceneDeposits = CollectSurfaceDeposits(uint.MaxValue);
+            pipeline.SetSurfaceDeposits(sceneDeposits, ResolveReceiverLayerTable(sceneDeposits, uint.MaxValue,
+                sceneVisibility: true, pipeline.Workset.Origin));
             pipeline.SetSceneSelection(showGeometry ? GetSelectedSubtreeWorld() : null);
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
@@ -1734,6 +1815,10 @@ internal sealed partial class ImGuiEditorWindow
     /// 绘制 Vulkan Compute 渲染标签页，GPU 不可用时返回 false
     /// </summary>
     private bool TryRenderGpuPathView(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+        => RenderWithTimelinePreview(() => TryRenderGpuPathViewCore(drawList, origin, size,
+            GetActiveRenderCameraObject() is null ? camera : GetRenderViewCamera()));
+
+    private bool TryRenderGpuPathViewCore(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         var effective = ResolveRenderSettings(GetActiveRenderCameraObject());
         if (_gpuRenderingDisabled || effective.Backend == RenderBackend.Cpu) return false;
@@ -1741,11 +1826,26 @@ internal sealed partial class ImGuiEditorWindow
         if (_pipeline is not { } pipeline) return false;
         try
         {
+            if (pipeline.IsInitializing)
+            {
+                _pipelineStatus = "显卡体素管线正在后台初始化";
+                return false;
+            }
             pipeline.SetSceneLights(CollectSceneLights(GetActiveRenderCullingMask()));
             pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
             // 首帧工作集是在渲染视图按需上传的，因此不能在 SyncWorld 之前用
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
-            if (!pipeline.IsAvailable) return false;
+            if (!pipeline.IsAvailable)
+            {
+                if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
+                _pipelineStatus = pipeline.IsInitializing ? "显卡体素管线正在后台初始化" : _pipelineStatus;
+                return false;
+            }
+            var renderMask = GetActiveRenderCullingMask();
+            var renderDeposits = CollectSurfaceDeposits(renderMask);
+            pipeline.SetSurfaceDeposits(renderDeposits, ResolveReceiverLayerTable(renderDeposits, renderMask,
+                sceneVisibility: false, pipeline.Workset.Origin));
+            _pipelineStatus = string.Empty;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
             // 交互渲染每帧只追加一个路径样本：累加样本上限和最终画质不变，
@@ -2452,7 +2552,7 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.SmallButton(reference.Name))
                 {
                     _selectedSceneObjectId = reference.Id;
-                    _voxelEditTargetId = reference.Id;
+                    _voxelEditTargetId = IsVoxelEditableObject(reference.Id) ? reference.Id : null;
                     FocusHierarchyObject(reference);
                 }
                 ImGui.SameLine();
@@ -2640,6 +2740,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             _historyConfirmation = (command, forward, message);
             _openHistoryConfirmation = true;
+            _historyConfirmationResolved = false;
             _historyAwaitKeyRelease = true;
             _historyRepeatDirection = 0;
             _undoHeldSeconds = _undoRepeatAccumulator = 0F;
@@ -2986,12 +3087,6 @@ internal sealed partial class ImGuiEditorWindow
     private static float SrgbToLinearComponent(float value) =>
         value <= 0.04045F ? value / 12.92F : MathF.Pow((value + 0.055F) / 1.055F, 2.4F);
 
-    private void DrawSceneSection(RenderSettings settings)
-    {
-        DrawLightingSection(settings);
-        DrawEnvironmentSection(settings);
-    }
-
     private void DrawLightingSection(RenderSettings settings)
     {
         ImGui.SeparatorText("太阳与阴影");
@@ -3067,66 +3162,6 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.SetTooltip("实时光照已是确定性解析估计，静止画面逐帧一致，默认 0 即不读写历史图。保留供后续时间抗锯齿使用；相机或设置变化时历史自动作废。");
         }
 
-    }
-
-    private void DrawEnvironmentSection(RenderSettings settings)
-    {
-        var environmentBefore = new SceneEnvironmentSettings();
-        environmentBefore.CaptureFrom(settings);
-        var previousEnvironment = System.Text.Json.JsonSerializer.Serialize(environmentBefore, EnvironmentJsonOptions);
-        ImGui.SeparatorText("天空与地面");
-        if (ImGui.Checkbox("显示地面平面", ref settings.ShowGround) && ReferenceEquals(settings, _renderSettings))
-            _settingsToggleGround = settings.ShowGround;
-        DrawColorSlider("地面颜色", ref settings.GroundColor);
-        SliderFloat("地面地平线过渡（0=纯色无限地面）", ref settings.GroundFade, 0F, 1024F, "%.0f");
-        DrawColorSlider("天顶色", ref settings.SkyTop);
-        DrawColorSlider("地平线色", ref settings.SkyHorizon);
-        SliderFloat("天空环境光##sky", ref settings.SkyAmbient, 0F, 1.5F, "%.2f");
-        SliderFloat("暖色补光##sky", ref settings.AmbientTint, 0F, 0.8F, "%.2f");
-        ImGui.SeparatorText("水面");
-        if (ImGui.Checkbox("显示水面", ref settings.ShowWater) && settings.ShowWater)
-            settings.WaterAnimationEnabled = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪改变表面法线，不改变轮廓或产生透明折射。");
-        SliderFloat("水面高度", ref settings.WaterHeight, -1024F, 1024F, "%.1f 格");
-        DrawColorSlider("水面颜色", ref settings.WaterColor);
-        SliderFloat("波浪大小", ref settings.WaterWaveSize, 0F, 4F, "%.2f");
-        SliderFloat("波长", ref settings.WaterWaveLength, 0.1F, 256F, "%.1f 格");
-                 SliderFloat("水面粗糙度", ref settings.WaterRoughness, 0.01F, 1F, "%.2f");
-         ImGui.SeparatorText("水面动画与Shader");
-         ImGui.Checkbox("启用实时水面动画", ref settings.WaterAnimationEnabled);
-         if (ImGui.IsItemHovered()) ImGui.SetTooltip("驱动流动波纹；路径追踪动态预览会重新累积，截图时固定水面时刻。");
-         SliderFloat("动画速度", ref settings.WaterAnimationSpeed, -4F, 4F, "%.2f");
-         SliderFloat("流向X", ref settings.WaterFlowDirection.X, -1F, 1F, "%.2f");
-         SliderFloat("流向Z", ref settings.WaterFlowDirection.Y, -1F, 1F, "%.2f");
-         SliderFloat("细节扰动", ref settings.WaterDetailStrength, 0F, 2F, "%.2f");
-         SliderFloat("高光强度", ref settings.WaterSpecularStrength, 0F, 4F, "%.2f");
-         ImGui.SeparatorText("天气与大气");
-         SliderFloat("风强度", ref settings.WeatherWindStrength, 0F, 4F, "%.2f");
-         SliderFloat("风向", ref settings.WeatherWindDirection, 0F, 360F, "%.0f°");
-         SliderFloat("降雨强度", ref settings.WeatherRainIntensity, 0F, 1F, "%.2f");
-         SliderFloat("降雪强度", ref settings.WeatherSnowIntensity, 0F, 1F, "%.2f");
-         SliderFloat("雷暴强度", ref settings.WeatherStormIntensity, 0F, 1F, "%.2f");
-         SliderFloat("热浪折射散射", ref settings.WeatherHeatHaze, 0F, 1F, "%.2f");
-         SliderFloat("雷电频率", ref settings.WeatherLightningFrequency, 0F, 4F, "%.2f");
-        ImGui.SeparatorText("雾气");
-        DrawColorSlider("雾颜色", ref settings.FogColor);
-        SliderFloat("雾浓度（0=关）", ref settings.FogDensity, 0F, 0.05F, "%.4f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("消光系数，实时渲染与路径追踪共用；高度分布、太阳散射、噪声与体积质量等完整参数在独立的「环境配置」窗口中调整。");
-        SliderFloat("雾起始距离", ref settings.FogStart, 0F, 100000F, "%.0f 格");
-        SliderFloat("雾颜色权重", ref settings.FogSkyBlend, 0F, 1F, "%.2f");
-        SliderFloat("雾最大不透明度", ref settings.FogMaxOpacity, 0F, 1F, "%.2f");
-        SliderFloat("近处淡入距离（0=关）", ref settings.NearFade, 0F, 256F, "%.0f");
-        if (ReferenceEquals(settings, _renderSettings) && _sceneDocument is not null)
-        {
-            var environmentAfter = new SceneEnvironmentSettings();
-            environmentAfter.CaptureFrom(settings);
-            if (previousEnvironment != System.Text.Json.JsonSerializer.Serialize(environmentAfter, EnvironmentJsonOptions))
-            {
-                _sceneDocument.Environment = environmentAfter;
-                MarkSceneDocumentDirty();
-                _pipeline?.ResetAccumulation();
-            }
-        }
     }
 
     private void DrawPaletteSection(RenderSettings settings)
