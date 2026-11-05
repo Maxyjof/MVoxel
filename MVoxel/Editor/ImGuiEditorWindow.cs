@@ -2017,7 +2017,7 @@ DockId=0x6A3C3007,0
             MathF.Sin(_sceneOrbitPitch),
             MathF.Cos(_sceneOrbitPitch) * MathF.Cos(_sceneOrbitYaw));
         // 距离必须为正：即使外部状态异常也不会让相机穿过目标点
-        var position = target + direction * MathF.Max(0.001F, _sceneCameraDistance);
+        var position = target + direction * MathF.Max(0.0001F, _sceneCameraDistance);
         var forward = Vector3.Normalize(target - position);
         var right = Vector3.Cross(forward, Vector3.UnitY);
         if (right.LengthSquared < 0.0001F)
@@ -2029,7 +2029,8 @@ DockId=0x6A3C3007,0
         var up = Vector3.Normalize(Vector3.Cross(right, forward));
         return new SceneCamera(position, target, forward, right, up)
         {
-            NearClip = _sceneNearClip,
+            // 近裁剪面跟随距离收缩，缩到极近时画面不会被整个裁掉
+            NearClip = MathF.Max(0.0001F, MathF.Min(_sceneNearClip, _sceneCameraDistance * 0.02F)),
             FarClip = _sceneFarClip,
             FieldOfViewDegrees = _sceneFieldOfView,
         };
@@ -2527,9 +2528,9 @@ DockId=0x6A3C3007,0
                 io.MouseWheel, ImGui.IsMouseDown(ImGuiMouseButton.Right)) && !gizmoHovered)
         {
             var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
-            // 乘法缩放、不设上限，只保证距离永远为正
-            _sceneCameraDistance = ClampSceneDistance(_sceneCameraDistance * continuousFactor);
-            _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.0001F, 100000F);
+            // 纯乘法缩放：距离按指数收缩/放大，可无限接近镜头但永不小于 0
+            _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * continuousFactor, 0.0001F, 1_000_000_000F);
+            _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.00001F, 100000F);
         }
 
         var orbitRight = !gizmoHovered && !capsLockMode && ImGui.IsMouseDragging(ImGuiMouseButton.Right);
