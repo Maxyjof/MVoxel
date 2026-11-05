@@ -731,8 +731,14 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="distance">目标距离</param>
     /// <returns>夹取后的距离</returns>
-    private static float ClampSceneDistance(float distance) =>
-        float.IsFinite(distance) ? Math.Clamp(distance, 0.001F, 1_000_000_000F) : 18F;
+    /// <summary>最小环绕距离：再近就不移动相机，改用光学变焦，保证右键始终是绕枢轴环绕</summary>
+    private const float MinimumOrbitDistance = 1.5F;
+
+    private static float ClampSceneDistance(float distance)
+    {
+        if (!float.IsFinite(distance)) return 18F;
+        return Math.Clamp(distance, MinimumOrbitDistance, 1_000_000_000F);
+    }
 
     private SceneZoomLimits GetSceneZoomLimits()
     {
@@ -2035,6 +2041,56 @@ internal sealed partial class ImGuiEditorWindow
     private NumVector3 _pickDirection;
     private float _pickDistance;
     private VoxelDda.Hit? _pickResult;
+
+    /// <summary>
+    /// 当前允许的最小环绕距离：选中对象有多大，相机就至少退到能把对象放在视野里的距离
+    /// </summary>
+    /// <returns>最小环绕距离</returns>
+    private float ComputeMinimumOrbitDistance()
+    {
+        if (GetSelectedSceneObject() is not { } selected ||
+            !_objectVoxels.TryGetWorld(selected.Id, out var world) ||
+            !world.TryGetBounds(out var minimum, out var maximum))
+            return MinimumOrbitDistance;
+        var extentX = maximum.X - minimum.X + 1F;
+        var extentY = maximum.Y - minimum.Y + 1F;
+        var extentZ = maximum.Z - minimum.Z + 1F;
+        var radius = MathF.Max(extentX, MathF.Max(extentY, extentZ)) * 0.5F;
+        return MathF.Max(MinimumOrbitDistance, radius * 2F);
+    }
+
+    /// <summary>
+    /// 解析滚轮缩放要靠近的目标点：优先鼠标下的体素，其次选中对象的包围盒中心
+    /// </summary>
+    /// <param name=screenPixel>鼠标位置</param>
+    /// <param name=origin>视口左上角</param>
+    /// <param name=size>视口尺寸</param>
+    /// <param name=camera>观察相机</param>
+    /// <param name=target>目标世界坐标</param>
+    /// <returns>解析成功时为 true</returns>
+    private bool TryResolveZoomTarget(Vector2 screenPixel, Vector2 origin, Vector2 size, SceneCamera camera,
+        out Vector3 target)
+    {
+        target = default;
+        if (PickVoxel(screenPixel, origin, size, camera) is { } hit)
+        {
+            target = new Vector3(hit.Coordinate.X + 0.5F, hit.Coordinate.Y + 0.5F, hit.Coordinate.Z + 0.5F);
+            return true;
+        }
+
+        if (GetSelectedSceneObject() is { } selected &&
+            _objectVoxels.TryGetWorld(selected.Id, out var world) &&
+            world.TryGetBounds(out var minimum, out var maximum))
+        {
+            target = new Vector3(
+                (float)((minimum.X + maximum.X + 1) * 0.5),
+                (float)((minimum.Y + maximum.Y + 1) * 0.5),
+                (float)((minimum.Z + maximum.Z + 1) * 0.5));
+            return true;
+        }
+
+        return false;
+    }
 
     private VoxelDda.Hit? PickVoxel(Vector2 screenPixel, Vector2 origin, Vector2 size, SceneCamera camera)
     {
