@@ -567,6 +567,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             sceneOrbitYawDegrees = _sceneOrbitYaw * 180F / MathF.PI,
             sceneOrbitPitchDegrees = _sceneOrbitPitch * 180F / MathF.PI,
             sceneEffectiveFieldOfView = _sceneFieldOfView,
+            freeFlyActive = _freeFlyActive,
+            freeFlyPosition = _freeFlyActive
+                ? new[] { _freeFlyPosition.X, _freeFlyPosition.Y, _freeFlyPosition.Z }
+                : null,
+            freeFlyYawDegrees = _freeFlyActive ? _freeFlyYaw * 180F / MathF.PI : 0F,
+            freeFlyPitchDegrees = _freeFlyActive ? _freeFlyPitch * 180F / MathF.PI : 0F,
                 timeline = DescribeTimelineState(),
                 pendingDialog = DescribePendingDialog(),
                 videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
@@ -2017,6 +2023,7 @@ DockId=0x6A3C3007,0
 
     private SceneCamera GetSceneCamera()
     {
+        if (_freeFlyActive) return GetFreeFlyCamera();
         var target = new Vector3(_scenePan.X, _sceneFreeMoveHeight, _scenePan.Y);
         var direction = new Vector3(
             MathF.Cos(_sceneOrbitPitch) * MathF.Sin(_sceneOrbitYaw),
@@ -2502,17 +2509,39 @@ DockId=0x6A3C3007,0
         var capsLockMode = IsCapsLockEnabled();
         if (allowMouseCapture && capsLockMode)
         {
+            // 进入第一人称：承接当前画面位置与朝向
+            if (captureTarget == ViewportCaptureTarget.Scene && !_freeFlyActive) EnterFreeFly();
             BeginSceneMouseCapture(captureTarget);
             gizmoHovered = false;
         }
-        else if (_capturedViewport == captureTarget)
+        else
         {
-            EndSceneMouseCapture(captureTarget);
+            // 退出第一人称：环绕点放到视线前方 50 单位，画面不跳（只对场景视口生效）
+            if (captureTarget == ViewportCaptureTarget.Scene && _freeFlyActive) ExitFreeFlyToOrbit();
+            if (_capturedViewport == captureTarget) EndSceneMouseCapture(captureTarget);
         }
 
         if (_sceneMouseCaptured && _capturedViewport == captureTarget)
         {
             var camera = GetSceneCamera();
+            if (captureTarget == ViewportCaptureTarget.Scene && _freeFlyActive)
+            {
+                if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
+                {
+                    // 第一人称下的中键平移：沿相机右向量与上向量挪动位置
+                    var panScale = 0.05F;
+                    var delta = camera.Right * io.MouseDelta.X * panScale - camera.Up * io.MouseDelta.Y * panScale;
+                    _freeFlyPosition += delta;
+                }
+                else
+                {
+                    UpdateFreeFlyLook(io.MouseDelta);
+                }
+
+                UpdateFreeFlyMovement(camera, io.DeltaTime);
+                return false;
+            }
+
             if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
             {
                 var panScale = _sceneCameraDistance / Math.Max(160F, Math.Min(size.X, size.Y));
@@ -2637,10 +2666,12 @@ DockId=0x6A3C3007,0
     /// <param name="camera">当前相机</param>
     /// <param name="deltaTime">帧间隔秒数</param>
     /// <returns>世界空间位移</returns>
-    private Vector3 GetFreeMoveDelta(SceneCamera camera, float deltaTime)
+    private Vector3 GetFreeMoveDelta(SceneCamera camera, float deltaTime, bool includePitch = false)
     {
-        var forward = new Vector3(camera.Forward.X, 0F, camera.Forward.Z);
-        if (forward.LengthSquared > 0.0001F)
+        var forward = includePitch
+            ? Vector3.Normalize(camera.Forward)
+            : new Vector3(camera.Forward.X, 0F, camera.Forward.Z);
+        if (!includePitch && forward.LengthSquared > 0.0001F)
         {
             forward = Vector3.Normalize(forward);
         }
