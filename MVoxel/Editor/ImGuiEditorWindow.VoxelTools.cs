@@ -1925,14 +1925,8 @@ internal sealed partial class ImGuiEditorWindow
                 return true;
             }
 
-            //窗口失焦时保留已完成的画面，重新聚焦或MCP截图时继续累积
-            if (!IsFocused && _capturePath is null && !_renderViewNeedsInitialRender &&
-                pipeline.DisplayTextureId != IntPtr.Zero)
-            {
-                DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
-                return true;
-            }
-
+            // 渲染窗口的采样不随焦点暂停：编辑器切到后台时继续累积样本，
+            // 回到前台或 MCP 截图时看到的是持续推进的结果
             // 调整渲染配置时可以短暂复用上一张纹理，避免拖动滑块同步等待完整路径追踪；
             // 相机导航绝不能走这条分支，否则新姿态刚写入就会被旧视角覆盖显示，
             // 表现为右键环绕后视角瞬间弹回。

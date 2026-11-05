@@ -3701,6 +3701,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return mix(low, high, step(vec3(0.04045), color));
         }
 
+        // 场景预览的反色描边权重：逐样本累积后取平均，最后由 PostProcess 在显示空间反色，
+        // 与 MC 准星的反色叠加同一思路（输出像素 = 1 - 最终显示色），而不是按面色调互补色
+        float gSceneOutlineMask = 0.0;
+
         vec3 Sky(vec3 rayDirection)
         {
             if (values[104] > 0.5)
@@ -4601,8 +4605,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.z, remainPoint.z));
                     else
                         edgeDistance = min(min(localPoint.x, remainPoint.x), min(localPoint.y, remainPoint.y));
-                    float outlineWidth = max(0.012, hitDistance / max(values[3], 1.0) * 1.35);
-                    float outlineAmount = 1.0 - smoothstep(outlineWidth * 0.25, outlineWidth, edgeDistance);
+                    // 相邻体素的两侧描边会并排出现，每侧按半个屏幕像素计算；
+                    // 不设置世界单位下限，否则相机靠近时黑线会突然变粗。
+                    // 宽度取约 1.6 个世界像素：太细会被抗锯齿采样稀释成半透明灰边
+                    float outlineWidth = max(1e-6, hitDistance / max(values[3], 1.0) * 1.6);
+                    float outlineAmount = 1.0 - smoothstep(0.0, outlineWidth, edgeDistance);
+                    // 再走一遍 smoothstep，让面色到描边色是连续过渡而不是一条硬线
+                    outlineAmount = outlineAmount * outlineAmount * (3.0 - 2.0 * outlineAmount);
                     // 一格体素缩到几个像素时，固定像素宽的四周棱线会盖住整个面。
                     // 使用命中面的最小世界跨度换算到屏幕像素，远处逐渐减弱描边，
                     // 避免大场景俯视时所有体素叠成一片黑色。
@@ -4620,7 +4629,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         float sunFace = max(dot(hitNormal, -sceneSun), 0.0);
                         faceColor *= 0.52 + 0.38 * sunFace + 0.14 * max(hitNormal.y, 0.0);
                     }
-                    radiance += mix(faceColor, vec3(0.012, 0.014, 0.018), outlineAmount);
+                    // 描边只记录权重，由显示空间的 PostProcess 做反色：
+                    // 和 MC 准星一样对最终画面取反，深色方块得到浅色棱线，浅色方块得到深色棱线
+                    gSceneOutlineMask = outlineAmount;
+                    radiance += faceColor;
                     break;
                 }
 
@@ -5190,6 +5202,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         void main()
         {
             ivec2 pixel = ivec2(gl_GlobalInvocationID.xy) + tilePush.tileOffset;
+            gSceneOutlineMask = 0.0;
             if (values[P_SUN_PASS] > 0.5)
             {
                 if (values[P_SUN_PASS] < 1.5) BuildSunDepth(pixel);
@@ -5373,8 +5386,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float sampleSurfaceDistance = 3.402823e+38;
                 vec3 sampleNormal;
                 bool sampleSelected;
+                gSceneOutlineMask = 0.0;
                 vec3 tracedColor = TracePath(sampleOrigin, direction, state, pathMode,
                     sampleSurfaceHit, sampleSurfaceDistance, sampleNormal, sampleSelected);
+                outlineMaskSum += gSceneOutlineMask;
                 if (pathMode && sampleSurfaceHit && values[39] > 0.0)
                     tracedColor = mix(Sky(direction), tracedColor, smoothstep(0.0, values[39], sampleSurfaceDistance));
                 // 雾已在 TracePath 的每个弹射段按参与介质处理（实时通道由
@@ -5387,6 +5402,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 primarySurfaceDistance = min(primarySurfaceDistance, sampleSurfaceDistance);
             }
             sampleColor /= float(samples);
+            gSceneOutlineMask = outlineMaskSum / float(samples);
             if (values[63] > 0.5 && values[63] < 1.5)
                 imageStore(guideImage, pixel, vec4(selectedPixel ? 1.0 : 0.0, guide.w, 0.0, 1.0));
 
@@ -5593,7 +5609,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float noise = fract(sin(dot(vec2(pixel), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
                 color += noise / 255.0;
             }
-            return clamp(color, 0.0, 1.0);
+            color = clamp(color, 0.0, 1.0);
+            // MC 准星式反色：描边像素取最终显示色的反色，与底色亮度无关，
+            // 这样深色方块自然是浅色棱线、浅色方块自然是深色棱线
+            color = mix(color, vec3(1.0) - color, clamp(gSceneOutlineMask, 0.0, 1.0));
+            return color;
         }
         """;
 

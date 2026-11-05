@@ -2671,7 +2671,7 @@ DockId=0x6A3C3007,0
     /// <param name="origin">视口左上角屏幕坐标</param>
     /// <param name="size">视口尺寸</param>
     /// <param name="camera">观察相机</param>
-    /// <param name="showOutlines">是否绘制体素黑色描边</param>
+    /// <param name="showOutlines">是否绘制体素反色描边</param>
     private void DrawVoxelWorldPreview(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showOutlines, VoxelWorld? previewWorld = null)
     {
@@ -2730,7 +2730,7 @@ DockId=0x6A3C3007,0
                 var alpha = (int)(245F * fade);
                 if (alpha > 0)
                 {
-                    var outline = ToPackedColor(Color.FromArgb(alpha, 4, 7, 11));
+                    var outline = ToPackedColor(InverseOutlineColor(face.Color, alpha));
                     for (var index = 0; index < polygon.Length; index++)
                         drawList.AddLine(polygon[index], polygon[(index + 1) % polygon.Length], outline, 1.2F);
                 }
@@ -2915,7 +2915,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        var outline = ToPackedColor(Color.FromArgb(245, 4, 7, 11));
+        var outline = ToPackedColor(InverseOutlineColor(baseColor, 235));
         var edges = new[]
         {
             (0, 1), (1, 2), (2, 3), (3, 0),
@@ -2926,6 +2926,17 @@ DockId=0x6A3C3007,0
         {
             drawList.AddLine(points[start], points[end], outline, 1.35F);
         }
+    }
+
+    /// <summary>
+    /// 计算反色描边：与 MC 准星一致，直接取最终面色的反色
+    /// </summary>
+    /// <param name="faceColor">方块或面的颜色</param>
+    /// <param name="alpha">描边透明度</param>
+    /// <returns>反色描边颜色</returns>
+    private static Color InverseOutlineColor(Color faceColor, int alpha)
+    {
+        return Color.FromArgb(alpha, 255 - faceColor.R, 255 - faceColor.G, 255 - faceColor.B);
     }
 
     private static Color Shade(Color color, float factor)

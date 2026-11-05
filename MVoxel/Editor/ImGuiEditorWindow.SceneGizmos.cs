@@ -48,6 +48,42 @@ internal sealed partial class ImGuiEditorWindow
     private static readonly Color AxisYColor = Color.FromArgb(255, 108, 214, 132);
     private static readonly Color AxisZColor = Color.FromArgb(255, 86, 156, 232);
 
+    /// <summary>场景对象在视口里显示的图标类型，每个对象只显示一个</summary>
+    private enum SceneObjectIconKind
+    {
+        /// <summary>模型对象直接显示体素，不再画图标</summary>
+        None,
+        Light,
+        Camera,
+        ProbeVolume,
+        CurveRenderer,
+        TreeGenerator,
+        Generic,
+    }
+
+    /// <summary>
+    /// 按组件优先级决定对象图标：模型最高（直接显示体素），其次光照、相机、
+    /// 自动探针、曲线渲染器与树生成器，最后才是通用对象
+    /// </summary>
+    /// <param name="sceneObject">场景对象</param>
+    /// <returns>该对象应当显示的图标类型</returns>
+    private static SceneObjectIconKind ResolveSceneObjectIcon(SceneObject sceneObject)
+    {
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled))
+            return SceneObjectIconKind.None;
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsLight(component) && component.Enabled))
+            return SceneObjectIconKind.Light;
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsCamera(component) && component.Enabled))
+            return SceneObjectIconKind.Camera;
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsProbeVolume(component) && component.Enabled))
+            return SceneObjectIconKind.ProbeVolume;
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsCurveRenderer(component) && component.Enabled))
+            return SceneObjectIconKind.CurveRenderer;
+        if (sceneObject.Components.Any(component => SceneComponentTypes.IsTreeGenerator(component) && component.Enabled))
+            return SceneObjectIconKind.TreeGenerator;
+        return SceneObjectIconKind.Generic;
+    }
+
     private SceneObject? GetSelectedSceneObject() =>
         _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId);
 
@@ -67,6 +103,8 @@ internal sealed partial class ImGuiEditorWindow
             var selectedLight = selected?.Id == sceneObject.Id;
             if (!selectedLight)
             {
+                // 图标按组件优先级只画一个：模型最高（直接显示体素），其次光照、相机与其他组件
+                if (ResolveSceneObjectIcon(sceneObject) != SceneObjectIconKind.Light) continue;
                 // 与渲染光源和拾取共用对象位置；外圈标明这是光源，而非体素。
                 if (SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _) &&
                     marker.X >= origin.X && marker.X < origin.X + size.X && marker.Y >= origin.Y && marker.Y < origin.Y + size.Y)
@@ -86,8 +124,8 @@ internal sealed partial class ImGuiEditorWindow
 
         foreach (var sceneObject in _sceneDocument.Objects)
         {
-            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
-                !sceneObject.Components.Any(component => SceneComponentTypes.IsCamera(component) && component.Enabled)) continue;
+            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex)) continue;
+            if (ResolveSceneObjectIcon(sceneObject) != SceneObjectIconKind.Camera) continue;
             if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _) ||
                 marker.X < origin.X || marker.X >= origin.X + size.X || marker.Y < origin.Y || marker.Y >= origin.Y + size.Y) continue;
             var color = ToPackedColor(selected?.Id == sceneObject.Id ? EditorPalette.Accent : EditorPalette.Icon);
@@ -97,14 +135,31 @@ internal sealed partial class ImGuiEditorWindow
         }
         foreach (var sceneObject in _sceneDocument.Objects)
         {
-            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex) ||
-                sceneObject.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) || SceneComponentTypes.IsCamera(component) || SceneComponentTypes.IsLight(component))) continue;
-            if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _)) continue;
+            if (!IsSceneObjectVisible(sceneObject) || !_sceneDocument.IsLayerVisible(sceneObject.LayerIndex)) continue;
+            var iconKind = ResolveSceneObjectIcon(sceneObject);
+            if (iconKind is SceneObjectIconKind.None or SceneObjectIconKind.Light or SceneObjectIconKind.Camera)
+                continue;
+            if (!SceneProjection.Project(GetObjectWorldPosition(sceneObject), origin, size, camera, out var marker, out _) ||
+                marker.X < origin.X || marker.X >= origin.X + size.X || marker.Y < origin.Y || marker.Y >= origin.Y + size.Y) continue;
             var color = ToPackedColor(selected?.Id == sceneObject.Id ? EditorPalette.Accent : EditorPalette.Icon);
-            drawList.AddRect(marker - new Vector2(5F), marker + new Vector2(5F), color, 1F, ImDrawFlags.None, 1.3F);
-            drawList.AddLine(marker - new Vector2(3F, 0F), marker + new Vector2(3F, 0F), color);
-            drawList.AddLine(marker - new Vector2(0F, 3F), marker + new Vector2(0F, 3F), color);
-            if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 8F) ImGui.SetTooltip(sceneObject.Name);
+            switch (iconKind)
+            {
+                case SceneObjectIconKind.ProbeVolume:
+                    DrawSceneProbeIcon(drawList, marker, color);
+                    break;
+                case SceneObjectIconKind.CurveRenderer:
+                    DrawSceneCurveIcon(drawList, marker, color);
+                    break;
+                case SceneObjectIconKind.TreeGenerator:
+                    DrawSceneTreeIcon(drawList, marker, color);
+                    break;
+                default:
+                    DrawSceneGenericIcon(drawList, marker, color);
+                    break;
+            }
+
+            if (ImGui.IsWindowHovered() && Vector2.Distance(ImGui.GetIO().MousePos, marker) < 10F)
+                ImGui.SetTooltip(sceneObject.Name);
         }
         DrawCurveRendererOverlays(drawList, origin, size, camera, selected);
         if (selected is null) return;
@@ -186,6 +241,51 @@ internal sealed partial class ImGuiEditorWindow
         draw.AddCircle(center + new Vector2(-1F, .5F), 2.5F, color, 12, 1.2F);
         draw.AddTriangle(center + new Vector2(4F, -2F), center + new Vector2(8F, -4F),
             center + new Vector2(8F, 4F), color, 1.4F);
+    }
+
+    /// <summary>
+    /// 自动探针图标：一个探针体积的轮廓加中心点
+    /// </summary>
+    private static void DrawSceneProbeIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var corner = new Vector2(6F, 5.5F);
+        draw.AddRect(center - corner, center + corner, color, 1F, ImDrawFlags.None, 1.2F);
+        draw.AddLine(center + new Vector2(-6F, 0F), center + new Vector2(6F, 0F), color, 1F);
+        draw.AddCircleFilled(center, 1.7F, color, 8);
+    }
+
+    /// <summary>
+    /// 曲线渲染器图标：一段贝塞尔曲线加两个端点
+    /// </summary>
+    private static void DrawSceneCurveIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var start = center + new Vector2(-8F, 5F);
+        var control = center + new Vector2(0F, -11F);
+        var end = center + new Vector2(8F, 5F);
+        draw.AddBezierQuadratic(start, control, end, color, 1.4F, 16);
+        draw.AddCircleFilled(start, 1.8F, color, 8);
+        draw.AddCircleFilled(end, 1.8F, color, 8);
+    }
+
+    /// <summary>
+    /// 树生成器图标：树干、分叉与树冠
+    /// </summary>
+    private static void DrawSceneTreeIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        draw.AddLine(center + new Vector2(0F, 7F), center + new Vector2(0F, 0F), color, 1.6F);
+        draw.AddLine(center + new Vector2(-3F, 2.5F), center + new Vector2(0F, -1F), color, 1.2F);
+        draw.AddLine(center + new Vector2(3F, 2.5F), center + new Vector2(0F, -1F), color, 1.2F);
+        draw.AddCircleFilled(center + new Vector2(0F, -4.5F), 4.6F, color, 14);
+    }
+
+    /// <summary>
+    /// 通用对象图标：方框加十字
+    /// </summary>
+    private static void DrawSceneGenericIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        draw.AddRect(center - new Vector2(5F), center + new Vector2(5F), color, 1F, ImDrawFlags.None, 1.3F);
+        draw.AddLine(center - new Vector2(3F, 0F), center + new Vector2(3F, 0F), color);
+        draw.AddLine(center - new Vector2(0F, 3F), center + new Vector2(0F, 3F), color);
     }
 
     private Vector3 GetObjectPivot(SceneObject sceneObject)
