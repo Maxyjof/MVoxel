@@ -72,6 +72,53 @@ public static class CurveSpline
     }
 
     /// <summary>
+    /// 读取选中控制点的截面滚转角（度）：相对“世界 Y 为上参考”的正交基，
+    /// 这是截面朝向里唯一真正影响生成形状的自由度
+    /// </summary>
+    /// <param name=data>曲线数据</param>
+    /// <param name=index>控制点索引</param>
+    /// <returns>滚转角，范围 -180 到 180 度</returns>
+    public static float RollDegrees(CurveRendererComponentData data, int index)
+    {
+        if (data.Points.Length == 0) return 0F;
+        var center = Math.Clamp(index, 0, data.Points.Length - 1);
+        var forward = ForwardAt(data, center);
+        ReferenceBasis(forward, out var referenceUp, out _);
+        var hint = Vector3.Transform(Vector3.UnitY, data.Points[center].Rotation);
+        Orthonormalize(forward, hint, out var up, out _);
+        var cross = Vector3.Cross(referenceUp, up);
+        var angle = MathF.Atan2(Vector3.Dot(cross, forward), Math.Clamp(Vector3.Dot(referenceUp, up), -1F, 1F));
+        return angle * (180F / MathF.PI);
+    }
+
+    /// <summary>
+    /// 按截面滚转角重建控制点朝向
+    /// </summary>
+    /// <param name=data>曲线数据</param>
+    /// <param name=index>控制点索引</param>
+    /// <param name=rollDegrees>滚转角（度）</param>
+    /// <returns>新的控制点朝向</returns>
+    public static Quaternion WithRoll(CurveRendererComponentData data, int index, float rollDegrees)
+    {
+        if (data.Points.Length == 0) return Quaternion.Identity;
+        var center = Math.Clamp(index, 0, data.Points.Length - 1);
+        var forward = ForwardAt(data, center);
+        ReferenceBasis(forward, out var referenceUp, out _);
+        var radians = rollDegrees * (MathF.PI / 180F);
+        var up = Vector3.Transform(referenceUp, Quaternion.CreateFromAxisAngle(forward, radians));
+        return CurveRotation.FromBasis(forward, up);
+    }
+
+    /// <summary>以世界 Y 为上参考、与切线正交的基准上方向</summary>
+    private static void ReferenceBasis(Vector3 forward, out Vector3 up, out Vector3 right)
+    {
+        if (forward.LengthSquared() < 0.000001F) forward = Vector3.UnitZ;
+        var normalized = Vector3.Normalize(forward);
+        var hint = MathF.Abs(normalized.Y) > 0.98F ? Vector3.UnitX : Vector3.UnitY;
+        Orthonormalize(normalized, hint, out up, out right);
+    }
+
+    /// <summary>
     /// 按曲线参数细分出折线采样，闭合曲线会包含回到起点的那一段
     /// </summary>
     /// <param name="data">曲线数据</param>

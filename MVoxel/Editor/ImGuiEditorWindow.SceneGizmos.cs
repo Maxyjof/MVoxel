@@ -712,6 +712,8 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
         if (TryBeginVoxelSelectionGizmoDrag(mouse, origin, size, camera, selected)) return true;
+        // 曲线编辑时手柄属于当前控制点，对象级手柄既不画也不该抢输入
+        if (IsCurveEditing(selected)) return false;
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));

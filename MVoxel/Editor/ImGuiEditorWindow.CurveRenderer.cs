@@ -278,11 +278,14 @@ internal sealed partial class ImGuiEditorWindow
             state.GeometryChanged = true;
         }
 
-        var euler = CurveRotation.ToEulerDegrees(point.Rotation);
-        BeginInspectorField("旋转", "控制点局部朝向，决定方形、十字这类截面绕曲线的旋转角度。");
-        if (DrawCurveFloat3("##CurvePointRotation", ref euler, .5F, -360F, 360F))
+        // 三个欧拉角里只有绕切线的滚转真正改变截面形状，其余分量会被正交化吃掉，
+        // 所以这里只暴露一个“截面旋转”，避免调了没反应
+        var current = state.Data with { Points = state.Points.ToArray() };
+        var roll = CurveSpline.RollDegrees(current, index);
+        BeginInspectorField("截面旋转", "截面绕曲线走向的滚转角，直接决定方块管与十字管的朝向；拖动场景里的旋转手柄改的是同一个角度。");
+        if (ImGui.DragFloat("##CurvePointRoll", ref roll, .5F, -180F, 180F, "%.1f°"))
         {
-            state.Points[index] = point with { Rotation = CurveRotation.FromEulerDegrees(euler) };
+            state.Points[index] = point with { Rotation = CurveSpline.WithRoll(current, index, roll) };
             point = state.Points[index];
             state.GeometryChanged = true;
         }

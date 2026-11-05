@@ -26,6 +26,9 @@ internal sealed partial class ImGuiEditorWindow
         TangentIn,
         TangentOut,
         Rotation,
+        PointMove,
+        Roll,
+        Width,
     }
 
     private CurveGizmoDragKind _curveGizmoDragKind;
@@ -37,6 +40,11 @@ internal sealed partial class ImGuiEditorWindow
     private CurvePointData _curveGizmoDragStartPoint;
     private Vector3 _curveGizmoDragStartWorld;
     private Vector3 _curveGizmoDragStartHandleWorld;
+    private int _curveGizmoDragAxis;
+    private float _curveGizmoDragStartRoll;
+    private float _curveGizmoDragStartWidth = 1F;
+    private float _curveGizmoStartScreenAngle;
+    private Vector2 _curveGizmoPivotScreen;
     private readonly List<CurveSample> _curveSampleBuffer = new(512);
 
     /// <summary>切线入手柄颜色</summary>
@@ -142,9 +150,37 @@ internal sealed partial class ImGuiEditorWindow
         if (!editing || _curvePointIndex < 0 || _curvePointIndex >= points.Length) return;
         var point = points[_curvePointIndex];
         var pointWorld = CurveLocalToWorld(owner, point.Position);
-        if (!SceneProjection.Project(pointWorld, origin, size, camera, out _, out var depth)) return;
+        if (!SceneProjection.Project(pointWorld, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         CurveSpline.BasisAt(data, _curvePointIndex, out var up, out _);
+        // 左侧工具的平移/旋转/缩放手柄直接作用在当前控制点上
+        switch (_sceneGizmoMode)
+        {
+            case SceneGizmoMode.Move:
+                DrawMoveGizmo(drawList, origin, size, camera, pointWorld, pivotScreen, unitsPerPixel);
+                return;
+            case SceneGizmoMode.Rotate:
+            {
+                var rollForward = CurveSpline.ForwardAt(data, _curvePointIndex);
+                CurveSpline.Orthonormalize(rollForward, NumVector3.UnitY, out var planeUp, out var planeRight);
+                var rollRadius = unitsPerPixel * 58F;
+                DrawWorldCircle(drawList, origin, size, camera, pointWorld, ToWorld(planeUp), ToWorld(planeRight),
+                    rollRadius, ToPackedColor(EditorPalette.Accent), 2F);
+                drawList.AddText(pivotScreen + new Vector2(10F, 10F),
+                    ToPackedColor(EditorPalette.MutedText), "截面滚转");
+                return;
+            }
+            case SceneGizmoMode.Scale:
+            {
+                var scaleHandle = pivotScreen + new Vector2(0F, -72F);
+                var scaleColor = ToPackedColor(EditorPalette.Accent);
+                drawList.AddLine(pivotScreen, scaleHandle, scaleColor, 2F);
+                drawList.AddRectFilled(scaleHandle - new Vector2(5F), scaleHandle + new Vector2(5F), scaleColor);
+                drawList.AddText(scaleHandle + new Vector2(10F, -6F), scaleColor, $"{point.Width:0.00}×");
+                return;
+            }
+        }
+
         var handleLength = unitsPerPixel * 56F;
         var upHandle = pointWorld + ToWorld(up) * handleLength;
         if (SceneProjection.Project(upHandle, origin, size, camera, out var upScreen, out _))
@@ -335,32 +371,87 @@ internal sealed partial class ImGuiEditorWindow
         var index = Math.Clamp(_curvePointIndex, 0, points.Length - 1);
         var point = points[index];
         var pointWorld = CurveLocalToWorld(owner, point.Position);
-        if (!SceneProjection.Project(pointWorld, origin, size, camera, out _, out var depth)) return false;
+        if (!SceneProjection.Project(pointWorld, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
 
-        CurveSpline.BasisAt(data, index, out var up, out _);
-        var upHandle = pointWorld + ToWorld(up) * unitsPerPixel * 56F;
-        if (SceneProjection.Project(upHandle, origin, size, camera, out var upScreen, out _) &&
-            Vector2.Distance(mouse, upScreen) <= 9F)
+        // 与对象手柄同样的命中顺序：先判当前工具的手柄，再判控制点与切线
+        if (_sceneGizmoMode == SceneGizmoMode.Move)
         {
-            BeginCurveDrag(CurveGizmoDragKind.Rotation, index, point, pointWorld, upHandle, unitsPerPixel, mouse);
-            return true;
+            for (var axisIndex = 0; axisIndex < 3; axisIndex++)
+            {
+                if (!TryProjectAxis(origin, size, camera, pointWorld, AxisVector(axisIndex), out var axisEnd,
+                        out var axisPixels)) continue;
+                if (DistanceToSegment(mouse, pivotScreen, axisEnd) > 9F) continue;
+                BeginCurveDrag(CurveGizmoDragKind.PointMove, index, point, pointWorld, pointWorld, unitsPerPixel, mouse);
+                _curveGizmoDragAxis = axisIndex;
+                _curveGizmoPixelsPerUnit = MathF.Max(0.001F, axisPixels);
+                return true;
+            }
+        }
+        else if (_sceneGizmoMode == SceneGizmoMode.Rotate)
+        {
+            var rollForward = CurveSpline.ForwardAt(data, index);
+            CurveSpline.Orthonormalize(rollForward, NumVector3.UnitY, out var planeUp, out var planeRight);
+            var rollRadius = unitsPerPixel * 58F;
+            var bestDistance = float.MaxValue;
+            for (var step = 0; step < 32; step++)
+            {
+                var angle = MathF.Tau * step / 32F;
+                var world = pointWorld + ToWorld(planeUp) * (MathF.Cos(angle) * rollRadius) +
+                            ToWorld(planeRight) * (MathF.Sin(angle) * rollRadius);
+                if (!SceneProjection.Project(world, origin, size, camera, out var screen, out _)) continue;
+                bestDistance = MathF.Min(bestDistance, Vector2.Distance(mouse, screen));
+            }
+
+            if (bestDistance <= 10F)
+            {
+                BeginCurveDrag(CurveGizmoDragKind.Roll, index, point, pointWorld, pointWorld, unitsPerPixel, mouse);
+                _curveGizmoDragStartRoll = CurveSpline.RollDegrees(data, index);
+                _curveGizmoPivotScreen = pivotScreen;
+                _curveGizmoStartScreenAngle = MathF.Atan2(mouse.Y - pivotScreen.Y, mouse.X - pivotScreen.X);
+                return true;
+            }
+        }
+        else if (_sceneGizmoMode == SceneGizmoMode.Scale)
+        {
+            if (Vector2.Distance(mouse, pivotScreen + new Vector2(0F, -72F)) <= 12F)
+            {
+                BeginCurveDrag(CurveGizmoDragKind.Width, index, point, pointWorld, pointWorld, unitsPerPixel, mouse);
+                _curveGizmoDragStartWidth = point.Width;
+                return true;
+            }
         }
 
-        if (data.Interpolation != CurveInterpolation.Linear)
+        // 只有选择工具下才认切线/朝向手柄与自由拖动，其他工具交给上面三个分支
+        var selectionMode = _sceneGizmoMode == SceneGizmoMode.Select;
+        if (selectionMode)
         {
-            if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera, out var tangentOutScreen))
+            CurveSpline.BasisAt(data, index, out var up, out _);
+            var upHandle = pointWorld + ToWorld(up) * unitsPerPixel * 56F;
+            if (SceneProjection.Project(upHandle, origin, size, camera, out var upScreen, out _) &&
+                Vector2.Distance(mouse, upScreen) <= 9F)
             {
-                BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
-                    unitsPerPixel, mouse);
+                BeginCurveDrag(CurveGizmoDragKind.Rotation, index, point, pointWorld, upHandle, unitsPerPixel, mouse);
                 return true;
             }
 
-            if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera, out var tangentInScreen))
+            if (data.Interpolation != CurveInterpolation.Linear)
             {
-                BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen, unitsPerPixel,
-                    mouse);
-                return true;
+                if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera,
+                        out var tangentOutScreen))
+                {
+                    BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
+                        unitsPerPixel, mouse);
+                    return true;
+                }
+
+                if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera,
+                        out var tangentInScreen))
+                {
+                    BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen,
+                        unitsPerPixel, mouse);
+                    return true;
+                }
             }
         }
 
@@ -372,8 +463,13 @@ internal sealed partial class ImGuiEditorWindow
             var candidateUnits = MathF.Max(0.0001F,
                 candidateDepth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
             _curvePointIndex = candidate;
-            BeginCurveDrag(CurveGizmoDragKind.Point, candidate, points[candidate],
-                CurveLocalToWorld(owner, points[candidate].Position), Vector3.Zero, candidateUnits, mouse);
+            // 其他工具下点一下只切换当前控制点，拖动仍由对应工具的手柄负责
+            if (selectionMode)
+            {
+                BeginCurveDrag(CurveGizmoDragKind.Point, candidate, points[candidate],
+                    CurveLocalToWorld(owner, points[candidate].Position), Vector3.Zero, candidateUnits, mouse);
+            }
+
             return true;
         }
 
@@ -469,6 +565,36 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     Rotation = CurveRotation.FromBasis(forward, ToNum(direction)),
                 };
+                break;
+            }
+            case CurveGizmoDragKind.PointMove:
+            {
+                // 与对象平移手柄一致：只沿命中的那条轴移动
+                var axis = AxisVector(_curveGizmoDragAxis);
+                var amount = Vector3.Dot(delta, axis) / _curveGizmoPixelsPerUnit;
+                points[_curveGizmoDragIndex] = _curveGizmoDragStartPoint with
+                {
+                    Position = _curveGizmoDragStartPoint.Position + ToNum(axis * amount),
+                };
+                CurveSpline.RecomputeAutoTangents(points, data.Closed);
+                break;
+            }
+            case CurveGizmoDragKind.Roll:
+            {
+                var angle = MathF.Atan2(mouse.Y - _curveGizmoPivotScreen.Y, mouse.X - _curveGizmoPivotScreen.X);
+                var roll = _curveGizmoDragStartRoll - (angle - _curveGizmoStartScreenAngle) * (180F / MathF.PI);
+                points[_curveGizmoDragIndex] = _curveGizmoDragStartPoint with
+                {
+                    Rotation = CurveSpline.WithRoll(data with { Points = points.ToArray() },
+                        _curveGizmoDragIndex, roll),
+                };
+                break;
+            }
+            case CurveGizmoDragKind.Width:
+            {
+                var deltaY = _curveGizmoDragStartMouse.Y - mouse.Y;
+                var width = Math.Clamp(_curveGizmoDragStartWidth + deltaY * 0.02F, 0.05F, 8F);
+                points[_curveGizmoDragIndex] = _curveGizmoDragStartPoint with { Width = width };
                 break;
             }
         }
