@@ -84,8 +84,9 @@ internal sealed partial class ImGuiEditorWindow
         var deltaX = Math.Clamp(mouseDelta.X, -60F, 60F);
         var deltaY = Math.Clamp(mouseDelta.Y, -60F, 60F);
         _freeFlyYaw += ViewportInputPolicy.OrbitYawDelta(deltaX);
+        // 第一人称：鼠标上移抬高视线、下移压低视线，与环绕相机的俯仰方向相反
         _freeFlyPitch = Math.Clamp(
-            _freeFlyPitch + ViewportInputPolicy.OrbitPitchDelta(deltaY), -1.55F, 1.55F);
+            _freeFlyPitch - ViewportInputPolicy.OrbitPitchDelta(deltaY), -1.55F, 1.55F);
     }
 
     /// <summary>
