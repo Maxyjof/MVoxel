@@ -36,9 +36,8 @@ internal sealed partial class ImGuiEditorWindow
             changed = true;
         }
 
-        BeginInspectorField("强度", "灯光强度。点光与聚光按距离平方衰减；面积灯按发光面辐亮度计，尺寸固定时数值越大越亮。");
         var intensity = data.Intensity;
-        if (ImGui.DragFloat("##LightIntensity", ref intensity, 0.05F, 0F, 1000F, "%.2f"))
+        if (InspectorDragFloatField("强度", "灯光强度。点光与聚光按距离平方衰减；面积灯按发光面辐亮度计，尺寸固定时数值越大越亮。", ref intensity, 0.05F, 0F, 1000F, "%.2f"))
         {
             data = data with { Intensity = intensity };
             changed = true;

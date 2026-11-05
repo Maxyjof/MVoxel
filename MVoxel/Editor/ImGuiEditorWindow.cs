@@ -4431,7 +4431,12 @@ DockId=0x6A3C3007,0
     /// 检查器里的浮点字段：输入框可拖，左侧标签也可按住拖动改值
     /// </summary>
     private static bool InspectorDragFloatField(string label, ref float value, float speed, float minimum,
-        float maximum, string format = "%.2f", string? tooltip = null)
+        float maximum, string format = "%.2f", string? tooltip = null) =>
+        InspectorDragFloatField(label, tooltip, ref value, speed, minimum, maximum, format);
+
+    /// <summary>浮点字段：标签在前、提示在第二位，方便批量迁移调用</summary>
+    private static bool InspectorDragFloatField(string label, string? tooltip, ref float value, float speed,
+        float minimum, float maximum, string format = "%.2f")
     {
         var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
         var changed = ImGui.DragFloat("##" + label, ref value, speed, minimum, maximum, format);
@@ -4439,6 +4444,24 @@ DockId=0x6A3C3007,0
         {
             value = Math.Clamp(value + dragPixels * speed, minimum, maximum);
             changed = true;
+        }
+
+        return changed;
+    }
+
+    /// <summary>整数字段：标签与拖动框都能改值，拖动按整格步进</summary>
+    private static bool InspectorDragIntField(string label, string? tooltip, ref int value, int minimum, int maximum)
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.DragInt("##" + label, ref value, 1F, minimum, maximum);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var steps = (int)MathF.Round(dragPixels);
+            if (steps != 0)
+            {
+                value = Math.Clamp(value + steps, minimum, maximum);
+                changed = true;
+            }
         }
 
         return changed;
