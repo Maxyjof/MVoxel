@@ -58,6 +58,8 @@ internal sealed partial class ImGuiEditorWindow
         new("scene.setTransform", "场景", "设置变换", "设置对象的自由变换位置与欧拉旋转（度）",
             [.. TargetIdOrName, Param("position", "number[3]", false, "世界位置 x/y/z"),
              Param("rotation", "number[3]", false, "欧拉角 x/y/z，单位为度")]),
+        new("scene.setModelRotation", "场景", "设置模型旋转", "按浮点角度对体素模型重新采样，位置仍保持整数格",
+            [.. TargetIdOrName, Param("rotation", "number[3]", true, "欧拉角 x/y/z，单位为度，可为任意浮点值")]),
         new("scene.select", "场景", "选中对象", "选中对象并打开检查器，等同在层级里点选",
             TargetIdOrName),
         new("scene.components.get", "环境交互", "读取环境交互组件", "读取对象上的局部后处理、风场、风力接收器、积水和积雪投射参数", [.. TargetIdOrName]),
@@ -397,6 +399,7 @@ internal sealed partial class ImGuiEditorWindow
             "scene.setLocked" => SetSceneObjectFlag(payload, visible: false),
             "scene.setLayer" => SetSceneObjectLayer(payload),
             "scene.setTransform" => SetSceneObjectTransform(payload),
+        "scene.setModelRotation" => SetSceneModelRotation(payload),
             "scene.select" => QueueSelectObject(WrapArguments(payload)),
             "scene.selection" => DescribeSelection(),
             "scene.components.get" => GetEnvironmentComponents(payload),
@@ -887,6 +890,27 @@ internal sealed partial class ImGuiEditorWindow
         MarkSceneDocumentDirty();
         _pipeline?.ResetAccumulation();
         return DescribeSceneObject(target);
+    });
+
+    /// <summary>
+    /// 自动化：按浮点角度重新生成体素模型，位置与格坐标保持不变
+    /// </summary>
+    private object SetSceneModelRotation(JsonElement arguments) => RunOnUi(() =>
+    {
+        var target = RequireObject(arguments);
+        var rotation = ReadVector(arguments, "rotation") ?? throw new ArgumentException("缺少 rotation（欧拉角 x/y/z，单位度）");
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) ??
+                        throw new InvalidOperationException("对象没有体素模型组件，浮点旋转只支持体素模型");
+        if (target.Transform.Mode != TransformMode.Grid)
+            throw new InvalidOperationException("浮点旋转只支持网格模式的对象");
+        var degrees = new System.Numerics.Vector3((float)rotation[0], (float)rotation[1], (float)rotation[2]);
+        ApplyModelRotation(target, component, RotationFromDegrees(degrees), degrees);
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        return new
+        {
+            id = target.Id.ToString(),
+            rotation = new[] { data.RotationX, data.RotationY, data.RotationZ },
+        };
     });
 
     private object ListLayers()

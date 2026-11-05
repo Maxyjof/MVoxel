@@ -126,6 +126,14 @@ internal sealed partial class ImGuiEditorWindow
         foreach (var sceneObject in _sceneDocument.Objects)
         {
             var component = GetGeneratedVoxelComponent(sceneObject);
+            // 组件停用后生成体素要跟着隐藏，重新启用时再按参数重建
+            if (component is { Enabled: false })
+            {
+                _objectVoxels.Remove(sceneObject.Id);
+                _generatedVoxelTruncated.Remove(sceneObject.Id);
+                continue;
+            }
+
             if (component is null || _objectVoxels.TryGetWorld(sceneObject.Id, out _)) continue;
             if (!SceneComponentTypes.TryPrepareGeneratedVoxels(component, ProceduralVoxelBudget, out var local,
                     out var regenerated, out var truncated)) continue;

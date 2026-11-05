@@ -53,10 +53,9 @@ internal sealed partial class ImGuiEditorWindow
         var updated = data;
         var sortingChanged = false;
 
-        DrawInspectorHint("参数只改生成规则，点“生成体素”才会替换当前的树；生成的体素保存在场景文件中，不进入绘制模式。");
 
         DrawTreeStyleSection(ref updated);
-        if (ImGui.CollapsingHeader("树干与枝条##TreeTrunkSection", ImGuiTreeNodeFlags.DefaultOpen))
+        if (ImGui.CollapsingHeader("树干与枝条##TreeTrunkSection"))
         {
             ImGui.Indent(8F);
             DrawTreeTrunkSection(ref updated);
@@ -65,7 +64,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Dummy(new Vector2(0F, 2F));
         }
 
-        if (ImGui.CollapsingHeader("树冠与树叶##TreeCrownSection", ImGuiTreeNodeFlags.DefaultOpen))
+        if (ImGui.CollapsingHeader("树冠与树叶##TreeCrownSection"))
         {
             ImGui.Indent(8F);
             DrawTreeCrownSection(ref updated);
@@ -291,7 +290,6 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SetTooltip("把当前生成的体素固定成模型组件：之后可以进入绘制模式，但不能再改回树生成器；" +
                              "如果只是想换个样子，请先调参数再点“生成体素”。");
         ImGui.PushStyleColor(ImGuiCol.Text, ToColor(EditorPalette.MutedText));
-        DrawInspectorHint("实例化会移除树生成器组件，体素转存到模型组件里。想反悔只能用撤销（Ctrl+Z）。");
         ImGui.PopStyleColor();
     }
 

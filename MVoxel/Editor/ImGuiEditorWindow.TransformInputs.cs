@@ -205,7 +205,7 @@ internal sealed partial class ImGuiEditorWindow
         });
         if (!free)
         {
-            // 网格对象的旋转是浮点参数：拖动只预览，松手后按基准体素重新采样生成
+            // 有体素模型组件的对象用浮点旋转；没有模型组件（例如还没实例化的生成器）仍用 90 度离散旋转
             var rotationComponent = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
             if (rotationComponent is not null)
             {
@@ -218,6 +218,20 @@ internal sealed partial class ImGuiEditorWindow
                     _pendingModelRotationObjectId = item.Id;
                 }, "浮点旋转：按角度对基准体素重新采集，结果是干净的整数体素而不是斜格子。\n拖动只预览，松开后整份重新生成；反复调整都以最近一次编辑的基准为准。");
                 CommitPendingModelRotation(item, rotationComponent);
+            }
+            else
+            {
+                DrawTransformRow("旋转", rotationValues, 90D, 24D, (axis, value) =>
+                {
+                    if (Math.Abs(value) > 360000 || Math.Abs(value / 90 - Math.Round(value / 90)) > 0.00001)
+                    {
+                        SetStatus("体素旋转角度必须为 90 度的整数倍");
+                        return;
+                    }
+
+                    var steps = ((int)Math.Round((value - rotationValues[axis]) / 90) % 4 + 4) % 4;
+                    for (var step = 0; step < steps; step++) RotateModelObjectBy90(item, axis);
+                });
             }
         }
         else
@@ -232,6 +246,28 @@ internal sealed partial class ImGuiEditorWindow
 
         if (item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } modelComponent)
             DrawModelScaleRow(item, modelComponent);
+        else if (!free) DrawTransformScaleRow(item);
+    }
+
+    /// <summary>
+    /// 没有体素模型组件的网格对象用整数缩放，改的是对象变换的缩放分量
+    /// </summary>
+    /// <param name="item">选中的对象</param>
+    private void DrawTransformScaleRow(SceneObject item)
+    {
+        var transform = item.Transform;
+        var values = new[] { (double)transform.ScaleX, transform.ScaleY, transform.ScaleZ };
+        DrawTransformRow("缩放", values, 1D, 12D, (axis, value) =>
+        {
+            var clamped = Math.Clamp((int)Math.Round(value), 1, 64);
+            values[axis] = clamped;
+            if (axis == 0) transform.ScaleX = clamped;
+            else if (axis == 1) transform.ScaleY = clamped;
+            else transform.ScaleZ = clamped;
+            UpdateTransformMarker(item);
+            MarkSceneDocumentDirty();
+            _pipeline?.ResetAccumulation();
+        }, "对象整数缩放：1 到 64 的整数倍；体素模型对象请用下方的倍数缩放，能保持基准精度。");
     }
 
     /// <summary>

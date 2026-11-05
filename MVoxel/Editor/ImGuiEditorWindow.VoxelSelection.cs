@@ -134,14 +134,18 @@ internal sealed partial class ImGuiEditorWindow
         var startX = data.StartX;
         var startY = data.StartY;
         var startZ = data.StartZ;
-        BeginInspectorField("起点（局部格）", "相对局部原点的格坐标，随对象一起移动；局部原点默认对齐模型包围盒最小角，所以新添加时从 0 开始。");
+        var startDrag = BeginInspectorField("起点（局部格）",
+            "相对局部原点的格坐标，随对象一起移动；局部原点默认对齐模型包围盒最小角，所以新添加时从 0 开始。",
+            draggable: true);
         changed |= DrawVoxelSelectionInt3("##VoxelSelectionStart", ref startX, ref startY, ref startZ,
-            -10_000_000, 10_000_000);
+            -10_000_000, 10_000_000, startDrag);
         var sizeX = data.SizeX;
         var sizeY = data.SizeY;
         var sizeZ = data.SizeZ;
-        BeginInspectorField("长宽高（格）", "范围覆盖的格数，从起点向正方向展开；至少 1 格，单轴上限 4096 格。");
-        changed |= DrawVoxelSelectionInt3("##VoxelSelectionSize", ref sizeX, ref sizeY, ref sizeZ, 1, 4096);
+        var sizeDrag = BeginInspectorField("长宽高（格）",
+            "范围覆盖的格数，从起点向正方向展开；至少 1 格，单轴上限 4096 格。", draggable: true);
+        changed |= DrawVoxelSelectionInt3("##VoxelSelectionSize", ref sizeX, ref sizeY, ref sizeZ, 1, 4096,
+            sizeDrag);
 
         // 局部坐标换算到世界后才是体素数据的键，这里给一行只读坐标方便核对
         var objectOrigin = GetObjectGridOrigin(sceneObject);
@@ -279,7 +283,8 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="minimum">最小值</param>
     /// <param name="maximum">最大值</param>
     /// <returns>三个轴是否有任一变化</returns>
-    private static bool DrawVoxelSelectionInt3(string id, ref int x, ref int y, ref int z, int minimum, int maximum)
+    private static bool DrawVoxelSelectionInt3(string id, ref int x, ref int y, ref int z, int minimum, int maximum,
+        float dragPixels = 0F)
     {
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var width = MathF.Max(ImGui.GetFontSize() * 3F, (ImGui.GetContentRegionAvail().X - spacing * 2F) / 3F);
@@ -294,7 +299,20 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SetNextItemWidth(width);
         changed |= ImGui.DragInt("##Z", ref z, .25F, minimum, maximum);
         ImGui.PopID();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("依次为 X、Y、Z");
+        // 标签拖动时三轴按同一格数增减，和三分量浮点字段手感一致
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var steps = (int)MathF.Round(dragPixels * .25F);
+            if (steps != 0)
+            {
+                x = Math.Clamp(x + steps, minimum, maximum);
+                y = Math.Clamp(y + steps, minimum, maximum);
+                z = Math.Clamp(z + steps, minimum, maximum);
+                changed = true;
+            }
+        }
+
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("依次为 X、Y、Z；按住左侧标签拖动可三轴一起调整");
         return changed;
     }
 
@@ -366,9 +384,10 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>移动栏</summary>
     private void DrawVoxelSelectionMove(SceneObject sceneObject)
     {
-        BeginInspectorField("位移（格）", "整体平移选中体素；目标位置会覆盖原有体素，原位留空。");
+        var moveDrag = BeginInspectorField("位移（格）", "整体平移选中体素；目标位置会覆盖原有体素，原位留空。",
+            draggable: true);
         DrawVoxelSelectionInt3("##VoxelSelectionMove", ref _voxelSelectionMoveX, ref _voxelSelectionMoveY,
-            ref _voxelSelectionMoveZ, -4096, 4096);
+            ref _voxelSelectionMoveZ, -4096, 4096, moveDrag);
         if (ImGui.Button("应用移动", new Vector2(-1F, 0F))) ApplyVoxelSelectionMove(sceneObject);
     }
 

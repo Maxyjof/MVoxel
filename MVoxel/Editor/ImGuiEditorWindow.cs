@@ -4049,6 +4049,13 @@ DockId=0x6A3C3007,0
                     component.Enabled = enabled;
                     MarkSceneDocumentDirty();
                     _pipeline?.ResetAccumulation();
+                    // 程序化组件启停要同步生成体素：停用即隐藏，启用后按参数重建
+                    if (SceneComponentTypes.IsGeneratedVoxelComponent(component))
+                    {
+                        if (enabled) RebuildGeneratedVoxels(selectedObject, component, string.Empty);
+                        else RemoveGeneratedVoxelWorld(selectedObject);
+                    }
+
                     SetStatus($"{selectedObject.Name} 的{SceneComponentTypes.GetDisplayName(component)}组件已{(enabled ? "启用" : "停用")}");
                 }
             }
