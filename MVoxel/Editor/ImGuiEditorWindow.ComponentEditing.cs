@@ -19,6 +19,16 @@ internal sealed partial class ImGuiEditorWindow
     private StableId? _toolSelectionTracked;
 
     /// <summary>
+    /// 曲线编辑中选中切线或朝向手柄时缩放没有意义，缩放工具应锁定
+    /// </summary>
+    private bool IsCurveScaleToolLocked()
+    {
+        var selected = GetSelectedSceneObject();
+        if (selected is null || !IsCurveEditing(selected)) return false;
+        return _curveActiveHandle != CurveHandleKind.Point;
+    }
+
+    /// <summary>
     /// 按 Unity 的规则让工具跟随选择：刚选中对象时切到上次的变换工具，
     /// 取消选中时回到选择工具
     /// </summary>

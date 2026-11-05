@@ -31,6 +31,10 @@ internal sealed partial class ImGuiEditorWindow
         Width,
     }
 
+    /// <summary>曲线编辑里当前选中的手柄种类；切线与朝向手柄没有缩放语义</summary>
+    private enum CurveHandleKind { Point, TangentIn, TangentOut, Rotation }
+
+    private CurveHandleKind _curveActiveHandle = CurveHandleKind.Point;
     private CurveGizmoDragKind _curveGizmoDragKind;
     private bool _curveGizmoDragging;
     private bool _curveGizmoDragChanged;
@@ -153,7 +157,8 @@ internal sealed partial class ImGuiEditorWindow
         if (!SceneProjection.Project(pointWorld, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         CurveSpline.BasisAt(data, _curvePointIndex, out var up, out _);
-        // 左侧工具的平移/旋转/缩放手柄直接作用在当前控制点上
+        // 左侧工具的平移/旋转/缩放手柄只作用于控制点；切线与朝向手柄没有这些语义
+        if (_curveActiveHandle != CurveHandleKind.Point) return;
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
@@ -422,36 +427,38 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        // 只有选择工具下才认切线/朝向手柄与自由拖动，其他工具交给上面三个分支
-        var selectionMode = _sceneGizmoMode == SceneGizmoMode.Select;
-        if (selectionMode)
+        // 切线与朝向手柄在任何工具下都能选中；选中它们后缩放工具会锁定
+        CurveSpline.BasisAt(data, index, out var up, out _);
+        var upHandle = pointWorld + ToWorld(up) * unitsPerPixel * 56F;
+        if (SceneProjection.Project(upHandle, origin, size, camera, out var upScreen, out _) &&
+            Vector2.Distance(mouse, upScreen) <= 9F)
         {
-            CurveSpline.BasisAt(data, index, out var up, out _);
-            var upHandle = pointWorld + ToWorld(up) * unitsPerPixel * 56F;
-            if (SceneProjection.Project(upHandle, origin, size, camera, out var upScreen, out _) &&
-                Vector2.Distance(mouse, upScreen) <= 9F)
+            _curveActiveHandle = CurveHandleKind.Rotation;
+            if (_sceneGizmoMode == SceneGizmoMode.Scale) _sceneGizmoMode = SceneGizmoMode.Select;
+            BeginCurveDrag(CurveGizmoDragKind.Rotation, index, point, pointWorld, upHandle, unitsPerPixel, mouse);
+            return true;
+        }
+
+        if (data.Interpolation != CurveInterpolation.Linear)
+        {
+            if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera,
+                    out var tangentOutScreen))
             {
-                BeginCurveDrag(CurveGizmoDragKind.Rotation, index, point, pointWorld, upHandle, unitsPerPixel, mouse);
+                _curveActiveHandle = CurveHandleKind.TangentOut;
+                if (_sceneGizmoMode == SceneGizmoMode.Scale) _sceneGizmoMode = SceneGizmoMode.Select;
+                BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
+                    unitsPerPixel, mouse);
                 return true;
             }
 
-            if (data.Interpolation != CurveInterpolation.Linear)
+            if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera,
+                    out var tangentInScreen))
             {
-                if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera,
-                        out var tangentOutScreen))
-                {
-                    BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
-                        unitsPerPixel, mouse);
-                    return true;
-                }
-
-                if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera,
-                        out var tangentInScreen))
-                {
-                    BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen,
-                        unitsPerPixel, mouse);
-                    return true;
-                }
+                _curveActiveHandle = CurveHandleKind.TangentIn;
+                if (_sceneGizmoMode == SceneGizmoMode.Scale) _sceneGizmoMode = SceneGizmoMode.Select;
+                BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen,
+                    unitsPerPixel, mouse);
+                return true;
             }
         }
 
@@ -463,8 +470,9 @@ internal sealed partial class ImGuiEditorWindow
             var candidateUnits = MathF.Max(0.0001F,
                 candidateDepth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
             _curvePointIndex = candidate;
+            _curveActiveHandle = CurveHandleKind.Point;
             // 其他工具下点一下只切换当前控制点，拖动仍由对应工具的手柄负责
-            if (selectionMode)
+            if (_sceneGizmoMode == SceneGizmoMode.Select)
             {
                 BeginCurveDrag(CurveGizmoDragKind.Point, candidate, points[candidate],
                     CurveLocalToWorld(owner, points[candidate].Position), Vector3.Zero, candidateUnits, mouse);

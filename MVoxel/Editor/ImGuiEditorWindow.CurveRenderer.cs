@@ -215,6 +215,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.Selectable(label, selectedPoint))
             {
                 _curvePointIndex = index;
+                _curveActiveHandle = CurveHandleKind.Point;
             }
 
             if (ImGui.BeginPopupContextItem("##CurvePointContext"))

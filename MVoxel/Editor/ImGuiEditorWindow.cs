@@ -2073,7 +2073,9 @@ DockId=0x6A3C3007,0
             var position = columnTop + new Vector2(0F, i * (buttonSize + 3F));
             ImGui.SetCursorScreenPos(position);
             ImGui.PushID(i);
-            if (ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize)))
+            var scaleLocked = i == (int)SceneGizmoMode.Scale && IsCurveScaleToolLocked();
+            var clicked = ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize)) && !scaleLocked;
+            if (clicked)
             {
                 var mode = (SceneGizmoMode)i;
                 // Unity 行为：切回选择工具就取消选中；切到变换工具则记住它，之后选中对象自动用这个工具
@@ -2087,14 +2089,17 @@ DockId=0x6A3C3007,0
                 if (mode != SceneGizmoMode.Select) _lastTransformMode = mode;
             }
             var over = ImGui.IsItemHovered(); hovered |= over;
-            var color = ToPackedColor(i == (int)_sceneGizmoMode ? Color.FromArgb(230, EditorPalette.AccentSoft) :
-                over ? Color.FromArgb(220, EditorPalette.PanelHeader) : Color.FromArgb(190, EditorPalette.Window));
+            var color = scaleLocked ? ToPackedColor(Color.FromArgb(120, EditorPalette.Window)) :
+                ToPackedColor(i == (int)_sceneGizmoMode ? Color.FromArgb(230, EditorPalette.AccentSoft) :
+                    over ? Color.FromArgb(220, EditorPalette.PanelHeader) : Color.FromArgb(190, EditorPalette.Window));
             draw.AddRectFilled(position, position + new Vector2(buttonSize), color, 5F);
             draw.AddRect(position, position + new Vector2(buttonSize), ToPackedColor(EditorPalette.Border), 5F);
             var c = position + new Vector2(buttonSize * .5F);
             var ink = ToPackedColor(EditorPalette.Text);
-            DrawSceneToolIcon(draw, i, c, buttonSize, ink);
-            if (over)
+            DrawSceneToolIcon(draw, i, c, buttonSize, scaleLocked ? AlphaColor(ink, .35F) : ink);
+            if (over && scaleLocked)
+                ImGui.SetTooltip("当前选中的是切线或朝向手柄，没有缩放语义，缩放工具不可用");
+            else if (over)
                 ImGui.SetTooltip(i switch
                 {
                     0 => "选择：点击对象选中；再次点击退出选中",
