@@ -561,6 +561,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 renderWorksetBuild = DescribeWorksetBuild(_pipeline),
                 performanceAnalyzerVisible = IsPerformanceAnalyzerVisible,
                 centerTab = _centerTab,
+            sceneCameraDistance = _sceneCameraDistance,
+            sceneZoom = _sceneZoom,
+            sceneOrbitYawDegrees = _sceneOrbitYaw * 180F / MathF.PI,
+            sceneOrbitPitchDegrees = _sceneOrbitPitch * 180F / MathF.PI,
                 timeline = DescribeTimelineState(),
                 pendingDialog = DescribePendingDialog(),
                 videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
@@ -2524,8 +2528,8 @@ DockId=0x6A3C3007,0
             return false;
         }
 
-        if (ViewportInputPolicy.ShouldApplyWheelZoom(
-                io.MouseWheel, ImGui.IsMouseDown(ImGuiMouseButton.Right)) && !gizmoHovered)
+        // 右键环绕期间也允许滚轮缩放：手一直按着右键时不会突然失去缩放
+        if (ViewportInputPolicy.ShouldApplyWheelZoom(io.MouseWheel, false) && !gizmoHovered)
         {
             var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
             // 纯乘法缩放：距离按指数收缩/放大，可无限接近镜头但永不小于 0
