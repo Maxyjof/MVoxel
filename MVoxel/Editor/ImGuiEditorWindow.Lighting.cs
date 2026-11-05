@@ -45,9 +45,8 @@ internal sealed partial class ImGuiEditorWindow
 
         if (data.Shape is LightShape.Point or LightShape.Spot)
         {
-            BeginInspectorField("范围", "光照影响的最大距离，超出范围后衰减到零。");
             var range = data.Range;
-            if (ImGui.DragFloat("##LightRange", ref range, 0.25F, 0.01F, 100000F, "%.2f"))
+            if (InspectorDragFloatField("范围", "光照影响的最大距离，超出范围后衰减到零。", ref range, 0.25F, 0.01F, 100000F, "%.2f"))
             {
                 data = data with { Range = range };
                 changed = true;
@@ -56,17 +55,15 @@ internal sealed partial class ImGuiEditorWindow
 
         if (data.Shape == LightShape.Area)
         {
-            BeginInspectorField("宽度", "面积灯矩形面的宽度；对象朝向决定发光面方向，尺寸越大阴影越柔。");
             var areaWidth = data.AreaWidth;
-            if (ImGui.DragFloat("##LightAreaWidth", ref areaWidth, 0.25F, 0.1F, 4096F, "%.2f"))
+            if (InspectorDragFloatField("宽度", "面积灯矩形面的宽度；对象朝向决定发光面方向，尺寸越大阴影越柔。", ref areaWidth, 0.25F, 0.1F, 4096F, "%.2f"))
             {
                 data = data with { AreaWidth = areaWidth };
                 changed = true;
             }
 
-            BeginInspectorField("高度", "面积灯矩形面的高度。");
             var areaHeight = data.AreaHeight;
-            if (ImGui.DragFloat("##LightAreaHeight", ref areaHeight, 0.25F, 0.1F, 4096F, "%.2f"))
+            if (InspectorDragFloatField("高度", "面积灯矩形面的高度。", ref areaHeight, 0.25F, 0.1F, 4096F, "%.2f"))
             {
                 data = data with { AreaHeight = areaHeight };
                 changed = true;

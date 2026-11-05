@@ -4393,6 +4393,9 @@ DockId=0x6A3C3007,0
         SetStatus($"已恢复“{sceneObject.Name}”的{SceneComponentTypes.GetDisplayName(component)}组件默认值");
     }
 
+    /// <summary>标签拖动到编辑器边缘后需要补回的位移，避免下一帧把跳变算进拖动</summary>
+    private static float _inspectorLabelWrap;
+
     private static float BeginInspectorField(string label, string? tooltip = null, bool draggable = false)
     {
         var start = ImGui.GetCursorPosX();
@@ -4405,8 +4408,43 @@ DockId=0x6A3C3007,0
             var origin = ImGui.GetCursorScreenPos();
             ImGui.PushID(label);
             ImGui.InvisibleButton("##FieldLabelDrag", new Vector2(labelWidth, ImGui.GetFrameHeight()));
-            if (ImGui.IsItemActive()) dragPixels = ImGui.GetIO().MouseDelta.X;
             var active = ImGui.IsItemActive();
+            if (active)
+            {
+                // 任意方向都能拖：右/上增大，左/下减小；到编辑器边缘时环绕到另一侧继续拖
+                var io = ImGui.GetIO();
+                dragPixels = io.MouseDelta.X - io.MouseDelta.Y + _inspectorLabelWrap;
+                _inspectorLabelWrap = 0F;
+                var viewport = ImGui.GetMainViewport();
+                var minimum = viewport.Pos + new Vector2(1F, 1F);
+                var maximum = viewport.Pos + viewport.Size - new Vector2(2F, 2F);
+                if (io.MousePos.X <= minimum.X)
+                {
+                    dragPixels += maximum.X - minimum.X;
+                    io.MousePos = new Vector2(maximum.X, io.MousePos.Y);
+                    _inspectorLabelWrap = maximum.X - minimum.X;
+                }
+                else if (io.MousePos.X >= maximum.X)
+                {
+                    dragPixels -= maximum.X - minimum.X;
+                    io.MousePos = new Vector2(minimum.X, io.MousePos.Y);
+                    _inspectorLabelWrap = -(maximum.X - minimum.X);
+                }
+                else if (io.MousePos.Y <= minimum.Y)
+                {
+                    dragPixels -= maximum.Y - minimum.Y;
+                    io.MousePos = new Vector2(io.MousePos.X, maximum.Y);
+                    _inspectorLabelWrap = -(maximum.Y - minimum.Y);
+                }
+                else if (io.MousePos.Y >= maximum.Y)
+                {
+                    dragPixels += maximum.Y - minimum.Y;
+                    io.MousePos = new Vector2(io.MousePos.X, minimum.Y);
+                    _inspectorLabelWrap = maximum.Y - minimum.Y;
+                }
+
+                ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW);
+            }
             var draw = ImGui.GetWindowDrawList();
             draw.AddText(new Vector2(origin.X,
                     origin.Y + (ImGui.GetFrameHeight() - ImGui.GetTextLineHeight()) * .5F),
@@ -4448,6 +4486,10 @@ DockId=0x6A3C3007,0
 
         return changed;
     }
+
+    /// <summary>不带范围限制的浮点字段，只需要灵敏度的调用形式</summary>
+    private static bool InspectorDragFloatField(string label, string? tooltip, ref float value, float speed) =>
+        InspectorDragFloatField(label, tooltip, ref value, speed, -float.MaxValue, float.MaxValue);
 
     /// <summary>整数字段：标签与拖动框都能改值，拖动按整格步进</summary>
     private static bool InspectorDragIntField(string label, string? tooltip, ref int value, int minimum, int maximum)
@@ -4685,19 +4727,19 @@ DockId=0x6A3C3007,0
             ImGui.BeginDisabled();
             ImGui.Checkbox("##ProbeAutoBake", ref autoBake);
             ImGui.EndDisabled();
-            BeginInspectorField("偏移 X", "探针体积相对对象原点的偏移。视图Gizmo与此值同步。");
-            var offsetX = data.OffsetX; if (ImGui.DragFloat("##ProbeOffsetX", ref offsetX, 0.05F)) data = data with { OffsetX = offsetX };
-            BeginInspectorField("偏移 Y", null);
-            var offsetY = data.OffsetY; if (ImGui.DragFloat("##ProbeOffsetY", ref offsetY, 0.05F)) data = data with { OffsetY = offsetY };
-            BeginInspectorField("偏移 Z", null);
-            var offsetZ = data.OffsetZ; if (ImGui.DragFloat("##ProbeOffsetZ", ref offsetZ, 0.05F)) data = data with { OffsetZ = offsetZ };
+            var offsetX = data.OffsetX;
+            if (InspectorDragFloatField("偏移 X", "探针体积相对对象原点的偏移。视图Gizmo与此值同步。", ref offsetX, 0.05F)) data = data with { OffsetX = offsetX };
+            var offsetY = data.OffsetY;
+            if (InspectorDragFloatField("偏移 Y", null, ref offsetY, 0.05F)) data = data with { OffsetY = offsetY };
+            var offsetZ = data.OffsetZ;
+            if (InspectorDragFloatField("偏移 Z", null, ref offsetZ, 0.05F)) data = data with { OffsetZ = offsetZ };
             BeginInspectorField("尺寸 X/Y/Z", "探针体积范围和自动采样网格尺寸。");
             var probeSize = new System.Numerics.Vector3(data.SizeX, data.SizeY, data.SizeZ);
             var sizeChanged = ImGui.DragFloat3("##ProbeSize", ref probeSize, 0.1F);
             if (sizeChanged) data = data with { SizeX = probeSize.X, SizeY = probeSize.Y, SizeZ = probeSize.Z };
-            BeginInspectorField("探针密度", "每格体积内的探针密度，首期烘焙使用规则三维网格。");
             var density = data.Density;
-            if (ImGui.DragFloat("##ProbeDensity", ref density, 0.05F, 0.05F, 32F)) data = data with { Density = density };
+            if (InspectorDragFloatField("探针密度", "每格体积内的探针密度，首期烘焙使用规则三维网格。", ref density,
+                    0.05F, 0.05F, 32F)) data = data with { Density = density };
             if (!data.Equals(SceneComponentTypes.ReadProbeVolume(component)))
             {
                 SceneComponentTypes.WriteProbeVolume(component, data);

@@ -15,7 +15,11 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>拖拽开始时该轴的数值</summary>
     private double _axisDragStart;
     /// <summary>拖拽开始时的鼠标横坐标</summary>
-    private float _axisDragMouseX;
+    /// <summary>拖动累积的像素位移：右与上为正，左与下为负</summary>
+    private float _axisDragPixels;
+    /// <summary>环绕到另一侧后需要补回的位移，避免下一帧把跳变当成拖动</summary>
+    private float _axisDragWrap;
+    private Vector2 _axisDragWrapSize;
     /// <summary>拖拽过程中已经写回的预览值</summary>
     private double _axisDragPreview;
 
@@ -43,8 +47,38 @@ internal sealed partial class ImGuiEditorWindow
 
         if (dragging)
         {
-            //横向位移换算成离散步进，松手前就写回，并在本帧让输入框直接显示预览值
-            var steps = Math.Round((ImGui.GetIO().MousePos.X - _axisDragMouseX) / pixelsPerStep);
+            //任意方向都能拖：右/上增大，左/下减小；到编辑器边缘时环绕到另一侧继续拖
+            var io = ImGui.GetIO();
+            var delta = io.MouseDelta.X - io.MouseDelta.Y + _axisDragWrap;
+            _axisDragWrap = 0F;
+            _axisDragPixels += delta;
+            var viewport = ImGui.GetMainViewport();
+            var minimum = viewport.Pos + new Vector2(1F, 1F);
+            var maximum = viewport.Pos + viewport.Size - new Vector2(2F, 2F);
+            _axisDragWrapSize = maximum - minimum;
+            if (io.MousePos.X <= minimum.X)
+            {
+                io.MousePos = new Vector2(maximum.X, io.MousePos.Y);
+                _axisDragWrap = _axisDragWrapSize.X;
+            }
+            else if (io.MousePos.X >= maximum.X)
+            {
+                io.MousePos = new Vector2(minimum.X, io.MousePos.Y);
+                _axisDragWrap = -_axisDragWrapSize.X;
+            }
+            else if (io.MousePos.Y <= minimum.Y)
+            {
+                io.MousePos = new Vector2(io.MousePos.X, maximum.Y);
+                _axisDragWrap = -_axisDragWrapSize.Y;
+            }
+            else if (io.MousePos.Y >= maximum.Y)
+            {
+                io.MousePos = new Vector2(io.MousePos.X, minimum.Y);
+                _axisDragWrap = _axisDragWrapSize.Y;
+            }
+
+            //位移换算成离散步进，松手前就写回，并在本帧让输入框直接显示预览值
+            var steps = Math.Round(_axisDragPixels / pixelsPerStep);
             var preview = _axisDragStart + steps * dragStep;
             if (!SameTransformValue(preview, _axisDragPreview))
             {
@@ -112,7 +146,8 @@ internal sealed partial class ImGuiEditorWindow
         {
             _axisDragId = id;
             _axisDragStart = value;
-            _axisDragMouseX = ImGui.GetIO().MousePos.X;
+            _axisDragPixels = 0F;
+            _axisDragWrap = 0F;
             _axisDragPreview = value;
             dragging = true;
         }
@@ -131,8 +166,8 @@ internal sealed partial class ImGuiEditorWindow
         if (hovered)
         {
             ImGui.SetTooltip(key == "旋转"
-                ? $"按住左右拖动可直接调整角度，每 {pixelsPerStep:0} 像素 {dragStep:0} 度；输入后立即生效"
-                : $"按住左右拖动可直接调整数值，每 {pixelsPerStep:0} 像素 {dragStep:0.###}；输入后立即生效");
+                ? $"按住拖动可直接调整角度：右或上增大、左或下减小，每 {pixelsPerStep:0} 像素 {dragStep:0} 度；拖到编辑器边缘会从另一侧继续"
+                : $"按住拖动可直接调整数值：右或上增大、左或下减小，每 {pixelsPerStep:0} 像素 {dragStep:0.###}；拖到编辑器边缘会从另一侧继续");
         }
 
         ImGui.PopID();
