@@ -227,7 +227,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void RequestExit()
     {
-        if (IsAssetStage) { SetStatus("请先从资产编辑返回场景"); return; }
+        if (IsAssetStage) { RequestAssetStageExit(); return; }
         if (_projectOperation.IsRunning)
         {
             SetStatus("请等待当前操作完成，或先在进度窗口取消操作，再退出");
@@ -276,7 +276,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
-        if (IsAssetStage) { e.Cancel = true; SetStatus("请先从资产编辑返回场景"); return; }
+        if (IsAssetStage) { e.Cancel = true; RequestAssetStageExit(); return; }
         if (_projectOperation.IsRunning)
         {
             e.Cancel = true;
@@ -3466,7 +3466,8 @@ DockId=0x6A3C3007,0
                 _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenVoxelAssetStage, InstantiatePrefabAsset,
                     ExportVoxAsset, path => OpenGeneratorAsset(path), ExportQubicleAsset,
                     path => FindOpenAssetReferenceNames(path).Count,
-                    FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene);
+                    FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene,
+                    path => RequestTimelineSwitch(path));
                 break;
             case "渲染配置": DrawConfigurationPanel(); break;
             case "生成器": DrawGeneratorToolbar(); ImGui.Separator(); DrawGeneratorEditor(); ImGui.Separator(); DrawGeneratorParameters(); DrawGeneratorMessage(); break;
@@ -4907,7 +4908,8 @@ DockId=0x6A3C3007,0
         _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenVoxelAssetStage, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
             path => FindOpenAssetReferenceNames(path).Count,
-            FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene);
+            FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene,
+            path => RequestTimelineSwitch(path));
         var selectedAssetPath = _assetBrowser.SelectedAssetPath;
         if (!string.Equals(selectedAssetPath, _lastAssetSelectionPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -5788,6 +5790,7 @@ DockId=0x6A3C3007,0
         _activeSceneRelativePath = preloadedModels?.ScenePath ?? FindStartupSceneRelativePath(project);
         _assetBrowser.Reset();
         _assetBrowser.EditingAssetPath = string.Empty;
+        _assetStageCameras.Clear();
         _voxelModelReferenceCacheRoot = null;
         _voxelModelReferenceCache = Array.Empty<string>();
         _lastAssetSelectionPath = string.Empty;
@@ -5878,6 +5881,7 @@ DockId=0x6A3C3007,0
         _renderCameraInitialFramePending = true;
         _assetBrowser.Reset();
         _assetBrowser.EditingAssetPath = string.Empty;
+        _assetStageCameras.Clear();
         _lastAssetSelectionPath = string.Empty;
         _pluginCommandResults.Clear();
         _pluginCommandInputs.Clear();
@@ -5967,7 +5971,7 @@ DockId=0x6A3C3007,0
 
     private void RequestCloseProject()
     {
-        if (IsAssetStage) { SetStatus("请先从资产编辑返回场景"); return; }
+        if (IsAssetStage) { RequestAssetStageExit(); return; }
         if (_project is not null && TimelineIsDirty)
         {
             ConfirmTimelineChangesBefore(RequestCloseProject);

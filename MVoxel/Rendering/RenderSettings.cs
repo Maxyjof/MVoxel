@@ -353,6 +353,8 @@ public sealed class RenderSettings
     public float WeatherStormIntensity;
     public float WeatherHeatHaze;
     public float WeatherLightningFrequency;
+    public int WeatherSeed;
+    public float WeatherViewDistance = 128F;
 
     /// <summary>
     /// 近处淡入距离，0 关闭，用于模型贴脸时的柔化
@@ -758,6 +760,8 @@ public sealed class RenderSettings
         WeatherStormIntensity = Math.Clamp(WeatherStormIntensity, 0F, 1F);
         WeatherHeatHaze = Math.Clamp(WeatherHeatHaze, 0F, 1F);
         WeatherLightningFrequency = Math.Clamp(WeatherLightningFrequency, 0F, 4F);
+        WeatherSeed = Math.Clamp(WeatherSeed, 0, 65535);
+        WeatherViewDistance = Math.Clamp(WeatherViewDistance, 1F, 256F);
         NearFade = Math.Clamp(NearFade, 0F, 512F);
         GroundFade = Math.Clamp(GroundFade, 0F, 4096F);
         Exposure = Math.Clamp(Exposure, -6F, 6F);
@@ -900,6 +904,7 @@ public sealed class RenderSettings
         WeatherStormIntensity = Safe(WeatherStormIntensity, 0F);
         WeatherHeatHaze = Safe(WeatherHeatHaze, 0F);
         WeatherLightningFrequency = Safe(WeatherLightningFrequency, 0F);
+        WeatherViewDistance = Safe(WeatherViewDistance, 128F);
         WaterColor = SafeChannel(WaterColor, new Vector3(0.08F, 0.32F, 0.42F));
         NearFade = Safe(NearFade, 0F);
         GroundFade = Safe(GroundFade, 0F);

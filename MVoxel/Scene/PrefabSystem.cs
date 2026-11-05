@@ -62,6 +62,7 @@ public static class PrefabSystem
         {
             AssetPath = NormalizePath(assetPath),
             SourceId = asset.PrefabId,
+            SourceRevision = asset.Revision,
             Links = links,
         };
         return root;
@@ -159,12 +160,12 @@ public static class PrefabSystem
     public static IReadOnlyList<SceneObject> CollectInstanceRoots(SceneDocument document, string assetPath)
     {
         ArgumentNullException.ThrowIfNull(document);
-        var normalized = NormalizePath(assetPath);
+        var normalized = ComparableAssetPath(assetPath);
         var byId = document.Objects.ToDictionary(item => item.Id);
         var result = new List<SceneObject>();
         foreach (var item in document.Objects)
         {
-            if (item.Prefab is null || !string.Equals(item.Prefab.AssetPath, normalized, StringComparison.OrdinalIgnoreCase))
+            if (item.Prefab is null || !string.Equals(ComparableAssetPath(item.Prefab.AssetPath), normalized, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -238,6 +239,7 @@ public static class PrefabSystem
                 Name = source.Name,
                 Visible = source.Visible,
                 Locked = source.Locked,
+                LayerIndex = source.LayerIndex,
                 Transform = CloneTransform(source.Transform),
                 Components = [],
             };
@@ -247,6 +249,7 @@ public static class PrefabSystem
                 {
                     TypeId = component.TypeId,
                     SchemaVersion = component.SchemaVersion,
+                    Enabled = component.Enabled,
                     Data = component.Data.ValueKind == JsonValueKind.Undefined ? component.Data : component.Data.Clone(),
                     OwnerPluginId = component.OwnerPluginId,
                 });
@@ -260,6 +263,7 @@ public static class PrefabSystem
                 {
                     AssetPath = NormalizePath(assetPath),
                     SourceId = source.Id,
+                    SourceRevision = asset.Revision,
                     Links = new Dictionary<string, string> { [clone.Id.Value.ToString()] = source.Id.Value.ToString() },
                 };
                 newRoot = clone;
@@ -270,6 +274,7 @@ public static class PrefabSystem
                 {
                     AssetPath = NormalizePath(source.Prefab.AssetPath),
                     SourceId = source.Prefab.SourceId,
+                    SourceRevision = source.Prefab.SourceRevision,
                     Links = new Dictionary<string, string>(source.Prefab.Links, StringComparer.Ordinal),
                 };
             }
@@ -328,6 +333,7 @@ public static class PrefabSystem
                 Name = source.Name,
                 Visible = source.Visible,
                 Locked = source.Locked,
+                LayerIndex = source.LayerIndex,
                 Transform = CloneTransform(source.Transform),
                 ParentId = source.Id == root.Id ? null : source.ParentId,
                 Prefab = source.Id == root.Id ? null : source.Prefab,
@@ -338,6 +344,7 @@ public static class PrefabSystem
                 {
                     TypeId = component.TypeId,
                     SchemaVersion = component.SchemaVersion,
+                    Enabled = component.Enabled,
                     Data = component.Data.ValueKind == JsonValueKind.Undefined ? component.Data : component.Data.Clone(),
                     OwnerPluginId = component.OwnerPluginId,
                 });
@@ -398,6 +405,7 @@ public static class PrefabSystem
         var variant = ApplyInstanceToAsset(document, instanceRoot, name);
         variant.BaseAssetPath = instanceRoot.Prefab.AssetPath;
         variant.BasePrefabId = baseAsset.PrefabId;
+        variant.BaseRevision = baseAsset.Revision;
         variant.BaseLinks = new Dictionary<string, string>(instanceRoot.Prefab.Links, StringComparer.Ordinal);
         foreach (var item in PrefabOverrides.Compute(document, instanceRoot, baseAsset))
         {
@@ -428,7 +436,8 @@ public static class PrefabSystem
         ArgumentNullException.ThrowIfNull(variant);
         ArgumentNullException.ThrowIfNull(baseAsset);
         var conflicts = new List<string>();
-        var baseChanged = variant.BasePrefabId != StableId.Empty && baseAsset.PrefabId != variant.BasePrefabId;
+        var baseChanged = variant.BasePrefabId != StableId.Empty &&
+            (baseAsset.PrefabId != variant.BasePrefabId || baseAsset.Revision != variant.BaseRevision);
         if (variant.BaseAssetPath.Length == 0 ||
             variant.BasePrefabId == StableId.Empty ||
             !baseChanged)
@@ -488,7 +497,12 @@ public static class PrefabSystem
         }
 
         // 基础侧新增对象并入变体树：父级优先映射到变体对象，否则挂到变体根
-        var rootId = variant.Objects[0].Id;
+        var rootId = variant.PrefabId;
+        var existingVariantIds = variant.Objects.Select(item => item.Id).ToHashSet();
+        var sourceToVariant = new Dictionary<StableId, StableId>();
+        foreach (var (variantKey, baseKey) in variant.BaseLinks)
+            if (StableId.TryParse(variantKey, out var variantId) && existingVariantIds.Contains(variantId) &&
+                StableId.TryParse(baseKey, out var baseId)) sourceToVariant[baseId] = variantId;
         var newBaseIds = baseAsset.Objects
             .Select(item => item.Id)
             .Where(id => !linkedBaseIds.Contains(id))
@@ -502,14 +516,15 @@ public static class PrefabSystem
             }
 
             var clone = CloneObject(baseObject);
-            clone.Id = StableId.New();
+            var identity = System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes($"mvoxel-variant:{variant.PrefabId}:{baseObject.Id}"));
+            clone.Id = new StableId(new Guid(identity.AsSpan(0, 16)));
+            if (!existingVariantIds.Add(clone.Id)) throw new InvalidDataException("变体继承对象的身份冲突");
             clone.Prefab = null;
-            clone.ParentId = baseObject.ParentId is not null &&
-                baseById.TryGetValue(baseObject.ParentId.Value, out var baseParent) &&
-                addedLinks.TryGetValue(baseParent.Id.Value.ToString(), out var mappedParent)
-                ? StableId.Parse(mappedParent)
-                : rootId;
+            clone.ParentId = baseObject.ParentId is { } parent && sourceToVariant.TryGetValue(parent, out var mappedParent)
+                ? mappedParent : rootId;
             merged.Add(clone);
+            sourceToVariant[baseObject.Id] = clone.Id;
             addedLinks[clone.Id.Value.ToString()] = baseObject.Id.Value.ToString();
         }
 
@@ -517,6 +532,9 @@ public static class PrefabSystem
         {
             Name = variant.Name,
             PrefabId = variant.PrefabId,
+            Revision = variant.Revision,
+            Revisions = variant.Revisions,
+            BaseRevision = variant.BaseRevision,
             BaseAssetPath = variant.BaseAssetPath,
             BasePrefabId = variant.BasePrefabId,
             BaseLinks = new Dictionary<string, string>(variant.BaseLinks, StringComparer.Ordinal),
@@ -549,6 +567,7 @@ public static class PrefabSystem
         variant.Objects = effective.Objects;
         variant.BaseLinks = new Dictionary<string, string>(effective.BaseLinks, StringComparer.Ordinal);
         variant.BasePrefabId = baseAsset.PrefabId;
+        variant.BaseRevision = baseAsset.Revision;
         PrefabSerializer.Save(path, variant);
         return conflicts;
     }
@@ -619,6 +638,12 @@ public static class PrefabSystem
     /// <summary>
     /// 统一资产路径分隔符，保证实例与资产按同一路径匹配
     /// </summary>
+    private static string ComparableAssetPath(string path)
+    {
+        var value = NormalizePath(path).TrimStart('/');
+        return value.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) ? value[7..] : value;
+    }
+
     private static string NormalizePath(string path)
     {
         return path.Replace('\\', '/');

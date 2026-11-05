@@ -72,10 +72,10 @@ public static class PrefabOverrides
             return result;
         }
 
-        if (prefab.SourceId != asset.PrefabId)
+        if (prefab.SourceId != asset.PrefabId || prefab.SourceRevision != asset.Revision)
         {
             result.Add(new Override(instanceRoot.Id, instanceRoot.Name, Kind.SourceDrift,
-                "来源资产已被重新应用或外部修改，实例尚未同步"));
+                "来源资产身份或修订已变化，实例尚未同步"));
         }
 
         var subtree = PrefabSystem.CollectSubtree(document, instanceRoot);

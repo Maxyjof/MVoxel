@@ -63,6 +63,8 @@ public sealed class SceneEnvironmentSettings
     public float WeatherStormIntensity;
     public float WeatherHeatHaze;
     public float WeatherLightningFrequency;
+    public int WeatherSeed;
+    public float WeatherViewDistance = 128F;
     public float NearFade;
 
     public void Normalize()
@@ -101,6 +103,8 @@ public sealed class SceneEnvironmentSettings
         WeatherStormIntensity = Clamp(WeatherStormIntensity, 0F, 1F);
         WeatherHeatHaze = Clamp(WeatherHeatHaze, 0F, 1F);
         WeatherLightningFrequency = Clamp(WeatherLightningFrequency, 0F, 4F);
+        WeatherSeed = Math.Clamp(WeatherSeed, 0, 65535);
+        WeatherViewDistance = Clamp(WeatherViewDistance, 1F, 256F);
         NearFade = Clamp(NearFade, 0F, 512F);
         SceneBackgroundColor = Color(SceneBackgroundColor, new(.025F, .035F, .05F));
         GroundColor = Color(GroundColor, Vector3.One);
@@ -157,6 +161,8 @@ public sealed class SceneEnvironmentSettings
         settings.WeatherStormIntensity = WeatherStormIntensity;
         settings.WeatherHeatHaze = WeatherHeatHaze;
         settings.WeatherLightningFrequency = WeatherLightningFrequency;
+        settings.WeatherSeed = WeatherSeed;
+        settings.WeatherViewDistance = WeatherViewDistance;
         settings.NearFade = NearFade;
     }
 
@@ -207,6 +213,8 @@ public sealed class SceneEnvironmentSettings
         WeatherStormIntensity = settings.WeatherStormIntensity;
         WeatherHeatHaze = settings.WeatherHeatHaze;
         WeatherLightningFrequency = settings.WeatherLightningFrequency;
+        WeatherSeed = settings.WeatherSeed;
+        WeatherViewDistance = settings.WeatherViewDistance;
         NearFade = settings.NearFade;
         Normalize();
     }

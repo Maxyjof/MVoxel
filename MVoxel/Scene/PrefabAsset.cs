@@ -28,6 +28,12 @@ public sealed class PrefabAsset
     /// </summary>
     public List<SceneObject> Objects { get; set; } = [];
 
+    /// <summary>资产修订号；用于识别场景实例尚未应用的资产变更。</summary>
+    public long Revision { get; set; }
+
+    /// <summary>旧版本快照，用于场景未打开时保留实例覆盖的合并基线。</summary>
+    public List<PrefabRevision> Revisions { get; set; } = [];
+
     /// <summary>
     /// 变体基础资产的相对路径；空字符串表示普通预制体而非变体
     /// </summary>
@@ -37,6 +43,9 @@ public sealed class PrefabAsset
     /// 创建变体时基础资产的 PrefabId，用于判断基础是否已更新
     /// </summary>
     public StableId BasePrefabId { get; set; } = StableId.Empty;
+
+    /// <summary>变体上次继承的基础资产修订号。</summary>
+    public long BaseRevision { get; set; }
 
     /// <summary>
     /// 变体对象 ID → 基础资产来源对象 ID 的映射，覆盖整棵变体子树
@@ -48,6 +57,14 @@ public sealed class PrefabAsset
     /// 拉取基础更新时这些类型保留变体值，其余类型继承基础最新内容
     /// </summary>
     public Dictionary<string, string> OverrideKinds { get; set; } = new(StringComparer.Ordinal);
+}
+
+/// <summary>预制体某个已保存修订的对象快照。</summary>
+public sealed class PrefabRevision
+{
+    public long Revision { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public List<SceneObject> Objects { get; set; } = [];
 }
 
 /// <summary>

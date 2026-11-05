@@ -48,6 +48,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private long _runtimeMaterialRefreshAt;
 
+    private readonly Dictionary<string, (long Length, long WriteTicks, MaterialExchangeMetadata Materials)> _nativeMaterialCache = new(StringComparer.OrdinalIgnoreCase);
+
     private void RefreshRuntimeMaterialTable()
     {
         var now = Environment.TickCount64;
@@ -57,8 +59,42 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         _runtimeMaterialRefreshAt = now;
+        var embedded = _voxelStage?.Materials.Definitions.ToDictionary(
+            pair => EmbeddedMaterialPrefix + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(pair.Key)),
+            pair => pair.Value, StringComparer.Ordinal) ?? new Dictionary<string, MaterialAsset>(StringComparer.Ordinal);
+        var defaults = new Dictionary<StableId, List<MaterialSlotBinding>>();
+        if (_voxelStage is null && _project is not null && _sceneDocument is not null)
+        {
+            foreach (var (objectId, key) in GetObjectModelLoadKeys(_project, _sceneDocument))
+            {
+                try
+                {
+                    var file = new FileInfo(key.Path);
+                    if (!_nativeMaterialCache.TryGetValue(key.Path, out var cached) ||
+                        cached.Length != file.Length || cached.WriteTicks != file.LastWriteTimeUtc.Ticks)
+                    {
+                        cached = (file.Length, file.LastWriteTimeUtc.Ticks, key.SourceSegment.Length == 0
+                            ? LargeWorldFormat.ReadMaterials(key.Path) : LargeWorldFormat.ReadObjects(key.Path).Materials);
+                        _nativeMaterialCache[key.Path] = cached;
+                    }
+                    var sourceBindings = key.SourceSegment.Length != 0 &&
+                        cached.Materials.ObjectBindings.TryGetValue(key.SourceSegment, out var objectBindings)
+                        ? objectBindings : cached.Materials.Bindings;
+                    foreach (var (slot, id) in sourceBindings)
+                    {
+                        if (!cached.Materials.Definitions.TryGetValue(id, out var material)) continue;
+                        var virtualPath = EmbeddedMaterialPrefix + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(key.Path + "\0" + id));
+                        embedded[virtualPath] = material;
+                        if (!defaults.TryGetValue(objectId, out var bindings)) defaults[objectId] = bindings = [];
+                        bindings.Add(new MaterialSlotBinding(slot, virtualPath));
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+                { _nativeMaterialCache.Remove(key.Path); }
+            }
+        }
         ApplyRuntimeMaterialMap(BuildRuntimeMaterialMap(_sceneDocument, _brushMaterials,
-            _project?.AssetsPath ?? string.Empty));
+            _project?.AssetsPath ?? string.Empty, embedded, defaults));
     }
 
     /// <summary>
@@ -69,7 +105,9 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="assetsPath">项目资产根目录</param>
     /// <returns>槽位映射、运行时材质表与内容指纹</returns>
     private static RuntimeMaterialMap BuildRuntimeMaterialMap(SceneDocument? scene,
-        IReadOnlyList<MaterialAsset> materials, string assetsPath)
+        IReadOnlyList<MaterialAsset> materials, string assetsPath,
+        IReadOnlyDictionary<string, MaterialAsset>? embeddedMaterials = null,
+        IReadOnlyDictionary<StableId, List<MaterialSlotBinding>>? modelDefaults = null)
     {
         var byPath = materials.ToDictionary(item => Path.GetFullPath(item.SourcePath), StringComparer.OrdinalIgnoreCase);
         var runtimeByPath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -81,12 +119,23 @@ internal sealed partial class ImGuiEditorWindow
             if (component is null) continue;
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var localSlots = new Dictionary<int, int>();
-            foreach (var binding in data.MaterialSlots ?? [])
+            var explicitBindings = data.MaterialSlots ?? [];
+            var explicitSlots = explicitBindings.Select(binding => binding.Slot).ToHashSet();
+            var defaults = modelDefaults is not null && modelDefaults.TryGetValue(sceneObject.Id, out var modelBindings)
+                ? modelBindings.Where(binding => !explicitSlots.Contains(binding.Slot)) : [];
+            foreach (var binding in explicitBindings.Concat(defaults))
             {
                 if (string.IsNullOrEmpty(assetsPath)) continue;
-                var assetPath = Path.GetFullPath(Path.Combine(assetsPath,
+                var isEmbedded = binding.MaterialAsset.StartsWith(EmbeddedMaterialPrefix, StringComparison.Ordinal);
+                var assetPath = isEmbedded ? binding.MaterialAsset : Path.GetFullPath(Path.Combine(assetsPath,
                     binding.MaterialAsset.Replace('/', Path.DirectorySeparatorChar)));
-                if (!byPath.TryGetValue(assetPath, out var material))
+                var found = isEmbedded
+                    ? embeddedMaterials is not null && embeddedMaterials.TryGetValue(assetPath, out _)
+                    : byPath.ContainsKey(assetPath);
+                var material = isEmbedded
+                    ? embeddedMaterials?.GetValueOrDefault(assetPath)
+                    : byPath.GetValueOrDefault(assetPath);
+                if (!found || material is null)
                 {
                     const string missingKey = "__mv_missing_material__";
                     if (!runtimeByPath.TryGetValue(missingKey, out var missingSlot))
@@ -112,7 +161,9 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var signature = string.Join("|", runtimeMaterials.OrderBy(item => item.Key)
-            .Select(item => $"{item.Key}:{item.Value.SourcePath}:{File.GetLastWriteTimeUtc(item.Value.SourcePath).Ticks}")) +
+            .Select(item => embeddedMaterials is not null && embeddedMaterials.Values.Any(value => ReferenceEquals(value, item.Value))
+                ? $"{item.Key}:embedded:{System.Text.Json.JsonSerializer.Serialize(item.Value)}"
+                : $"{item.Key}:{item.Value.SourcePath}:{File.GetLastWriteTimeUtc(item.Value.SourcePath).Ticks}")) +
             ";" + string.Join("|", objectSlots.OrderBy(item => item.Key.Value)
                 .SelectMany(item => item.Value.OrderBy(slot => slot.Key)
                     .Select(slot => $"{item.Key}:{slot.Key}>{slot.Value}")));
@@ -168,10 +219,17 @@ internal sealed partial class ImGuiEditorWindow
 
     private bool DeferProjectReplacement(Action continuation)
     {
+        // 切换项目前必须先离开资产编辑空间，这里直接给出保存或放弃的出口
+        if (IsAssetStage) { RequestAssetStageExit(); return true; }
+        if (!_allowProjectReplacement && _project is not null && TimelineIsDirty)
+        {
+            ConfirmTimelineChangesBefore(continuation);
+            return true;
+        }
         if (_allowProjectReplacement || _project is null || (!_sceneDocumentDirty && !_generatorDirty)) return false;
         _afterProjectClose = continuation;
         _projectPathDialogMode = 0;
-        _closeProjectDialogRequested = true;
+        RequestCloseProjectDialog();
         return true;
     }
 
@@ -286,10 +344,22 @@ internal sealed partial class ImGuiEditorWindow
         return binding is { } selected ? FindMaterialAsset(selected.MaterialAsset) : null;
     }
 
-    private MaterialAsset? FindMaterialAsset(string? relativePath) => string.IsNullOrWhiteSpace(relativePath) || _project is null
-        ? null : _brushMaterials.FirstOrDefault(item =>
+    private MaterialAsset? FindMaterialAsset(string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || _project is null) return null;
+        if (relativePath.StartsWith(EmbeddedMaterialPrefix, StringComparison.Ordinal))
+        {
+            try
+            {
+                var id = System.Text.Encoding.UTF8.GetString(Convert.FromHexString(relativePath[EmbeddedMaterialPrefix.Length..]));
+                return _voxelStage?.Materials.Definitions.GetValueOrDefault(id);
+            }
+            catch (FormatException) { return null; }
+        }
+        return _brushMaterials.FirstOrDefault(item =>
             string.Equals(Path.GetRelativePath(_project.AssetsPath, item.SourcePath).Replace('\\', '/'),
                 relativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase));
+    }
 
     private void SaveModelMaterialBindings(SceneObject modelObject, ComponentRecord component,
         VoxelModelComponentData data, Dictionary<int, MaterialSlotBinding> bindings)

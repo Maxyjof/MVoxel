@@ -111,7 +111,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("本模型的本地槽位，仅用于新方块；局部改材质请擦除后重绘。切换模型后画笔恢复槽0。");
         selected = FindCurrentBrushMaterial();
-        if (selected is not null && ImGui.Button("打开材质检查器")) OpenMaterialInspector(selected);
+        if (selected is not null && !IsEmbeddedStageMaterial(selected) && ImGui.Button("打开材质检查器")) OpenMaterialInspector(selected);
     }
 
     private void DrawModelMaterialSlotsCore(SceneObject modelObject)
@@ -159,7 +159,7 @@ internal sealed partial class ImGuiEditorWindow
             material = bindings.TryGetValue(slot, out var current) ? FindMaterialAsset(current.MaterialAsset) : null;
             if (material is not null)
             {
-                if (ImGui.SmallButton("打开材质检查器")) OpenMaterialInspector(material);
+                if (!IsEmbeddedStageMaterial(material) && ImGui.SmallButton("打开材质检查器")) OpenMaterialInspector(material);
                 ContinueMaterialControl(MaterialButtonWidth("删除槽位"));
             }
             ImGui.BeginDisabled(!bindings.ContainsKey(slot));
@@ -247,6 +247,9 @@ internal sealed partial class ImGuiEditorWindow
 
     private string RelativeMaterialAssetPath(MaterialAsset material) =>
         Path.GetRelativePath(_project!.AssetsPath, material.SourcePath).Replace('\\', '/');
+
+    private bool IsEmbeddedStageMaterial(MaterialAsset material) =>
+        _voxelStage is not null && _voxelStage.Materials.Definitions.Values.Any(value => ReferenceEquals(value, material));
 
     private void OpenMaterialInspector(MaterialAsset material)
     {

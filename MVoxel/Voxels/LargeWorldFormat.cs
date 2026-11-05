@@ -50,7 +50,8 @@ public static class LargeWorldFormat
         var startStructureStamp = world.StructureStamp;
         if (!world.TryGetBounds(out var minimum, out var maximum))
         {
-            throw new InvalidOperationException("不能保存空的大世界模型");
+            WriteEmpty(path, materials);
+            return;
         }
 
         var width = checked((int)(maximum.X - minimum.X + 1));
@@ -105,42 +106,141 @@ public static class LargeWorldFormat
     public static void WriteObjects(string path, IReadOnlyList<NativeObjectSegment> objects,
         MaterialExchangeMetadata? materials = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ValidateObjectSegments(objects);
+        var versions = objects.Select(segment => segment.World.ContentVersion).ToArray();
+        var metadata = materials is null ? Array.Empty<byte>() : MaterialExchangeCodec.Encode(materials);
+        var temporaryPath = AtomicFile.BeginTemporary(path);
+        try
+        {
+            var writtenHash = WriteObjectDocument(temporaryPath, objects, metadata);
+            VerifyTemporary(temporaryPath, writtenHash);
+            for (var index = 0; index < objects.Count; index++)
+            {
+                if (objects[index].World.ContentVersion != versions[index])
+                    throw new InvalidOperationException("写入对象片段期间体素发生变化，请重新保存");
+            }
+            AtomicFile.CommitTemporary(temporaryPath, path);
+        }
+        finally
+        {
+            AtomicFile.DiscardTemporary(temporaryPath);
+        }
+    }
+
+    /// <summary>
+    /// 校验片段具备写出后可被自身读回的条件：写出侧与读取侧的标识、名称、
+    /// 体素数量限制保持一致，避免产出读取阶段才报错的资产
+    /// </summary>
+    private static void ValidateObjectSegments(IReadOnlyList<NativeObjectSegment> objects)
+    {
         ArgumentNullException.ThrowIfNull(objects);
         if (objects.Count == 0 || objects.Count > MaximumObjectSegments)
             throw new ArgumentException("对象片段数量无效", nameof(objects));
-        var metadata = materials is null ? Array.Empty<byte>() : MaterialExchangeCodec.Encode(materials);
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
-        writer.Write(Magic); writer.Write(ObjectFormatVersion); writer.Write(objects.Count);
+        var objectIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var segment in objects)
         {
-            if (string.IsNullOrWhiteSpace(segment.ObjectId) || segment.World is null)
-                throw new InvalidDataException("对象片段缺少标识或体素世界");
-            var idBytes = System.Text.Encoding.UTF8.GetBytes(segment.ObjectId);
-            if (idBytes.Length > MaximumObjectIdBytes) throw new InvalidDataException("对象标识过长");
-            var nameBytes = System.Text.Encoding.UTF8.GetBytes(segment.Name ?? string.Empty);
-            if (nameBytes.Length > MaximumObjectNameBytes) throw new InvalidDataException("对象名称过长");
-            writer.Write(segment.ObjectId);
-            writer.Write(nameBytes.Length); writer.Write(nameBytes);
-            writer.Write(segment.Origin.X); writer.Write(segment.Origin.Y); writer.Write(segment.Origin.Z);
-            writer.Write(segment.World.OccupiedVoxelCount);
-            foreach (var (coordinate, value) in segment.World.EnumerateOccupied())
-            {
-                writer.Write(coordinate.X); writer.Write(coordinate.Y); writer.Write(coordinate.Z);
-                writer.Write(value.Color.R); writer.Write(value.Color.G); writer.Write(value.Color.B); writer.Write(value.Color.A);
-                writer.Write(value.MaterialSlot); writer.Write(value.Flags);
-            }
+            if (segment is null || segment.World is null)
+                throw new ArgumentException("对象片段缺少体素世界", nameof(objects));
+            if (string.IsNullOrWhiteSpace(segment.ObjectId))
+                throw new ArgumentException("对象片段缺少标识", nameof(objects));
+            if (System.Text.Encoding.UTF8.GetByteCount(segment.ObjectId) > MaximumObjectIdBytes)
+                throw new ArgumentException("对象标识过长", nameof(objects));
+            if (!objectIds.Add(segment.ObjectId))
+                throw new ArgumentException($"对象片段标识重复：{segment.ObjectId}", nameof(objects));
+            if (System.Text.Encoding.UTF8.GetByteCount(segment.Name ?? string.Empty) > MaximumObjectNameBytes)
+                throw new ArgumentException("对象名称过长", nameof(objects));
+            if (segment.World.OccupiedVoxelCount > MaximumVoxelRecords)
+                throw new ArgumentException("对象片段体素数量超出格式上限", nameof(objects));
         }
-        writer.Write(metadata.Length); writer.Write(metadata);
-        writer.Flush();
-        AtomicFile.WriteBytes(path, stream.ToArray());
+    }
+
+    /// <summary>把对象片段写入临时文件，返回已落盘内容的SHA256哈希</summary>
+    private static byte[] WriteObjectDocument(string temporaryPath, IReadOnlyList<NativeObjectSegment> objects,
+        byte[] metadata)
+    {
+        using var hash = System.Security.Cryptography.SHA256.Create();
+        byte[] writtenHash;
+        using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
+        using (var hashed = new System.Security.Cryptography.CryptoStream(stream, hash,
+                   System.Security.Cryptography.CryptoStreamMode.Write, leaveOpen: true))
+        using (var writer = new BinaryWriter(hashed, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(Magic);
+            writer.Write(ObjectFormatVersion);
+            writer.Write(objects.Count);
+            foreach (var segment in objects)
+            {
+                var nameBytes = System.Text.Encoding.UTF8.GetBytes(segment.Name ?? string.Empty);
+                writer.Write(segment.ObjectId);
+                writer.Write(nameBytes.Length);
+                writer.Write(nameBytes);
+                writer.Write(segment.Origin.X);
+                writer.Write(segment.Origin.Y);
+                writer.Write(segment.Origin.Z);
+                var version = segment.World.ContentVersion;
+                var count = segment.World.OccupiedVoxelCount;
+                writer.Write(count);
+                var written = 0;
+                foreach (var (coordinate, value) in segment.World.EnumerateOccupied())
+                {
+                    writer.Write(coordinate.X);
+                    writer.Write(coordinate.Y);
+                    writer.Write(coordinate.Z);
+                    writer.Write(value.Color.R);
+                    writer.Write(value.Color.G);
+                    writer.Write(value.Color.B);
+                    writer.Write(value.Color.A);
+                    writer.Write(value.MaterialSlot);
+                    writer.Write(value.Flags);
+                    written++;
+                }
+                if (written != count || version != segment.World.ContentVersion)
+                    throw new InvalidOperationException("写入对象片段期间体素发生变化，请重新保存");
+            }
+            writer.Write(metadata.Length);
+            writer.Write(metadata);
+            writer.Flush();
+            hashed.FlushFinalBlock();
+            writtenHash = hash.Hash!;
+            stream.Flush(flushToDisk: true);
+        }
+        return writtenHash;
+    }
+
+    /// <summary>回读临时文件重算哈希，与写入结果不一致说明磁盘内容不可信</summary>
+    private static void VerifyTemporary(string temporaryPath, byte[] expectedHash)
+    {
+        using var verify = new FileStream(temporaryPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+        if (!System.Security.Cryptography.SHA256.HashData(verify).SequenceEqual(expectedHash))
+            throw new IOException("对象片段写入校验失败，原资产未替换");
+    }
+
+    /// <summary>判断文件是否为多对象原生文档。</summary>
+    public static bool IsObjectDocument(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var reader = new BinaryReader(stream);
+        return stream.Length >= 8 && reader.ReadUInt32() == Magic && reader.ReadInt32() == ObjectFormatVersion;
+    }
+
+    /// <summary>合成多对象体素以供预览；重叠位置由后面的对象覆盖。</summary>
+    public static VoxelWorld ReadObjectPreview(string path)
+    {
+        var document = ReadObjects(path);
+        var world = new VoxelWorld();
+        var writer = world.CreateBulkWriter();
+        foreach (var segment in document.Objects)
+            foreach (var (coordinate, value) in segment.World.EnumerateOccupied()) writer.Set(coordinate, value);
+        return world;
     }
 
     /// <summary>读取v4对象片段文件；v2/v3请继续使用ReadDocument</summary>
     public static NativeObjectDocument ReadObjects(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        return ReadObjects(File.ReadAllBytes(path));
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
+        return ReadObjects(stream);
     }
 
     /// <summary>从字节读取v4对象片段文件</summary>
@@ -148,25 +248,36 @@ public static class LargeWorldFormat
     {
         ArgumentNullException.ThrowIfNull(bytes);
         using var stream = new MemoryStream(bytes, writable: false);
+        return ReadObjects(stream);
+    }
+
+    private static NativeObjectDocument ReadObjects(Stream stream)
+    {
+        if (stream.Length < 12)
+            throw new InvalidDataException("对象片段文件头不完整");
         using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
         if (reader.ReadUInt32() != Magic || reader.ReadInt32() != ObjectFormatVersion)
             throw new InvalidDataException("不是MVoxel v4对象片段文件");
         var count = reader.ReadInt32();
         if (count < 1 || count > MaximumObjectSegments) throw new InvalidDataException("对象片段数量无效");
         var segments = new List<NativeObjectSegment>(count);
+        var objectIds = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < count; index++)
         {
-            var id = reader.ReadString();
-            var idBytes = System.Text.Encoding.UTF8.GetByteCount(id);
-            if (string.IsNullOrWhiteSpace(id) || idBytes > MaximumObjectIdBytes)
+            var idLength = ReadIdentifierLength(reader);
+            if (idLength < 1 || idLength > MaximumObjectIdBytes || idLength > stream.Length - stream.Position)
                 throw new InvalidDataException("对象标识无效或过长");
+            var id = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(idLength));
+            if (string.IsNullOrWhiteSpace(id) || !objectIds.Add(id))
+                throw new InvalidDataException("对象标识为空或重复");
             var nameLength = reader.ReadInt32();
             if (nameLength < 0 || nameLength > MaximumObjectNameBytes || nameLength > stream.Length - stream.Position)
                 throw new InvalidDataException("对象名称长度无效");
             var name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLength));
             var origin = new VoxelCoord64(reader.ReadInt64(), reader.ReadInt64(), reader.ReadInt64());
             var voxelCount = reader.ReadInt32();
-            if (voxelCount < 0 || voxelCount > MaximumVoxelRecords) throw new InvalidDataException("对象体素数量无效");
+            if (voxelCount < 0 || voxelCount > MaximumVoxelRecords || (long)voxelCount * 31L > stream.Length - stream.Position)
+                throw new InvalidDataException("对象体素数量或文件长度无效");
             var world = new VoxelWorld();
             for (var voxel = 0; voxel < voxelCount; voxel++)
             {
@@ -175,6 +286,8 @@ public static class LargeWorldFormat
                 if (value.IsEmpty) throw new InvalidDataException("v4对象包含空体素");
                 world.Set(coordinate, value);
             }
+            if (world.OccupiedVoxelCount != voxelCount)
+                throw new InvalidDataException("对象片段包含重复体素坐标");
             segments.Add(new NativeObjectSegment(id, name, origin, world));
         }
         var metadataLength = reader.ReadInt32();
@@ -185,14 +298,27 @@ public static class LargeWorldFormat
         return new NativeObjectDocument(segments, MaterialExchangeCodec.Decode(reader.ReadBytes(metadataLength)));
     }
 
-
-    public static void WriteEmpty(string path)
+    /// <summary>读取变长整数标识长度，畸形编码统一视为文件损坏</summary>
+    private static int ReadIdentifierLength(BinaryReader reader)
     {
-        var header = new byte[24];
-        using (var stream = new MemoryStream(header, writable: true))
+        try { return reader.Read7BitEncodedInt(); }
+        catch (FormatException exception) { throw new InvalidDataException("对象标识编码损坏", exception); }
+    }
+
+
+    public static void WriteEmpty(string path, MaterialExchangeMetadata? materials = null)
+    {
+        var metadata = materials is null ? null : MaterialExchangeCodec.Encode(materials);
+        var bytes = new byte[24 + (metadata is null ? 0 : 4 + metadata.Length)];
+        using (var stream = new MemoryStream(bytes, writable: true))
         using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
-            WriteHeader(writer, 1, 1, 1, 0, Version);
-        AtomicFile.WriteBytes(path, header);
+            WriteHeader(writer, 1, 1, 1, 0, metadata is null ? Version : 3);
+        if (metadata is not null)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(24), metadata.Length);
+            metadata.CopyTo(bytes, 28);
+        }
+        AtomicFile.WriteBytes(path, bytes);
     }
 
     /// <summary>
@@ -389,6 +515,11 @@ public static class LargeWorldFormat
         var header = new byte[24];
         ReadFully(stream, header, header.Length);
         var (width, depth, height, count) = ValidateHeader(header, stream.Length);
+        var version = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(4));
+        stream.Position = 24L + (long)count * RecordSize;
+        var materials = ReadMetadata(stream, version);
+        stream.Position = 24;
+        var voxelOrigin = origin + materials.OriginOffset;
         var world = new VoxelWorld();
         var writer = world.CreateBulkWriter();
         var buffer = new byte[RecordSize * 65536];
@@ -401,14 +532,13 @@ public static class LargeWorldFormat
             ReadFully(stream, buffer, bytes);
             for (var record = 0; record < records; record++)
             {
-                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, origin, writer);
+                ParseRecord(buffer.AsSpan(record * RecordSize, RecordSize), width, height, depth, voxelOrigin, writer);
             }
 
             remaining -= records;
             reportProgress?.Invoke(count - remaining, count);
         }
 
-        var materials = ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(4)));
         return new NativeVoxelDocument(world, materials);
     }
 
@@ -478,17 +608,28 @@ public static class LargeWorldFormat
         }
 
         var (width, depth, height, count) = ValidateHeader(bytes, bytes.Length);
+        using var stream = new MemoryStream(bytes, writable: false);
+        stream.Position = 24L + (long)count * RecordSize;
+        var materials = ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(4)));
+        var voxelOrigin = origin + materials.OriginOffset;
         var world = new VoxelWorld();
         var writer = world.CreateBulkWriter();
         for (var index = 0; index < count; index++)
         {
-            ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, origin, writer);
+            ParseRecord(bytes.AsSpan(24 + index * RecordSize, RecordSize), width, height, depth, voxelOrigin, writer);
         }
-
-        using var stream = new MemoryStream(bytes, writable: false);
-        stream.Position = 24L + count * RecordSize;
-        var materials = ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(4)));
         return new NativeVoxelDocument(world, materials);
+    }
+
+    /// <summary>仅读取原生模型的材质元数据，不解码体素记录。</summary>
+    public static MaterialExchangeMetadata ReadMaterials(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan);
+        var header = new byte[24];
+        ReadFully(stream, header, header.Length);
+        var (_, _, _, count) = ValidateHeader(header, stream.Length);
+        stream.Position = 24L + (long)count * RecordSize;
+        return ReadMetadata(stream, BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(4)));
     }
 
     private static MaterialExchangeMetadata ReadMetadata(Stream stream, int version)

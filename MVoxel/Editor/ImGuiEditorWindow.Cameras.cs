@@ -67,6 +67,11 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>当前相机对象</returns>
     private SceneObject? GetActiveRenderCameraObject()
     {
+        // 时间轴预览临时使用场景副本；不能复用本帧缓存中属于编辑场景的相机引用，
+        // 也不能因为预览中的可见性改变而改写用户选中的相机。
+        if (_timelinePreviewScene is not null && ReferenceEquals(_sceneDocument, _timelinePreviewScene))
+            return _sceneDocument.Objects.FirstOrDefault(item => item.Id == _renderCameraId &&
+                item.Components.Any(component => component.Enabled && SceneComponentTypes.IsCamera(component)));
         var cameras = GetRenderCameraObjects();
         if (cameras.Count == 0)
         {

@@ -93,7 +93,8 @@ internal sealed class ThumbnailCache : IDisposable
                     world = VoxFormat.Read(absolutePath);
                     break;
                 case ".mvmodel" or ".mvworld":
-                    world = LargeWorldFormat.Read(absolutePath);
+                    world = LargeWorldFormat.IsObjectDocument(absolutePath)
+                        ? LargeWorldFormat.ReadObjectPreview(absolutePath) : LargeWorldFormat.Read(absolutePath);
                     break;
                 default:
                     return null;

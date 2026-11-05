@@ -507,11 +507,16 @@ public sealed class VoxelWorld
     /// <summary>
     /// 复制全部区块，副本和原世界可独立修改
     /// </summary>
-    internal VoxelWorld Clone()
+    internal VoxelWorld Clone(CancellationToken cancellation = default)
     {
         var copy = new VoxelWorld();
+        var count = 0;
         foreach (var (coordinate, chunk) in _chunks)
+        {
+            if ((count++ & 63) == 0) cancellation.ThrowIfCancellationRequested();
             copy.AdoptChunk(coordinate, chunk.Clone());
+        }
+        cancellation.ThrowIfCancellationRequested();
         return copy;
     }
 
@@ -533,15 +538,15 @@ public sealed class VoxelWorld
         var target = new Dictionary<ChunkCoord64, SparseVoxelChunk>(_chunks.Count);
         foreach (var (coordinate, chunk) in _chunks)
         {
-            var baseX = coordinate.X * ChunkSize + offsetX;
-            var baseY = coordinate.Y * ChunkSize + offsetY;
-            var baseZ = coordinate.Z * ChunkSize + offsetZ;
+            var baseX = checked(coordinate.X * ChunkSize + offsetX);
+            var baseY = checked(coordinate.Y * ChunkSize + offsetY);
+            var baseZ = checked(coordinate.Z * ChunkSize + offsetZ);
             foreach (var (index, value) in chunk.Snapshot)
             {
                 var local = SparseVoxelChunk.FromIndex(index);
-                var worldX = baseX + local.X;
-                var worldY = baseY + local.Y;
-                var worldZ = baseZ + local.Z;
+                var worldX = checked(baseX + local.X);
+                var worldY = checked(baseY + local.Y);
+                var worldZ = checked(baseZ + local.Z);
                 var chunkCoordinate = new ChunkCoord64(
                     FloorDiv(worldX, ChunkSize), FloorDiv(worldY, ChunkSize), FloorDiv(worldZ, ChunkSize));
                 if (!target.TryGetValue(chunkCoordinate, out var destination))

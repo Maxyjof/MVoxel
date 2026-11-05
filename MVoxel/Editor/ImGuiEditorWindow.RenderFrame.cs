@@ -90,7 +90,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.SetNextWindowSize(new Vector2(400F, 0F), ImGuiCond.FirstUseEver);
-        if (!ImGui.Begin("导出图片", ref _showExportDialog, ImGuiWindowFlags.NoCollapse))
+        if (!ImGui.Begin("导出", ref _showExportDialog, ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
             return;
@@ -102,24 +102,30 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.RadioButton("视频", settings.ExportDialogFormat == "video")) settings.ExportDialogFormat = "video";
         if (settings.ExportDialogFormat == "video")
         {
-            ImGui.TextDisabled("按时间轴逐帧推进，渲染窗口预览保持静止。");
+            ImGui.TextDisabled("按时间轴逐帧渲染并编码 MP4。");
             var timelines = _project is null ? Array.Empty<string>() : Directory.GetFiles(_project.AssetsPath, "*.mvtimeline.json", SearchOption.AllDirectories)
                 .Select(path => Path.GetRelativePath(_project.AssetsPath, path).Replace('\\', '/')).OrderBy(path => path).ToArray();
             ImGui.SetNextItemWidth(-1F);
-            var timelineLabel = string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset) ? "选择时间轴资产" : settings.ExportDialogTimelineAsset;
+            var timelineLabel = string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset) ? "当前时间轴" : settings.ExportDialogTimelineAsset;
             if (ImGui.BeginCombo("##ExportTimeline", timelineLabel))
             {
+                if (ImGui.Selectable("当前时间轴", string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset))) settings.ExportDialogTimelineAsset = string.Empty;
                 foreach (var timeline in timelines)
                     if (ImGui.Selectable(timeline, timeline == settings.ExportDialogTimelineAsset)) settings.ExportDialogTimelineAsset = timeline;
                 ImGui.EndCombo();
             }
             var frameRate = settings.ExportDialogVideoFrameRate;
             if (ImGui.InputInt("视频帧率", ref frameRate)) settings.ExportDialogVideoFrameRate = Math.Clamp(frameRate, 1, 240);
-            var startFrame = settings.ExportDialogVideoStartFrame;
-            if (ImGui.InputInt("起始帧", ref startFrame)) settings.ExportDialogVideoStartFrame = Math.Max(0, startFrame);
-            var endFrame = settings.ExportDialogVideoEndFrame;
-            if (ImGui.InputInt("结束帧", ref endFrame)) settings.ExportDialogVideoEndFrame = Math.Max(settings.ExportDialogVideoStartFrame, endFrame);
-            if (timelines.Length == 0) ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F), "请在Assets文件夹右键新建时间轴。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("视频时长由所选时间轴决定；帧率可独立设置。");
+            if (string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset))
+            {
+                //只有“当前时间轴”能在这里直接算出帧数，避免对话框每帧去读资产文件
+                var frames = (int)Math.Ceiling(_timelineAsset.LengthFrames * (double)settings.ExportDialogVideoFrameRate /
+                    Math.Max(1, _timelineAsset.FrameRate));
+                ImGui.TextDisabled($"当前时间轴将渲染 {frames} 帧，约 {frames / (double)Math.Max(1, settings.ExportDialogVideoFrameRate):0.00} 秒");
+            }
+            if (!string.IsNullOrWhiteSpace(_timelineAssetPath) && TimelineIsDirty)
+                ImGui.TextDisabled("当前时间轴有未保存修改，导出使用窗口中的最新内容");
         }
         else
         {
@@ -203,7 +209,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.TextDisabled($"输出 {(int)(canvas.X * canvasScale)} × {(int)(canvas.Y * canvasScale)} 像素");
         if (settings.ExportDialogFormat == "video")
         {
-            ImGui.TextDisabled("视频模式当前只建立时间轴导出配置，编码队列将在视频导出阶段启用。");
+            ImGui.TextDisabled("MP4 · H.264，宽高需为偶数。");
         }
         else if (settings.ExportDialogFormat == "all")
             ImGui.TextDisabled("每个相机各出一张，尺寸同上，构图按各自相机取景");
@@ -214,36 +220,19 @@ internal sealed partial class ImGuiEditorWindow
             SaveProjectSettings();
             if (settings.ExportDialogFormat == "video")
             {
-                if (string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset))
-                {
-                    SetStatus("视频导出必须先选择时间轴资产");
-                    ImGui.End();
-                    return;
-                }
-                var timeline = LoadTimelineRuntimeAsset(settings.ExportDialogTimelineAsset);
+                var timeline = string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset)
+                    ? _timelineAsset : LoadTimelineRuntimeAsset(settings.ExportDialogTimelineAsset);
                 if (timeline is null)
                 {
                     SetStatus("时间轴资产无法读取，请重新选择");
                     ImGui.End();
                     return;
                 }
-                settings.ExportDialogVideoFrameRate = timeline.FrameRate;
-                settings.ExportDialogVideoEndFrame = Math.Max(settings.ExportDialogVideoStartFrame, timeline.LengthFrames);
-                var frameSettings = ResolveRenderSettings(GetActiveRenderCameraObject(), _projectSettings.ExportRenderSettings);
-                frameSettings.PathTracingEnabled = true;
-                frameSettings.PathSamplesPerFrame = 1;
-                frameSettings.PathMaxAccumulatedSamples = Math.Max(16, frameSettings.PathMaxAccumulatedSamples);
-                var outputDirectory = Path.Combine(_project!.RootPath, "Assets", "Exports", $"视频帧-{DateTime.Now:yyyyMMdd-HHmmss}");
-                for (var frame = settings.ExportDialogVideoStartFrame; frame <= settings.ExportDialogVideoEndFrame; frame++)
-                {
-                    var framePath = Path.Combine(outputDirectory, $"帧-{frame:000000}.png");
-                    EnqueueExport(new ExportJob(framePath, frameSettings)
-                    {
-                        Camera = GetRenderViewCamera(), CullingMask = GetActiveRenderCullingMask(),
-                        TimelineAsset = settings.ExportDialogTimelineAsset, TimelineFrame = frame
-                    });
-                }
-                SetStatus($"已加入视频帧序列导出：{settings.ExportDialogVideoEndFrame - settings.ExportDialogVideoStartFrame + 1}帧");
+                var outputPath = NativeDialogs.SaveFile("保存视频", "MP4 视频\0*.mp4\0\0", "mp4", $"视频-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
+                if (string.IsNullOrWhiteSpace(outputPath)) { ImGui.End(); return; }
+                var export = StartVideoExport(outputPath, timeline, settings.ExportDialogVideoFrameRate,
+                    string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset) ? null : settings.ExportDialogTimelineAsset);
+                if (!export.Started) { ImGui.End(); return; }
             }
             else
             {

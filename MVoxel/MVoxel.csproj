@@ -33,9 +33,11 @@
     <Target Name="CopyEditorDocking" AfterTargets="Build">
         <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(TargetDir)cimgui.dll" />
         <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(TargetDir)runtimes/win-x64/native/cimgui.dll" />
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/mvoxel_video_encoder.exe" DestinationFolder="$(TargetDir)" />
     </Target>
     <Target Name="PublishEditorDocking" AfterTargets="Publish">
         <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(PublishDir)cimgui.dll" />
         <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/cimgui.dll" DestinationFiles="$(PublishDir)runtimes/win-x64/native/cimgui.dll" />
+        <Copy SourceFiles="Native/ImGuiDocking/obj/$(Configuration)/mvoxel_video_encoder.exe" DestinationFolder="$(PublishDir)" />
     </Target>
 </Project>

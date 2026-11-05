@@ -3,6 +3,7 @@ using ImGuiNET;
 using MVoxel.Animation;
 using MVoxel.Scene;
 using MVoxel.Core;
+using MVoxel.Project;
 
 namespace MVoxel.Editor;
 
@@ -70,9 +71,11 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Checkbox("循环", ref loop)) animation.Loop = loop;
         var speed = animation.Speed;
         if (ImGui.DragFloat("播放速度", ref speed, 0.05F, -8F, 8F, "%.2fx")) animation.Speed = Math.Clamp(speed, -8F, 8F);
-        if (ImGui.Button("插入当前帧")) InsertAnimationKey(linked, animation, animation.CurrentFrame, "Transform", "Position");
+        if (ImGui.Button("插入位置关键帧")) InsertAnimationKey(linked, animation, animation.CurrentFrame, "Transform", "Position");
         ImGui.SameLine();
-        ImGui.Text("参数默认隐藏，可在节点参数列表中点击显示");
+        if (ImGui.Button("插入旋转关键帧")) InsertAnimationKey(linked, animation, animation.CurrentFrame, "Transform",
+            linked.Transform.Mode == TransformMode.Grid ? "GridRotation" : "Quaternion");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("格点模型记录 90 度整数旋转，在关键帧之间保持上一个朝向。");
         DrawAnimationParameterList(linked, animation);
         ImGui.SeparatorText("关键帧曲线");
         var clipPath = animation.ClipAsset;
@@ -160,7 +163,13 @@ internal sealed partial class ImGuiEditorWindow
         var selected = NativeDialogs.SaveFile("保存动画片段", "动画片段\0*.mvanim.json\0全部文件\0*.*\0\0", ".mvanim.json", clip.Name);
         if (string.IsNullOrWhiteSpace(selected)) return;
         var animationsDirectory = Path.Combine(_project.AssetsPath, "Animations");
-        var fullPath = EnsureAnimationClipExtension(Path.GetFullPath(selected));
+        var selectedPath = Path.GetFullPath(selected);
+        var fullPath = EnsureAnimationClipExtension(selectedPath);
+        if (!string.Equals(selectedPath, fullPath, StringComparison.OrdinalIgnoreCase) && File.Exists(fullPath))
+        {
+            SetStatus("目标动画片段已存在，请使用完整文件名重新选择并确认覆盖");
+            return;
+        }
         var root = Path.GetFullPath(animationsDirectory) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
         {
@@ -171,7 +180,8 @@ internal sealed partial class ImGuiEditorWindow
         SaveAnimationAsset(fullPath, clip);
         var relative = Path.GetRelativePath(_project.RootPath, fullPath).Replace(Path.DirectorySeparatorChar, '/');
         var component = target.Components.FirstOrDefault(SceneComponentTypes.IsAnimation);
-        if (component is not null) SceneComponentTypes.WriteAnimation(component, animation with { ClipAsset = relative });
+        animation.ClipAsset = relative;
+        if (component is not null) SceneComponentTypes.WriteAnimation(component, animation);
         MarkSceneDocumentDirty();
         SetStatus($"已保存动画片段：{relative}");
     }
@@ -179,18 +189,53 @@ internal sealed partial class ImGuiEditorWindow
     private void InsertAnimationKey(SceneObject target, AnimationComponentData animation, int frame, string component, string parameter)
     {
         if (_project is null) return;
-        var clip = new AnimationClip { Name = string.IsNullOrWhiteSpace(animation.ClipAsset) ? "动画片段" : Path.GetFileNameWithoutExtension(animation.ClipAsset) };
+        var existingPath = string.IsNullOrWhiteSpace(animation.ClipAsset)
+            ? null : Path.Combine(_project.RootPath, animation.ClipAsset.Replace('/', Path.DirectorySeparatorChar));
+        AnimationClip clip;
+        try
+        {
+            clip = existingPath is not null && File.Exists(existingPath)
+                ? JsonSerializer.Deserialize<AnimationClip>(File.ReadAllText(existingPath)) ?? new AnimationClip()
+                : new AnimationClip { Name = target.Name + "动画" };
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            SetStatus($"读取动画片段失败，未写入关键帧：{exception.Message}");
+            return;
+        }
         var values = parameter switch
         {
             "Position" when target.Transform.Mode == MVoxel.Core.TransformMode.Free => AnimationValueCodec.FromVector(new System.Numerics.Vector3((float)target.Transform.Free.Position.X, (float)target.Transform.Free.Position.Y, (float)target.Transform.Free.Position.Z)),
+            "Position" when target.Transform.Mode == MVoxel.Core.TransformMode.Grid => AnimationValueCodec.FromVector(new System.Numerics.Vector3(target.Transform.Grid.Position.X, target.Transform.Grid.Position.Y, target.Transform.Grid.Position.Z)),
             "Rotation" when target.Transform.Mode == MVoxel.Core.TransformMode.Free => AnimationValueCodec.FromVector(QuaternionToEuler(target.Transform.Free.Rotation)),
+            "Quaternion" when target.Transform.Mode == TransformMode.Free =>
+            [target.Transform.Free.Rotation.X, target.Transform.Free.Rotation.Y, target.Transform.Free.Rotation.Z, target.Transform.Free.Rotation.W],
+            "GridRotation" when target.Transform.Mode == TransformMode.Grid =>
+            [target.Transform.Grid.Rotation.M00, target.Transform.Grid.Rotation.M01, target.Transform.Grid.Rotation.M02,
+             target.Transform.Grid.Rotation.M10, target.Transform.Grid.Rotation.M11, target.Transform.Grid.Rotation.M12,
+             target.Transform.Grid.Rotation.M20, target.Transform.Grid.Rotation.M21, target.Transform.Grid.Rotation.M22],
             _ => [0F, 0F, 0F]
         };
-        clip.Keyframes.Add(new AnimationKeyframe { Frame = frame, ObjectId = target.Id.ToString(), ComponentType = component, Parameter = parameter, Values = values });
-        var path = Path.Combine(_project.AssetsPath, "Animations", clip.Name + ".mvanim.json");
+        clip.Keyframes.RemoveAll(key => key.Frame == frame && key.ObjectId == target.Id.ToString() && key.ComponentType == component && key.Parameter == parameter);
+        var keyframe = new AnimationKeyframe { Frame = frame, ObjectId = target.Id.ToString(), ComponentType = component, Parameter = parameter, Values = values };
+        if (parameter == "GridRotation") keyframe.RightCurve.Mode = AnimationInterpolation.Step;
+        clip.Keyframes.Add(keyframe);
+        clip.LengthFrames = Math.Max(clip.LengthFrames, frame);
+        var path = existingPath;
+        if (path is null)
+        {
+            var directory = Path.Combine(_project.AssetsPath, "Animations");
+            var baseName = string.Join("_", clip.Name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+            if (string.IsNullOrWhiteSpace(baseName)) baseName = "动画片段";
+            path = Path.Combine(directory, baseName + ".mvanim.json");
+            for (var index = 2; File.Exists(path); index++) path = Path.Combine(directory, $"{baseName} {index}.mvanim.json");
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         SaveAnimationAsset(path, clip);
-        SceneComponentTypes.WriteAnimation(target.Components.First(SceneComponentTypes.IsAnimation), animation with { ClipAsset = "Animations/" + Path.GetFileName(path) });
+        AssetMetaStore.EnsureMeta(path);
+        var relative = Path.GetRelativePath(_project.RootPath, path).Replace('\\', '/');
+        animation.ClipAsset = relative;
+        SceneComponentTypes.WriteAnimation(target.Components.First(SceneComponentTypes.IsAnimation), animation);
         MarkSceneDocumentDirty();
     }
 }

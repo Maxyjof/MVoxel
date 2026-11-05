@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using MVoxel.Animation;
 
 namespace MVoxel.Editor;
 
@@ -9,7 +10,10 @@ internal sealed partial class ImGuiEditorWindow
     private string? _capturePath;
     private int _captureFrames;
     private bool _captureRendered;
-    private float? _captureRain, _captureSnow, _captureHeat;
+    private float _captureWeatherTime;
+    private float? _captureRain, _captureSnow, _captureHeat, _captureStorm, _captureLightning;
+    private int? _captureWeatherSeed;
+    private float? _captureWeatherViewDistance;
     private float? _captureWaterFiltering;
     private bool? _captureHardwareAcceleration;
     private MVoxel.Rendering.RenderSettings? _captureRenderSettings;
@@ -17,6 +21,10 @@ internal sealed partial class ImGuiEditorWindow
     private int _captureWidth, _captureHeight;
     private long _captureDeadline;
     private readonly ConcurrentDictionary<string, object> _captureMetadata = new();
+    /// <summary>截图期间临时使用的时间轴与帧，不写入用户正在编辑的时间轴窗口</summary>
+    private TimelineAsset? _captureTimelineAsset;
+    private int? _captureTimelineFrame;
+    private string? _captureTimelineLabel;
 
     private object QueueCaptureView(JsonElement request)
     {
@@ -41,6 +49,18 @@ internal sealed partial class ImGuiEditorWindow
         var rain = ReadWeather("rain");
         var snow = ReadWeather("snow");
         var heat = ReadWeather("heatHaze");
+        var storm = ReadWeather("storm");
+        float? lightning = arguments.TryGetProperty("lightning", out var lightningValue) ? lightningValue.GetSingle() : null;
+        if (lightning.HasValue && (!float.IsFinite(lightning.Value) || lightning.Value < 0F || lightning.Value > 4F))
+            throw new ArgumentException("lightning 必须在 0–4 之间");
+        int? weatherSeed = arguments.TryGetProperty("weatherSeed", out var seedValue) ? seedValue.GetInt32() : null;
+        if (weatherSeed is < 0 or > 65535) throw new ArgumentException("weatherSeed 必须在 0–65535 之间");
+        float? weatherTime = arguments.TryGetProperty("weatherTime", out var timeValue) ? timeValue.GetSingle() : null;
+        if (weatherTime.HasValue && (!float.IsFinite(weatherTime.Value) || weatherTime.Value < 0F || weatherTime.Value > 1000000F))
+            throw new ArgumentException("weatherTime 必须在 0–1000000 秒之间");
+        float? weatherViewDistance = arguments.TryGetProperty("weatherViewDistance", out var distanceValue) ? distanceValue.GetSingle() : null;
+        if (weatherViewDistance.HasValue && (!float.IsFinite(weatherViewDistance.Value) || weatherViewDistance.Value < 1F || weatherViewDistance.Value > 256F))
+            throw new ArgumentException("weatherViewDistance 必须在 1–256 之间");
         float? waterFiltering = arguments.TryGetProperty("waterFiltering", out var filterValue) ? filterValue.GetSingle() : null;
         if (waterFiltering.HasValue && (!float.IsFinite(waterFiltering.Value) || waterFiltering.Value < 0F || waterFiltering.Value > 2F))
             throw new ArgumentException("waterFiltering 必须在 0–2 之间");
@@ -70,6 +90,24 @@ internal sealed partial class ImGuiEditorWindow
         }
         else if (arguments.TryGetProperty("position", out _) || arguments.TryGetProperty("target", out _))
             throw new ArgumentException("相机位置和目标必须同时提供");
+        //时间轴采样：给了资产就按该资产取帧，只给帧则冻结窗口里的时间轴内容
+        string? timelineRelativePath = null;
+        TimelineAsset? captureTimeline = null;
+        if (arguments.TryGetProperty("timelinePath", out var timelineValue) && !string.IsNullOrWhiteSpace(timelineValue.GetString()))
+        {
+            timelineRelativePath = timelineValue.GetString()!;
+            ResolveTimelinePath(timelineRelativePath);
+            captureTimeline = LoadTimelineRuntimeAsset(timelineRelativePath)
+                ?? throw new ArgumentException("时间轴资产无法读取或内容无效");
+        }
+        int? timelineFrame = arguments.TryGetProperty("timelineFrame", out var frameValue) ? frameValue.GetInt32() : null;
+        if (timelineFrame is < 0 or > 10_000_000) throw new ArgumentException("timelineFrame 必须在 0–10000000 之间");
+        if (captureTimeline is not null && timelineFrame is null) timelineFrame = 0;
+        if (timelineFrame.HasValue)
+        {
+            captureTimeline ??= JsonSerializer.Deserialize<TimelineAsset>(JsonSerializer.Serialize(_timelineAsset)) ?? _timelineAsset;
+            timelineFrame = Math.Clamp(timelineFrame.Value, 0, Math.Max(1, captureTimeline.LengthFrames));
+        }
         if (!string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("截图路径必须以.png结尾");
         if (File.Exists(path)) throw new IOException("截图文件已存在");
@@ -98,7 +136,16 @@ internal sealed partial class ImGuiEditorWindow
                 _accumulationSignature = string.Empty;
             }
             _capturePath = path;
+            _captureTimelineAsset = captureTimeline;
+            _captureTimelineFrame = timelineFrame;
+            _captureTimelineLabel = timelineRelativePath;
+            //按帧截图时天气时刻跟着帧走，未指定 weatherTime 才自动推算
+            _captureWeatherTime = weatherTime ?? (timelineFrame.HasValue && captureTimeline is not null
+                ? timelineFrame.Value / (float)Math.Max(1, captureTimeline.FrameRate)
+                : TimelineWeatherTime);
             _captureRain = rain; _captureSnow = snow; _captureHeat = heat;
+            _captureStorm = storm; _captureLightning = lightning; _captureWeatherSeed = weatherSeed;
+            _captureWeatherViewDistance = weatherViewDistance;
             _captureWaterFiltering = waterFiltering;
             _captureHardwareAcceleration = hardwareAcceleration;
             // 截图必须使用真正参与渲染的有效设置：项目配置与场景环境合并后的结果，
@@ -171,7 +218,13 @@ internal sealed partial class ImGuiEditorWindow
                 skyAmbient = _captureRenderSettings.SkyAmbient,
                 emissiveIntensity = _captureRenderSettings.EmissiveIntensity,
                 sunEnabled = _captureRenderSettings.SunEnabled,
-                rain = _captureRain, snow = _captureSnow, heatHaze = _captureHeat,
+                rain = _captureRenderSettings.WeatherRainIntensity, snow = _captureRenderSettings.WeatherSnowIntensity,
+                heatHaze = _captureRenderSettings.WeatherHeatHaze, storm = _captureRenderSettings.WeatherStormIntensity,
+                lightning = _captureRenderSettings.WeatherLightningFrequency,
+                weatherTime = _captureWeatherTime, weatherSeed = _captureRenderSettings.WeatherSeed,
+                weatherViewDistance = _captureRenderSettings.WeatherViewDistance,
+                timelinePath = _captureTimelineLabel,
+                timelineFrame = _captureTimelineFrame,
                 waterFiltering = _captureWaterFiltering,
                 sunShadowMethod = settings.SunShadowMethod.ToString(),
                 sunShadowFallback = _pipeline.SunShadowFallbackReason,
@@ -190,8 +243,13 @@ internal sealed partial class ImGuiEditorWindow
     private void FinishCapture()
     {
         _capturePath = null;
+        _captureTimelineAsset = null;
+        _captureTimelineFrame = null;
+        _captureTimelineLabel = null;
         _captureRenderSettings = null;
         _captureRain = null; _captureSnow = null; _captureHeat = null;
+        _captureStorm = null; _captureLightning = null; _captureWeatherSeed = null;
+        _captureWeatherViewDistance = null;
         _captureWaterFiltering = null;
         _captureHardwareAcceleration = null;
         _accumulationSignature = string.Empty;

@@ -13,6 +13,8 @@ internal sealed partial class ImGuiEditorWindow
     private int _historyRepeatDirection;
     private (IEditorCommand Command, bool Forward, string Warning)? _historyConfirmation;
     private bool _openHistoryConfirmation;
+    /// <summary>自动化已回答，下一帧在弹窗作用域内补关弹窗</summary>
+    private bool _historyConfirmationResolved;
     private bool _historyAwaitKeyRelease;
     private bool _historyPriming = true;
     private int _historyLayoutRestoreFrame = -2;
@@ -33,7 +35,17 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.OpenPopup(title);
             _openHistoryConfirmation = false;
         }
-        if (_historyConfirmation is not { } pending) return;
+        if (_historyConfirmation is not { } pending)
+        {
+            //自动化回答后弹窗还开着，补一帧把它关掉，避免空弹窗挡住输入
+            if (_historyConfirmationResolved && CenteredModal.Begin(title, ImGuiWindowFlags.AlwaysAutoResize))
+            {
+                _historyConfirmationResolved = false;
+                ImGui.CloseCurrentPopup();
+                ImGui.EndPopup();
+            }
+            return;
+        }
         ImGui.SetNextWindowSize(new System.Numerics.Vector2(
             Math.Min(ImGui.GetIO().DisplaySize.X * .85F, ImGui.GetFontSize() * 42F), 0F), ImGuiCond.Appearing);
         ImGui.SetNextWindowSizeConstraints(System.Numerics.Vector2.Zero, ImGui.GetIO().DisplaySize * .9F);
@@ -111,6 +123,7 @@ internal sealed partial class ImGuiEditorWindow
     private void ResetEditorHistory()
     {
         _historyConfirmation = null;
+        _historyConfirmationResolved = false;
         _openHistoryConfirmation = false;
         foreach (var command in _historyCommands) (command as IDisposable)?.Dispose();
         _historyCommands.Clear();
@@ -310,6 +323,7 @@ internal sealed partial class ImGuiEditorWindow
                     completed.Add(command);
                 }
                 if (sceneChanged) editor.RestoreHistoryScene(forward ? after : before);
+                if (sceneChanged) editor.RefreshEditedVoxelAssetsAfterHistory();
                 editor.RestoreHistoryUi(forward ? after : before, sceneChanged, assetsChanged);
                 if (sceneChanged)
                     editor.MarkSceneDocumentDirty();

@@ -48,9 +48,21 @@ public sealed class AnimationClip
 
     public void Normalize()
     {
+        Name ??= "动画片段";
+        Keyframes ??= [];
+        VisibleParameters ??= new HashSet<string>(StringComparer.Ordinal);
         FrameRate = Math.Clamp(FrameRate, 1, 240);
         LengthFrames = Math.Clamp(LengthFrames, 1, 1_000_000);
         Keyframes.RemoveAll(key => key is null || key.Frame < 0 || key.Frame > LengthFrames || key.Values is null);
+        foreach (var key in Keyframes)
+        {
+            key.ObjectId ??= string.Empty;
+            key.ComponentType ??= string.Empty;
+            key.Parameter ??= string.Empty;
+            key.SnapshotAsset ??= string.Empty;
+            key.LeftCurve ??= new AnimationCurve();
+            key.RightCurve ??= new AnimationCurve();
+        }
         VisibleParameters.RemoveWhere(string.IsNullOrWhiteSpace);
     }
 }

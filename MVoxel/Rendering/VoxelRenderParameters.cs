@@ -146,7 +146,8 @@ public sealed class VoxelRenderParameters
     public const int FogNoiseStrength = 206, FogNoiseScale = 207, FogNoiseSpeed = 208;
     /// <summary>薄板玻璃近似开关与厚度上限（世界格）</summary>
     public const int ThinGlassEnabled = 209, ThinGlassMaxThickness = 210;
-    public const int SlotCount = 212;
+    public const int WeatherSeed = 211, WeatherTime = 212, WeatherViewDistance = 213, SurfaceDepositCount = 214, SurfaceReceiverSlots = 215;
+    public const int SlotCount = 216;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -157,6 +158,10 @@ public sealed class VoxelRenderParameters
         var names = new (string, int)[]
         {
             ("P_PARAMETER_COUNT", SlotCount),
+            ("P_WEATHER_SEED", WeatherSeed), ("P_WEATHER_TIME", WeatherTime),
+            ("P_WEATHER_VIEW_DISTANCE", WeatherViewDistance),
+            ("P_SURFACE_DEPOSIT_COUNT", SurfaceDepositCount),
+            ("P_SURFACE_RECEIVER_SLOTS", SurfaceReceiverSlots),
             ("P_WATER_FOOTPRINT_FILTERING", WaterFootprintFiltering),
             ("P_SUN_RECONSTRUCTION_AVAILABLE", SunReconstructionAvailable),
             ("P_SUN_METHOD", SunShadowMethod), ("P_SUN_PASS", SunShadowPass),
@@ -325,6 +330,7 @@ public sealed class VoxelRenderParameters
         parameters[Focal] = frame.FocalPixels;
         parameters[Frame] = frame.FrameIndex;
         parameters[WaterTime] = frame.WaterTime;
+        parameters[WeatherTime] = frame.WeatherTime;
         parameters[ViewWidth] = frame.ViewWidthPixels;
         parameters[ViewHeight] = frame.ViewHeightPixels;
         parameters[Pixel] = pixelSeedSalt;
@@ -524,6 +530,8 @@ public sealed class VoxelRenderParameters
         parameters[WeatherStorm] = settings.WeatherStormIntensity;
         parameters[WeatherHeatHaze] = settings.WeatherHeatHaze;
         parameters[WeatherLightning] = settings.WeatherLightningFrequency;
+        parameters[WeatherSeed] = settings.WeatherSeed;
+        parameters[WeatherViewDistance] = settings.WeatherViewDistance;
         parameters[FogStart] = settings.FogStart;
         parameters[FogSkyBlend] = settings.FogSkyBlend;
         parameters[FogMaxOpacity] = settings.FogMaxOpacity;
@@ -597,6 +605,7 @@ public sealed class VoxelRenderParameters
         bool ScenePreview = false)
     {
         public float WaterTime { get; init; }
+        public float WeatherTime { get; init; }
         /// <summary>
         /// 相机近平面距离
         /// </summary>

@@ -719,7 +719,6 @@ internal sealed partial class ImGuiEditorWindow
         });
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
-        DrawRenderSettingsAccordion("environment", "环境配置", () => DrawEnvironmentSection(settings));
 
         DrawRenderSettingsAccordion("color", "色彩输出", () =>
         {

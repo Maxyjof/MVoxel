@@ -9,9 +9,24 @@ internal sealed partial class ImGuiEditorWindow
 {
     private static readonly JsonSerializerOptions EnvironmentJsonOptions = new(JsonSerializerDefaults.Web) { IncludeFields = true };
 
+    /// <summary>
+    /// 打开独立的环境配置窗口并把它提到最前：渲染配置和“窗口”菜单都走这一个入口，
+    /// 避免窗口被前面的大面板压住而看起来“点了没反应”。
+    /// </summary>
+    private void OpenEnvironmentWindow()
+    {
+        _showEnvironmentWindow = true;
+        _focusEnvironmentWindow = true;
+    }
+
     private void DrawEnvironmentWindow()
     {
         if (!_showEnvironmentWindow) return;
+        if (_focusEnvironmentWindow)
+        {
+            ImGui.SetNextWindowFocus();
+            _focusEnvironmentWindow = false;
+        }
         var open = _showEnvironmentWindow;
         ImGui.SetNextWindowSize(new Vector2(520F, 620F), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("环境配置##EnvironmentWindow", ref open, PanelWindowFlags))
@@ -60,14 +75,19 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawEnvironmentWeather(SceneEnvironmentSettings environment)
     {
         if (!ImGui.CollapsingHeader("天气", ImGuiTreeNodeFlags.DefaultOpen)) return;
+        ImGui.DragInt("天气种子", ref environment.WeatherSeed, 1F, 0, 65535);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("改变雨雪、闪电与热浪的随机分布；相同种子与时间轴帧得到相同结果。");
+        SliderFloat("雨雪可见距离", ref environment.WeatherViewDistance, 1F, 256F, "%.0f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("雨雪在相机周围的最大显示距离（世界单位）；距离越大，绘制工作量越高。此参数不改变模型精度。");
         SliderFloat("风强度", ref environment.WeatherWindStrength, 0F, 4F, "%.2f");
         SliderFloat("风向", ref environment.WeatherWindDirection, 0F, 360F, "%.0f°");
         SliderFloat("降雨强度", ref environment.WeatherRainIntensity, 0F, 1F, "%.2f");
         SliderFloat("降雪强度", ref environment.WeatherSnowIntensity, 0F, 1F, "%.2f");
         SliderFloat("雷暴强度", ref environment.WeatherStormIntensity, 0F, 1F, "%.2f");
         SliderFloat("热浪强度", ref environment.WeatherHeatHaze, 0F, 1F, "%.2f");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("渲染视图中使用随天气时间和种子变化的屏幕空间位移模拟热浪；这不是物理折射。");
         SliderFloat("闪电频率", ref environment.WeatherLightningFrequency, 0F, 4F, "%.2f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("闪电需要雷暴强度大于零；天气为屏幕空间近似效果。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("闪电需要雷暴强度大于零；雷暴亮度目前为画面近似效果。");
     }
 
     private static void DrawSkyAndGround(SceneEnvironmentSettings environment)

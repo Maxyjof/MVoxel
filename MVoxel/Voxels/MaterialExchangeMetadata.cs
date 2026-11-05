@@ -9,6 +9,9 @@ namespace MVoxel.Voxels;
 /// </summary>
 public sealed class MaterialExchangeMetadata
 {
+    /// <summary>单模型体素相对于资产原点的包围盒偏移；旧文件默认为零。</summary>
+    public VoxelCoord64 OriginOffset { get; init; } = VoxelCoord64.Zero;
+
     public Dictionary<ushort, string> Bindings { get; init; } = [];
 
     /// <summary>多对象导出时按稳定对象ID保存各对象的本地槽位映射</summary>

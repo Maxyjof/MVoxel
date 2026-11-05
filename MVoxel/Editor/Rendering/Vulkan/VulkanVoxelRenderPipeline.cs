@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -124,7 +124,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private Pipeline _computePipeline;
     private VkBuffer _materialTableBuffer;
     private DeviceMemory _materialTableMemory;
+    private ulong _materialTableBufferBytes;
+    private const int SurfaceDepositFloats = 32;
+    private static readonly ulong MaterialTableBytes = (ulong)MVoxel.Project.MaterialAsset.TableSlots *
+        MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float);
+    private float[] _surfaceDepositPacked = [];
+    private uint[] _surfaceReceiverWords = [];
     private float[] _materialTable = MVoxel.Project.MaterialAsset.PackTable(new Dictionary<int, MVoxel.Project.MaterialAsset>());
+    private bool _materialTableUploadPending;
     private int MaterialTableSlotCount => Math.Max(1, _materialTable.Length / MVoxel.Project.MaterialAsset.FloatsPerSlot);
     // 上传暂存缓冲持久复用：切换视图会触发工作集重传，
     // 每次同步都新建再销毁缓冲会让驱动分配器频繁抖动，也放大了驱动异常的概率
@@ -227,6 +234,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _sceneSelectionDirty = true;
     private bool _sceneSelectionActive;
     private bool _disposed;
+    private Task<Pipeline>? _computePipelineCreation;
+    private Task<Pipeline>? _hardwarePipelineCreation;
+    private string? _computePipelineError;
     private bool _usingHardwareRayTracing;
     private int _worksetMaximumCells;
 
@@ -260,8 +270,43 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>
     /// 获取当前体素 GPU 绘制管线是否已经可以呈现视图
     /// </summary>
-    internal bool IsAvailable => (_context is null || !_context.IsDeviceLost) &&
-        _computePipeline.Handle != 0 && GpuWorksetUploaded && _bvhBuffer.Handle != 0;
+    internal bool IsAvailable
+    {
+        get
+        {
+            CompleteComputePipelineCreation();
+            return (_context is null || !_context.IsDeviceLost) &&
+                _computePipelineError is null && _computePipeline.Handle != 0 && GpuWorksetUploaded && _bvhBuffer.Handle != 0;
+        }
+    }
+
+    internal bool IsInitializing => _computePipelineCreation is { IsCompleted: false };
+    internal string? InitializationError => _computePipelineError;
+
+    // Only the UI thread adopts the result. The worker owns the returned pipeline
+    // until this method or Dispose joins it; the device must outlive that worker.
+    private void CompleteComputePipelineCreation(bool wait = false)
+    {
+        var task = _computePipelineCreation;
+        if (task is null || (!wait && !task.IsCompleted)) return;
+        _computePipelineCreation = null;
+        try
+        {
+            _computePipeline = task.GetAwaiter().GetResult();
+            if (_materialTableUploadPending && !_disposed)
+            {
+                _materialTableUploadPending = false;
+                SetMaterialTable(_materialTable);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (exception.ToString().Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
+                _context?.MarkDeviceLost();
+            _computePipelineError = exception.Message;
+            MVoxelLog.Error("Vulkan Compute 管线后台初始化失败", exception);
+        }
+    }
 
     /// <summary>
     /// 获取显示纹理句柄
@@ -509,6 +554,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             ? table
             : PadMaterialTable(table, MVoxel.Project.MaterialAsset.TableSlots * stride);
         table = normalizedTable;
+        if (IsInitializing)
+        {
+            _materialTable = (float[])table.Clone();
+            _materialTableUploadPending = true;
+            ResetAccumulation();
+            return;
+        }
         if (_context is null || _api is not { } api || _materialTableBuffer.Handle == 0)
         {
             _materialTable = (float[])table.Clone();
@@ -549,6 +601,102 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         Array.Fill(result, MVoxel.Project.MaterialAsset.FollowGlobal);
         source.AsSpan().CopyTo(result);
         return result;
+    }
+
+    /// <summary>
+    /// 上传投射体数据到材质表之后的独立区域。原生 65536 个材质槽保持原样；
+    /// 不截断投射体数量，缓冲不足时扩容，设备范围不足时明确报错。
+    /// </summary>
+    internal void SetSurfaceDeposits(float[] packed, SurfaceReceiverLayerTable? receiverTable = null)
+    {
+        ArgumentNullException.ThrowIfNull(packed);
+        if (packed.Length % SurfaceDepositFloats != 0) throw new ArgumentException("表面投射数据长度无效", nameof(packed));
+        if (receiverTable is not null && receiverTable.Origin != _workset.Origin)
+            throw new ArgumentException("接收图层表原点与当前 GPU 工作集不一致", nameof(receiverTable));
+        var receiverWords = receiverTable?.Words ?? [];
+        if (MemoryMarshal.AsBytes(_surfaceDepositPacked.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(packed.AsSpan())) &&
+            _surfaceReceiverWords.AsSpan().SequenceEqual(receiverWords)) return;
+        if (IsInitializing) throw new InvalidOperationException("渲染管线尚在初始化");
+        if (_context is null || _api is not { } api || _materialTableBuffer.Handle == 0)
+        {
+            _surfaceDepositPacked = (float[])packed.Clone();
+            _surfaceReceiverWords = (uint[])receiverWords.Clone();
+            ResetAccumulation();
+            return;
+        }
+
+        var required = MaterialTableBytes + (ulong)Math.Max(packed.Length + (long)receiverWords.Length, SurfaceDepositFloats) * sizeof(float);
+        PhysicalDeviceProperties properties = default;
+        api.GetPhysicalDeviceProperties(_context.PhysicalDevice, &properties);
+        if (required > properties.Limits.MaxStorageBufferRange)
+            throw new InvalidOperationException("表面投射组件数据超出设备存储缓冲区上限");
+
+        WaitForComputeIdle();
+        if (required > _materialTableBufferBytes)
+        {
+            // Allocate and fill before releasing the old table, so an allocation error
+            // leaves all existing material data and descriptors intact.
+            var newBytes = Math.Min(NextCapacity(required), properties.Limits.MaxStorageBufferRange);
+            var (newBuffer, newMemory) = CreateBuffer(newBytes, BufferUsageFlags.StorageBufferBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            try
+            {
+                WriteMaterialBuffer(api, newMemory, _materialTable, packed, receiverWords);
+            }
+            catch
+            {
+                api.DestroyBuffer(_device, newBuffer, null);
+                api.FreeMemory(_device, newMemory, null);
+                throw;
+            }
+            api.DestroyBuffer(_device, _materialTableBuffer, null);
+            api.FreeMemory(_device, _materialTableMemory, null);
+            _materialTableBuffer = newBuffer;
+            _materialTableMemory = newMemory;
+            _materialTableBufferBytes = newBytes;
+            UpdateComputeDescriptors();
+        }
+        else if (packed.Length > 0 || receiverWords.Length > 0)
+        {
+            WriteMaterialBuffer(api, _materialTableMemory, null, packed, receiverWords);
+        }
+        _surfaceDepositPacked = (float[])packed.Clone();
+        _surfaceReceiverWords = (uint[])receiverWords.Clone();
+        ResetAccumulation();
+        _lastParameters = null;
+        _realtimeHistoryInvalid = true;
+    }
+
+    private void WriteMaterialBuffer(Vk api, DeviceMemory memory, float[]? materials, float[] deposits, uint[] receiverWords)
+    {
+        void* mapped = null;
+        var offset = materials is null ? MaterialTableBytes : 0UL;
+        var bytes = (materials is null ? 0UL : MaterialTableBytes) + ((ulong)deposits.Length + (ulong)receiverWords.Length) * sizeof(float);
+        if (bytes == 0) return;
+        Check(api.MapMemory(_device, memory, offset, bytes, 0, &mapped), "映射材质与表面投射缓冲");
+        try
+        {
+            if (materials is not null)
+            {
+                fixed (float* source = materials)
+                    System.Buffer.MemoryCopy(source, mapped, (long)MaterialTableBytes, (long)MaterialTableBytes);
+            }
+            if (deposits.Length > 0)
+            {
+                var destination = materials is null ? mapped : (byte*)mapped + MaterialTableBytes;
+                var depositBytes = (long)deposits.Length * sizeof(float);
+                fixed (float* source = deposits)
+                    System.Buffer.MemoryCopy(source, destination, depositBytes, depositBytes);
+            }
+            if (receiverWords.Length > 0)
+            {
+                var destination = (byte*)mapped + (materials is null ? 0UL : MaterialTableBytes) + (ulong)deposits.Length * sizeof(float);
+                var receiverBytes = (long)receiverWords.Length * sizeof(uint);
+                fixed (uint* source = receiverWords)
+                    System.Buffer.MemoryCopy(source, destination, receiverBytes, receiverBytes);
+            }
+        }
+        finally { api.UnmapMemory(_device, memory); }
     }
 
     /// <summary>
@@ -991,6 +1139,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private float[] BuildParameters(RenderSettings settings, in VoxelRenderParameters.FrameState frameState)
     {
         var parameters = VoxelRenderParameters.Build(settings, frameState, frameState.FrameIndex);
+        parameters[VoxelRenderParameters.SurfaceDepositCount] = _surfaceDepositPacked.Length / SurfaceDepositFloats;
+        parameters[VoxelRenderParameters.SurfaceReceiverSlots] = _surfaceReceiverWords.Length / SurfaceReceiverLayerTable.WordsPerSlot;
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
         parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
         parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
@@ -1278,6 +1428,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         _disposed = true;
+        // A pending vkCreateComputePipelines uses this device and pipeline layout.
+        // Join before destroying either, including on the device-lost path.
+        CompleteComputePipelineCreation(wait: true);
+        CompleteHardwarePipelineCreation(wait: true);
         if (_api is { } api)
         {
             // 设备已丢失后，继续等待队列或逐项销毁原生资源可能再次触发驱动异常。
@@ -1392,8 +1546,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             CreateRingCommands();
             if (_context is not null)
             {
-                var tableBytes = (ulong)(MVoxel.Project.MaterialAsset.TableSlots *
-                    MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float));
+                var tableBytes = MaterialTableBytes + SurfaceDepositFloats * sizeof(float);
+                _materialTableBufferBytes = tableBytes;
                 (_materialTableBuffer, _materialTableMemory) = CreateBuffer(
                     tableBytes,
                     BufferUsageFlags.StorageBufferBit,
@@ -1418,38 +1572,45 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
 
             EnsureSunDepthBuffer(16);
-            var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
-            var shaderModule = CreateShaderModule(words);
-            nint entryPoint = SilkMarshal.StringToPtr("main");
-            try
-            {
-                PipelineShaderStageCreateInfo stage = new()
-                {
-                    SType = StructureType.PipelineShaderStageCreateInfo,
-                    Stage = ShaderStageFlags.ComputeBit,
-                    Module = shaderModule,
-                    PName = (byte*)entryPoint
-                };
-                ComputePipelineCreateInfo createInfo = new()
-                {
-                    SType = StructureType.ComputePipelineCreateInfo,
-                    Stage = stage,
-                    Layout = _computePipelineLayout = CreateComputePipelineLayout(),
-                    BasePipelineIndex = -1
-                };
-                Check(_api!.CreateComputePipelines(_device, default, 1, in createInfo, null, out _computePipeline),
-                    "创建 Vulkan 体素 Compute 管线");
-            }
-            finally
-            {
-                SilkMarshal.Free(entryPoint);
-                _api!.DestroyShaderModule(_device, shaderModule, null);
-            }
+            _computePipelineLayout = CreateComputePipelineLayout();
+            _computePipelineCreation = Task.Run(CreateComputePipeline);
         }
         catch
         {
             Dispose();
             throw;
+        }
+    }
+
+    private Pipeline CreateComputePipeline()
+    {
+        var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
+        var shaderModule = CreateShaderModule(words);
+        nint entryPoint = SilkMarshal.StringToPtr("main");
+        try
+        {
+            PipelineShaderStageCreateInfo stage = new()
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.ComputeBit,
+                Module = shaderModule,
+                PName = (byte*)entryPoint
+            };
+            ComputePipelineCreateInfo createInfo = new()
+            {
+                SType = StructureType.ComputePipelineCreateInfo,
+                Stage = stage,
+                Layout = _computePipelineLayout,
+                BasePipelineIndex = -1
+            };
+            Check(_api!.CreateComputePipelines(_device, default, 1, in createInfo, null, out var pipeline),
+                "创建 Vulkan 体素 Compute 管线");
+            return pipeline;
+        }
+        finally
+        {
+            SilkMarshal.Free(entryPoint);
+            _api!.DestroyShaderModule(_device, shaderModule, null);
         }
     }
 
@@ -1462,52 +1623,67 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </remarks>
     private void EnsureHardwareShadowPipeline()
     {
+        CompleteHardwarePipelineCreation();
         if (_hardwareShadowPipeline.Handle != 0 || _hardwareShadowPipelineFailed) return;
         if (_context?.SupportsHardwareRayQuery != true || _computePipelineLayout.Handle == 0 || _api is null) return;
+        _hardwarePipelineCreation ??= Task.Run(CreateHardwareShadowPipeline);
+    }
+
+    private void CompleteHardwarePipelineCreation(bool wait = false)
+    {
+        var task = _hardwarePipelineCreation;
+        if (task is null || (!wait && !task.IsCompleted)) return;
+        _hardwarePipelineCreation = null;
         try
         {
-            var words = VulkanShaderCompiler.Compile(HardwareSceneComputeShader,
-                ShaderKind.ComputeShader, "MVoxel.Scene.rt.comp", rayTracing: true,
-                vulkan11: _context.HardwareShadersTargetVulkan11);
-            var shaderModule = CreateShaderModule(words);
-            nint entryPoint = SilkMarshal.StringToPtr("main");
-            try
-            {
-                PipelineShaderStageCreateInfo stage = new()
-                {
-                    SType = StructureType.PipelineShaderStageCreateInfo,
-                    Stage = ShaderStageFlags.ComputeBit,
-                    Module = shaderModule,
-                    PName = (byte*)entryPoint
-                };
-                ComputePipelineCreateInfo createInfo = new()
-                {
-                    SType = StructureType.ComputePipelineCreateInfo,
-                    Stage = stage,
-                    Layout = _computePipelineLayout,
-                    BasePipelineIndex = -1
-                };
-                Check(_api.CreateComputePipelines(_device, default, 1, in createInfo, null, out _hardwareShadowPipeline),
-                    "创建 Ray Query 阴影加速管线");
-                MVoxelLog.Info("硬件光追阴影加速已就绪，太阳阴影改由 ray query 求交");
-            }
-            finally
-            {
-                SilkMarshal.Free(entryPoint);
-                _api.DestroyShaderModule(_device, shaderModule, null);
-            }
+            _hardwareShadowPipeline = task.GetAwaiter().GetResult();
+            MVoxelLog.Info("硬件光追阴影加速已就绪，太阳阴影改由 ray query 求交");
         }
         catch (Exception exception)
         {
             if (_context?.IsDeviceLost == true || exception.ToString().Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
             {
                 _context?.MarkDeviceLost();
-                throw;
+                if (!wait) throw;
             }
             _hardwareShadowPipelineFailed = true;
             _hardwareShadowFailure = exception.Message;
             _hardwareShadowPipeline = default;
             MVoxelLog.Warn($"硬件光追阴影管线创建失败，保持 Compute 路径：{exception.Message}");
+        }
+    }
+
+    private Pipeline CreateHardwareShadowPipeline()
+    {
+        var words = VulkanShaderCompiler.Compile(HardwareSceneComputeShader,
+            ShaderKind.ComputeShader, "MVoxel.Scene.rt.comp", rayTracing: true,
+            vulkan11: _context!.HardwareShadersTargetVulkan11);
+        var shaderModule = CreateShaderModule(words);
+        nint entryPoint = SilkMarshal.StringToPtr("main");
+        try
+        {
+            PipelineShaderStageCreateInfo stage = new()
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.ComputeBit,
+                Module = shaderModule,
+                PName = (byte*)entryPoint
+            };
+            ComputePipelineCreateInfo createInfo = new()
+            {
+                SType = StructureType.ComputePipelineCreateInfo,
+                Stage = stage,
+                Layout = _computePipelineLayout,
+                BasePipelineIndex = -1
+            };
+            Check(_api!.CreateComputePipelines(_device, default, 1, in createInfo, null, out var pipeline),
+                "创建 Ray Query 阴影加速管线");
+            return pipeline;
+        }
+        finally
+        {
+            SilkMarshal.Free(entryPoint);
+            _api!.DestroyShaderModule(_device, shaderModule, null);
         }
     }
 
@@ -2821,8 +2997,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (_ringSets[slot].Handle == 0) return;
             DescriptorBufferInfo parameterInfo = new(_ringParameterBuffers[slot], 0,
                 (ulong)(VoxelRenderParameters.SlotCount * 4 * sizeof(float)));
-            DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0,
-                (ulong)(MVoxel.Project.MaterialAsset.TableSlots * MVoxel.Project.MaterialAsset.FloatsPerSlot * sizeof(float)));
+            DescriptorBufferInfo materialTableInfo = new(_materialTableBuffer, 0, _materialTableBufferBytes);
             writes[0] = new()
             {
                 SType = StructureType.WriteDescriptorSet,
@@ -4405,6 +4580,98 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return exp(-0.125 * max(values[P_WATER_FOOTPRINT_FILTERING], 0.0) * (x*x + y*y));
         }
 
+        // Two appended material-table records form one projector. The first three
+        // vec4s transform world position to projector-local coordinates; the rest
+        // contain extents, masks and material responses. CPU submission sorts them.
+        uint SurfaceReceiverLayer(ivec3 cell)
+        {
+            uint slots = uint(values[P_SURFACE_RECEIVER_SLOTS]);
+            if (slots == 0u) return 0u;
+            uint hash = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u;
+            hash ^= hash >> 16; hash *= 0x7feb352du;
+            hash ^= hash >> 15; hash *= 0x846ca68bu; hash ^= hash >> 16;
+            uint index = hash & (slots - 1u);
+            int baseIndex = 65536 + int(values[P_SURFACE_DEPOSIT_COUNT]) * 2;
+            for (uint probe = 0u; probe < slots; ++probe)
+            {
+                MaterialSlotData record = materialSlots[baseIndex + int(index / 4u)];
+                uint part = index & 3u;
+                vec4 entry = part == 0u ? record.scalars : part == 1u ? record.absorption :
+                    part == 2u ? record.optics : record.haze;
+                uvec4 bits = floatBitsToUint(entry);
+                if (bits.w == 0u) return 0u;
+                if (all(equal(bits.xyz, uvec3(cell)))) return bits.w;
+                index = (index + 1u) & (slots - 1u);
+            }
+            return 0u;
+        }
+
+        void ApplySurfaceDeposits(vec3 hitPoint, inout vec3 hitNormal,
+            inout vec3 hitColor, inout MaterialSlotData material, bool groundHit)
+        {
+            int count = int(values[P_SURFACE_DEPOSIT_COUNT]);
+            uint receiverLayer = 0u;
+            bool receiverLayerRead = false;
+            for (int i = 0; i < count; ++i)
+            {
+                MaterialSlotData transform = materialSlots[65536 + i * 2];
+                MaterialSlotData appearance = materialSlots[65537 + i * 2];
+                uint receiverMask = floatBitsToUint(appearance.haze.w);
+                if (receiverMask != 0xffffffffu)
+                {
+                    if (!receiverLayerRead)
+                    {
+                        // 解析地面不属于对象图层；查不到归属时保守地不接收受限投射。
+                        ivec3 cell = ivec3(floor(hitPoint - hitNormal * 0.001 - vec3(values[16], values[17], values[18])));
+                        receiverLayer = groundHit ? 0u : SurfaceReceiverLayer(cell);
+                        receiverLayerRead = true;
+                    }
+                    if (receiverLayer == 0u || receiverLayer > 32u ||
+                        (receiverMask & (1u << (receiverLayer - 1u))) == 0u) continue;
+                }
+                vec4 point = vec4(hitPoint, 1.0);
+                vec3 local = vec3(dot(transform.scalars, point), dot(transform.absorption, point),
+                    dot(transform.optics, point));
+                vec3 halfSize = max(transform.haze.xyz, vec3(0.005));
+                vec3 remaining = vec3(1.0) - abs(local) / halfSize;
+                if (min(remaining.x, min(remaining.y, remaining.z)) <= 0.0) continue;
+                vec3 localUp = normalize(transform.absorption.xyz);
+                float facing = dot(hitNormal, localUp);
+                // 相同起止角是硬阈值；尤其 0° 时不能把上边界推到 1 以上，
+                // 否则朝上的表面也永远无法接收投射。
+                float angleWeight = appearance.optics.x - appearance.optics.y < 0.0001
+                    ? step(appearance.optics.y - 0.000001, facing)
+                    : smoothstep(appearance.optics.y, appearance.optics.x, facing);
+                float edge = min(remaining.x, remaining.z);
+                float edgeWeight = transform.haze.w > 0.0 ? smoothstep(0.0, transform.haze.w, edge) : 1.0;
+                float depthWeight = appearance.absorption.w > 0.0
+                    ? smoothstep(0.0, appearance.absorption.w, remaining.y) : 1.0;
+                float amount = clamp(appearance.optics.z, 0.0, 1.0);
+                float scale = max(appearance.optics.w, 0.001);
+                vec2 patternPoint = local.xz * scale + vec2(appearance.haze.y * 0.17, appearance.haze.y * 0.31);
+                float pattern = EnvironmentNoise(patternPoint);
+                float softness = max(appearance.haze.x, 0.001);
+                float mask = amount <= 0.0 ? 0.0 : amount >= 1.0 ? 1.0
+                    : smoothstep(1.0 - amount - softness, 1.0 - amount + softness, pattern);
+                float weight = clamp(appearance.scalars.w * angleWeight * edgeWeight * depthWeight * mask, 0.0, 1.0);
+                if (weight <= 0.0) continue;
+                hitColor = mix(hitColor, SrgbToLinear(clamp(appearance.scalars.rgb, vec3(0.0), vec3(1.0))),
+                    weight * clamp(appearance.absorption.z, 0.0, 1.0));
+                float oldRoughness = material.scalars.x >= 0.0 ? material.scalars.x : values[P_ROUGHNESS];
+                material.scalars.x = mix(oldRoughness, clamp(appearance.absorption.x, 0.01, 1.0),
+                    weight * clamp(appearance.absorption.y, 0.0, 1.0));
+                if (appearance.haze.z > 0.0)
+                {
+                    float dx = EnvironmentNoise(patternPoint + vec2(0.05, 0.0)) - pattern;
+                    float dz = EnvironmentNoise(patternPoint + vec2(0.0, 0.05)) - pattern;
+                    vec3 tangentX = normalize(transform.scalars.xyz);
+                    vec3 tangentZ = normalize(transform.optics.xyz);
+                    hitNormal = normalize(hitNormal - (tangentX * dx + tangentZ * dz) *
+                        weight * appearance.haze.z * 2.0);
+                }
+            }
+        }
+
         vec3 TracePath(vec3 rayOrigin, vec3 rayDirection, inout uint state, bool pathMode,
             out bool primarySurfaceHit, out float primarySurfaceDistance, out vec3 primaryNormal,
             out bool primarySelected)
@@ -4577,6 +4844,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     ? SrgbToLinear(clamp(vec3(values[146], values[147], values[148]), vec3(0.0), vec3(1.0)))
                     : groundHit ? Ground(rayOrigin, rayDirection, hitDistance, pathMode)
                     : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+                if (!waterHit && values[P_SURFACE_DEPOSIT_COUNT] > 0.0)
+                    ApplySurfaceDeposits(hitPoint, hitNormal, hitLinearColor, material, groundHit);
                 if (!pathMode && values[115] > 0.5 && values[57] <= 0.5)
                 {
                     // 场景窗口的 GPU 基础显示：只做确定性的面向明暗，不进入实时特效路径。
@@ -5060,7 +5329,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return min(radiance, vec3(max(values[77], 0.001)));
         }
 
-        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height);
+        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height, float surfaceDistance);
 
         // 降噪的 5x5 邻域会与同工作组内相邻像素大量重叠，整组协作预取一次即可：
         // 8x8 工作组需要 12x12 的环形边界，每像素从 50 次 imageLoad 降到约 2.3 次
@@ -5135,6 +5404,32 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
             vec3 color = weightSum > 0.0 ? filtered / weightSum : center;
             return mix(center, color, strength);
+        }
+
+        // 使用独立的 HDR 累积图作为只读输入，避免在同一个派发中读写输出图造成竞争。
+        // 对降噪后的基色叠加原图位移差，保留基色的降噪结果和后续 Bloom/曝光。
+        vec3 HeatHazeAt(vec3 baseColor, ivec2 pixel, int width, int height)
+        {
+            float strength = clamp(values[P_WEATHER_HEAT_HAZE], 0.0, 1.0);
+            if (strength <= 0.0) return baseColor;
+            vec2 uv = (vec2(pixel) + 0.5) / float(height);
+            float clock = values[P_WEATHER_TIME];
+            float seed = values[P_WEATHER_SEED];
+            vec2 phase = vec2(seed * 0.17, seed * 0.31);
+            float x = EnvironmentNoise(uv * vec2(4.0, 9.0) + phase + vec2(0.16, -0.65) * clock) - 0.5;
+            float y = EnvironmentNoise(uv * vec2(6.0, 5.0) + phase.yx + vec2(-0.12, -0.48) * clock + 19.0) - 0.5;
+            vec2 offset = vec2(x * 7.0, y * 3.5) * strength;
+            vec2 target = clamp(vec2(pixel) + offset, vec2(0.0), vec2(width - 1, height - 1));
+            ivec2 low = ivec2(floor(target));
+            ivec2 high = min(low + ivec2(1), ivec2(width - 1, height - 1));
+            vec2 fraction = fract(target);
+            vec3 a = mix(imageLoad(accumulationImage, low).rgb,
+                imageLoad(accumulationImage, ivec2(high.x, low.y)).rgb, fraction.x);
+            vec3 b = mix(imageLoad(accumulationImage, ivec2(low.x, high.y)).rgb,
+                imageLoad(accumulationImage, high).rgb, fraction.x);
+            vec3 displaced = mix(a, b, fraction.y);
+            vec3 source = imageLoad(accumulationImage, pixel).rgb;
+            return max(baseColor + displaced - source, vec3(0.0));
         }
 
         vec3 BloomGather(ivec2 pixel, int width, int height)
@@ -5264,12 +5559,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                      values[P_DENOISE_ENABLED] > 0.5 && values[P_DENOISE_STRENGTH] > 0.0);
                 vec3 displayBase = displayDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
+                displayBase = HeatHazeAt(displayBase, pixel, width, height);
                 if (values[P_BLOOM_ENABLED] > 0.5 && values[P_BLOOM_INTENSITY] > 0.0)
                 {
                     displayBase += BloomGather(pixel, width, height) *
                         clamp(values[P_BLOOM_INTENSITY], 0.0, 2.0);
                 }
-                StoreSceneOutput(pixel, vec4(PostProcess(displayBase, pixel, width, height), 1.0));
+                StoreSceneOutput(pixel, vec4(PostProcess(displayBase, pixel, width, height, -1.0), 1.0));
                 return;
             }
 
@@ -5305,7 +5601,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (values[103] > 0.5 && useDenoise)
             {
                 vec3 color = DenoiseAt(pixel, width, height);
-                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
+                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height, -1.0), 1.0));
                 return;
             }
 
@@ -5315,7 +5611,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 vec3 base = useDenoise ? DenoiseAt(pixel, width, height)
                     : imageLoad(accumulationImage, pixel).rgb;
                 vec3 color = base + BloomGather(pixel, width, height) * clamp(values[110], 0.0, 2.0);
-                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), 1.0));
+                StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height, -1.0), 1.0));
                 return;
             }
 
@@ -5340,6 +5636,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             bool selectedPixel = false;
             float primarySurfaceDistance = 3.402823e+38;
             vec4 guide = vec4(0.0);
+            float outlineMaskSum = 0.0;
             for (int sampleIndex = 0; sampleIndex < 64; sampleIndex++)
             {
                 if (sampleIndex >= samples) break;
@@ -5462,7 +5759,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     if (gridDistance >= primarySurfaceDistance - max(1e-4, gridDistance * 1e-5))
                     {
                         float outputAlpha = primarySurfaceHit ? 1.0 : 0.0;
-                        StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
+                        StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height, primarySurfaceDistance), outputAlpha));
                         return;
                     }
                     vec2 p = (origin + t * ray).xz;
@@ -5471,21 +5768,22 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     vec2 dpdx = (t * (dx - ray * dx.y / ray.y)).xz;
                     vec2 dpdy = (t * (dy - ray * dy.y / ray.y)).xz;
                     vec2 footprint = max(abs(dpdx) + abs(dpdy), vec2(1e-6));
-                    float level = max(0.0, log2(max(footprint.x, footprint.y) * 8.0));
-                    float stepSize = exp2(floor(level));
+                    float baseStep = max(values[P_GRID_STEP], 0.001);
+                    float level = max(0.0, log2(max(footprint.x, footprint.y) * 8.0 / baseStep));
+                    float stepSize = baseStep * exp2(floor(level));
                     float blend = smoothstep(0.0, 1.0, fract(level));
                     float fine = GridCoverage(p, footprint, stepSize);
                     float coarse = GridCoverage(p, footprint, stepSize * 2.0);
-                    float fade = 1.0 / (1.0 + level * 0.22);
-                    float horizon = smoothstep(0.0, 0.025, abs(normalize(ray).y));
-                    float alpha = mix(fine, coarse, blend) * fade * horizon * 0.65;
+                    float fade = 1.0 / (1.0 + level * 0.16);
+                    float horizon = abs(normalize(ray).y) / (abs(normalize(ray).y) + 0.004);
+                    float alpha = mix(fine, coarse, blend) * fade * horizon * 0.72;
                     // 网格只在实际线条覆盖到的像素参与遮挡；不能将无限地面当作
                     // 不透明色板，否则相机位于地面下方时整座模型会被背景色盖住。
                     vec3 background = max(vec3(values[98], values[99], values[100]), vec3(0.0));
                     background = mix(1.055 * pow(background, vec3(1.0 / 2.4)) - 0.055,
                         background * 12.92, lessThanEqual(background, vec3(0.0031308)));
                     vec3 baseColor = primarySurfaceHit
-                        ? PostProcess(color, pixel, width, height)
+                        ? PostProcess(color, pixel, width, height, primarySurfaceDistance)
                         : background;
                     vec3 composite = mix(baseColor, vec3(0.38, 0.47, 0.59), alpha);
                     StoreSceneOutput(pixel, vec4(composite, 1.0));
@@ -5495,10 +5793,68 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 场景预览允许背景透明，让场景视图绘制自己的底色；渲染视图
             // 必须始终不透明，否则关闭 Bloom 后天空像素 alpha 为 0，会透出视口底色发黑
             float outputAlpha = pathMode || values[115] < 0.5 || primarySurfaceHit ? 1.0 : 0.0;
-            StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height), outputAlpha));
+            StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height, primarySurfaceDistance), outputAlpha));
         }
 
-        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height)
+        // 以固定世界网格定义粒子，时间只平移粒子场。DDA 只访问射线经过的网格。
+        float WeatherField(vec3 camera, vec3 ray, float rayLimit, vec3 velocity,
+            float time, float density, uint salt, float focal, bool snow)
+        {
+            const float cellSize = 2.0;
+            vec3 origin = camera - velocity * time;
+            ivec3 cell = ivec3(floor(origin / cellSize));
+            ivec3 stepCell = ivec3(sign(ray));
+            vec3 absRay = max(abs(ray), vec3(1e-7));
+            vec3 stepDistance = vec3(cellSize) / absRay;
+            vec3 boundary = (vec3(cell) + max(vec3(stepCell), vec3(0.0))) * cellSize;
+            vec3 nextDistance = abs((boundary - origin) / absRay);
+            if (abs(ray.x) < 1e-7) nextDistance.x = 1e30;
+            if (abs(ray.y) < 1e-7) nextDistance.y = 1e30;
+            if (abs(ray.z) < 1e-7) nextDistance.z = 1e30;
+            vec3 axis = normalize(-velocity);
+            float coverage = 0.0;
+            // 256 个世界单位最多穿过 224 个边长为 2 的网格。
+            for (int i = 0; i < 228; ++i)
+            {
+                uint id = Hash(uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^
+                    uint(cell.z) * 83492791u ^ salt);
+                float present = float(id & 65535u) / 65535.0;
+                if (present < density)
+                {
+                    vec3 randomCenter = vec3(float(Hash(id + 1u) & 65535u),
+                        float(Hash(id + 2u) & 65535u), float(Hash(id + 3u) & 65535u)) / 65535.0;
+                    vec3 center = (vec3(cell) + mix(vec3(0.25), vec3(0.75), randomCenter)) * cellSize;
+                    vec3 offset = origin - center;
+                    float parallel = dot(ray, axis);
+                    float axisOffset = snow ? 0.0 : clamp((dot(axis, offset) - parallel * dot(ray, offset)) /
+                        max(1.0 - parallel * parallel, 0.001), -0.30, 0.30);
+                    vec3 particlePoint = center + axis * axisOffset;
+                    float alongRay = dot(particlePoint - origin, ray);
+                    if (alongRay > 0.02 && alongRay < rayLimit)
+                    {
+                        float separation = length(origin + ray * alongRay - particlePoint);
+                        float radius = snow ? mix(0.045, 0.09, randomCenter.x) : mix(0.015, 0.03, randomCenter.x);
+                        float footprint = max(alongRay / max(focal, 1.0), 0.001);
+                        float alpha = (1.0 - smoothstep(radius, radius + footprint, separation)) *
+                            min(1.0, radius * 2.0 / footprint);
+                        // 镜头附近的粒子渐隐，避免单滴雨在近裁剪面放大成遮住视野的巨条。
+                        alpha *= smoothstep(1.0, 5.0, alongRay);
+                        coverage = max(coverage, alpha);
+                    }
+                }
+                float exitDistance = min(nextDistance.x, min(nextDistance.y, nextDistance.z));
+                if (exitDistance >= rayLimit || coverage >= 0.98) break;
+                if (nextDistance.x <= nextDistance.y && nextDistance.x <= nextDistance.z)
+                { cell.x += stepCell.x; nextDistance.x += stepDistance.x; }
+                else if (nextDistance.y <= nextDistance.z)
+                { cell.y += stepCell.y; nextDistance.y += stepDistance.y; }
+                else
+                { cell.z += stepCell.z; nextDistance.z += stepDistance.z; }
+            }
+            return coverage;
+        }
+
+        vec3 PostProcess(vec3 color, ivec2 pixel, int width, int height, float surfaceDistance)
         {
             color *= exp2(values[65]);
             color *= vec3(values[68], values[69], values[70]);
@@ -5522,54 +5878,58 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 color *= 1.0 - clamp(dot(uv, uv) * values[67], 0.0, 0.85);
             }
             color = max(color, vec3(0.0));
-            // 天气是屏幕空间近似：每个网格内随机分布独立粒子，避免整屏周期性条纹。
+            // 雨雪是世界坐标中的粒子场；收尾通道从导引图取得首表面深度。
             vec2 weatherUv = (vec2(pixel) + 0.5) / vec2(height);
-            float weatherTime = values[P_WATER_TIME];
+            float weatherTime = values[P_WEATHER_TIME];
+            float weatherSeed = values[P_WEATHER_SEED];
             vec2 windDirection = vec2(cos(radians(values[P_WEATHER_WIND_DIRECTION])), sin(radians(values[P_WEATHER_WIND_DIRECTION])));
             float windStrength = max(values[P_WEATHER_WIND_STRENGTH], 0.0);
             float stormStrength = clamp(values[P_WEATHER_STORM], 0.0, 1.0);
-            vec2 drift = vec2(windDirection.x * windStrength * 0.045, -0.55);
-            vec2 rainPos = (weatherUv - drift * weatherTime) * vec2(92.0, 24.0);
             float rainDrop = 0.0;
-            if (values[P_WEATHER_RAIN] > 0.0)
-                for (int y=-1; y<=1; y++) for (int x=-1; x<=1; x++)
-                {
-                    vec2 cell = floor(rainPos) + vec2(x,y);
-                    float seed = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
-                    vec2 center = cell + vec2(fract(seed * 13.17), fract(seed * 7.31));
-                    vec2 delta = rainPos - center;
-                    float width = mix(0.035, 0.075, fract(seed * 31.7));
-                    float length = mix(0.15, 0.42, fract(seed * 53.1));
-                    rainDrop = max(rainDrop, (1.0-smoothstep(width*0.4,width,abs(delta.x))) *
-                        (1.0-smoothstep(length*0.5,length,abs(delta.y))) * step(0.35,seed));
-                }
-            rainDrop *= clamp(values[P_WEATHER_RAIN], 0.0, 1.0);
-            vec2 snowPos = (weatherUv - vec2(drift.x * 0.45, -0.10) * weatherTime) * 32.0;
             float snowDrop = 0.0;
-            if (values[P_WEATHER_SNOW] > 0.0)
-                for (int y=-1; y<=1; y++) for (int x=-1; x<=1; x++)
+            if (values[P_WEATHER_RAIN] > 0.0 || values[P_WEATHER_SNOW] > 0.0)
+            {
+                vec3 camera = vec3(values[0], values[1], values[2]);
+                vec3 forward = vec3(values[4], values[5], values[6]);
+                vec3 right = vec3(values[8], values[9], values[10]);
+                vec3 up = vec3(values[12], values[13], values[14]);
+                float focal = max(values[3], 1.0);
+                if (values[P_MODE_PATH] > 0.5 && values[87] > 0.0)
+                    focal = float(height) / (2.0 * tan(radians(clamp(values[87], 20.0, 120.0)) * 0.5));
+                vec2 screen = vec2(pixel) + 0.5 - vec2(width, height) * 0.5;
+                vec3 ray = normalize(forward + right * screen.x / focal - up * screen.y / focal);
+                float maxDistance = min(values[P_FAR_CLIP], values[P_WEATHER_VIEW_DISTANCE]);
+                if (surfaceDistance < 0.0)
                 {
-                    vec2 cell = floor(snowPos) + vec2(x,y);
-                    float seed = fract(sin(dot(cell, vec2(173.3, 269.5))) * 31837.731);
-                    vec2 center = cell + vec2(fract(seed * 19.37), fract(seed * 43.11));
-                    float radius = mix(0.045, 0.14, fract(seed * 71.9));
-                    snowDrop = max(snowDrop, (1.0-smoothstep(radius*0.35,radius,length(snowPos-center))) * step(0.22,seed));
+                    float viewDepth = imageLoad(guideImage, pixel).w;
+                    if (viewDepth > 0.0) maxDistance = min(maxDistance, viewDepth / max(dot(ray, forward), 1e-5));
                 }
-            snowDrop *= clamp(values[P_WEATHER_SNOW], 0.0, 1.0);
+                else maxDistance = min(maxDistance, surfaceDistance);
+                vec3 wind = vec3(windDirection.x, 0.0, windDirection.y) * windStrength;
+                uint weatherHash = uint(weatherSeed) * 2654435761u;
+                if (values[P_WEATHER_RAIN] > 0.0)
+                    rainDrop = WeatherField(camera, ray, maxDistance, vec3(wind.x, -8.0, wind.z),
+                        weatherTime, clamp(values[P_WEATHER_RAIN], 0.0, 1.0) * 0.12, weatherHash, focal, false);
+                if (values[P_WEATHER_SNOW] > 0.0)
+                    snowDrop = WeatherField(camera, ray, maxDistance, vec3(wind.x * 0.4, -1.2, wind.z * 0.4),
+                        weatherTime, clamp(values[P_WEATHER_SNOW], 0.0, 1.0) * 0.22, weatherHash ^ 0x9e3779b9u, focal, true);
+            }
             color = mix(color, vec3(0.75, 0.86, 0.98), rainDrop * 0.5);
             color = mix(color, vec3(0.94, 0.97, 1.0), snowDrop * 0.9);
             color *= 1.0 - stormStrength * 0.18;
             float lightningRate = max(values[P_WEATHER_LIGHTNING], 0.0);
             float lightningClock = weatherTime * lightningRate * 0.42;
             float lightningCell = floor(lightningClock);
-            float lightningOffset = fract(sin(lightningCell * 91.73 + 17.0) * 43758.5453);
+            float lightningOffset = fract(sin(lightningCell * 91.73 + 17.0 + weatherSeed * 0.31) * 43758.5453);
             float lightningPhase = abs(fract(lightningClock) - lightningOffset);
             float flash = (1.0 - smoothstep(0.0, 0.08, lightningPhase)) * step(0.001, lightningRate);
             color += vec3(0.8, 0.85, 1.0) * flash * stormStrength * 0.5;
-            // 当前没有安全的独立颜色输入供折射采样；使用轻微热雾色偏近似。
-            float heatNoise = EnvironmentNoise(weatherUv * vec2(9.0, 17.0) + vec2(0.3, -0.8) * weatherTime);
-            float heat = values[P_WEATHER_HEAT_HAZE] * heatNoise;
-            color = mix(color, color * vec3(1.04, 1.01, 0.95), heat * 0.25);
+            // 场景基础预览没有独立收尾输入，保留轻微色偏提示；渲染视图在收尾通道采样位移。
+            if (surfaceDistance >= 0.0 && values[P_SCENE_PREVIEW] > 0.5)
+            {
+                float heatNoise = EnvironmentNoise(weatherUv * vec2(9.0, 17.0) + vec2(0.3, -0.8) * weatherTime + weatherSeed * vec2(0.17, 0.31));
+                color = mix(color, color * vec3(1.04, 1.01, 0.95), values[P_WEATHER_HEAT_HAZE] * heatNoise * 0.25);
+            }
             if (values[64] > 0.5)
             {
                 if (int(values[64]) == 1)

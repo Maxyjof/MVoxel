@@ -154,31 +154,37 @@ public static class VoxFormat
         return VoxDocumentReader.Read(bytes);
     }
 
-    /// <summary>把文档里的每个实例按平移与旋转摆好，合并成一个世界</summary>
-    /// <param name="document">解析结果</param>
-    /// <returns>合并后的世界</returns>
+    /// <summary>把文档里的每个实例按平移与旋转摆好，合并成一个世界。</summary>
     public static VoxelWorld Compose(VoxDocument document) => Compose(document, VoxelCoord64.Zero);
 
-    /// <summary>把文档里的每个实例按平移与旋转摆好，合并成一个世界</summary>
+    /// <summary>把单个实例的变换烘焙到独立世界，保留颜色和材质槽。</summary>
+    public static VoxelWorld ComposeInstance(VoxDocument document, VoxInstance instance, VoxelCoord64 origin = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var world = new VoxelWorld();
+        AppendInstance(document, instance, origin, world.CreateBulkWriter());
+        return world;
+    }
+
     private static VoxelWorld Compose(VoxDocument document, VoxelCoord64 origin)
     {
         var world = new VoxelWorld();
-        foreach (var instance in document.Instances)
-        {
-            var model = document.Models[instance.ModelIndex];
-            foreach (var voxel in model.Voxels)
-            {
-                // MagicaVoxel 的 Z 是重力方向，映射到 MVoxel 的 Y 轴向上
-                var local = new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y);
-                var coordinate = origin + instance.Offset + instance.Rotation.Apply(local);
-                // 调色板索引同时是材质槽：导入后材质面板与着色器都按它取参数
-                world.Set(coordinate, new VoxelValue(voxel.Color,
-                    (ushort)Math.Clamp(voxel.PaletteIndex, 0, Project.MaterialAsset.TableSlots - 1),
-                    voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
-            }
-        }
-
+        var writer = world.CreateBulkWriter();
+        foreach (var instance in document.Instances) AppendInstance(document, instance, origin, writer);
         return world;
+    }
+
+    private static void AppendInstance(VoxDocument document, VoxInstance instance, VoxelCoord64 origin, VoxelWorld.BulkWriter writer)
+    {
+        var model = document.Models[instance.ModelIndex];
+        foreach (var voxel in model.Voxels)
+        {
+            var local = new VoxelCoord64(-voxel.X - 1L, voxel.Z, voxel.Y);
+            var coordinate = origin + instance.Offset + instance.Rotation.Apply(local);
+            writer.Set(coordinate, new VoxelValue(voxel.Color,
+                (ushort)Math.Clamp(voxel.PaletteIndex, 0, Project.MaterialAsset.TableSlots - 1),
+                voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
+        }
     }
 
     /// <summary>按 256 边界切块，块内坐标从零开始，块在世界中的位置交给场景图</summary>

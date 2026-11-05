@@ -86,6 +86,17 @@ internal sealed class ObjectVoxelStore
 
     internal bool TryGetWorld(StableId id, out VoxelWorld world) => _objects.TryGetValue(id, out world!);
 
+    /// <summary>全部对象体素总数，供界面统计显示，避免每帧复制引用表</summary>
+    internal int TotalOccupiedVoxelCount
+    {
+        get
+        {
+            var total = 0;
+            foreach (var world in _objects.Values) total += world.OccupiedVoxelCount;
+            return total;
+        }
+    }
+
     internal bool Remove(StableId id) => _objects.Remove(id);
 
     internal void Clear() => _objects.Clear();

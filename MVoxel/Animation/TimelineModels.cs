@@ -51,23 +51,37 @@ public sealed class TimelineAsset
 
     public void Normalize()
     {
+        Name ??= "时间轴";
+        ActivationRanges ??= [];
+        Clips ??= [];
+        Events ??= [];
         FrameRate = Math.Clamp(FrameRate, 1, 240);
         LengthFrames = Math.Clamp(LengthFrames, 1, 10_000_000);
-        ActivationRanges.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.ObjectId));
-        Clips.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.ObjectId) || string.IsNullOrWhiteSpace(item.ClipAsset));
-        Events.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.Action));
+        // 未填写完成的轨道也是用户工作，应保存在资产中，供下次继续编辑。
+        ActivationRanges.RemoveAll(item => item is null);
+        Clips.RemoveAll(item => item is null);
+        Events.RemoveAll(item => item is null);
         foreach (var range in ActivationRanges)
         {
-            range.StartFrame = Math.Clamp(range.StartFrame, 0, LengthFrames);
-            range.EndFrame = Math.Clamp(Math.Max(range.StartFrame, range.EndFrame), 0, LengthFrames);
+            range.ObjectId ??= string.Empty;
+            range.StartFrame = Math.Clamp(range.StartFrame, 0, 10_000_000);
+            range.EndFrame = Math.Clamp(range.EndFrame, 0, 10_000_000);
         }
         foreach (var clip in Clips)
         {
+            clip.ObjectId ??= string.Empty;
+            clip.ClipAsset ??= string.Empty;
             clip.ClipAsset = clip.ClipAsset.Replace('\\', '/');
-            clip.StartFrame = Math.Clamp(clip.StartFrame, 0, LengthFrames);
-            clip.EndFrame = Math.Clamp(Math.Max(clip.StartFrame, clip.EndFrame), 0, LengthFrames);
+            clip.StartFrame = Math.Clamp(clip.StartFrame, 0, 10_000_000);
+            clip.EndFrame = Math.Clamp(clip.EndFrame, 0, 10_000_000);
             clip.Speed = float.IsFinite(clip.Speed) ? Math.Clamp(clip.Speed, -8F, 8F) : 1F;
         }
-        foreach (var marker in Events) marker.Frame = Math.Clamp(marker.Frame, 0, LengthFrames);
+        foreach (var marker in Events)
+        {
+            marker.Condition ??= string.Empty;
+            marker.Action ??= string.Empty;
+            marker.TargetObjectId ??= string.Empty;
+            marker.Frame = Math.Clamp(marker.Frame, 0, 10_000_000);
+        }
     }
 }

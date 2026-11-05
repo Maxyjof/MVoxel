@@ -70,7 +70,9 @@ public static class AssetMetaStore
             return false;
         }
 
-        return AssetExtensions.Contains(Path.GetExtension(relativePath));
+        return relativePath.EndsWith(".mvtimeline.json", StringComparison.OrdinalIgnoreCase) ||
+            relativePath.EndsWith(".mvanim.json", StringComparison.OrdinalIgnoreCase) ||
+            AssetExtensions.Contains(Path.GetExtension(relativePath));
     }
 
     /// <summary>

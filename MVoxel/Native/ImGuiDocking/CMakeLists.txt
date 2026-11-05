@@ -4,3 +4,8 @@ add_library(cimgui SHARED cimgui.cpp imgui/imgui.cpp imgui/imgui_draw.cpp imgui/
 target_compile_features(cimgui PRIVATE cxx_std_11)
 target_compile_definitions(cimgui PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS=1)
 target_link_libraries(cimgui PRIVATE imm32)
+add_executable(mvoxel_video_encoder ../VideoEncoder/main.cpp)
+target_compile_features(mvoxel_video_encoder PRIVATE cxx_std_17)
+target_compile_options(mvoxel_video_encoder PRIVATE /utf-8)
+target_compile_definitions(mvoxel_video_encoder PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(mvoxel_video_encoder PRIVATE mfplat mfreadwrite mfuuid windowscodecs ole32)

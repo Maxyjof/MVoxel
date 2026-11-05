@@ -7,6 +7,57 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    private void AddVoxelAssetReferenceToScene(string relativePath)
+    {
+        if (_project is null || _sceneDocument is null) return;
+        if (IsAssetStage) { SetStatus("请先返回场景，再添加体素资产引用"); return; }
+        if (_worldLoadFailed) { SetStatus("当前场景数据尚无法安全添加模型引用"); return; }
+        try
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_project.AssetsPath)) + Path.DirectorySeparatorChar;
+            var path = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+                !(path.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
+                  path.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException("体素数据路径无效");
+            if (LargeWorldFormat.IsObjectDocument(path))
+            {
+                var document = LargeWorldFormat.ReadObjects(path);
+                if (document.Objects.Select(segment => segment.ObjectId).Distinct(StringComparer.Ordinal).Count() != document.Objects.Count)
+                    throw new InvalidDataException("体素资产包含重复的对象标识");
+                foreach (var segment in document.Objects)
+                {
+                    var part = CreateHierarchyObject(string.IsNullOrWhiteSpace(segment.Name) ? "体素对象" : segment.Name, null, true);
+                    part.Transform = TransformComponent.FromGrid(new GridTransform(segment.Origin, OrthogonalRotation.Identity));
+                    var partComponent = part.Components.First(SceneComponentTypes.IsVoxelModel);
+                    var partData = SceneComponentTypes.ReadVoxelModel(partComponent);
+                    SceneComponentTypes.WriteVoxelModel(partComponent, partData with
+                    {
+                        Model = "Assets/" + relativePath.Replace('\\', '/'), SourceSegment = segment.ObjectId, SourceOrigin = segment.Origin,
+                        VoxelCount = segment.World.OccupiedVoxelCount,
+                    });
+                    _objectVoxels.SetWorld(part.Id, segment.World);
+                }
+                RebuildObjectVoxelWorld();
+                SetStatus($"已添加 {document.Objects.Count} 个体素资产对象引用");
+                return;
+            }
+            // 在修改场景前完成读取，损坏或缺失的资产不会留下空对象。
+            var world = LargeWorldFormat.Read(path);
+            var item = CreateHierarchyObject(Path.GetFileNameWithoutExtension(path), null, true);
+            var component = item.Components.First(SceneComponentTypes.IsVoxelModel);
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            SceneComponentTypes.WriteVoxelModel(component, data with
+            { Model = "Assets/" + relativePath.Replace('\\', '/'), VoxelCount = world.OccupiedVoxelCount });
+            _objectVoxels.SetWorld(item.Id, world);
+            RebuildObjectVoxelWorld();
+            SetStatus($"已添加体素资产引用：{item.Name}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+            InvalidOperationException or ArgumentException or OverflowException)
+        { SetStatus($"添加体素资产引用失败：{exception.Message}"); }
+    }
+
     private void ApplyVoxelModelReference(SceneObject sceneObject, ComponentRecord component, string reference)
     {
         if (_project is null || _sceneDocument is null) return;
@@ -44,7 +95,7 @@ internal sealed partial class ImGuiEditorWindow
                     if (forward)
                     {
                         SceneComponentTypes.WriteVoxelModel(active, current with
-                        { Model = reference, VoxelCount = loaded.OccupiedVoxelCount, MirrorX = false });
+                        { Model = reference, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = loaded.OccupiedVoxelCount, MirrorX = false });
                         EmbeddedVoxelData.Remove(active);
                     }
                     //新模型按 1x 载入，重置缩放标记并丢弃旧基准，避免下次缩放拿旧基准替换掉刚载入的模型
@@ -109,7 +160,7 @@ internal sealed partial class ImGuiEditorWindow
             var data = SceneComponentTypes.ReadVoxelModel(component);
             SceneComponentTypes.WriteVoxelModel(component, data with
             {
-                Model = targetReference, VoxelCount = objectWorld.OccupiedVoxelCount,
+                Model = targetReference, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = objectWorld.OccupiedVoxelCount,
             });
             EmbeddedVoxelData.Remove(component);
             AlignModelOriginToBounds(sceneObject, objectWorld);

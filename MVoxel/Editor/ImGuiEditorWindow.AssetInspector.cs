@@ -35,7 +35,7 @@ internal sealed partial class ImGuiEditorWindow
             ProjectAssetKind.Palette => DrawPaletteAssetInspector(relativePath, absolutePath),
             ProjectAssetKind.RenderPreset => DrawRenderPresetInspector(relativePath, absolutePath),
             ProjectAssetKind.Generator => DrawGeneratorAssetInspector(relativePath, absolutePath),
-            ProjectAssetKind.Script or ProjectAssetKind.Document or ProjectAssetKind.Unknown =>
+            ProjectAssetKind.Script or ProjectAssetKind.Document or ProjectAssetKind.Timeline or ProjectAssetKind.AnimationClip or ProjectAssetKind.Unknown =>
                 DrawTextAssetInspector(relativePath, absolutePath, kind),
             _ => false,
         };
@@ -59,7 +59,13 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextDisabled($"尺寸  {maximum.X - minimum.X + 1} × {maximum.Y - minimum.Y + 1} × {maximum.Z - minimum.Z + 1}");
             }
 
-            if (ImGui.Button("设为当前体素数据", new Vector2(150F, 30F))) OpenWorldAsset(relativePath);
+            var native = path.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Button(native ? "编辑体素资产" : "导入体素数据"))
+            {
+                OpenVoxelAssetStage(relativePath);
+            }
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(native ? "在独立空间中编辑此资产" : "先导入为原生资产，再进入独立编辑空间");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
         {
@@ -80,9 +86,10 @@ internal sealed partial class ImGuiEditorWindow
             return _assetInspectorWorld;
         }
 
-        var world = Path.GetExtension(path).Equals(".vox", StringComparison.OrdinalIgnoreCase)
-            ? VoxFormat.Read(path)
-            : LargeWorldFormat.Read(path);
+        var native = path.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith(".mvworld", StringComparison.OrdinalIgnoreCase);
+        var world = native && LargeWorldFormat.IsObjectDocument(path)
+            ? LargeWorldFormat.ReadObjectPreview(path) : ReadVoxelAsset(path);
         _assetInspectorWorldPath = path;
         _assetInspectorWorldStamp = stamp;
         _assetInspectorWorld = world;
@@ -237,7 +244,7 @@ internal sealed partial class ImGuiEditorWindow
         var info = new FileInfo(path);
         ImGui.TextDisabled($"路径  {relativePath}");
         ImGui.TextDisabled($"大小  {info.Length:N0} 字节    修改时间  {info.LastWriteTime:yyyy-MM-dd HH:mm}");
-        if (kind is ProjectAssetKind.Script or ProjectAssetKind.Document)
+        if (kind is ProjectAssetKind.Script or ProjectAssetKind.Document or ProjectAssetKind.Timeline or ProjectAssetKind.AnimationClip)
         {
             try
             {

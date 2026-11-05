@@ -225,13 +225,14 @@ internal sealed partial class ImGuiEditorWindow
             [Param("panel", "string", true, "面板标识，见 ui.panels"), Param("visible", "boolean", true, "是否显示")]),
         new("asset.list", "资产", "列出资产", "列出项目资产，可按目录、类型筛选并选择是否递归子目录",
             [Param("folder", "string", false, "相对 Assets 的目录，缺省为根目录"),
-             Param("kind", "string", false, "只看某种类型：Scene/VoxelModel/Material/Palette/Timeline/AnimationClip/Generator/Document/Image 等"),
+             Param("kind", "string", false, "只看某种类型：可用 Scene/VoxelModel/Material 等枚举名，也可用 voxel/scene/material 等创建简写"),
              Param("recursive", "boolean", false, "是否递归子目录，默认 false")]),
         new("asset.create", "资产", "新建资产", "等同资产面板右键创建：体素数据、场景、调色盘、材质、渲染预设、动画片段、时间轴、文本、Markdown 与生成器",
             [Param("kind", "string", true,
                  "voxel/scene/palette/material/renderpreset/animationclip/timeline/document/markdown/generator.js/generator.lua"),
              Param("folder", "string", false, "目标目录，缺省为 Assets 根目录"),
-             Param("name", "string", false, "不含扩展名的文件名，缺省按类型自动编号")]),
+             Param("name", "string", false, "不含扩展名的文件名，缺省按类型自动编号"),
+             Param("open", "boolean", false, "创建后立刻进入体素编辑空间或打开生成器面板，默认 false")]),
         new("asset.createFolder", "资产", "新建文件夹", "在指定目录创建资产文件夹",
             [Param("folder", "string", false, "父目录，缺省为 Assets 根目录"), Param("name", "string", true, "文件夹名称")]),
         new("asset.rename", "资产", "重命名资产", "重命名资产并让场景与预制体中的引用跟随；name 只给主名时自动保留原扩展名",
@@ -248,9 +249,12 @@ internal sealed partial class ImGuiEditorWindow
             [Param("path", "string", true, "相对 Assets 的资产路径")]),
         new("asset.stage.status", "资产", "读取编辑空间状态", "返回是否在资产编辑空间、编辑的资产路径、脏标记与状态栏文本", []),
         new("asset.stage.save", "资产", "保存编辑空间资产", "保存当前编辑空间中的资产，等价顶栏“保存资产”与 Ctrl+S", []),
+        new("asset.stage.saveAsCopy", "资产", "另存副本并切换", "把当前编辑的资产另存为副本并切换到副本继续编辑，未保存修改先写回原资产", []),
         new("asset.openStage", "资产", "打开资产编辑空间", "打开项目内体素数据或预制体的独立编辑空间",
             [Param("path", "string", true, "相对项目 Assets 目录的资产路径")]),
-        new("asset.returnScene", "资产", "返回场景", "资产空间无未保存修改时返回原场景", []),
+        new("asset.returnScene", "资产", "返回场景", "返回原场景；有未保存修改时需带 save=true 保存或 discard=true 放弃",
+            [Param("save", "boolean", false, "返回前先保存资产，默认 false"),
+             Param("discard", "boolean", false, "返回前放弃未保存修改，默认 false")]),
         new("ui.openRenderSection", "界面", "展开渲染配置分组", "打开渲染配置面板并独占展开指定分组，供截图与文档取证使用",
             [Param("section", "string", true, "分组标识：lighting/palette/color/path/material/camera/lod；environment 会打开独立的环境配置窗口")]),
         new("perf.profile", "性能", "强制性能采样", "不打开分析器窗口也开启 GPU 时间戳采样，供命令行取证",
@@ -457,6 +461,7 @@ internal sealed partial class ImGuiEditorWindow
             "asset.info" => DescribeAssetInfo(payload),
             "asset.stage.status" => DescribeAssetStage(),
             "asset.stage.save" => SaveAssetStageFromAutomation(),
+            "asset.stage.saveAsCopy" => SaveAssetStageCopyFromAutomation(),
             "asset.openStage" => RunOnUi(() =>
             {
                 var path = ReadString(payload, "path") ?? throw new ArgumentException("缺少 path");
@@ -474,9 +479,25 @@ internal sealed partial class ImGuiEditorWindow
             "asset.returnScene" => RunOnUi(() =>
             {
                 if (!IsAssetStage) return new { returned = true, status = "当前已在场景中" };
-                if (_sceneDocumentDirty) throw new InvalidOperationException("资产有未保存修改，请在编辑器中保存或放弃后返回场景");
+                var save = ReadBoolean(payload, "save") ?? false;
+                var discard = ReadBoolean(payload, "discard") ?? false;
+                if (save && discard) throw new InvalidOperationException("save 与 discard 不能同时为 true");
+                var wasDirty = _sceneDocumentDirty;
+                if (wasDirty)
+                {
+                    if (save)
+                    {
+                        if (!SaveAssetStage()) throw new InvalidOperationException(_statusText);
+                    }
+                    else if (!discard)
+                    {
+                        throw new InvalidOperationException(
+                            "资产有未保存修改；带 save=true 保存后返回，或带 discard=true 放弃修改后返回");
+                    }
+                }
+
                 if (_prefabStage is not null) ReturnFromPrefabAssetStage(); else ReturnFromVoxelAssetStage(false);
-                return new { returned = !IsAssetStage, status = _statusText };
+                return new { returned = !IsAssetStage, saved = save && wasDirty, discarded = discard && wasDirty, status = _statusText };
             }),
             "ui.openRenderSection" => OpenRenderSection(payload),
             "ui.status" => new { status = _statusText },
