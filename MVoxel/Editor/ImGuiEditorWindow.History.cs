@@ -46,9 +46,11 @@ internal sealed partial class ImGuiEditorWindow
             }
             return;
         }
-        ImGui.SetNextWindowSize(new System.Numerics.Vector2(
-            Math.Min(ImGui.GetIO().DisplaySize.X * .85F, ImGui.GetFontSize() * 42F), 0F), ImGuiCond.Appearing);
-        ImGui.SetNextWindowSizeConstraints(System.Numerics.Vector2.Zero, ImGui.GetIO().DisplaySize * .9F);
+        var displayWidth = ImGui.GetIO().DisplaySize.X;
+        // 提示内容通常只有一两行，窗口宽度按字号取，过宽会把画面完全挡住
+        var dialogWidth = Math.Clamp(ImGui.GetFontSize() * 24F, 320F, displayWidth * 0.6F);
+        ImGui.SetNextWindowSize(new System.Numerics.Vector2(dialogWidth, 0F), ImGuiCond.Appearing);
+        ImGui.SetNextWindowSizeConstraints(new System.Numerics.Vector2(280F, 0F), ImGui.GetIO().DisplaySize * .9F);
         if (!CenteredModal.Begin(title, ImGuiWindowFlags.AlwaysAutoResize)) return;
         ImGui.TextWrapped($"即将{(pending.Forward ? "重做" : "撤销")}：{pending.Command.Name}");
         ImGui.Separator();
@@ -222,6 +224,16 @@ internal sealed partial class ImGuiEditorWindow
             }).ToList();
         }
         _objectVoxels.RestoreReferences(state.Worlds);
+        // 曲线渲染器与树生成器的体素由组件参数生成，历史快照里的世界引用可能来自另一时刻；
+        // 先摘掉这些对象的世界，让 RebuildObjectVoxelWorld 按恢复后的组件重新生成，
+        // 否则会出现组件参数已撤销、画面上的体素却停在撤销前的情况
+        if (_sceneDocument is not null)
+        {
+            foreach (var sceneObject in _sceneDocument.Objects)
+            {
+                if (GetGeneratedVoxelComponent(sceneObject) is not null) _objectVoxels.Remove(sceneObject.Id);
+            }
+        }
     }
 
     private void RestoreHistoryUi(EditorHistoryState state, bool sceneChanged, bool assetsChanged)
@@ -290,11 +302,8 @@ internal sealed partial class ImGuiEditorWindow
             var target = forward ? after : before;
             var removed = source.Objects.Keys.Count(id => !target.Objects.ContainsKey(id));
             if (removed > 0) warnings.Add($"此操作会从场景移除 {removed} 个对象及其组件和模型数据。");
-            var replaced = source.Worlds.Count(pair => target.Worlds.TryGetValue(pair.Key, out var world) &&
-                !ReferenceEquals(world, pair.Value) && pair.Value.OccupiedVoxelCount > 0);
-            if (replaced > 0) warnings.Add($"此操作会替换 {replaced} 个模型的当前体素数据。");
-            var cells = commands.OfType<VoxelStrokeCommand>().Sum(command => (long)command.ChangedCellCount);
-            if (cells >= 100_000) warnings.Add($"此操作包含 {cells:N0} 次体素格修改，可能显著改变模型并需要较长处理时间。");
+            // 体素数据的撤销重做属于日常编辑，直接用新的世界引用覆盖旧引用即可，不再弹窗确认；
+            // 只有对象增删和磁盘文件冲突这类真正不可逆的后果才需要提醒。
             return warnings.Count == 0 ? null : string.Join("\n\n", warnings);
         }
         public void Execute() => Apply(true);
