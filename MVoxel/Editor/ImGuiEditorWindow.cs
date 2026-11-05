@@ -80,6 +80,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private StableId? _animationLinkedObjectId;
     private int _probeVolumeSelection;
     private int _centerTab;
+
+    /// <summary>最近一次真正获得焦点的中心页签：0 场景，1 渲染</summary>
+    private int _focusedCenterTab;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
     private string? _requestedRenderSettingsSection;
@@ -1856,6 +1859,7 @@ DockId=0x6A3C3007,0
         {
             DrawPanelWindowMenu();
             _centerTab = 0;
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _focusedCenterTab = 0;
             DrawSceneView();
         }
         ImGui.End();
@@ -1876,6 +1880,7 @@ DockId=0x6A3C3007,0
                 _renderViewNeedsInitialRender = true;
             }
             _renderViewWasFocused = renderViewFocused;
+            if (renderViewFocused) _focusedCenterTab = 1;
             DrawRenderView();
         }
         ImGui.End();

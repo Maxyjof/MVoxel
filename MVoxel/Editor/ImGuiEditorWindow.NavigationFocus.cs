@@ -75,18 +75,27 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 层级节点被双击时调用。当前中心窗口决定使用场景视角还是渲染相机。
     /// </summary>
-    private void FocusHierarchyObject(SceneObject sceneObject)
+    /// <summary>
+    /// 双击层级或场景对象时聚焦；默认聚焦场景视角，只有从渲染页面发起的聚焦才用渲染相机
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="preferRenderCamera">是否优先使用当前渲染相机</param>
+    private void FocusHierarchyObject(SceneObject sceneObject, bool preferRenderCamera = false)
     {
+        // 先保证选中；包围盒暂时算不出来时退回对象原点继续聚焦
+        _selectedSceneObjectId = sceneObject.Id;
+        _selectedVoxel = null;
         if (!TryGetHierarchyObjectBounds(sceneObject, out var bounds))
         {
-            SetStatus($"无法计算对象“{sceneObject.Name}”的包围盒");
-            return;
+            var pivot = GetObjectPivot(sceneObject);
+            bounds = new FocusBounds(pivot - new Vector3(0.5F), pivot + new Vector3(0.5F));
         }
 
         // 聚焦目标跟随 Gizmo 支点设置：中心取包围盒中心，枢轴取对象原点
         var target = _editorSettings.GizmoPivotCenter ? bounds.Center : GetObjectPivot(sceneObject);
         // 只有渲染窗口处于焦点且确实绑定了相机对象时才聚焦渲染相机，否则一律聚焦场景视角
-        if (_renderViewWasFocused && GetActiveRenderCameraObject() is { } cameraObject)
+        if (preferRenderCamera && _focusedCenterTab == 1 &&
+            GetActiveRenderCameraObject() is { Locked: false } cameraObject)
         {
             BeginRenderCameraFocus(cameraObject, bounds, target);
         }
@@ -98,8 +107,6 @@ internal sealed partial class ImGuiEditorWindow
             BeginSceneCameraFocus(bounds, viewport, _sceneFieldOfView, target);
         }
 
-        _selectedSceneObjectId = sceneObject.Id;
-        _selectedVoxel = null;
     }
 
     private void BeginSceneCameraFocus(FocusBounds bounds, Vector2 viewportSize, float fieldOfView,
