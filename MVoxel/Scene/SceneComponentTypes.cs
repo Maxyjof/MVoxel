@@ -272,8 +272,26 @@ public static partial class SceneComponentTypes
             ReadMaterialSlots(data),
             data.TryGetProperty("mirrorX", out var mirrorX) && mirrorX.ValueKind == JsonValueKind.True,
             ReadString(data, "sourceSegment"),
-            ReadVoxelSourceOrigin(data));
+            ReadVoxelSourceOrigin(data),
+            ReadModelRotation(data, "rotationX"),
+            ReadModelRotation(data, "rotationY"),
+            ReadModelRotation(data, "rotationZ"));
     }
+
+    /// <summary>把旋转角规范到 -180 到 180 度，非有限值按 0 处理</summary>
+    private static float NormalizeModelRotation(float degrees)
+    {
+        if (!float.IsFinite(degrees)) return 0F;
+        var wrapped = (degrees + 180F) % 360F;
+        if (wrapped < 0F) wrapped += 360F;
+        return wrapped - 180F;
+    }
+
+    /// <summary>读取模型浮点旋转角（度），缺失按 0 处理</summary>
+    private static float ReadModelRotation(JsonElement data, string name) =>
+        data.TryGetProperty(name, out var value) && value.TryGetSingle(out var degrees) && float.IsFinite(degrees)
+            ? degrees
+            : 0F;
 
     private static VoxelCoord64? ReadVoxelSourceOrigin(JsonElement data)
     {
@@ -300,6 +318,9 @@ public static partial class SceneComponentTypes
             ScaleZ = ClampModelScale(data.ScaleZ),
             SortingLayer = string.IsNullOrWhiteSpace(data.SortingLayer) ? "默认" : data.SortingLayer.Trim(),
             MaterialSlots = NormalizeMaterialSlots(data.MaterialSlots),
+            RotationX = NormalizeModelRotation(data.RotationX),
+            RotationY = NormalizeModelRotation(data.RotationY),
+            RotationZ = NormalizeModelRotation(data.RotationZ),
         }, JsonOptions)!.AsObject();
         // 旧版本只认单个 scale，这里补一份，用旧版打开时至少能看到大致倍数
         updated["scale"] = JsonValue.Create(ClampModelScale(data.ScaleX));
@@ -578,7 +599,8 @@ public readonly record struct VoxelModelComponentData(
     string Model, string Part, int VoxelCount, string Template,
     float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
     string SortingLayer = "默认", int SortingOrder = 0,
-    MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false, string SourceSegment = "", VoxelCoord64? SourceOrigin = null)
+    MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false, string SourceSegment = "", VoxelCoord64? SourceOrigin = null,
+    float RotationX = 0F, float RotationY = 0F, float RotationZ = 0F)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }

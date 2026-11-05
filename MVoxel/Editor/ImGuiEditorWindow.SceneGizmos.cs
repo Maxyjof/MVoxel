@@ -1084,8 +1084,15 @@ internal sealed partial class ImGuiEditorWindow
             _sceneGizmoDragRotation = false;
             if (selected.Transform.Mode == TransformMode.Grid)
             {
-                var steps = (int)MathF.Round(_sceneGizmoRotationDelta / (MathF.PI / 2F));
-                for (var i = 0; i < ((steps % 4 + 4) % 4); i++) RotateModelObjectBy90(selected, _sceneGizmoDragAxis);
+                // 体素网格上的旋转是重新采样生成的：按拖动角度对基准重采样，不再只取 90 度整数倍
+                var radians = _sceneGizmoRotationDelta;
+                if (_editorSettings.RotationSnapEnabled)
+                {
+                    var step = MathF.Max(1F, _editorSettings.RotationSnapDegrees) * (MathF.PI / 180F);
+                    radians = MathF.Round(radians / step) * step;
+                }
+
+                if (MathF.Abs(radians) > .0001F) ApplyModelRotationDelta(selected, _sceneGizmoDragAxis, radians);
             }
             else if (MathF.Abs(_sceneGizmoRotationDelta) > .0001F) MarkSceneDocumentDirty();
             return;

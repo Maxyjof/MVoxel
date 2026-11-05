@@ -251,7 +251,11 @@ internal sealed partial class ImGuiEditorWindow
         var current = CaptureObjectVoxels(sceneObject);
         if (current.OccupiedVoxelCount == 0) return;
         if (!TryWriteScaleBase(sceneObject, current)) return;
-        SceneComponentTypes.WriteVoxelModel(component, data with { ScaleX = 1F, ScaleY = 1F, ScaleZ = 1F });
+        SceneComponentTypes.WriteVoxelModel(component, data with
+        {
+            ScaleX = 1F, ScaleY = 1F, ScaleZ = 1F,
+            RotationX = 0F, RotationY = 0F, RotationZ = 0F,
+        });
         _scaleBaseObjectId = sceneObject.Id;
         _scaleBaseRotation = sceneObject.Transform.Grid.Rotation;
         _scaleBaseWorld = ModelScaleRule.ToLocal(current);
@@ -272,14 +276,27 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelWorld? ResolveScaleBase(SceneObject sceneObject, VoxelWorld current, VoxelCoord64 origin)
     {
         var rotation = sceneObject.Transform.Grid.Rotation;
-        if (IsAtBaseScale(sceneObject))
+        var modelRotation = ReadModelRotation(sceneObject);
+        var hasModelRotation = MathF.Abs(modelRotation.X) > .001F || MathF.Abs(modelRotation.Y) > .001F ||
+                               MathF.Abs(modelRotation.Z) > .001F;
+        if (IsAtBaseScale(sceneObject) && !hasModelRotation)
         {
-            // 基准尺寸下的模型数据就是基准，每次进入缩放都以最新编辑为准
-            if (!TryWriteScaleBase(sceneObject, current)) return null;
+            // 基准尺寸且没有浮点旋转时，模型数据就是基准；已有旋转或缓存时不能覆盖，
+            // 否则当前这份“已经旋转过的体素”会被当成基准，导致反复旋转层层糊掉
+            if (_scaleBaseObjectId == sceneObject.Id && _scaleBaseWorld is { } cachedBase)
+                return ModelScaleRule.Align(OrientScaleBase(cachedBase, _scaleBaseRotation, rotation), origin);
+            if (!TryReadScaleBaseLocal(sceneObject, out var storedBase, out var storedBaseRotation) ||
+                storedBase.OccupiedVoxelCount == 0)
+            {
+                if (!TryWriteScaleBase(sceneObject, current)) return null;
+                storedBase = current;
+                storedBaseRotation = rotation;
+            }
+
             _scaleBaseObjectId = sceneObject.Id;
-            _scaleBaseRotation = rotation;
-            _scaleBaseWorld = ModelScaleRule.ToLocal(current);
-            return current;
+            _scaleBaseRotation = storedBaseRotation;
+            _scaleBaseWorld = ModelScaleRule.ToLocal(storedBase);
+            return ModelScaleRule.Align(OrientScaleBase(storedBase, storedBaseRotation, rotation), origin);
         }
 
         if (_scaleBaseObjectId == sceneObject.Id && _scaleBaseWorld is { } cached)
