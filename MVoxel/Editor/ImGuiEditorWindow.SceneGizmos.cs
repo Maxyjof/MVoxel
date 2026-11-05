@@ -234,12 +234,16 @@ internal sealed partial class ImGuiEditorWindow
         if (_sceneGizmoDragging) return;
         var mouse = ImGui.GetIO().MousePos;
         if (!ImGui.IsMouseHoveringRect(origin, origin + size)) return;
+        var bestPlaneDistance = float.MaxValue;
         for (var plane = 0; plane < 3; plane++)
         {
             var (u, v) = AxisPlane(plane);
             if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera,
                     out var point, out _)) continue;
-            if (Vector2.Distance(mouse, point) <= 6.5F * 1.3F * 1.2F * 1.5F) _gizmoHoverPlane = plane;
+            var distance = Vector2.Distance(mouse, point);
+            if (distance > 6.5F * 1.3F * 1.2F * 1.5F || distance >= bestPlaneDistance) continue;
+            bestPlaneDistance = distance;
+            _gizmoHoverPlane = plane;
         }
 
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
@@ -931,20 +935,42 @@ internal sealed partial class ImGuiEditorWindow
         switch (mode)
         {
             case SceneGizmoMode.Move:
+            {
+                // 与高亮使用同一套判定：取距离最近的平面，避免“看到蓝色按下去却拖到绿色”
+                var bestPlane = -1;
+                var bestPlaneDistance = float.MaxValue;
+                var bestU = Vector2.Zero;
+                var bestV = Vector2.Zero;
                 for (var plane = 0; plane < 3; plane++)
                 {
                     var (u, v) = AxisPlane(plane);
-                    if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _) ||
-                        Vector2.Distance(mouse, point) > 6.5F * 1.3F * 1.2F * 1.7F ||
-                        !SceneProjection.Project(pivot + u, origin, size, camera, out var pu, out _) ||
+                    if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera,
+                            out var point, out _))
+                        continue;
+                    var distance = Vector2.Distance(mouse, point);
+                    if (distance > 6.5F * 1.3F * 1.2F * 1.7F || distance >= bestPlaneDistance) continue;
+                    if (!SceneProjection.Project(pivot + u, origin, size, camera, out var pu, out _) ||
                         !SceneProjection.Project(pivot + v, origin, size, camera, out var pv, out _)) continue;
-                    var su = pu - pivotScreen; var sv = pv - pivotScreen;
+                    var su = pu - pivotScreen;
+                    var sv = pv - pivotScreen;
                     if (MathF.Abs(su.X * sv.Y - su.Y * sv.X) < .0001F) continue;
-                    _sceneGizmoDragPlane = plane; _sceneGizmoPlaneU = su; _sceneGizmoPlaneV = sv;
-                    _sceneGizmoDragStartMouse = mouse; _sceneGizmoDragStartPosition = pivot;
+                    bestPlane = plane;
+                    bestPlaneDistance = distance;
+                    bestU = su;
+                    bestV = sv;
+                }
+
+                if (bestPlane >= 0)
+                {
+                    _sceneGizmoDragPlane = bestPlane;
+                    _sceneGizmoPlaneU = bestU;
+                    _sceneGizmoPlaneV = bestV;
+                    _sceneGizmoDragStartMouse = mouse;
+                    _sceneGizmoDragStartPosition = pivot;
                     _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
                     BeginGridDragPreview(selected);
-                    _sceneGizmoDragging = true; _sceneGizmoDragRotation = false;
+                    _sceneGizmoDragging = true;
+                    _sceneGizmoDragRotation = false;
                     return true;
                 }
                 for (var axisIndex = 0; axisIndex < 3; axisIndex++)
@@ -971,6 +997,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
 
                 return false;
+            }
             case SceneGizmoMode.Rotate:
                 for (var axisIndex = 0; axisIndex < 3; axisIndex++)
                 {
