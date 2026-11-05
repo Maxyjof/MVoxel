@@ -1222,6 +1222,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
         MeasureSince(mark, ref _analysisLive.DialogsMs);
         _applyPreset = false;
+        SyncComponentEditingState();
         EndEditorHistory();
     }
 
@@ -4318,6 +4319,7 @@ DockId=0x6A3C3007,0
             {
                 _voxelEditTargetId = editing ? null : selectedObject.Id;
                 _activeTool = editing ? EditorTool.Pick : EditorTool.Draw;
+                if (!editing) MarkComponentEditingOwner(selectedObject.Id);
                 _sceneGizmoMode = SceneGizmoMode.Select;
                 if (!editing) _selectedSceneObjectId = selectedObject.Id;
             }
@@ -4404,6 +4406,7 @@ DockId=0x6A3C3007,0
             {
                 data = data with { Editing = !editing };
                 SceneComponentTypes.WriteProbeVolume(component, data);
+                if (!editing) MarkComponentEditingOwner(selectedObject.Id);
                 MarkSceneDocumentDirty();
                 SetStatus(editing ? "已退出探针编辑" : "已进入探针编辑，可在场景视图调整体积");
             }

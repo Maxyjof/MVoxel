@@ -155,10 +155,14 @@ internal sealed partial class ImGuiEditorWindow
             drawList.AddText(upScreen + new Vector2(6F, -4F), color, "朝向");
         }
 
-        DrawCurveTangentHandle(drawList, origin, size, camera, pointWorld, point.TangentIn,
-            ToPackedColor(CurveTangentInColor), "入");
-        DrawCurveTangentHandle(drawList, origin, size, camera, pointWorld, point.TangentOut,
-            ToPackedColor(CurveTangentOutColor), "出");
+        // 直线插值不参与切线运算，画切线手柄只会让人以为它有效
+        if (data.Interpolation != CurveInterpolation.Linear)
+        {
+            DrawCurveTangentHandle(drawList, origin, size, camera, pointWorld, point.TangentIn,
+                ToPackedColor(CurveTangentInColor), "入");
+            DrawCurveTangentHandle(drawList, origin, size, camera, pointWorld, point.TangentOut,
+                ToPackedColor(CurveTangentOutColor), "出");
+        }
     }
 
     /// <summary>
@@ -343,18 +347,21 @@ internal sealed partial class ImGuiEditorWindow
             return true;
         }
 
-        if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera, out var tangentOutScreen))
+        if (data.Interpolation != CurveInterpolation.Linear)
         {
-            BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
-                unitsPerPixel, mouse);
-            return true;
-        }
+            if (TryCurveHandleHit(pointWorld, point.TangentOut, mouse, origin, size, camera, out var tangentOutScreen))
+            {
+                BeginCurveDrag(CurveGizmoDragKind.TangentOut, index, point, pointWorld, tangentOutScreen,
+                    unitsPerPixel, mouse);
+                return true;
+            }
 
-        if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera, out var tangentInScreen))
-        {
-            BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen, unitsPerPixel,
-                mouse);
-            return true;
+            if (TryCurveHandleHit(pointWorld, point.TangentIn, mouse, origin, size, camera, out var tangentInScreen))
+            {
+                BeginCurveDrag(CurveGizmoDragKind.TangentIn, index, point, pointWorld, tangentInScreen, unitsPerPixel,
+                    mouse);
+                return true;
+            }
         }
 
         for (var candidate = 0; candidate < points.Length; candidate++)

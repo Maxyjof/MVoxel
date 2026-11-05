@@ -320,19 +320,102 @@ public static class CurveSpline
         var value = normalized.VoxelValue;
         var seen = new HashSet<VoxelCoord64>();
         var writer = world.CreateBulkWriter();
-        var cursor = 1;
-        for (var stamp = 0; stamp < stamps; stamp++)
+        if (normalized.Shape == CurveBrushShape.Beads)
         {
-            var distance = stamps == 1 ? 0F : MathF.Min(totalLength, stamp * step);
-            while (cursor < samples.Count - 1 && distances[cursor] < distance) cursor++;
-            var sample = Interpolate(samples, distances, cursor, distance);
-            Stamp(writer, seen, sample, normalized, step, maximumVoxels, value, ref truncated);
+            // 珠链是沿曲线排列的离散球珠，仍按采样间距盖章，间距决定珠距
+            var cursor = 1;
+            for (var stamp = 0; stamp < stamps; stamp++)
+            {
+                var distance = stamps == 1 ? 0F : MathF.Min(totalLength, stamp * step);
+                while (cursor < samples.Count - 1 && distances[cursor] < distance) cursor++;
+                var sample = Interpolate(samples, distances, cursor, distance);
+                Stamp(writer, seen, sample, normalized, step, maximumVoxels, value, ref truncated);
+                if (truncated) return world;
+            }
+
+            Stamp(writer, seen, samples[^1], normalized, step, maximumVoxels, value, ref truncated);
+            return world;
+        }
+
+        // 方块管、圆管与十字管改成沿相邻采样的连线扫掠：只按采样点盖章时，
+        // 拐角与截面朝向变化处会漏格，扫掠能保证整条管连续
+        if (samples.Count == 1)
+        {
+            Stamp(writer, seen, samples[0], normalized, step, maximumVoxels, value, ref truncated);
+            return world;
+        }
+
+        for (var index = 1; index < samples.Count; index++)
+        {
+            StampSegment(writer, seen, samples[index - 1], samples[index], normalized, maximumVoxels, value,
+                ref truncated);
             if (truncated) return world;
         }
 
-        // 终点单独补一次，保证曲线最后一段不会因为取整差一点而缺角
-        Stamp(writer, seen, samples[^1], normalized, step, maximumVoxels, value, ref truncated);
         return world;
+    }
+
+    /// <summary>
+    /// 沿相邻两个采样的连线扫掠截面，拐角处也不会断
+    /// </summary>
+    /// <param name="writer">批量写入器</param>
+    /// <param name="seen">已写入的坐标集合</param>
+    /// <param name="start">线段起点采样</param>
+    /// <param name="end">线段终点采样</param>
+    /// <param name="data">曲线数据</param>
+    /// <param name="maximumVoxels">体素上限</param>
+    /// <param name="value">写入值</param>
+    /// <param name="truncated">是否截断</param>
+    private static void StampSegment(VoxelWorld.BulkWriter writer, HashSet<VoxelCoord64> seen,
+        CurveSample start, CurveSample end, CurveRendererComponentData data, int maximumVoxels,
+        VoxelValue value, ref bool truncated)
+    {
+        var delta = end.Position - start.Position;
+        var lengthSquared = delta.LengthSquared();
+        var length = MathF.Sqrt(lengthSquared);
+        var forward = length > 0.0001F ? delta / length : start.Forward;
+        var radiusStart = MathF.Max(0.1F, data.Radius * MathF.Max(0.05F, start.Width));
+        var radiusEnd = MathF.Max(0.1F, data.Radius * MathF.Max(0.05F, end.Width));
+        var reach = MathF.Max(radiusStart, radiusEnd) + 1F;
+        var minimumX = (long)MathF.Floor(MathF.Min(start.Position.X, end.Position.X) - reach);
+        var maximumX = (long)MathF.Ceiling(MathF.Max(start.Position.X, end.Position.X) + reach);
+        var minimumY = (long)MathF.Floor(MathF.Min(start.Position.Y, end.Position.Y) - reach);
+        var maximumY = (long)MathF.Ceiling(MathF.Max(start.Position.Y, end.Position.Y) + reach);
+        var minimumZ = (long)MathF.Floor(MathF.Min(start.Position.Z, end.Position.Z) - reach);
+        var maximumZ = (long)MathF.Ceiling(MathF.Max(start.Position.Z, end.Position.Z) + reach);
+        for (var x = minimumX; x <= maximumX; x++)
+        for (var y = minimumY; y <= maximumY; y++)
+        for (var z = minimumZ; z <= maximumZ; z++)
+        {
+            var center = new Vector3(x + 0.5F, y + 0.5F, z + 0.5F);
+            // 先求体素中心在线段上的最近点，再用该处的截面基判断是否落在管体内
+            var t = lengthSquared < 0.000001F
+                ? 0F
+                : Math.Clamp(Vector3.Dot(center - start.Position, delta) / lengthSquared, 0F, 1F);
+            var closest = start.Position + delta * t;
+            var radius = radiusStart + (radiusEnd - radiusStart) * t;
+            Orthonormalize(forward, Vector3.Lerp(start.Up, end.Up, t), out var up, out var right);
+            var offset = center - closest;
+            var along = Vector3.Dot(offset, right);
+            var height = Vector3.Dot(offset, up);
+            var inside = data.Shape switch
+            {
+                CurveBrushShape.Square => MathF.Abs(along) <= radius && MathF.Abs(height) <= radius,
+                CurveBrushShape.Round => along * along + height * height <= radius * radius,
+                _ => (MathF.Abs(along) <= radius * 0.34F && MathF.Abs(height) <= radius ||
+                      MathF.Abs(height) <= radius * 0.34F && MathF.Abs(along) <= radius),
+            };
+            if (!inside) continue;
+            var coordinate = new VoxelCoord64(x, y, z);
+            if (!seen.Add(coordinate)) continue;
+            if (seen.Count > maximumVoxels)
+            {
+                truncated = true;
+                return;
+            }
+
+            writer.Set(coordinate, value);
+        }
     }
 
     /// <summary>

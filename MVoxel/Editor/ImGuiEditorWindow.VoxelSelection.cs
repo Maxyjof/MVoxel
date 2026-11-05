@@ -118,6 +118,7 @@ internal sealed partial class ImGuiEditorWindow
                 _activeTool = EditorTool.Pick;
                 _voxelEditTargetId = null;
                 _brushPreview = null;
+                MarkComponentEditingOwner(sceneObject.Id);
             }
 
             SetStatus(editing ? "已退出框选模式" : "已进入框选模式：拖动中心手柄平移范围，拖动六面手柄改长宽高");

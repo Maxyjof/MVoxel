@@ -158,6 +158,9 @@ public readonly record struct CurveRendererComponentData(
     /// <summary>控制点数量上限，避免一次生成把界面拖死</summary>
     public const int MaximumPointCount = 512;
 
+    /// <summary>光栅化算法版本；算法改动时提升，使旧负载按新规则重建</summary>
+    private const int RasterVersion = 2;
+
     /// <summary>每段采样数上限</summary>
     public const int MaximumResolution = 64;
 
@@ -211,6 +214,8 @@ public readonly record struct CurveRendererComponentData(
     {
         var data = Normalize();
         var hash = 14695981039346656037UL;
+        // 光栅化算法变化时提升版本号，旧场景里的隐藏负载会按新算法重建，避免留下断开的旧体素
+        MixInt(ref hash, RasterVersion);
         MixInt(ref hash, data.Points.Length);
         foreach (var point in data.Points)
         {
@@ -359,7 +364,8 @@ internal static class CurveRendererJson
         merged[MaterialSlotName] = normalized.MaterialSlot;
         merged[SortingLayerName] = normalized.SortingLayer;
         merged[SortingOrderName] = normalized.SortingOrder;
-        merged[EditingName] = normalized.Editing;
+        // 编辑状态是会话状态，不写进场景文件：否则重开场景或撤销都会把“正在编辑”一起带回来
+        merged.Remove(EditingName);
         component.Data = JsonSerializer.SerializeToElement(merged, Options);
     }
 

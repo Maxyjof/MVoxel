@@ -74,6 +74,7 @@ internal sealed partial class ImGuiEditorWindow
         _sceneGizmoMode = SceneGizmoMode.Select;
         _curvePointObjectId = sceneObject.Id;
         _curvePointIndex = 0;
+        MarkComponentEditingOwner(sceneObject.Id);
         RebuildGeneratedVoxels(sceneObject, component, "新建曲线");
         SetStatus("已添加曲线渲染器：拖动控制点、切线手柄，或直接修改检查器参数来调整曲线");
     }
@@ -122,6 +123,7 @@ internal sealed partial class ImGuiEditorWindow
                 _voxelEditTargetId = null;
                 _sceneGizmoMode = SceneGizmoMode.Select;
                 _curvePointObjectId = sceneObject.Id;
+                MarkComponentEditingOwner(sceneObject.Id);
                 if (_curvePointIndex < 0 && state.Points.Count > 0) _curvePointIndex = 0;
             }
 
@@ -161,17 +163,23 @@ internal sealed partial class ImGuiEditorWindow
 
         var halfWidth = MathF.Max(ImGui.GetFontSize() * 4F,
             MathF.Floor((ImGui.GetContentRegionAvail().X - ImGui.GetStyle().ItemSpacing.X) * .5F) - 1F);
-        if (ImGui.Button("自动平滑切线", new Vector2(halfWidth, 0F)))
+        // 直线插值不参与切线计算，切线工具与切线参数都没有意义，直接不显示
+        var linear = state.Data.Interpolation == CurveInterpolation.Linear;
+        if (!linear)
         {
-            CurveSpline.RecomputeAutoTangents(state.Points, state.Data.Closed);
-            state.GeometryChanged = true;
-            SetStatus("已按相邻控制点重算自动切线，手动调整过的点不会被覆盖");
+            if (ImGui.Button("自动平滑切线", new Vector2(halfWidth, 0F)))
+            {
+                CurveSpline.RecomputeAutoTangents(state.Points, state.Data.Closed);
+                state.GeometryChanged = true;
+                SetStatus("已按相邻控制点重算自动切线，手动调整过的点不会被覆盖");
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("只重算切线模式为“自动”的点；对齐、镜像与自由模式的点保持原样。");
+            ImGui.SameLine();
         }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("只重算切线模式为“自动”的点；对齐、镜像与自由模式的点保持原样。");
-        ImGui.SameLine();
-        if (ImGui.Button("反转方向", new Vector2(halfWidth, 0F)))
+        if (ImGui.Button("反转方向", new Vector2(linear ? -1F : halfWidth, 0F)))
         {
             state.Points.Reverse();
             for (var index = 0; index < state.Points.Count; index++)
@@ -279,64 +287,69 @@ internal sealed partial class ImGuiEditorWindow
             state.GeometryChanged = true;
         }
 
-        BeginInspectorField("切线联动", "自动按相邻点推算；对齐保持前后反向；镜像额外保持等长；自由则两侧互不影响。");
-        var mode = (int)point.TangentMode;
-        if (ImGui.Combo("##CurvePointTangentMode", ref mode, "自动\0对齐\0镜像\0自由\0"))
+        // 直线插值只用控制点位置与朝向，切线与联动方式都不参与生成
+        var linear = state.Data.Interpolation == CurveInterpolation.Linear;
+        if (!linear)
         {
-            point = point with { TangentMode = (CurveTangentMode)mode };
-            if (point.TangentMode == CurveTangentMode.Auto)
-                CurveSpline.RecomputeAutoTangents(state.Points, state.Data.Closed);
-            state.Points[index] = point;
-            state.GeometryChanged = true;
-        }
+            BeginInspectorField("切线联动", "自动按相邻点推算；对齐保持前后反向；镜像额外保持等长；自由则两侧互不影响。");
+            var mode = (int)point.TangentMode;
+            if (ImGui.Combo("##CurvePointTangentMode", ref mode, "自动\0对齐\0镜像\0自由\0"))
+            {
+                point = point with { TangentMode = (CurveTangentMode)mode };
+                if (point.TangentMode == CurveTangentMode.Auto)
+                    CurveSpline.RecomputeAutoTangents(state.Points, state.Data.Closed);
+                state.Points[index] = point;
+                state.GeometryChanged = true;
+            }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("拖动场景里的切线手柄时，自动模式会切换成自由模式，保留你的手动调整。");
-        var linkingMode = point.TangentMode;
-        var curve = state.Data with { Points = state.Points.ToArray() };
-        CurveSpline.BasisAt(curve, index, out var up, out _);
-        var nextDirection = ChordDirection(state.Points, index, true, state.Data.Closed);
-        var previousDirection = ChordDirection(state.Points, index, false, state.Data.Closed);
-        var width = point.Width;
-        BeginInspectorField("宽度倍率", "截面按这个倍率缩放，用来做曲线的粗细渐变。");
-        if (ImGui.DragFloat("##CurvePointWidth", ref width, .01F, .05F, 8F, "%.2f×"))
-        {
-            state.Points[index] = point with { Width = width };
-            point = state.Points[index];
-            state.GeometryChanged = true;
-        }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("拖动场景里的切线手柄时，自动模式会切换成自由模式，保留你的手动调整。");
+            var linkingMode = point.TangentMode;
+            var curve = state.Data with { Points = state.Points.ToArray() };
+            CurveSpline.BasisAt(curve, index, out var up, out _);
+            var nextDirection = ChordDirection(state.Points, index, true, state.Data.Closed);
+            var previousDirection = ChordDirection(state.Points, index, false, state.Data.Closed);
+            var width = point.Width;
+            BeginInspectorField("宽度倍率", "截面按这个倍率缩放，用来做曲线的粗细渐变。");
+            if (ImGui.DragFloat("##CurvePointWidth", ref width, .01F, .05F, 8F, "%.2f×"))
+            {
+                state.Points[index] = point with { Width = width };
+                point = state.Points[index];
+                state.GeometryChanged = true;
+            }
 
-        var outLength = 0F;
-        var outYaw = 0F;
-        var outPitch = 0F;
-        CurveSpline.DecomposeTangent(point.TangentOut, nextDirection, up, out outLength, out outYaw, out outPitch);
-        BeginInspectorField("出切线（长/水平/俯仰）", "朝向下一点的贝塞尔手柄，水平角与俯仰角以控制点走向为基准；拖动数值时自动切换到自由切线。");
-        if (DrawCurveTangentAngles("##CurveTangentOut", ref outLength, ref outYaw, ref outPitch))
-        {
-            var tangent = CurveSpline.ComposeTangent(outLength, outYaw, outPitch, nextDirection, up);
-            point = point with { TangentOut = tangent, TangentMode = CurveTangentMode.Free };
-            if (linkingMode is CurveTangentMode.Aligned or CurveTangentMode.Mirrored)
-                point = CurveSpline.AlignTangent(point, editedOut: true,
-                    forceSameLength: linkingMode == CurveTangentMode.Mirrored);
-            state.Points[index] = point;
-            point = state.Points[index];
-            state.GeometryChanged = true;
-        }
+            var outLength = 0F;
+            var outYaw = 0F;
+            var outPitch = 0F;
+            CurveSpline.DecomposeTangent(point.TangentOut, nextDirection, up, out outLength, out outYaw, out outPitch);
+            BeginInspectorField("出切线（长/水平/俯仰）", "朝向下一点的贝塞尔手柄，水平角与俯仰角以控制点走向为基准；拖动数值时自动切换到自由切线。");
+            if (DrawCurveTangentAngles("##CurveTangentOut", ref outLength, ref outYaw, ref outPitch))
+            {
+                var tangent = CurveSpline.ComposeTangent(outLength, outYaw, outPitch, nextDirection, up);
+                point = point with { TangentOut = tangent, TangentMode = CurveTangentMode.Free };
+                if (linkingMode is CurveTangentMode.Aligned or CurveTangentMode.Mirrored)
+                    point = CurveSpline.AlignTangent(point, editedOut: true,
+                        forceSameLength: linkingMode == CurveTangentMode.Mirrored);
+                state.Points[index] = point;
+                point = state.Points[index];
+                state.GeometryChanged = true;
+            }
 
-        var inLength = 0F;
-        var inYaw = 0F;
-        var inPitch = 0F;
-        CurveSpline.DecomposeTangent(point.TangentIn, previousDirection, up, out inLength, out inYaw, out inPitch);
-        BeginInspectorField("入切线（长/水平/俯仰）", "朝向上一点的贝塞尔手柄；长度决定进入该点时的弯曲程度。");
-        if (DrawCurveTangentAngles("##CurveTangentIn", ref inLength, ref inYaw, ref inPitch))
-        {
-            var tangent = CurveSpline.ComposeTangent(inLength, inYaw, inPitch, previousDirection, up);
-            point = point with { TangentIn = tangent, TangentMode = CurveTangentMode.Free };
-            if (linkingMode is CurveTangentMode.Aligned or CurveTangentMode.Mirrored)
-                point = CurveSpline.AlignTangent(point, editedOut: false,
-                    forceSameLength: linkingMode == CurveTangentMode.Mirrored);
-            state.Points[index] = point;
-            state.GeometryChanged = true;
+            var inLength = 0F;
+            var inYaw = 0F;
+            var inPitch = 0F;
+            CurveSpline.DecomposeTangent(point.TangentIn, previousDirection, up, out inLength, out inYaw, out inPitch);
+            BeginInspectorField("入切线（长/水平/俯仰）", "朝向上一点的贝塞尔手柄；长度决定进入该点时的弯曲程度。");
+            if (DrawCurveTangentAngles("##CurveTangentIn", ref inLength, ref inYaw, ref inPitch))
+            {
+                var tangent = CurveSpline.ComposeTangent(inLength, inYaw, inPitch, previousDirection, up);
+                point = point with { TangentIn = tangent, TangentMode = CurveTangentMode.Free };
+                if (linkingMode is CurveTangentMode.Aligned or CurveTangentMode.Mirrored)
+                    point = CurveSpline.AlignTangent(point, editedOut: false,
+                        forceSameLength: linkingMode == CurveTangentMode.Mirrored);
+                state.Points[index] = point;
+                state.GeometryChanged = true;
+            }
         }
 
         if (ImGui.SmallButton("复制此点到末尾"))
@@ -383,21 +396,29 @@ internal sealed partial class ImGuiEditorWindow
             state.GeometryChanged = true;
         }
 
-        var step = state.Data.Step;
-        BeginInspectorField("采样间距（格）", "沿曲线盖章的间距；间距不大于半径时管身连续，调大可以做出断续的点线效果。");
-        if (ImGui.DragFloat("##CurveStep", ref step, .02F, .1F, 8F, "%.2f"))
+        // 只有珠链按间距排布球珠；方块管、圆管与十字管沿连线扫掠，间距不再影响结果
+        if (state.Data.Shape == CurveBrushShape.Beads)
         {
-            state.Data = state.Data with { Step = step };
-            state.GeometryChanged = true;
+            var step = state.Data.Step;
+            BeginInspectorField("采样间距（格）", "珠链沿曲线排布球珠的间距；调大可以做出断续的点线效果。");
+            if (ImGui.DragFloat("##CurveStep", ref step, .02F, .1F, 8F, "%.2f"))
+            {
+                state.Data = state.Data with { Step = step };
+                state.GeometryChanged = true;
+            }
         }
 
-        var resolution = state.Data.Resolution;
-        BeginInspectorField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。");
-        if (ImGui.SliderInt("##CurveResolution", ref resolution, CurveRendererComponentData.MinimumResolution,
-                CurveRendererComponentData.MaximumResolution))
+        // 直线插值直接连接控制点，细分只影响贝塞尔的平滑程度
+        if (state.Data.Interpolation != CurveInterpolation.Linear)
         {
-            state.Data = state.Data with { Resolution = resolution };
-            state.GeometryChanged = true;
+            var resolution = state.Data.Resolution;
+            BeginInspectorField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。");
+            if (ImGui.SliderInt("##CurveResolution", ref resolution, CurveRendererComponentData.MinimumResolution,
+                    CurveRendererComponentData.MaximumResolution))
+            {
+                state.Data = state.Data with { Resolution = resolution };
+                state.GeometryChanged = true;
+            }
         }
 
         BeginInspectorField("体素颜色", "生成体素统一使用的颜色；透明度小于 255 会自动加半透明标记。");
