@@ -83,6 +83,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     /// <summary>最近一次真正获得焦点的中心页签：0 场景，1 渲染</summary>
     private int _focusedCenterTab;
+
+    /// <summary>层级里上一次单击的对象与时间，用来自行判定双击，避免 ImGui 双击状态被其他控件吞掉</summary>
+    private StableId? _hierarchyLastClickId;
+    private double _hierarchyLastClickTime = double.NegativeInfinity;
     private int? _requestedCenterTab;
     private int? _requestedInspectorTab;
     private string? _requestedRenderSettingsSection;
@@ -577,6 +581,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             freeFlyYawDegrees = _freeFlyActive ? _freeFlyYaw * 180F / MathF.PI : 0F,
             freeFlyPitchDegrees = _freeFlyActive ? _freeFlyPitch * 180F / MathF.PI : 0F,
             mousePosition = new[] { ImGui.GetIO().MousePos.X, ImGui.GetIO().MousePos.Y },
+            focusDebug = _focusDebug.ToArray(),
+            selectedObjectName = GetSelectedSceneObject()?.Name,
                 timeline = DescribeTimelineState(),
                 pendingDialog = DescribePendingDialog(),
                 videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
@@ -1712,6 +1718,17 @@ DockId=0x6A3C3007,0
             ToggleSceneObjectLock(sceneObject);
         }
 
+        // 自己按时间判定双击：不依赖 ImGui 的双击状态，避免它被其他控件或失焦事件重置
+        var selfDoubleClicked = false;
+        if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked)
+        {
+            var now = ImGui.GetTime();
+            selfDoubleClicked = _hierarchyLastClickId == sceneObject.Id &&
+                                now - _hierarchyLastClickTime <= 0.35;
+            _hierarchyLastClickId = sceneObject.Id;
+            _hierarchyLastClickTime = selfDoubleClicked ? double.NegativeInfinity : now;
+        }
+
         if ((rowClicked || rowSelectableClicked) && !visibilityClicked && !selectableClicked &&
             true)
         {
@@ -1723,7 +1740,7 @@ DockId=0x6A3C3007,0
 
         // 不依赖 TreeNodeEx/InvisibleButton 哪一个拿到本次点击：双击判定只看
         // 当前行的实际悬停区域，避免树节点展开状态或 ImGui last-item 状态吞掉聚焦。
-        if (rowDoubleClicked && !visibilityClicked && !selectableClicked &&
+        if ((rowDoubleClicked || selfDoubleClicked) && !visibilityClicked && !selectableClicked &&
             true)
         {
             UnlockSceneSelectionForHierarchy(sceneObject.Id);

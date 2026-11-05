@@ -15,6 +15,19 @@ internal sealed partial class ImGuiEditorWindow
 {
     private const float FocusAnimationDuration = 0.36F;
     private SceneFocusAnimation? _sceneFocusAnimation;
+
+    /// <summary>最近几次聚焦的诊断记录，便于用 CLI 检查聚焦是否真的被触发</summary>
+    private readonly System.Collections.Generic.List<string> _focusDebug = new();
+
+    /// <summary>
+    /// 记录一条聚焦诊断信息，最多保留 8 条
+    /// </summary>
+    /// <param name="message">诊断内容</param>
+    private void FocusDebug(string message)
+    {
+        _focusDebug.Add(message);
+        if (_focusDebug.Count > 8) _focusDebug.RemoveAt(0);
+    }
     private RenderFocusAnimation? _renderFocusAnimation;
 
     private sealed class SceneFocusAnimation
@@ -70,11 +83,11 @@ internal sealed partial class ImGuiEditorWindow
     {
         public Vector3 Center => (Minimum + Maximum) * 0.5F;
         public Vector3 Extent => Maximum - Minimum;
+
+        /// <summary>包围盒是否为空或接近退化，退化时不值得作为聚焦依据</summary>
+        public bool IsDegenerate => Extent.X <= 0.01F && Extent.Y <= 0.01F && Extent.Z <= 0.01F;
     }
 
-    /// <summary>
-    /// 层级节点被双击时调用。当前中心窗口决定使用场景视角还是渲染相机。
-    /// </summary>
     /// <summary>
     /// 双击层级或场景对象时聚焦；默认聚焦场景视角，只有从渲染页面发起的聚焦才用渲染相机
     /// </summary>
@@ -85,14 +98,22 @@ internal sealed partial class ImGuiEditorWindow
         // 先保证选中；包围盒暂时算不出来时退回对象原点继续聚焦
         _selectedSceneObjectId = sceneObject.Id;
         _selectedVoxel = null;
-        if (!TryGetHierarchyObjectBounds(sceneObject, out var bounds))
+        if (!TryGetHierarchyObjectBounds(sceneObject, out var bounds) || bounds.IsDegenerate)
         {
+            // 空对象（没有体素、生成器还没生成）也要能聚焦：给合理半径，避免相机贴到原点
             var pivot = GetObjectPivot(sceneObject);
-            bounds = new FocusBounds(pivot - new Vector3(0.5F), pivot + new Vector3(0.5F));
+            const float emptyObjectRadius = 4F;
+            bounds = new FocusBounds(pivot - new Vector3(emptyObjectRadius),
+                pivot + new Vector3(emptyObjectRadius));
+            FocusDebug("fallback bounds for " + sceneObject.Name);
         }
 
         // 聚焦目标跟随 Gizmo 支点设置：中心取包围盒中心，枢轴取对象原点
         var target = _editorSettings.GizmoPivotCenter ? bounds.Center : GetObjectPivot(sceneObject);
+        FocusDebug("focus " + sceneObject.Name +
+                   " bounds=" + bounds.Minimum.X.ToString("0.#") + "," + bounds.Minimum.Y.ToString("0.#") + "," +
+                   bounds.Minimum.Z.ToString("0.#") + " - " + bounds.Maximum.X.ToString("0.#") + "," +
+                   bounds.Maximum.Y.ToString("0.#") + "," + bounds.Maximum.Z.ToString("0.#"));
         // 只有渲染窗口处于焦点且确实绑定了相机对象时才聚焦渲染相机，否则一律聚焦场景视角
         if (preferRenderCamera && _focusedCenterTab == 1 &&
             GetActiveRenderCameraObject() is { Locked: false } cameraObject)
@@ -115,6 +136,7 @@ internal sealed partial class ImGuiEditorWindow
         var center = targetOverride ?? bounds.Center;
         var targetDistance = CalculateFocusDistance(bounds, viewportSize, fieldOfView,
             GetSceneZoomLimits());
+        FocusDebug("sceneAnim targetDist=" + targetDistance.ToString("0.##"));
         _sceneFocusAnimation = new SceneFocusAnimation(
             _scenePan,
             _sceneFreeMoveHeight,
