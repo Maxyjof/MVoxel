@@ -200,6 +200,41 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 没有体素模型组件时的整数缩放：0 允许（隐藏对象），每次都以重新生成的基准缩放，反复调整不累积失真
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="x">X 倍率</param>
+    /// <param name="y">Y 倍率</param>
+    /// <param name="z">Z 倍率</param>
+    private void ApplyObjectIntegerScale(SceneObject sceneObject, int x, int y, int z)
+    {
+        var transform = sceneObject.Transform;
+        x = Math.Clamp(x, 0, 64);
+        y = Math.Clamp(y, 0, 64);
+        z = Math.Clamp(z, 0, 64);
+        if (transform.ScaleX == x && transform.ScaleY == y && transform.ScaleZ == z) return;
+        transform.ScaleX = x;
+        transform.ScaleY = y;
+        transform.ScaleZ = z;
+        // 先清掉当前世界并按参数重生成一份基准，再按绝对倍率缩放，避免反复缩放累积误差
+        _objectVoxels.Remove(sceneObject.Id);
+        EnsureGeneratedVoxelWorlds();
+        if (x > 0 && y > 0 && z > 0 && _objectVoxels.TryGetWorld(sceneObject.Id, out var world))
+        {
+            var anchor = world.TryGetBounds(out var minimum, out _) ? minimum : VoxelCoord64.Zero;
+            if (ModelScaleRule.TryResample(world, x, y, z, anchor, out var scaled, out var error,
+                    _scaleCancellation.Token))
+                _objectVoxels.SetWorld(sceneObject.Id, scaled);
+            else SetStatus($"对象缩放失败：{error}");
+        }
+
+        MarkSceneDocumentDirty();
+        UpdateTransformMarker(sceneObject);
+        RebuildObjectVoxelWorld();
+        _pipeline?.ResetAccumulation();
+    }
+
+    /// <summary>
     /// 规范化单轴倍数：放大取整数倍，缩小保留小数；失败时把原因写进说明列表
     /// </summary>
     /// <param name="requested">用户填写的倍数</param>

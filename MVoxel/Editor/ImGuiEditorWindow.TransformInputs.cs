@@ -163,13 +163,6 @@ internal sealed partial class ImGuiEditorWindow
         drawList.AddText(origin + new Vector2((labelWidth - textSize.X) * .5F, (height - textSize.Y) * .5F),
             ToPackedColor(highlighted ? EditorPalette.Text : EditorPalette.MutedText), axis);
         if (highlighted) ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEW);
-        if (hovered)
-        {
-            ImGui.SetTooltip(key == "旋转"
-                ? $"按住拖动可直接调整角度：右或上增大、左或下减小，每 {pixelsPerStep:0} 像素 {dragStep:0} 度；拖到编辑器边缘会从另一侧继续"
-                : $"按住拖动可直接调整数值：右或上增大、左或下减小，每 {pixelsPerStep:0} 像素 {dragStep:0.###}；拖到编辑器边缘会从另一侧继续");
-        }
-
         ImGui.PopID();
         return dragging;
     }
@@ -249,6 +242,64 @@ internal sealed partial class ImGuiEditorWindow
         else if (!free) DrawTransformScaleRow(item);
     }
 
+    /// <summary>缩放行的联动锁定状态，和 Unity 的链式按钮一致</summary>
+    private bool _transformScaleLocked;
+
+    /// <summary>体素模型倍数缩放的联动锁定状态</summary>
+    private bool _modelScaleLocked;
+
+    /// <summary>
+    /// 带联动锁定的三轴行：锁定后改任意一轴，其余两轴同步为同一个值
+    /// </summary>
+    private void DrawTransformRowLocked(string label, double[] values, double dragStep, double pixelsPerStep,
+        ref bool locked, Action<int, double> apply)
+    {
+        BeginInspectorField(label);
+        DrawChainToggle(ref locked);
+        ImGui.SameLine(0F, 4F);
+        string[] axes = ["X", "Y", "Z"];
+        var labelWidth = 0F;
+        foreach (var axis in axes)
+            labelWidth += Math.Max(ImGui.CalcTextSize(axis).X + 6F, ImGui.GetFrameHeight() * .8F);
+        var width = Math.Max(35F, (ImGui.GetContentRegionAvail().X - labelWidth - 32F) / 3F);
+        for (var i = 0; i < 3; i++)
+        {
+            if (i != 0) ImGui.SameLine(0, 5);
+            if (TransformAxisInput(label, axes[i], values[i], width, dragStep, pixelsPerStep, out var result))
+            {
+                if (locked)
+                {
+                    for (var axis = 0; axis < 3; axis++) apply(axis, result);
+                }
+                else apply(i, result);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 绘制链式锁定按钮，锁定后高亮
+    /// </summary>
+    /// <param name="locked">锁定状态</param>
+    private static void DrawChainToggle(ref bool locked)
+    {
+        var size = ImGui.GetFrameHeight();
+        var origin = ImGui.GetCursorScreenPos();
+        ImGui.PushID("##TransformLock");
+        if (ImGui.InvisibleButton("##TransformLockButton", new Vector2(size, size))) locked = !locked;
+        var hovered = ImGui.IsItemHovered();
+        var draw = ImGui.GetWindowDrawList();
+        if (hovered || locked)
+            draw.AddRectFilled(origin, origin + new Vector2(size, size),
+                ToPackedColor(locked ? EditorPalette.AccentSoft : EditorPalette.PanelHeader),
+                ImGui.GetStyle().FrameRounding);
+        var color = ToPackedColor(locked ? EditorPalette.Accent : EditorPalette.MutedText);
+        var center = origin + new Vector2(size * .5F, size * .5F);
+        draw.AddCircle(center + new Vector2(-3.4F, 0F), 3.2F, color, 10, 1.4F);
+        draw.AddCircle(center + new Vector2(3.4F, 0F), 3.2F, color, 10, 1.4F);
+        if (hovered) ImGui.SetTooltip(locked ? "已锁定：改一个轴会同步其余两轴" : "点击锁定：改一个轴会同步其余两轴");
+        ImGui.PopID();
+    }
+
     /// <summary>
     /// 没有体素模型组件的网格对象用整数缩放，改的是对象变换的缩放分量
     /// </summary>
@@ -257,17 +308,12 @@ internal sealed partial class ImGuiEditorWindow
     {
         var transform = item.Transform;
         var values = new[] { (double)transform.ScaleX, transform.ScaleY, transform.ScaleZ };
-        DrawTransformRow("缩放", values, 1D, 12D, (axis, value) =>
+        DrawTransformRowLocked("缩放", values, 1D, 12D, ref _transformScaleLocked, (axis, value) =>
         {
-            var clamped = Math.Clamp((int)Math.Round(value), 1, 64);
+            var clamped = Math.Clamp((int)Math.Round(value), 0, 64);
             values[axis] = clamped;
-            if (axis == 0) transform.ScaleX = clamped;
-            else if (axis == 1) transform.ScaleY = clamped;
-            else transform.ScaleZ = clamped;
-            UpdateTransformMarker(item);
-            MarkSceneDocumentDirty();
-            _pipeline?.ResetAccumulation();
-        }, "对象整数缩放：1 到 64 的整数倍；体素模型对象请用下方的倍数缩放，能保持基准精度。");
+            ApplyObjectIntegerScale(item, (int)values[0], (int)values[1], (int)values[2]);
+        });
     }
 
     /// <summary>
@@ -280,11 +326,11 @@ internal sealed partial class ImGuiEditorWindow
     {
         var data = SceneComponentTypes.ReadVoxelModel(component);
         var scaleValues = new[] { (double)data.ScaleX, data.ScaleY, data.ScaleZ };
-        DrawTransformRow("缩放", scaleValues, 0.1D, 12D, (axis, value) =>
+        DrawTransformRowLocked("缩放", scaleValues, 0.1D, 12D, ref _modelScaleLocked, (axis, value) =>
         {
             scaleValues[axis] = value;
             ApplyModelScale(item, (float)scaleValues[0], (float)scaleValues[1], (float)scaleValues[2]);
-        }, "放大只支持整数倍，体素按整格复制；缩小支持小数倍，结果从模型最小角成组、对齐原始体素格。\n缩放始终以“最近一次编辑后的模型”为基准，只改倍数不会掉精度；在非 1x 尺寸上继续雕刻时，当前形态会成为新的基准。");
+        });
     }
 
     /// <summary>
@@ -340,6 +386,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private static Double3 GridEuler(OrthogonalRotation r)
     {
+        // 旧场景可能留下非法矩阵，显示时按单位旋转处理，避免得到 NaN 欧拉角
+        if (!r.IsValid) r = OrthogonalRotation.Identity;
         var matrix = new Matrix4x4(r.M00, r.M01, r.M02, 0, r.M10, r.M11, r.M12, 0, r.M20, r.M21, r.M22, 0, 0, 0, 0, 1);
         return TransformComponent.FromFree(new FreeTransform(Double3.Zero, Quaternion.CreateFromRotationMatrix(matrix))).GetEulerDegrees();
     }

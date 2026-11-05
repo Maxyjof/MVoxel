@@ -2184,16 +2184,18 @@ DockId=0x6A3C3007,0
     {
         ImGui.TextDisabled("移动吸附步长");
         var linked = _editorSettings.MoveSnapLinked;
-        if (ImGui.Checkbox("等比联动##GizmoSnapLinked", ref linked)) _editorSettings.MoveSnapLinked = linked;
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("开启后改一个轴，另外两轴按同一比例缩放；三轴都是 1 时把 X 设成 2，会一起变成 2。");
         var values = new[] { _editorSettings.MoveSnapX, _editorSettings.MoveSnapY, _editorSettings.MoveSnapZ };
         var previous = values.ToArray();
         var changed = -1;
+        DrawChainToggle(ref linked);
+        _editorSettings.MoveSnapLinked = linked;
+        ImGui.SameLine(0F, 4F);
         for (var axis = 0; axis < 3; axis++)
         {
             var label = axis switch { 0 => "X", 1 => "Y", _ => "Z" };
+            ImGui.SetNextItemWidth(90F);
             if (InspectorDragFloatField(label, ref values[axis], .05F, .05F, 64F)) changed = axis;
+            if (axis != 2) ImGui.SameLine(0F, 4F);
         }
 
         if (changed >= 0)
@@ -4456,14 +4458,11 @@ DockId=0x6A3C3007,0
             draw.AddText(new Vector2(origin.X,
                     origin.Y + (ImGui.GetFrameHeight() - ImGui.GetTextLineHeight()) * .5F),
                 ToPackedColor(active ? EditorPalette.Accent : EditorPalette.MutedText), label);
-            if (tooltip is not null && ImGui.IsItemHovered())
-                ImGui.SetTooltip(active ? tooltip : tooltip + "\n按住标签左右拖动即可改值");
             ImGui.PopID();
         }
         else
         {
             ImGui.TextDisabled(label);
-            if (tooltip is not null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
         }
 
         ImGui.SameLine();

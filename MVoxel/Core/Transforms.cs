@@ -215,16 +215,22 @@ public readonly struct OrthogonalRotation : IEquatable<OrthogonalRotation>
     /// </summary>
     /// <param name="right">先执行的旋转</param>
     /// <returns>复合后的旋转</returns>
-    public OrthogonalRotation Compose(OrthogonalRotation right) => new(
-        (sbyte)(M00 * right.M00 + M01 * right.M10 + M02 * right.M20),
-        (sbyte)(M00 * right.M01 + M01 * right.M11 + M02 * right.M21),
-        (sbyte)(M00 * right.M02 + M01 * right.M12 + M02 * right.M22),
-        (sbyte)(M10 * right.M00 + M11 * right.M10 + M12 * right.M20),
-        (sbyte)(M10 * right.M01 + M11 * right.M11 + M12 * right.M21),
-        (sbyte)(M10 * right.M02 + M11 * right.M12 + M12 * right.M22),
-        (sbyte)(M20 * right.M00 + M21 * right.M10 + M22 * right.M20),
-        (sbyte)(M20 * right.M01 + M21 * right.M11 + M22 * right.M21),
-        (sbyte)(M20 * right.M02 + M21 * right.M12 + M22 * right.M22));
+    public OrthogonalRotation Compose(OrthogonalRotation right)
+    {
+        // 旧场景或反序列化可能留下全零矩阵，直接合成会抛异常把整个编辑器带崩，这里按单位旋转兜底
+        var left = IsValid ? this : Identity;
+        var other = right.IsValid ? right : Identity;
+        return new OrthogonalRotation(
+            (sbyte)(left.M00 * other.M00 + left.M01 * other.M10 + left.M02 * other.M20),
+            (sbyte)(left.M00 * other.M01 + left.M01 * other.M11 + left.M02 * other.M21),
+            (sbyte)(left.M00 * other.M02 + left.M01 * other.M12 + left.M02 * other.M22),
+            (sbyte)(left.M10 * other.M00 + left.M11 * other.M10 + left.M12 * other.M20),
+            (sbyte)(left.M10 * other.M01 + left.M11 * other.M11 + left.M12 * other.M21),
+            (sbyte)(left.M10 * other.M02 + left.M11 * other.M12 + left.M12 * other.M22),
+            (sbyte)(left.M20 * other.M00 + left.M21 * other.M10 + left.M22 * other.M20),
+            (sbyte)(left.M20 * other.M01 + left.M21 * other.M11 + left.M22 * other.M21),
+            (sbyte)(left.M20 * other.M02 + left.M21 * other.M12 + left.M22 * other.M22));
+    }
 
     /// <summary>
     /// 按九个元素逐一比较两个旋转
