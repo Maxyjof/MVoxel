@@ -2111,6 +2111,20 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        var capsLockMode = IsCapsLockEnabled();
+        if (capsLockMode)
+        {
+            // 大小写锁定是第一人称游戏式操作：左键放置、右键破坏（MC 模式两者互换），
+            // 不能因为当前工具是选择工具就吞掉右键破坏
+            var lockedLeftAction = ViewportInputPolicy.Resolve(EditorMouseButton.Left, false, true,
+                _editorSettings.McMode);
+            var lockedRightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, false, true,
+                _editorSettings.McMode);
+            _ = ApplyMouseVoxelAction(lockedLeftAction, ImGuiMouseButton.Left, mouse, origin, size, camera);
+            _ = ApplyMouseVoxelAction(lockedRightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
+            return;
+        }
+
         if (_activeTool == EditorTool.Pick && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
         {
             var hit = PickVoxel(mouse, origin, size, camera);
@@ -2129,7 +2143,6 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        var capsLockMode = IsCapsLockEnabled();
         var shiftPressed = IsShiftPressed();
         // 相机和选择是观察工具，绝不能因为默认左键动作是 Place 而修改体素。
         // 之前“相机/选择/擦除”按钮虽然能切换状态，却仍会落入同一套放置逻辑。
