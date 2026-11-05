@@ -2212,8 +2212,10 @@ internal sealed partial class ImGuiEditorWindow
     private bool ApplyMouseVoxelAction(ViewportMouseAction action, ImGuiMouseButton button,
         Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
+        // 第一人称模式下只响应单击，拖动留给转头，避免边看边刷出一大片体素
+        var dragPaintAllowed = !IsCapsLockEnabled();
         if (action is ViewportMouseAction.None or ViewportMouseAction.Orbit ||
-            !(ImGui.IsMouseClicked(button) || button == ImGuiMouseButton.Left &&
+            !(ImGui.IsMouseClicked(button) || dragPaintAllowed && button == ImGuiMouseButton.Left &&
                 ImGui.IsMouseDragging(button) && ImGui.GetIO().MouseDelta != Vector2.Zero))
         {
             return false;

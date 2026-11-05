@@ -2004,8 +2004,9 @@ DockId=0x6A3C3007,0
             (showVoxelWorld || GetVoxelWorldObject() is null))
         {
             // 选择工具下拖动空白区域进入框选；单击未拖动时继续走体素拾取
+            // 大小写锁定的第一人称模式里左键拖动不该开始框选，避免动视角时弹出选择盒
             if (_sceneGizmoMode == SceneGizmoMode.Select && _activeTool == EditorTool.Pick &&
-                HandleObjectBoxSelection(origin, size, camera)) { }
+                !IsCapsLockEnabled() && HandleObjectBoxSelection(origin, size, camera)) { }
             else HandleVoxelToolInput(origin, size, camera);
 
             // 场景里双击对象时聚焦到它：先由单击选中，再按双击触发聚焦
