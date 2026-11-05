@@ -1899,7 +1899,10 @@ DockId=0x6A3C3007,0
         var camera = GetSceneCamera();
         var floatingToolSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
         var floatingToolsHovered = ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
-            origin + new Vector2(8F + floatingToolSize, 10F + 4F * (floatingToolSize + 3F)));
+            origin + new Vector2(8F + MathF.Max(floatingToolSize * 3F, 120F), 10F + 4F * (floatingToolSize + 3F)));
+        // 下拉面板展开时，面板区域也算在工具区内，避免点击穿透到场景
+        if (_gizmoPanel != GizmoPanelKind.None &&
+            ImGui.IsMouseHoveringRect(_gizmoPanelMinimum, _gizmoPanelMaximum)) floatingToolsHovered = true;
         _colorSampleSceneOrigin = origin;
         _colorSampleSceneSize = size;
         var gizmoInput = !_screenColorSampling && HandleSceneGizmoInput(origin, size, camera, gizmoHovered || floatingToolsHovered);
@@ -2125,6 +2128,7 @@ DockId=0x6A3C3007,0
                 });
             ImGui.PopID();
         }
+        DrawGizmoPanelOverlay();
         ImGui.SetCursorScreenPos(saved);
         return hovered;
     }
@@ -2143,6 +2147,7 @@ DockId=0x6A3C3007,0
     private Vector2 _gizmoPanelMaximum;
     private Vector2 _gizmoRowMinimum;
     private Vector2 _gizmoRowMaximum;
+    private Vector2 _gizmoPanelAnchor;
 
     private bool DrawGizmoModeRow(Vector2 top, float size)
     {
@@ -2153,7 +2158,7 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Space,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Space ? GizmoPanelKind.None : GizmoPanelKind.Space,
-            "点击展开 Gizmo 显示空间：全局使用世界轴，局部使用对象自身旋转后的轴");
+            string.Empty);
 
         var pivotText = _editorSettings.GizmoPivotCenter ? "中心" : "枢轴";
         var pivotWidth = Math.Max(size * 1.7F, ImGui.CalcTextSize(pivotText).X + 26F);
@@ -2161,7 +2166,7 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Pivot,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Pivot ? GizmoPanelKind.None : GizmoPanelKind.Pivot,
-            "点击展开 Gizmo 支点：中心使用选中包围盒中心，枢轴使用对象原点");
+            string.Empty);
 
         var snapText = "吸附";
         var snapWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize(snapText).X + 26F);
@@ -2169,58 +2174,62 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Snap,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Snap ? GizmoPanelKind.None : GizmoPanelKind.Snap,
-            "点击展开移动、旋转与缩放的吸附步长");
+            string.Empty);
 
         _gizmoRowMinimum = top;
         _gizmoRowMaximum = new Vector2(snapTop.X + snapWidth, top.Y + size);
 
-        if (_gizmoPanel != GizmoPanelKind.None)
-        {
-            // 面板窄一些，并且挂在各自按钮的正下方
-            var anchorX = _gizmoPanel switch
+        // 面板锚点先记下，等竖排工具列画完再画面板，保证面板盖在上面不穿模
+        _gizmoPanelAnchor = new Vector2(
+            _gizmoPanel switch
             {
                 GizmoPanelKind.Space => spaceMinimum.X,
                 GizmoPanelKind.Pivot => pivotTop.X,
                 _ => snapTop.X,
-            };
-            var panelWidth = _gizmoPanel == GizmoPanelKind.Snap ? 330F : 150F;
-            var panelTop = new Vector2(anchorX, top.Y + size + 4F);
-            if (panelTop.X + panelWidth > ImGui.GetWindowPos().X + ImGui.GetWindowWidth())
-                panelTop.X = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - panelWidth - 8F;
-            ImGui.SetCursorScreenPos(panelTop);
-            ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Window));
-            if (ImGui.BeginChild("##GizmoToolPanel", new Vector2(panelWidth, 0F),
-                    ImGuiChildFlags.AutoResizeY | ImGuiChildFlags.Borders))
+            },
+            top.Y + size + 4F);
+        return hovered;
+    }
+
+    /// <summary>
+    /// 在竖排工具列之后绘制下拉面板，保证面板位于最上层
+    /// </summary>
+    private void DrawGizmoPanelOverlay()
+    {
+        if (_gizmoPanel == GizmoPanelKind.None) return;
+        var panelWidth = _gizmoPanel == GizmoPanelKind.Snap ? 330F : 150F;
+        var panelTop = _gizmoPanelAnchor;
+        if (panelTop.X + panelWidth > ImGui.GetWindowPos().X + ImGui.GetWindowWidth())
+            panelTop.X = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - panelWidth - 8F;
+        ImGui.SetCursorScreenPos(panelTop);
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Window));
+        if (ImGui.BeginChild("##GizmoToolPanel", new Vector2(panelWidth, 0F),
+                ImGuiChildFlags.AutoResizeY | ImGuiChildFlags.Borders))
+        {
+            switch (_gizmoPanel)
             {
-                switch (_gizmoPanel)
-                {
-                    case GizmoPanelKind.Space:
-                        DrawGizmoSpacePanel();
-                        break;
-                    case GizmoPanelKind.Pivot:
-                        DrawGizmoPivotPanel();
-                        break;
-                    case GizmoPanelKind.Snap:
-                        DrawGizmoSnapPanel();
-                        break;
-                }
+                case GizmoPanelKind.Space:
+                    DrawGizmoSpacePanel();
+                    break;
+                case GizmoPanelKind.Pivot:
+                    DrawGizmoPivotPanel();
+                    break;
+                case GizmoPanelKind.Snap:
+                    DrawGizmoSnapPanel();
+                    break;
             }
-
-            ImGui.EndChild();
-            _gizmoPanelMinimum = ImGui.GetItemRectMin();
-            _gizmoPanelMaximum = ImGui.GetItemRectMax();
-            ImGui.PopStyleColor();
-
-            // 点击面板与入口按钮以外的区域时自动收起
-            var mouse = ImGui.GetIO().MousePos;
-            var outsidePanel = mouse.X < _gizmoPanelMinimum.X || mouse.X > _gizmoPanelMaximum.X ||
-                               mouse.Y < _gizmoPanelMinimum.Y || mouse.Y > _gizmoPanelMaximum.Y;
-            var outsideRow = mouse.X < _gizmoRowMinimum.X || mouse.X > _gizmoRowMaximum.X ||
-                             mouse.Y < _gizmoRowMinimum.Y || mouse.Y > _gizmoRowMaximum.Y;
-            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) && outsidePanel && outsideRow) _gizmoPanel = GizmoPanelKind.None;
         }
 
-        return hovered;
+        ImGui.EndChild();
+        _gizmoPanelMinimum = ImGui.GetItemRectMin();
+        _gizmoPanelMaximum = ImGui.GetItemRectMax();
+        ImGui.PopStyleColor();
+        var mouse = ImGui.GetIO().MousePos;
+        var outsidePanel = mouse.X < _gizmoPanelMinimum.X || mouse.X > _gizmoPanelMaximum.X ||
+                           mouse.Y < _gizmoPanelMinimum.Y || mouse.Y > _gizmoPanelMaximum.Y;
+        var outsideRow = mouse.X < _gizmoRowMinimum.X || mouse.X > _gizmoRowMaximum.X ||
+                         mouse.Y < _gizmoRowMinimum.Y || mouse.Y > _gizmoRowMaximum.Y;
+        if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) && outsidePanel && outsideRow) _gizmoPanel = GizmoPanelKind.None;
     }
 
     private void DrawGizmoSpacePanel()
@@ -2318,7 +2327,7 @@ DockId=0x6A3C3007,0
         var arrow = new Vector2(minimum.X + size.X - 10F, minimum.Y + size.Y * .5F);
         draw.AddTriangleFilled(arrow + new Vector2(-3F, -2F), arrow + new Vector2(3F, -2F), arrow + new Vector2(0F, 3F),
             ToPackedColor(EditorPalette.MutedText));
-        if (over) ImGui.SetTooltip(tooltip);
+        if (over && tooltip.Length > 0) ImGui.SetTooltip(tooltip);
         ImGui.PopID();
     }
 
