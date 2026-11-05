@@ -712,6 +712,30 @@ internal sealed partial class ImGuiEditorWindow
 
     private static float SnapComponent(float value, float step) => MathF.Round(value / step) * step;
 
+    /// <summary>旋转吸附步长：联动时三轴共用 X</summary>
+    private float RotationSnapStep(int axisIndex)
+    {
+        var value = axisIndex switch
+        {
+            0 => _editorSettings.RotationSnapX,
+            1 => _editorSettings.RotationSnapLinked ? _editorSettings.RotationSnapX : _editorSettings.RotationSnapY,
+            _ => _editorSettings.RotationSnapLinked ? _editorSettings.RotationSnapX : _editorSettings.RotationSnapZ,
+        };
+        return float.IsFinite(value) && value > 0.001F ? value : 15F;
+    }
+
+    /// <summary>缩放吸附步长：联动时三轴共用 X</summary>
+    private float ScaleSnapStep(int axisIndex)
+    {
+        var value = axisIndex switch
+        {
+            0 => _editorSettings.ScaleSnapX,
+            1 => _editorSettings.ScaleSnapLinked ? _editorSettings.ScaleSnapX : _editorSettings.ScaleSnapY,
+            _ => _editorSettings.ScaleSnapLinked ? _editorSettings.ScaleSnapX : _editorSettings.ScaleSnapZ,
+        };
+        return float.IsFinite(value) && value > 0.001F ? value : 0.1F;
+    }
+
     /// <summary>把位移的三个分量分别吸附到步长</summary>
     private Vector3 SnapGizmoDelta(Vector3 delta) => new(
         SnapComponent(delta.X, GizmoSnapStep(0)),
@@ -1070,7 +1094,7 @@ internal sealed partial class ImGuiEditorWindow
             _sceneGizmoRotationDelta = MathF.Atan2(MathF.Sin(angle - _sceneGizmoStartAngle), MathF.Cos(angle - _sceneGizmoStartAngle));
             if (_editorSettings.RotationSnapEnabled)
             {
-                var step = MathF.Max(1F, _editorSettings.RotationSnapDegrees) * (MathF.PI / 180F);
+                var step = RotationSnapStep(_sceneGizmoDragAxis) * (MathF.PI / 180F);
                 _sceneGizmoRotationDelta = MathF.Round(_sceneGizmoRotationDelta / step) * step;
             }
             if (selected.Transform.Mode == TransformMode.Free)
@@ -1139,6 +1163,11 @@ internal sealed partial class ImGuiEditorWindow
                 ModelScaleRule.Minimum, ModelScaleRule.Maximum);
             // 预览值按正式规则吸附：放大只能取整数倍，缩小按 0.05 一档
             factor = factor > 1F ? MathF.Round(factor) : MathF.Round(factor * 20F) / 20F;
+            if (_editorSettings.ScaleSnapEnabled)
+            {
+                var step = ScaleSnapStep(0);
+                factor = MathF.Max(step, MathF.Round(factor / step) * step);
+            }
             var ratio = factor / MathF.Max(ModelScaleRule.Minimum, _sceneGizmoDragStartValue);
             SceneComponentTypes.WriteVoxelModel(component, data with
             {
@@ -1281,7 +1310,7 @@ internal sealed partial class ImGuiEditorWindow
                 var radians = _sceneGizmoRotationDelta;
                 if (_editorSettings.RotationSnapEnabled)
                 {
-                    var step = MathF.Max(1F, _editorSettings.RotationSnapDegrees) * (MathF.PI / 180F);
+                    var step = RotationSnapStep(_sceneGizmoDragAxis) * (MathF.PI / 180F);
                     radians = MathF.Round(radians / step) * step;
                 }
 
@@ -1315,9 +1344,23 @@ internal sealed partial class ImGuiEditorWindow
             {
                 var multiplier = MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F);
                 var before = SceneSerializer.CloneObject(selected);
-                selected.Transform.ScaleX = MathF.Max(0F, selected.Transform.ScaleX * multiplier);
-                selected.Transform.ScaleY = MathF.Max(0F, selected.Transform.ScaleY * multiplier);
-                selected.Transform.ScaleZ = MathF.Max(0F, selected.Transform.ScaleZ * multiplier);
+                var snapScale = _editorSettings.ScaleSnapEnabled;
+                var scaleX = MathF.Max(0F, selected.Transform.ScaleX * multiplier);
+                var scaleY = MathF.Max(0F, selected.Transform.ScaleY * multiplier);
+                var scaleZ = MathF.Max(0F, selected.Transform.ScaleZ * multiplier);
+                if (snapScale)
+                {
+                    var stepX = ScaleSnapStep(0);
+                    var stepY = ScaleSnapStep(1);
+                    var stepZ = ScaleSnapStep(2);
+                    scaleX = MathF.Round(scaleX / stepX) * stepX;
+                    scaleY = MathF.Round(scaleY / stepY) * stepY;
+                    scaleZ = MathF.Round(scaleZ / stepZ) * stepZ;
+                }
+
+                selected.Transform.ScaleX = scaleX;
+                selected.Transform.ScaleY = scaleY;
+                selected.Transform.ScaleZ = scaleZ;
                 var after = SceneSerializer.CloneObject(selected);
                 if (!SceneSerializer.ObjectsEqual(before, after))
                 {

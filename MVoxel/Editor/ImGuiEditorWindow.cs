@@ -2124,47 +2124,149 @@ DockId=0x6A3C3007,0
     /// <param name="top">横向行的左上角屏幕坐标</param>
     /// <param name="size">按钮基准尺寸</param>
     /// <returns>是否悬停在这行按钮上</returns>
+    /// <summary>工具行当前展开的面板</summary>
+    private enum GizmoPanelKind { None, Space, Pivot, Snap }
+
+    private GizmoPanelKind _gizmoPanel;
+
     private bool DrawGizmoModeRow(Vector2 top, float size)
     {
         var hovered = false;
-        var spaceText = _editorSettings.GizmoLocalSpace ? "局部" : "全局";
-        var spaceWidth = Math.Max(size * 1.3F, ImGui.CalcTextSize(spaceText).X + 14F);
-        DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered, () =>
-        {
-            _editorSettings.GizmoLocalSpace = !_editorSettings.GizmoLocalSpace;
-            SetStatus(_editorSettings.GizmoLocalSpace ? "Gizmo 已切换到对象局部坐标轴" : "Gizmo 已切换到世界坐标轴");
-        }, "Gizmo 显示空间：全局使用世界轴，局部使用对象自身旋转后的轴");
+        var spaceText = _editorSettings.GizmoLocalSpace ? "局部 ▾" : "全局 ▾";
+        var spaceWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize(spaceText).X + 14F);
+        DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered,
+            _gizmoPanel == GizmoPanelKind.Space,
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Space ? GizmoPanelKind.None : GizmoPanelKind.Space,
+            "点击展开 Gizmo 显示空间：全局使用世界轴，局部使用对象自身旋转后的轴");
 
-        var pivotText = _editorSettings.GizmoPivotCenter ? "中心" : "枢轴";
-        var pivotWidth = Math.Max(size * 1.3F, ImGui.CalcTextSize(pivotText).X + 14F);
+        var pivotText = _editorSettings.GizmoPivotCenter ? "中心 ▾" : "枢轴 ▾";
+        var pivotWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize(pivotText).X + 14F);
         var pivotTop = top + new Vector2(spaceWidth + 4F, 0F);
-        DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered, () =>
-        {
-            _editorSettings.GizmoPivotCenter = !_editorSettings.GizmoPivotCenter;
-            SetStatus(_editorSettings.GizmoPivotCenter ? "Gizmo 支点：选中包围盒中心" : "Gizmo 支点：对象原点");
-        }, "Gizmo 支点：中心使用选中包围盒的中心，枢轴使用对象原点");
+        DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered,
+            _gizmoPanel == GizmoPanelKind.Pivot,
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Pivot ? GizmoPanelKind.None : GizmoPanelKind.Pivot,
+            "点击展开 Gizmo 支点：中心使用选中包围盒中心，枢轴使用对象原点");
 
-        var snapText = "吸附";
-        var snapWidth = Math.Max(size * 1.1F, ImGui.CalcTextSize(snapText).X + 14F);
+        var snapText = "吸附 ▾";
+        var snapWidth = Math.Max(size * 1.3F, ImGui.CalcTextSize(snapText).X + 14F);
         var snapTop = top + new Vector2(spaceWidth + pivotWidth + 8F, 0F);
         DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
-            () => ImGui.OpenPopup("##GizmoSnapPopup"),
-            "移动吸附步长 X " + _editorSettings.MoveSnapX.ToString("0.##") +
-            " · Y " + _editorSettings.MoveSnapY.ToString("0.##") +
-            " · Z " + _editorSettings.MoveSnapZ.ToString("0.##") +
-            (_editorSettings.MoveSnapLinked ? "（等比联动）" : string.Empty));
-        if (ImGui.BeginPopup("##GizmoSnapPopup"))
+            _gizmoPanel == GizmoPanelKind.Snap,
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Snap ? GizmoPanelKind.None : GizmoPanelKind.Snap,
+            "点击展开移动、旋转与缩放的吸附步长");
+
+        if (_gizmoPanel != GizmoPanelKind.None)
         {
-            DrawGizmoSnapPopup();
-            ImGui.EndPopup();
+            var panelWidth = Math.Max(spaceWidth + pivotWidth + snapWidth + 8F, 330F);
+            // 面板放到工具列右侧，避免盖住竖排工具按钮
+            var panelTop = top + new Vector2(size + 12F, 0F);
+            ImGui.SetCursorScreenPos(panelTop);
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, ToColor(EditorPalette.Window));
+            if (ImGui.BeginChild("##GizmoToolPanel", new Vector2(panelWidth, 0F),
+                    ImGuiChildFlags.AutoResizeY | ImGuiChildFlags.Borders))
+            {
+                switch (_gizmoPanel)
+                {
+                    case GizmoPanelKind.Space:
+                        DrawGizmoSpacePanel();
+                        break;
+                    case GizmoPanelKind.Pivot:
+                        DrawGizmoPivotPanel();
+                        break;
+                    case GizmoPanelKind.Snap:
+                        DrawGizmoSnapPanel();
+                        break;
+                }
+            }
+
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
         }
 
         return hovered;
     }
 
+    private void DrawGizmoSpacePanel()
+    {
+        var local = _editorSettings.GizmoLocalSpace;
+        if (ImGui.RadioButton("全局##GizmoSpaceGlobal", !local)) _editorSettings.GizmoLocalSpace = false;
+        ImGui.SameLine();
+        if (ImGui.RadioButton("局部##GizmoSpaceLocal", local)) _editorSettings.GizmoLocalSpace = true;
+        ImGui.TextDisabled("局部空间使用对象自身旋转后的坐标轴");
+    }
+
+    private void DrawGizmoPivotPanel()
+    {
+        var center = _editorSettings.GizmoPivotCenter;
+        if (ImGui.RadioButton("枢轴##GizmoPivotObject", !center)) _editorSettings.GizmoPivotCenter = false;
+        ImGui.SameLine();
+        if (ImGui.RadioButton("中心##GizmoPivotCenter", center)) _editorSettings.GizmoPivotCenter = true;
+        ImGui.TextDisabled("枢轴用对象原点，中心用选中包围盒中心");
+    }
+
+    /// <summary>吸附面板：移动、旋转、缩放各一组 XYZ，X 左侧是联动锁定</summary>
+    private void DrawGizmoSnapPanel()
+    {
+        DrawGizmoSnapRow("移动", "##SnapMove",
+            ref _editorSettings.MoveSnapLinked,
+            ref _editorSettings.MoveSnapX, ref _editorSettings.MoveSnapY, ref _editorSettings.MoveSnapZ,
+            .05F, .05F, 64F);
+        DrawGizmoSnapRow("旋转", "##SnapRotate",
+            ref _editorSettings.RotationSnapLinked,
+            ref _editorSettings.RotationSnapX, ref _editorSettings.RotationSnapY, ref _editorSettings.RotationSnapZ,
+            1F, 1F, 180F);
+        DrawGizmoSnapRow("缩放", "##SnapScale",
+            ref _editorSettings.ScaleSnapLinked,
+            ref _editorSettings.ScaleSnapX, ref _editorSettings.ScaleSnapY, ref _editorSettings.ScaleSnapZ,
+            .01F, .01F, 8F);
+        ImGui.TextDisabled("吸附步长按组联动：锁定后改一轴，其余两轴按同一比例缩放");
+    }
+
+    /// <summary>一组吸附步长：锁定 + X/Y/Z</summary>
+    private static void DrawGizmoSnapRow(string title, string id, ref bool linked, ref float x, ref float y,
+        ref float z, float speed, float minimum, float maximum)
+    {
+        ImGui.PushID(id);
+        var text = title;
+        var textWidth = Math.Max(ImGui.CalcTextSize(text).X, ImGui.CalcTextSize("移动").X) + 8F;
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextDisabled(text);
+        ImGui.SameLine(textWidth);
+        DrawChainToggle(ref linked);
+        ImGui.SameLine(0F, 4F);
+        var values = new[] { x, y, z };
+        var previous = values.ToArray();
+        var changed = -1;
+        for (var axis = 0; axis < 3; axis++)
+        {
+            var label = axis switch { 0 => "X", 1 => "Y", _ => "Z" };
+            ImGui.SetNextItemWidth(72F);
+            if (InspectorDragFloatField(label, ref values[axis], speed, minimum, maximum)) changed = axis;
+            if (axis != 2) ImGui.SameLine(0F, 4F);
+        }
+
+        if (changed >= 0)
+        {
+            var value = Math.Clamp(values[changed], minimum, maximum);
+            if (linked)
+            {
+                var ratio = value / MathF.Max(.0001F, previous[changed]);
+                for (var axis = 0; axis < 3; axis++)
+                    if (axis != changed) values[axis] = Math.Clamp(previous[axis] * ratio, minimum, maximum);
+            }
+
+            values[changed] = value;
+            x = values[0];
+            y = values[1];
+            z = values[2];
+        }
+
+        ImGui.PopID();
+    }
+
     /// <summary>横向行里的一个小按钮，点击后执行回调</summary>
     private void DrawGizmoRowButton(string id, Vector2 position, Vector2 size, string label, ref bool hovered,
-        Action onClick, string tooltip)
+        bool active, Action onClick, string tooltip)
     {
         ImGui.SetCursorScreenPos(position);
         ImGui.PushID(id);
@@ -2173,59 +2275,14 @@ DockId=0x6A3C3007,0
         hovered |= over;
         var draw = ImGui.GetWindowDrawList();
         var minimum = ImGui.GetItemRectMin();
-        draw.AddRectFilled(minimum, minimum + size,
-            ToPackedColor(over ? EditorPalette.PanelHeader : EditorPalette.Window), 5F);
-        draw.AddRect(minimum, minimum + size, ToPackedColor(EditorPalette.Border), 5F);
+        var fill = active ? EditorPalette.AccentSoft : over ? EditorPalette.PanelHeader : EditorPalette.Window;
+        draw.AddRectFilled(minimum, minimum + size, ToPackedColor(fill), 5F);
+        draw.AddRect(minimum, minimum + size, ToPackedColor(active ? EditorPalette.Accent : EditorPalette.Border), 5F);
         var textSize = ImGui.CalcTextSize(label);
         draw.AddText(minimum + new Vector2((size.X - textSize.X) * .5F, (size.Y - textSize.Y) * .5F),
             ToPackedColor(EditorPalette.Text), label);
         if (over) ImGui.SetTooltip(tooltip);
         ImGui.PopID();
-    }
-
-    /// <summary>移动吸附步长设置：等比联动下改一个轴，其余两轴按同一比例缩放</summary>
-    private void DrawGizmoSnapPopup()
-    {
-        ImGui.TextDisabled("移动吸附步长");
-        var linked = _editorSettings.MoveSnapLinked;
-        var values = new[] { _editorSettings.MoveSnapX, _editorSettings.MoveSnapY, _editorSettings.MoveSnapZ };
-        var previous = values.ToArray();
-        var changed = -1;
-        DrawChainToggle(ref linked);
-        _editorSettings.MoveSnapLinked = linked;
-        ImGui.SameLine(0F, 4F);
-        for (var axis = 0; axis < 3; axis++)
-        {
-            var label = axis switch { 0 => "X", 1 => "Y", _ => "Z" };
-            ImGui.SetNextItemWidth(90F);
-            if (InspectorDragFloatField(label, ref values[axis], .05F, .05F, 64F)) changed = axis;
-            if (axis != 2) ImGui.SameLine(0F, 4F);
-        }
-
-        if (changed >= 0)
-        {
-            var value = Math.Clamp(values[changed], .05F, 64F);
-            if (_editorSettings.MoveSnapLinked)
-            {
-                var ratio = value / MathF.Max(.0001F, previous[changed]);
-                for (var axis = 0; axis < 3; axis++)
-                    if (axis != changed) values[axis] = Math.Clamp(previous[axis] * ratio, .05F, 64F);
-            }
-
-            values[changed] = value;
-            _editorSettings.MoveSnapX = values[0];
-            _editorSettings.MoveSnapY = values[1];
-            _editorSettings.MoveSnapZ = values[2];
-        }
-
-        ImGui.Separator();
-        var rotationSnap = _editorSettings.RotationSnapEnabled;
-        if (ImGui.Checkbox("旋转吸附##GizmoRotationSnap", ref rotationSnap))
-            _editorSettings.RotationSnapEnabled = rotationSnap;
-        var degrees = _editorSettings.RotationSnapDegrees;
-        if (InspectorDragFloatField("角度", ref degrees, .5F, 1F, 180F, "%.0f°"))
-            _editorSettings.RotationSnapDegrees = Math.Clamp(degrees, 1F, 180F);
-        ImGui.TextDisabled("拖动对象或曲线控制点时按步长吸附；开启旋转吸附后按固定角度转动");
     }
 
     /// <summary>使用方向箭头、旋转箭头和缩放手柄区分变换工具。</summary>

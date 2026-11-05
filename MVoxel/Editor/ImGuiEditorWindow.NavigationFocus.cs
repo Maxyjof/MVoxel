@@ -83,31 +83,34 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        // 聚焦目标跟随 Gizmo 支点设置：中心取包围盒中心，枢轴取对象原点
+        var target = _editorSettings.GizmoPivotCenter ? bounds.Center : GetObjectPivot(sceneObject);
         if (_centerTab == 1)
         {
             if (GetActiveRenderCameraObject() is { } cameraObject)
             {
-                BeginRenderCameraFocus(cameraObject, bounds);
+                BeginRenderCameraFocus(cameraObject, bounds, target);
             }
             else
             {
                 // 没有相机对象时，渲染窗口使用编辑器内置相机；当前实现与场景视角
                 // 共用这组内置相机状态，因此仍然可以平滑移动而无需伪造场景对象。
-                BeginSceneCameraFocus(bounds, _lastRenderViewportSize, _sceneFieldOfView);
+                BeginSceneCameraFocus(bounds, _lastRenderViewportSize, _sceneFieldOfView, target);
             }
         }
         else
         {
-            BeginSceneCameraFocus(bounds, _lastSceneViewportSize, _sceneFieldOfView);
+            BeginSceneCameraFocus(bounds, _lastSceneViewportSize, _sceneFieldOfView, target);
         }
 
         _selectedSceneObjectId = sceneObject.Id;
         _selectedVoxel = null;
     }
 
-    private void BeginSceneCameraFocus(FocusBounds bounds, Vector2 viewportSize, float fieldOfView)
+    private void BeginSceneCameraFocus(FocusBounds bounds, Vector2 viewportSize, float fieldOfView,
+        Vector3? targetOverride = null)
     {
-        var center = bounds.Center;
+        var center = targetOverride ?? bounds.Center;
         var targetDistance = CalculateFocusDistance(bounds, viewportSize, fieldOfView,
             GetSceneZoomLimits());
         _sceneFocusAnimation = new SceneFocusAnimation(
@@ -120,7 +123,7 @@ internal sealed partial class ImGuiEditorWindow
         _renderFocusAnimation = null;
     }
 
-    private void BeginRenderCameraFocus(SceneObject cameraObject, FocusBounds bounds)
+    private void BeginRenderCameraFocus(SceneObject cameraObject, FocusBounds bounds, Vector3? targetOverride = null)
     {
         if (cameraObject.Locked)
         {
@@ -129,7 +132,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var camera = ToSceneCamera(cameraObject);
-        var target = bounds.Center;
+        var target = targetOverride ?? bounds.Center;
         var distance = CalculateFocusDistance(bounds, _lastRenderViewportSize,
             ResolveRenderSettings(cameraObject).CameraFovDegrees, GetRenderOrbitLimits());
         var viewDirection = NormalizeOr(camera.Position - target, -camera.Forward);
@@ -206,7 +209,8 @@ internal sealed partial class ImGuiEditorWindow
         var aspect = width / height;
         var horizontalHalfFov = MathF.Atan(MathF.Tan(verticalHalfFov) * aspect);
         var visibleHalfFov = MathF.Min(verticalHalfFov, horizontalHalfFov) * 0.82F;
-        var required = radius / MathF.Max(MathF.Tan(visibleHalfFov), 0.05F) * 1.08F;
+        // 留出更大的边距，大对象聚焦时相机不会被塞进模型内部
+        var required = MathF.Max(radius * 1.8F, radius / MathF.Max(MathF.Tan(visibleHalfFov), 0.05F) * 1.35F);
         return Math.Clamp(required, limits.MinimumDistance, limits.MaximumDistance);
     }
 

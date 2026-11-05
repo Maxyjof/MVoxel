@@ -96,6 +96,22 @@ public sealed class EditorSettingsDocument
 
     /// <summary>旋转吸附角度（度）</summary>
     public float RotationSnapDegrees = 15F;
+
+    /// <summary>旋转吸附的三轴角度（度）</summary>
+    public float RotationSnapX = 15F;
+    public float RotationSnapY = 15F;
+    public float RotationSnapZ = 15F;
+    /// <summary>旋转吸附三轴联动</summary>
+    public bool RotationSnapLinked = true;
+
+    /// <summary>缩放吸附的三轴步长</summary>
+    public float ScaleSnapX = 0.1F;
+    public float ScaleSnapY = 0.1F;
+    public float ScaleSnapZ = 0.1F;
+    /// <summary>缩放吸附三轴联动</summary>
+    public bool ScaleSnapLinked = true;
+    /// <summary>是否启用缩放吸附</summary>
+    public bool ScaleSnapEnabled;
     public int ExportParallelism = 1;
     public bool AutoSave = true;
     public int AutoSaveSeconds = 600;
