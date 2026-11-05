@@ -125,15 +125,6 @@ internal static class SceneGrid
                 var b = start + direction * (2 * lineExtent * (index + 1) / segments);
                 var mid = (a + b) / 2F;
                 var depth = Vector3.Dot(mid - camera.Position, camera.Forward);
-                // 地平线附近一格可能小于一个像素：副线淡出，
-                // 保留克制的主线，让远景保持可读
-                var spacingPixels = lineStep * SceneProjection.FocalLength(size, camera) /
-                                    Math.Max(camera.NearClip, depth);
-                // 远处允许降低副线密度，但不能把整片地面淡出成空白：
-                // 主线始终作为空间参照，副线保留最低可见度，避免缩放到某个距离后网格突然消失。
-                var densityFade = major
-                    ? 0.72F + 0.28F * SmoothStep(0.08F, 0.55F, spacingPixels)
-                    : 0.16F + 0.84F * SmoothStep(0.55F, 1.45F, spacingPixels);
                 var radial = Math.Max(Math.Abs(mid.X - camera.Target.X), Math.Abs(mid.Z - camera.Target.Z)) / lineExtent;
                 var edgeFade = 0.42F + 0.58F * (1F - SmoothStep(0.985F, 1F, radial));
                 var transitionFade = 1F;
@@ -147,12 +138,25 @@ internal static class SceneGrid
                         : SmoothStep(blendStart, blendEnd, radialDistance);
                 }
 
-                var fade = densityFade * edgeFade * transitionFade;
-                if (fade < (major ? 0.08F : 0.025F)) continue;
+                // 与 GPU 解析网格对齐观感：统一线色、0.72 透明度上限，
+                // 按像素足迹（等效 GPU 的 LOD 层级）和视线俯仰（地平线渐隐）淡出
+                var footprint = lineStep * SceneProjection.FocalLength(size, camera) /
+                                Math.Max(camera.NearClip, depth);
+                var level = MathF.Log2(Math.Max(1F, footprint * 8F / Math.Max(0.001F, lineStep)));
+                var distanceFade = 1F / (1F + Math.Max(0F, level) * 0.16F);
+                var rayDirection = mid - camera.Position;
+                var rayLength = MathF.Sqrt(rayDirection.X * rayDirection.X +
+                                           rayDirection.Y * rayDirection.Y +
+                                           rayDirection.Z * rayDirection.Z);
+                var verticalShare = rayLength > 1e-6F ? MathF.Abs(rayDirection.Y) / rayLength : 0F;
+                var horizonFade = verticalShare / (verticalShare + 0.004F);
+                // 细层是主参照，粗层只补远景覆盖，权重差对应 GPU 两级 LOD 的混合比
+                var layerWeight = fineLayer ? 1F : 0.62F;
+                var alpha = 0.72F * distanceFade * horizonFade * edgeFade * transitionFade * layerWeight;
+                if (alpha < 0.012F) continue;
                 if (SceneProjection.ClipLine(a, b, origin, size, camera, out var p, out var q))
                 {
-                    var color = major ? new Vector4(0.42F, 0.50F, 0.62F, fade * 0.78F) :
-                        new Vector4(0.28F, 0.35F, 0.45F, fade * 0.66F);
+                    var color = new Vector4(0.38F, 0.47F, 0.59F, alpha);
                     draw.AddLine(p, q, ImGui.ColorConvertFloat4ToU32(color), 1F);
                 }
             }

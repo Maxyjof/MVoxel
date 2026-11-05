@@ -173,6 +173,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VoxelWorld? _cpuPreviewWorld;
     private int _cpuPreviewWorldVersion = -1;
     private bool _cpuPreviewIncludesInterior;
+
+    /// <summary>显卡画面不可用时保留上一帧的宽限时长，超过后切到实时 CPU 预览</summary>
+    private const float StaleFrameGraceSeconds = 0.75F;
+
+    /// <summary>当前已连续处于回退状态的时长，用于判断是否还值得显示旧画面</summary>
+    private float _sceneFallbackSeconds;
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
     private readonly Dictionary<string, string> _pluginCommandResults = new(StringComparer.Ordinal);
@@ -1907,23 +1913,31 @@ DockId=0x6A3C3007,0
         var showVoxelWorld = IsVoxelWorldVisible();
         var gpuRendered = TryRenderGpuSceneView(drawList, origin, size, camera,
             showGeometry: showVoxelWorld && _project is not null);
+        if (gpuRendered) _sceneFallbackSeconds = 0F;
 
         if (!gpuRendered)
         {
+            _sceneFallbackSeconds += MathF.Max(0F, ImGui.GetIO().DeltaTime);
             // 显卡管线初始化或单帧失败时先保留上一帧的画面，避免在显卡画面与 CPU 预览之间闪烁；
-            // 仅有此时仍无画面才退回 CPU 预览，并裁到视口内，防止投影到视口外的方块压到面板上
+            // 但旧画面不会跟随相机，超过短暂宽限就切到实时 CPU 预览，否则网格和视角会一直冻住。
+            var keepStaleFrame = _sceneFallbackSeconds < StaleFrameGraceSeconds;
             drawList.PushClipRect(origin, origin + size, true);
             var cachedScenePipeline = _scenePipeline;
-            if (cachedScenePipeline is not null && cachedScenePipeline.DisplayTextureId != IntPtr.Zero)
+            if (keepStaleFrame && cachedScenePipeline is not null &&
+                cachedScenePipeline.DisplayTextureId != IntPtr.Zero)
             {
                 DrawPipelineImage(drawList, cachedScenePipeline, origin, size);
             }
             else
             {
-                if (_showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+                // GPU 网格按真实深度与体素比较；CPU 没有深度缓冲，用相机相对地面的位置决定叠放顺序：
+                // 相机在地面上方时网格先画（被模型遮住），在地面下方时网格位于模型前方，必须后画
+                var gridBehindModel = camera.Position.Y >= 0F;
+                if (gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
                 if (showVoxelWorld && _project is not null)
                     DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
                         GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
+                if (!gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
             }
 
             drawList.PopClipRect();
@@ -2691,6 +2705,8 @@ DockId=0x6A3C3007,0
         previewWorld ??= _world;
         EnsureCpuPreviewSurface(IsCameraInsideOccupiedVoxel(camera, previewWorld), previewWorld);
         var faces = new List<CpuPreviewFace>(_cpuPreviewSurfaceFaces.Count);
+        var nearPlane = SceneProjection.NearPlaneOf(camera);
+        var cameraSpace = new Vector3[4];
         for (var surfaceIndex = 0; surfaceIndex < _cpuPreviewSurfaceFaces.Count; surfaceIndex++)
         {
             var surface = _cpuPreviewSurfaceFaces[surfaceIndex];
@@ -2699,21 +2715,32 @@ DockId=0x6A3C3007,0
             // 斜视角被错误排到前景。法线来自体素外露面的固定朝向，和顶点绕序无关。
             if (Vector3.Dot(surface.Normal, camera.Position - center) <= 0.0001F) continue;
 
-            var points = new Vector2[4];
+            for (var index = 0; index < surface.Corners.Length; index++)
+                cameraSpace[index] = SceneProjection.ToCameraSpace(surface.Corners[index], camera);
+            // 近平面裁剪而不是整面丢弃：相机贴近模型时，跨近平面的面片仍要画出可见部分
+            var clipped = SceneProjection.ClipPolygonNearPlane(cameraSpace, nearPlane);
+            if (clipped.Count < 3) continue;
+
+            var points = new Vector2[clipped.Count];
             var nearestDepth = float.PositiveInfinity;
             var farthestDepth = float.NegativeInfinity;
             var totalDepth = 0F;
-            for (var index = 0; index < surface.Corners.Length; index++)
+            var visible = true;
+            for (var index = 0; index < clipped.Count; index++)
             {
-                if (!TryProject(surface.Corners[index], origin, size, camera, out points[index], out var depth))
-                    goto nextFace;
-                nearestDepth = Math.Min(nearestDepth, depth);
-                farthestDepth = Math.Max(farthestDepth, depth);
-                totalDepth += depth;
+                var point = SceneProjection.ProjectCameraSpace(clipped[index], origin, size, camera);
+                if (!float.IsFinite(point.X) || !float.IsFinite(point.Y)) { visible = false; break; }
+                points[index] = point;
+                nearestDepth = Math.Min(nearestDepth, clipped[index].Z);
+                farthestDepth = Math.Max(farthestDepth, clipped[index].Z);
+                totalDepth += clipped[index].Z;
             }
-            faces.Add(new CpuPreviewFace(points, surface.Color, nearestDepth, totalDepth / 4F,
+
+            if (!visible) continue;
+            // 整面落在视口之外时直接跳过，减少极端角度下的无效填充
+            if (!CpuPreviewFaceOverlapsViewport(points, origin, size)) continue;
+            faces.Add(new CpuPreviewFace(points, surface.Color, nearestDepth, totalDepth / clipped.Count,
                 farthestDepth, surfaceIndex));
-            nextFace:;
         }
 
         // 平均深度在“地面横面”和“建筑竖面”相交的投影中会发生次序反转；
@@ -2749,6 +2776,29 @@ DockId=0x6A3C3007,0
                 }
             }
         }
+    }
+
+    /// <summary>判断投影后的面片是否与视口矩形相交，用于跳过整面不可见的填充</summary>
+    /// <param name="points">面片屏幕顶点</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <returns>是否可能有可见像素</returns>
+    private static bool CpuPreviewFaceOverlapsViewport(IReadOnlyList<Vector2> points, Vector2 origin, Vector2 size)
+    {
+        var minX = float.PositiveInfinity;
+        var maxX = float.NegativeInfinity;
+        var minY = float.PositiveInfinity;
+        var maxY = float.NegativeInfinity;
+        foreach (var point in points)
+        {
+            minX = MathF.Min(minX, point.X);
+            maxX = MathF.Max(maxX, point.X);
+            minY = MathF.Min(minY, point.Y);
+            maxY = MathF.Max(maxY, point.Y);
+        }
+
+        return maxX >= origin.X && minX <= origin.X + size.X &&
+               maxY >= origin.Y && minY <= origin.Y + size.Y;
     }
 
     private void EnsureCpuPreviewSurface(bool includeInterior, VoxelWorld previewWorld)
@@ -3054,10 +3104,14 @@ DockId=0x6A3C3007,0
             gpuRendered = showVoxelWorld && _project is not null && TryRenderGpuPathView(drawList, origin, size, camera);
         if (!gpuRendered)
         {
+            // CPU 回退必须裁到渲染视口内，否则投影到视口外的方块会压到面板和边框上
+            drawList.PushClipRect(origin, origin + size, true);
             if (showVoxelWorld)
             {
                 DrawVoxelWorldPreview(drawList, origin, size, camera, showOutlines: false);
             }
+
+            drawList.PopClipRect();
             var navigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                              ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             if (!navigating)

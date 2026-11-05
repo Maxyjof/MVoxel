@@ -166,11 +166,56 @@ internal static class SceneProjection
         return float.IsFinite(screen.X) && float.IsFinite(screen.Y);
     }
 
+    /// <summary>把世界点转换到相机空间，供需要自行裁剪的调用方使用</summary>
+    /// <param name="world">世界坐标</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>相机空间坐标，Z 为正向深度</returns>
+    internal static Vector3 ToCameraSpace(Vector3 world, SceneCamera camera) => ToCamera(world, camera);
+
+    /// <summary>把相机空间点投影到屏幕；调用方需保证该点已在近平面之前</summary>
+    /// <param name="cameraSpace">相机空间坐标</param>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>屏幕坐标</returns>
+    internal static Vector2 ProjectCameraSpace(Vector3 cameraSpace, Vector2 origin, Vector2 size, SceneCamera camera) =>
+        ProjectCamera(cameraSpace, origin, size, camera);
+
+    /// <summary>读取相机近平面距离</summary>
+    /// <param name="camera">观察相机</param>
+    /// <returns>近平面距离</returns>
+    internal static float NearPlaneOf(SceneCamera camera) => NearPlane(camera);
+
+    /// <summary>
+    /// 按近平面裁剪相机空间多边形，保留可见部分。
+    /// CPU 预览不能因为某一个顶点在相机背后就整面丢弃，否则贴近模型时会出现缺块
+    /// </summary>
+    /// <param name="polygon">相机空间顶点，按顺序构成凸多边形</param>
+    /// <param name="near">近平面距离</param>
+    /// <returns>裁剪后的凸多边形，完全不可见时为空</returns>
+    internal static List<Vector3> ClipPolygonNearPlane(IReadOnlyList<Vector3> polygon, float near)
+    {
+        var result = new List<Vector3>(polygon.Count + 2);
+        for (var index = 0; index < polygon.Count; index++)
+        {
+            var current = polygon[index];
+            var next = polygon[(index + 1) % polygon.Count];
+            var currentInside = current.Z >= near;
+            var nextInside = next.Z >= near;
+            if (currentInside) result.Add(current);
+            if (currentInside == nextInside) continue;
+            var t = (near - current.Z) / (next.Z - current.Z);
+            if (!float.IsFinite(t)) continue;
+            result.Add(current + (next - current) * t);
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// 由屏幕点反算世界空间单位射线，作为 Project 的精确逆运算
     /// 地面网格覆盖范围来自真实视锥与地面的交点
-    /// </summary>
-    /// <param name="screen">屏幕坐标</param>
+    /// </summary>    /// <param name="screen">屏幕坐标</param>
     /// <param name="origin">视口左上角屏幕坐标</param>
     /// <param name="size">视口尺寸</param>
     /// <param name="camera">观察相机</param>
