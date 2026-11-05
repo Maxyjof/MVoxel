@@ -95,8 +95,6 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private IReadOnlyList<string> _sceneValidationErrors = Array.Empty<string>();
     private float _sceneZoom = 1F;
 
-    /// <summary>光学变焦系数：相机已到最小环绕距离后，继续滚轮缩小视场角</summary>
-    private float _sceneZoomFovScale = 1F;
     private float _sceneOrbitYaw = MathF.PI / 4F;
     private float _sceneOrbitPitch = 0.48F;
     private float _sceneCameraDistance = 18F;
@@ -568,8 +566,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             sceneZoom = _sceneZoom,
             sceneOrbitYawDegrees = _sceneOrbitYaw * 180F / MathF.PI,
             sceneOrbitPitchDegrees = _sceneOrbitPitch * 180F / MathF.PI,
-            sceneZoomFovScale = _sceneZoomFovScale,
-            sceneEffectiveFieldOfView = Math.Clamp(_sceneFieldOfView * _sceneZoomFovScale, 1F, 120F),
+            sceneEffectiveFieldOfView = _sceneFieldOfView,
                 timeline = DescribeTimelineState(),
                 pendingDialog = DescribePendingDialog(),
                 videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
@@ -2039,9 +2036,9 @@ DockId=0x6A3C3007,0
         return new SceneCamera(position, target, forward, right, up)
         {
             // 近裁剪面跟随距离收缩，缩到极近时画面不会被整个裁掉
-            NearClip = MathF.Max(0.0001F, MathF.Min(_sceneNearClip, _sceneCameraDistance * 0.02F)),
+            NearClip = _sceneNearClip,
             FarClip = _sceneFarClip,
-            FieldOfViewDegrees = Math.Clamp(_sceneFieldOfView * _sceneZoomFovScale, 1F, 120F),
+            FieldOfViewDegrees = _sceneFieldOfView,
         };
     }
 
@@ -2538,35 +2535,21 @@ DockId=0x6A3C3007,0
         {
             var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
 
-            // 向鼠标所指的体素靠拢；光标没压在体素上时，退回到“选中对象的包围盒中心”
+            // 向光标下的体素靠拢；没有命中时退回选中对象包围盒中心
             if (io.MouseWheel > 0F && TryResolveZoomTarget(mouse, origin, size, GetSceneCamera(),
                     out var zoomTarget))
             {
                 var blend = Math.Clamp((1F - continuousFactor) * 0.6F, 0F, 0.5F);
-                var panX = _scenePan.X + (zoomTarget.X - _scenePan.X) * blend;
-                var panZ = _scenePan.Y + (zoomTarget.Z - _scenePan.Y) * blend;
-                var height = _sceneFreeMoveHeight + (zoomTarget.Y - _sceneFreeMoveHeight) * blend;
-                _scenePan = new Vector2(panX, panZ);
-                _sceneFreeMoveHeight = height;
+                _scenePan = new Vector2(
+                    _scenePan.X + (zoomTarget.X - _scenePan.X) * blend,
+                    _scenePan.Y + (zoomTarget.Z - _scenePan.Y) * blend);
+                _sceneFreeMoveHeight += (zoomTarget.Y - _sceneFreeMoveHeight) * blend;
             }
 
-            // 最小距离跟着选中对象的大小走：相机始终留在物体外面，环绕才有视差
-            var minimumDistance = ComputeMinimumOrbitDistance();
-            var requested = _sceneCameraDistance * continuousFactor;
-            if (requested >= minimumDistance)
-            {
-                // 正常推拉相机；同时把光学变焦还原，避免拉远后视角仍是长焦
-                _sceneCameraDistance = Math.Clamp(requested, minimumDistance, 1_000_000_000F);
-                if (io.MouseWheel < 0F || requested > minimumDistance * 1.5F)
-                    _sceneZoomFovScale = MathF.Min(1F, _sceneZoomFovScale / continuousFactor);
-            }
-            else
-            {
-                // 已贴到最小环绕距离：不再靠近枢轴，改为收缩视场角实现“无限放大”
-                _sceneCameraDistance = minimumDistance;
-                _sceneZoomFovScale = Math.Clamp(_sceneZoomFovScale * continuousFactor, 0.02F, 1F);
-            }
-
+            // 只推拉距离，有最小距离限制，不再改变视场角
+            var minimumDistance = ComputeMinimumOrbitDistance(mouse, origin, size, GetSceneCamera());
+            _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * continuousFactor, minimumDistance,
+                1_000_000_000F);
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.00001F, 100000F);
         }
 

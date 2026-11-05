@@ -105,8 +105,6 @@ internal sealed partial class ImGuiEditorWindow
     private void BeginSceneCameraFocus(FocusBounds bounds, Vector2 viewportSize, float fieldOfView,
         Vector3? targetOverride = null)
     {
-        // 聚焦时恢复默认视场角，避免残留的长焦让画面看不清
-        _sceneZoomFovScale = 1F;
         var center = targetOverride ?? bounds.Center;
         var targetDistance = CalculateFocusDistance(bounds, viewportSize, fieldOfView,
             GetSceneZoomLimits());

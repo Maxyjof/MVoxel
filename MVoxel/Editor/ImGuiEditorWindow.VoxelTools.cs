@@ -2046,10 +2046,16 @@ internal sealed partial class ImGuiEditorWindow
     /// 当前允许的最小环绕距离：选中对象有多大，相机就至少退到能把对象放在视野里的距离
     /// </summary>
     /// <returns>最小环绕距离</returns>
-    private float ComputeMinimumOrbitDistance()
+    private float ComputeMinimumOrbitDistance(Vector2 screenPixel, Vector2 origin, Vector2 size,
+        SceneCamera camera)
     {
-        if (GetSelectedSceneObject() is not { } selected ||
-            !_objectVoxels.TryGetWorld(selected.Id, out var world) ||
+        var targetId = GetSelectedSceneObject()?.Id;
+        if (targetId is null && PickVoxel(screenPixel, origin, size, camera) is { } hit &&
+            _sceneDocument is not null &&
+            _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit.Coordinate, out var owner,
+                out _))
+            targetId = owner;
+        if (targetId is not { } id || !_objectVoxels.TryGetWorld(id, out var world) ||
             !world.TryGetBounds(out var minimum, out var maximum))
             return MinimumOrbitDistance;
         var extentX = maximum.X - minimum.X + 1F;
