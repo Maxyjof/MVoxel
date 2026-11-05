@@ -72,6 +72,18 @@ public sealed class EditorSettingsDocument
     public RenderSettings ExportRenderSettings = new();
     public int UndoRepeatDelayMs = 350;
     public int UndoRepeatIntervalMs = 70;
+
+    /// <summary>Gizmo 显示空间：true 使用对象局部坐标，false 使用世界坐标</summary>
+    public bool GizmoLocalSpace;
+
+    /// <summary>移动吸附步长，默认 1 格</summary>
+    public float MoveSnapX = 1F;
+    /// <summary>移动吸附步长 Y</summary>
+    public float MoveSnapY = 1F;
+    /// <summary>移动吸附步长 Z</summary>
+    public float MoveSnapZ = 1F;
+    /// <summary>吸附步长等比联动：改一个轴时其余轴按同一比例缩放</summary>
+    public bool MoveSnapLinked = true;
     public int ExportParallelism = 1;
     public bool AutoSave = true;
     public int AutoSaveSeconds = 600;

@@ -2065,9 +2065,11 @@ DockId=0x6A3C3007,0
         var buttonSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
         var top = origin + new Vector2(8F, 10F);
         var hovered = false;
+        hovered |= DrawGizmoModeRow(top, buttonSize);
+        var columnTop = top + new Vector2(0F, buttonSize + 4F);
         for (var i = 0; i < 4; i++)
         {
-            var position = top + new Vector2(0F, i * (buttonSize + 3F));
+            var position = columnTop + new Vector2(0F, i * (buttonSize + 3F));
             ImGui.SetCursorScreenPos(position);
             ImGui.PushID(i);
             if (ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize))) _sceneGizmoMode = (SceneGizmoMode)i;
@@ -2084,6 +2086,99 @@ DockId=0x6A3C3007,0
         }
         ImGui.SetCursorScreenPos(saved);
         return hovered;
+    }
+
+    /// <summary>
+    /// 工具列上方的横向小按钮：Gizmo 显示空间切换与移动吸附设置
+    /// </summary>
+    /// <param name="top">横向行的左上角屏幕坐标</param>
+    /// <param name="size">按钮基准尺寸</param>
+    /// <returns>是否悬停在这行按钮上</returns>
+    private bool DrawGizmoModeRow(Vector2 top, float size)
+    {
+        var hovered = false;
+        var spaceText = _editorSettings.GizmoLocalSpace ? "局部" : "全局";
+        var spaceWidth = Math.Max(size * 1.3F, ImGui.CalcTextSize(spaceText).X + 14F);
+        DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered, () =>
+        {
+            _editorSettings.GizmoLocalSpace = !_editorSettings.GizmoLocalSpace;
+            SetStatus(_editorSettings.GizmoLocalSpace ? "Gizmo 已切换到对象局部坐标轴" : "Gizmo 已切换到世界坐标轴");
+        }, "Gizmo 显示空间：全局使用世界轴，局部使用对象自身旋转后的轴");
+
+        var snapText = "吸附";
+        var snapWidth = Math.Max(size * 1.1F, ImGui.CalcTextSize(snapText).X + 14F);
+        var snapTop = top + new Vector2(spaceWidth + 4F, 0F);
+        DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
+            () => ImGui.OpenPopup("##GizmoSnapPopup"),
+            "移动吸附步长 X " + _editorSettings.MoveSnapX.ToString("0.##") +
+            " · Y " + _editorSettings.MoveSnapY.ToString("0.##") +
+            " · Z " + _editorSettings.MoveSnapZ.ToString("0.##") +
+            (_editorSettings.MoveSnapLinked ? "（等比联动）" : string.Empty));
+        if (ImGui.BeginPopup("##GizmoSnapPopup"))
+        {
+            DrawGizmoSnapPopup();
+            ImGui.EndPopup();
+        }
+
+        return hovered;
+    }
+
+    /// <summary>横向行里的一个小按钮，点击后执行回调</summary>
+    private void DrawGizmoRowButton(string id, Vector2 position, Vector2 size, string label, ref bool hovered,
+        Action onClick, string tooltip)
+    {
+        ImGui.SetCursorScreenPos(position);
+        ImGui.PushID(id);
+        if (ImGui.InvisibleButton(id, size)) onClick();
+        var over = ImGui.IsItemHovered();
+        hovered |= over;
+        var draw = ImGui.GetWindowDrawList();
+        var minimum = ImGui.GetItemRectMin();
+        draw.AddRectFilled(minimum, minimum + size,
+            ToPackedColor(over ? EditorPalette.PanelHeader : EditorPalette.Window), 5F);
+        draw.AddRect(minimum, minimum + size, ToPackedColor(EditorPalette.Border), 5F);
+        var textSize = ImGui.CalcTextSize(label);
+        draw.AddText(minimum + new Vector2((size.X - textSize.X) * .5F, (size.Y - textSize.Y) * .5F),
+            ToPackedColor(EditorPalette.Text), label);
+        if (over) ImGui.SetTooltip(tooltip);
+        ImGui.PopID();
+    }
+
+    /// <summary>移动吸附步长设置：等比联动下改一个轴，其余两轴按同一比例缩放</summary>
+    private void DrawGizmoSnapPopup()
+    {
+        ImGui.TextDisabled("移动吸附步长");
+        var linked = _editorSettings.MoveSnapLinked;
+        if (ImGui.Checkbox("等比联动##GizmoSnapLinked", ref linked)) _editorSettings.MoveSnapLinked = linked;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启后改一个轴，另外两轴按同一比例缩放；三轴都是 1 时把 X 设成 2，会一起变成 2。");
+        var values = new[] { _editorSettings.MoveSnapX, _editorSettings.MoveSnapY, _editorSettings.MoveSnapZ };
+        var previous = values.ToArray();
+        var changed = -1;
+        for (var axis = 0; axis < 3; axis++)
+        {
+            ImGui.SetNextItemWidth(110F);
+            var label = axis switch { 0 => "X##SnapX", 1 => "Y##SnapY", _ => "Z##SnapZ" };
+            if (ImGui.DragFloat(label, ref values[axis], .05F, .05F, 64F, "%.2f")) changed = axis;
+        }
+
+        if (changed >= 0)
+        {
+            var value = Math.Clamp(values[changed], .05F, 64F);
+            if (_editorSettings.MoveSnapLinked)
+            {
+                var ratio = value / MathF.Max(.0001F, previous[changed]);
+                for (var axis = 0; axis < 3; axis++)
+                    if (axis != changed) values[axis] = Math.Clamp(previous[axis] * ratio, .05F, 64F);
+            }
+
+            values[changed] = value;
+            _editorSettings.MoveSnapX = values[0];
+            _editorSettings.MoveSnapY = values[1];
+            _editorSettings.MoveSnapZ = values[2];
+        }
+
+        ImGui.TextDisabled("拖动对象或曲线控制点时按步长吸附");
     }
 
     /// <summary>使用方向箭头、旋转箭头和缩放手柄区分变换工具。</summary>

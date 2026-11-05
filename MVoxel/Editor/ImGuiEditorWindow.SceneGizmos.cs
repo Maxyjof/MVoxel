@@ -40,6 +40,8 @@ internal sealed partial class ImGuiEditorWindow
     private Vector2 _sceneGizmoDragStartMouse;
     private Vector3 _sceneGizmoDragStartPosition;
     private VoxelCoord64 _sceneGizmoDragStartGrid;
+    /// <summary>本次轴拖动使用的世界轴方向，局部空间下与对象轴向一致</summary>
+    private Vector3 _sceneGizmoDragAxisWorld;
     private float _sceneGizmoDragStartValue;
     private float _sceneGizmoDragPixelsPerUnit = 1F;
     private Vector2 _sceneGizmoDragScreenDirection;
@@ -189,7 +191,7 @@ internal sealed partial class ImGuiEditorWindow
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
-                DrawMoveGizmo(drawList, origin, size, camera, pivot, pivotScreen, unitsPerPixel);
+                DrawMoveGizmo(drawList, origin, size, camera, pivot, pivotScreen, unitsPerPixel, selected);
                 break;
             case SceneGizmoMode.Rotate:
                 DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel);
@@ -511,7 +513,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     private void DrawMoveGizmo(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
-        Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel)
+        Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel, SceneObject? axisOwner = null)
     {
         var length = unitsPerPixel * 82F;
         for (var plane = 0; plane < 3; plane++)
@@ -523,7 +525,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
-            var axis = AxisVector(axisIndex);
+            var axis = axisOwner is null ? AxisVector(axisIndex) : GizmoAxisFor(axisOwner, axisIndex);
             if (!TryProjectAxis(origin, size, camera, pivot, axis, out var end, out _)) continue;
             var color = ToPackedColor(AxisColor(axisIndex));
             drawList.AddLine(pivotScreen, end, color, 2.4F);
@@ -576,6 +578,51 @@ internal sealed partial class ImGuiEditorWindow
             1 => (Vector3.UnitZ, Vector3.UnitX),
             _ => (Vector3.UnitX, Vector3.UnitY),
         };
+
+    /// <summary>吸附步长：等比联动时三轴共用 X 的步长</summary>
+    private float GizmoSnapStep(int axisIndex)
+    {
+        var value = axisIndex switch
+        {
+            0 => _editorSettings.MoveSnapX,
+            1 => _editorSettings.MoveSnapLinked ? _editorSettings.MoveSnapX : _editorSettings.MoveSnapY,
+            _ => _editorSettings.MoveSnapLinked ? _editorSettings.MoveSnapX : _editorSettings.MoveSnapZ,
+        };
+        return float.IsFinite(value) && value > 0.0001F ? value : 1F;
+    }
+
+    private static float SnapComponent(float value, float step) => MathF.Round(value / step) * step;
+
+    /// <summary>把位移的三个分量分别吸附到步长</summary>
+    private Vector3 SnapGizmoDelta(Vector3 delta) => new(
+        SnapComponent(delta.X, GizmoSnapStep(0)),
+        SnapComponent(delta.Y, GizmoSnapStep(1)),
+        SnapComponent(delta.Z, GizmoSnapStep(2)));
+
+    /// <summary>当前 Gizmo 空间下的轴方向：局部空间按对象旋转换算</summary>
+    private Vector3 GizmoAxisFor(SceneObject sceneObject, int axisIndex)
+    {
+        var axis = AxisVector(axisIndex);
+        if (!_editorSettings.GizmoLocalSpace) return axis;
+        System.Numerics.Matrix4x4 matrix;
+        if (sceneObject.Transform.Mode == TransformMode.Free)
+        {
+            matrix = System.Numerics.Matrix4x4.CreateFromQuaternion(sceneObject.Transform.Free.Rotation);
+        }
+        else
+        {
+            var rotation = sceneObject.Transform.Grid.Rotation;
+            matrix = new System.Numerics.Matrix4x4(
+                rotation.M00, rotation.M01, rotation.M02, 0F,
+                rotation.M10, rotation.M11, rotation.M12, 0F,
+                rotation.M20, rotation.M21, rotation.M22, 0F,
+                0F, 0F, 0F, 1F);
+        }
+
+        var transformed = System.Numerics.Vector3.Transform(
+            new System.Numerics.Vector3(axis.X, axis.Y, axis.Z), matrix);
+        return new Vector3(transformed.X, transformed.Y, transformed.Z);
+    }
 
     private static Color AxisColor(int axisIndex) =>
         axisIndex switch { 0 => AxisXColor, 1 => AxisYColor, _ => AxisZColor };
@@ -736,12 +783,14 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 for (var axisIndex = 0; axisIndex < 3; axisIndex++)
                 {
-                    if (!TryProjectAxis(origin, size, camera, pivot, AxisVector(axisIndex),
+                    var gizmoAxis = GizmoAxisFor(selected, axisIndex);
+                    if (!TryProjectAxis(origin, size, camera, pivot, gizmoAxis,
                             out var end, out var pixelsPerUnit)) continue;
                     if (DistanceToSegment(mouse, pivotScreen, end) > 9F) continue;
                     _sceneGizmoDragPlane = -1;
                     _sceneGizmoDragRotation = false;
                     _sceneGizmoDragAxis = axisIndex;
+                    _sceneGizmoDragAxisWorld = gizmoAxis;
                     _sceneGizmoDragStartMouse = mouse;
                     _sceneGizmoDragStartPosition = pivot;
                     _sceneGizmoDragStartGrid = selected.Transform.Grid.Position;
@@ -886,7 +935,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (selected.Transform.Mode == TransformMode.Free)
             {
-                var delta = PlaneDragDelta(mouse);
+                var delta = SnapGizmoDelta(PlaneDragDelta(mouse));
                 var position = _sceneGizmoDragStartPosition + delta;
                 selected.Transform.SetFree(new FreeTransform(new Double3(position.X, position.Y, position.Z), selected.Transform.Free.Rotation));
                 UpdateTransformMarker(selected); _pipeline?.ResetAccumulation();
@@ -928,7 +977,8 @@ internal sealed partial class ImGuiEditorWindow
 
         if (selected.Transform.Mode == TransformMode.Free)
         {
-            var axis = AxisVector(_sceneGizmoDragAxis);
+            var axis = _sceneGizmoDragAxisWorld.LengthSquared > 0.0001F
+                ? _sceneGizmoDragAxisWorld : AxisVector(_sceneGizmoDragAxis);
             if (!SceneProjection.Project(_sceneGizmoDragStartPosition, origin, size, camera, out var start, out _) ||
                 !SceneProjection.Project(_sceneGizmoDragStartPosition + axis, origin, size, camera, out var unit, out _))
                 return;
@@ -937,7 +987,9 @@ internal sealed partial class ImGuiEditorWindow
             var pixelsPerUnit = direction.Length();
             direction /= pixelsPerUnit;
             var deltaPixels = Vector2.Dot(mouse - _sceneGizmoDragStartMouse, direction);
-            var position = _sceneGizmoDragStartPosition + axis * (deltaPixels / pixelsPerUnit);
+            var step = GizmoSnapStep(_sceneGizmoDragAxis);
+            var units = SnapComponent(deltaPixels / pixelsPerUnit, step);
+            var position = _sceneGizmoDragStartPosition + axis * units;
             var rotation = selected.Transform.Free.Rotation;
             selected.Transform.SetFree(new FreeTransform(
                 new Double3(position.X, position.Y, position.Z), rotation));
@@ -1029,13 +1081,15 @@ internal sealed partial class ImGuiEditorWindow
 
         if (selected.Transform.Mode == TransformMode.Grid)
         {
-            var steps = (int)MathF.Round(
+            var units = SnapComponent(
                 Vector2.Dot(mouse - _sceneGizmoDragStartMouse, _sceneGizmoDragScreenDirection) /
-                _sceneGizmoDragPixelsPerUnit);
-            if (steps == 0) return;
-            var axis = AxisVector(_sceneGizmoDragAxis);
+                _sceneGizmoDragPixelsPerUnit, GizmoSnapStep(_sceneGizmoDragAxis));
+            if (MathF.Abs(units) < 0.5F) return;
+            var axis = _sceneGizmoDragAxisWorld.LengthSquared > 0.0001F
+                ? _sceneGizmoDragAxisWorld : AxisVector(_sceneGizmoDragAxis);
             MoveModelObjectByGrid(selected, new VoxelCoord64(
-                (long)Math.Round(axis.X * steps), (long)Math.Round(axis.Y * steps), (long)Math.Round(axis.Z * steps)));
+                (long)MathF.Round(axis.X * units), (long)MathF.Round(axis.Y * units),
+                (long)MathF.Round(axis.Z * units)));
         }
         else
         {

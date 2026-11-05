@@ -571,7 +571,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 // 与对象平移手柄一致：只沿命中的那条轴移动
                 var axis = AxisVector(_curveGizmoDragAxis);
-                var amount = Vector3.Dot(delta, axis) / _curveGizmoPixelsPerUnit;
+                var amount = SnapComponent(Vector3.Dot(delta, axis) / _curveGizmoPixelsPerUnit,
+                    GizmoSnapStep(_curveGizmoDragAxis));
                 points[_curveGizmoDragIndex] = _curveGizmoDragStartPoint with
                 {
                     Position = _curveGizmoDragStartPoint.Position + ToNum(axis * amount),
