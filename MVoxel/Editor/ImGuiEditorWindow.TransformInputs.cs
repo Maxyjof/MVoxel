@@ -203,22 +203,33 @@ internal sealed partial class ImGuiEditorWindow
                 catch (OverflowException) { SetStatus("位置变化超出整数范围"); }
             }
         });
-        DrawTransformRow("旋转", rotationValues, free ? 5D : 90D, free ? 12D : 24D, (axis, value) =>
+        if (!free)
         {
-            if (free)
+            // 网格对象的旋转是浮点参数：拖动只预览，松手后按基准体素重新采样生成
+            var rotationComponent = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (rotationComponent is not null)
+            {
+                var modelData = SceneComponentTypes.ReadVoxelModel(rotationComponent);
+                var modelRotation = new[] { (double)modelData.RotationX, modelData.RotationY, modelData.RotationZ };
+                DrawTransformRow("旋转", modelRotation, 5D, 12D, (axis, value) =>
+                {
+                    modelRotation[axis] = value;
+                    _pendingModelRotation = modelRotation;
+                    _pendingModelRotationObjectId = item.Id;
+                }, "浮点旋转：按角度对基准体素重新采集，结果是干净的整数体素而不是斜格子。\n拖动只预览，松开后整份重新生成；反复调整都以最近一次编辑的基准为准。");
+                CommitPendingModelRotation(item, rotationComponent);
+            }
+        }
+        else
+        {
+            DrawTransformRow("旋转", rotationValues, 5D, 12D, (axis, value) =>
             {
                 rotationValues[axis] = value;
                 transform.SetFreeEuler(transform.Free.Position, new Double3(rotationValues[0], rotationValues[1], rotationValues[2]));
                 UpdateTransformMarker(item); MarkSceneDocumentDirty();
-            }
-            else
-            {
-                if (Math.Abs(value) > 360000 || Math.Abs(value / 90 - Math.Round(value / 90)) > 0.00001)
-                { SetStatus("体素旋转角度必须为 90 度的整数倍"); return; }
-                var steps = ((int)Math.Round((value - rotationValues[axis]) / 90) % 4 + 4) % 4;
-                for (var step = 0; step < steps; step++) RotateModelObjectBy90(item, axis);
-            }
-        });
+            });
+        }
+
         if (item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } modelComponent)
             DrawModelScaleRow(item, modelComponent);
     }

@@ -1,3 +1,4 @@
+using ImGuiNET;
 using System.Numerics;
 using MVoxel.Core;
 using MVoxel.Scene;
@@ -73,7 +74,8 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="sceneObject">目标对象</param>
     /// <param name="component">模型组件</param>
     /// <param name="rotation">目标旋转</param>
-    private void ApplyModelRotation(SceneObject sceneObject, ComponentRecord component, Quaternion rotation)
+    private void ApplyModelRotation(SceneObject sceneObject, ComponentRecord component, Quaternion rotation,
+        Vector3? degrees = null)
     {
         if (_project is null || _sceneDocument is null) return;
         var data = SceneComponentTypes.ReadVoxelModel(component);
@@ -115,7 +117,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         // 把角度写回组件，供检查器与下次旋转继续使用
-        var euler = ToEulerDegrees(rotation);
+        var euler = degrees ?? ToEulerDegrees(rotation);
         SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with
         {
             RotationX = euler.X,
@@ -125,6 +127,28 @@ internal sealed partial class ImGuiEditorWindow
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
         SetStatus($"已按浮点角度旋转：{rotated.OccupiedVoxelCount:N0} 体素");
+    }
+
+    /// <summary>检查器里正在预览的浮点旋转（度）与所属对象</summary>
+    private double[]? _pendingModelRotation;
+    private StableId? _pendingModelRotationObjectId;
+
+    /// <summary>
+    /// 把检查器里待提交的浮点旋转写进模型；拖动期间只预览，松手或输入结束后才重新采样
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="component">模型组件</param>
+    /// <returns>是否提交过</returns>
+    private bool CommitPendingModelRotation(SceneObject sceneObject, ComponentRecord component)
+    {
+        if (_pendingModelRotation is not { Length: 3 } pending || _pendingModelRotationObjectId != sceneObject.Id)
+            return false;
+        if (ImGui.IsMouseDown(ImGuiMouseButton.Left) || ImGui.IsAnyItemActive()) return false;
+        _pendingModelRotation = null;
+        _pendingModelRotationObjectId = null;
+        var degrees = new Vector3((float)pending[0], (float)pending[1], (float)pending[2]);
+        ApplyModelRotation(sceneObject, component, RotationFromDegrees(degrees), degrees);
+        return true;
     }
 
     /// <summary>
