@@ -731,8 +731,8 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="distance">目标距离</param>
     /// <returns>夹取后的距离</returns>
-    /// <summary>最小环绕距离：再近就不移动相机，改用光学变焦，保证右键始终是绕枢轴环绕</summary>
-    private const float MinimumOrbitDistance = 1.5F;
+    /// <summary>最小观察距离：允许相机一路推进到模型内部，只保留一个很小的正数下限</summary>
+    private const float MinimumOrbitDistance = 0.05F;
 
     private static float ClampSceneDistance(float distance)
     {
@@ -2041,29 +2041,6 @@ internal sealed partial class ImGuiEditorWindow
     private NumVector3 _pickDirection;
     private float _pickDistance;
     private VoxelDda.Hit? _pickResult;
-
-    /// <summary>
-    /// 当前允许的最小环绕距离：选中对象有多大，相机就至少退到能把对象放在视野里的距离
-    /// </summary>
-    /// <returns>最小环绕距离</returns>
-    private float ComputeMinimumOrbitDistance(Vector2 screenPixel, Vector2 origin, Vector2 size,
-        SceneCamera camera)
-    {
-        var targetId = GetSelectedSceneObject()?.Id;
-        if (targetId is null && PickVoxel(screenPixel, origin, size, camera) is { } hit &&
-            _sceneDocument is not null &&
-            _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit.Coordinate, out var owner,
-                out _))
-            targetId = owner;
-        if (targetId is not { } id || !_objectVoxels.TryGetWorld(id, out var world) ||
-            !world.TryGetBounds(out var minimum, out var maximum))
-            return MinimumOrbitDistance;
-        var extentX = maximum.X - minimum.X + 1F;
-        var extentY = maximum.Y - minimum.Y + 1F;
-        var extentZ = maximum.Z - minimum.Z + 1F;
-        var radius = MathF.Max(extentX, MathF.Max(extentY, extentZ)) * 0.5F;
-        return MathF.Max(MinimumOrbitDistance, radius * 2F);
-    }
 
     /// <summary>
     /// 解析滚轮缩放要靠近的目标点：优先鼠标下的体素，其次选中对象的包围盒中心

@@ -2036,7 +2036,8 @@ DockId=0x6A3C3007,0
         return new SceneCamera(position, target, forward, right, up)
         {
             // 近裁剪面跟随距离收缩，缩到极近时画面不会被整个裁掉
-            NearClip = _sceneNearClip,
+            // 近裁剪随时间距离缩小，穿进模型内部时仍能看到体素而不是整屏被裁掉
+            NearClip = MathF.Max(0.0001F, MathF.Min(_sceneNearClip, _sceneCameraDistance * 0.25F)),
             FarClip = _sceneFarClip,
             FieldOfViewDegrees = _sceneFieldOfView,
         };
@@ -2547,7 +2548,7 @@ DockId=0x6A3C3007,0
             }
 
             // 只推拉距离，有最小距离限制，不再改变视场角
-            var minimumDistance = ComputeMinimumOrbitDistance(mouse, origin, size, GetSceneCamera());
+            const float minimumDistance = MinimumOrbitDistance;
             _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * continuousFactor, minimumDistance,
                 1_000_000_000F);
             _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.00001F, 100000F);
