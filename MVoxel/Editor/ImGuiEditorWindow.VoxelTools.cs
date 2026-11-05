@@ -2482,7 +2482,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Separator();
         ImGui.TextWrapped(Path.GetFileName(path));
         var name = material.Name;
-        if (ImGui.InputText("名称", ref name, 48)) material.Name = name;
+        if (ImGui.InputText("名称", ref name, 48, ImGuiInputTextFlags.AutoSelectAll)) material.Name = name;
 
         DrawFollowableSlider("粗糙度", "粗糙度##mat", 0.01F, 1F, material.Roughness, value => material.Roughness = value);
         DrawFollowableSlider("金属度", "金属度##mat", 0F, 1F, material.Metallic, value => material.Metallic = value);

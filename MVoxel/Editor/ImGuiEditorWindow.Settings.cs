@@ -299,7 +299,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用方案会替换渲染窗口配置，之后的手动修改不会更改方案文件。导出画面单独配置。");
         ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(300F, ImGui.GetContentRegionAvail().X * .6F)));
-        ImGui.InputText("新方案名称", ref _newRenderPresetName, 96);
+        ImGui.InputText("新方案名称", ref _newRenderPresetName, 96, ImGuiInputTextFlags.AutoSelectAll);
         if (ImGui.Button("保存当前画面为新方案")) SaveNewProjectRenderPreset();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前渲染窗口配置保存到项目资产的渲染预设文件夹，不覆盖已有方案。");
     }
@@ -511,7 +511,7 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("基本", "editor.general.basic"))
             {
                 ImGui.SetNextItemWidth(-1F);
-                ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048);
+                ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048, ImGuiInputTextFlags.AutoSelectAll);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("新建项目的默认保存位置");
 
                 if (ImGui.Button("恢复默认项目根目录"))
@@ -853,7 +853,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.Separator();
-        ImGui.InputTextWithHint("##新方案名称", "新方案名称", ref _newShortcutSchemeName, 64);
+        ImGui.InputTextWithHint("##新方案名称", "新方案名称", ref _newShortcutSchemeName, 64, ImGuiInputTextFlags.AutoSelectAll);
         if (ImGui.Button("新增方案", new Vector2(-1F, 0F)))
         {
             var name = string.IsNullOrWhiteSpace(_newShortcutSchemeName)
@@ -904,7 +904,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         ImGui.EndDisabled();
 
-        ImGui.InputText("方案名称", ref _renameShortcutScheme, 64);
+        ImGui.InputText("方案名称", ref _renameShortcutScheme, 64, ImGuiInputTextFlags.AutoSelectAll);
         if (ImGui.IsItemDeactivatedAfterEdit())
         {
             var newName = _renameShortcutScheme.Trim();
@@ -920,7 +920,7 @@ internal sealed partial class ImGuiEditorWindow
 
         DrawSettingsSectionHeader("按命令修改绑定", "使用 Ctrl/Shift/Alt + 按键格式，例如 Ctrl+Z");
         ImGui.SetNextItemWidth(-1F);
-        ImGui.InputTextWithHint("##快捷键搜索", "搜索命令、分类或按键", ref _shortcutSearch, 128);
+        ImGui.InputTextWithHint("##快捷键搜索", "搜索命令、分类或按键", ref _shortcutSearch, 128, ImGuiInputTextFlags.AutoSelectAll);
         foreach (var command in ShortcutCommands.All)
         {
             scheme.Bindings.TryGetValue(command.Id, out var binding);
@@ -932,7 +932,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PushID(command.Id);
             ImGui.Text(command.DisplayName);
             ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(240F, ImGui.GetContentRegionAvail().X)));
-            if (ImGui.InputText("##绑定", ref binding, 32))
+            if (ImGui.InputText("##绑定", ref binding, 32, ImGuiInputTextFlags.AutoSelectAll))
             {
                 scheme.Bindings[command.Id] = binding.Trim();
                 SaveEditorSettings();
@@ -1031,7 +1031,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.TextWrapped(_project?.RootPath ?? string.Empty);
                 ImGui.Text("体素单位");
                 ImGui.SameLine(120F);
-                ImGui.InputText("##体素单位", ref _projectSettings.VoxelUnit, 64);
+                ImGui.InputText("##体素单位", ref _projectSettings.VoxelUnit, 64, ImGuiInputTextFlags.AutoSelectAll);
                 ImGui.Text("项目模板");
                 ImGui.SameLine(120F);
                 ImGui.TextDisabled(_projectSettings.TemplateId);
@@ -1118,7 +1118,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PushID($"LayerRow{layerIndex}");
             var name = document.LayerNames[layerIndex];
             ImGui.SetNextItemWidth(160F);
-            if (ImGui.InputText("##名", ref name, 32) && name.Trim().Length > 0 &&
+            if (ImGui.InputText("##名", ref name, 32, ImGuiInputTextFlags.AutoSelectAll) && name.Trim().Length > 0 &&
                 document.RenameLayer(layerIndex, name))
             {
                 MarkSceneDocumentDirty();
@@ -1153,7 +1153,7 @@ internal sealed partial class ImGuiEditorWindow
 
         var newLayerName = _newLayerName;
         ImGui.SetNextItemWidth(160F);
-        ImGui.InputText("##新图层名", ref _newLayerName, 32);
+        ImGui.InputText("##新图层名", ref _newLayerName, 32, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.SameLine();
         if (ImGui.SmallButton("新增图层"))
         {
@@ -1177,7 +1177,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PushID($"SortingLayer{i}");
             var name = document.SortingLayerNames[i];
             ImGui.SetNextItemWidth(160F);
-            if (ImGui.InputText("##排序图层名", ref name, 32) && document.RenameSortingLayer(i, name))
+            if (ImGui.InputText("##排序图层名", ref name, 32, ImGuiInputTextFlags.AutoSelectAll) && document.RenameSortingLayer(i, name))
                 MarkSceneDocumentDirty();
             ImGui.SameLine();
             if (ImGui.SmallButton("↑") && document.MoveSortingLayer(i, -1)) MarkSceneDocumentDirty();
@@ -1190,7 +1190,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PopID();
         }
         ImGui.SetNextItemWidth(160F);
-        ImGui.InputText("##新排序图层名", ref _newSortingLayerName, 32);
+        ImGui.InputText("##新排序图层名", ref _newSortingLayerName, 32, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.SameLine();
         if (ImGui.SmallButton("新增排序图层"))
         {
@@ -1252,7 +1252,7 @@ internal sealed partial class ImGuiEditorWindow
         if (paths.Count == 0)
         {
             ImGui.TextDisabled("项目中还没有调色盘资产。");
-            ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96);
+            ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96, ImGuiInputTextFlags.AutoSelectAll);
             if (ImGui.Button("创建默认调色盘", new Vector2(170F, 30F)))
                 CreateProjectPaletteAsset(VoxelPalette.Build());
             return;
@@ -1291,7 +1291,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.TextDisabled($"项目配置当前指向：{_projectSettings.ActivePalettePath}");
         ImGui.Separator();
-        ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96);
+        ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96, ImGuiInputTextFlags.AutoSelectAll);
         if (ImGui.Button("新建当前调色盘副本", new Vector2(180F, 30F)))
             CreateProjectPaletteAsset(_palette);
         ImGui.SameLine();

@@ -211,7 +211,7 @@ internal sealed class ProjectAssetBrowser
 
         SameLineWhenFits(searchWidth);
         ImGui.SetNextItemWidth(searchWidth);
-        ImGui.InputTextWithHint("##资源搜索", "搜索资产…", ref _searchText, 256);
+        ImGui.InputTextWithHint("##资源搜索", "搜索资产…", ref _searchText, 256, ImGuiInputTextFlags.AutoSelectAll);
 
         SameLineWhenFits(sliderWidth);
         ImGui.SetNextItemWidth(sliderWidth);
@@ -800,7 +800,7 @@ internal sealed class ProjectAssetBrowser
         if (ImGui.BeginMenu("文件夹"))
         {
             ImGui.SetNextItemWidth(Math.Max(ImGui.CalcTextSize("文件夹名称").X * 3F, ImGui.GetFontSize() * 12F));
-            ImGui.InputTextWithHint("##新文件夹名", "文件夹名称", ref _newFolderName, 128);
+            ImGui.InputTextWithHint("##新文件夹名", "文件夹名称", ref _newFolderName, 128, ImGuiInputTextFlags.AutoSelectAll);
             if (ImGui.Button("创建"))
             {
                 var result = ProjectAssetOperations.CreateFolder(project, folder, _newFolderName);

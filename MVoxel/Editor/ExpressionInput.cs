@@ -12,7 +12,7 @@ internal static class ExpressionInput
     {
         var id = ImGui.GetID(label);
         if (!Buffers.TryGetValue(id, out var text)) text = value.ToString("G", CultureInfo.InvariantCulture);
-        var changed = ImGui.InputText(label, ref text, 128);
+        var changed = ImGui.InputText(label, ref text, 128, ImGuiInputTextFlags.AutoSelectAll);
         var active = ImGui.IsItemActive();
         var parsed = TryEvaluate(text, out var number);
         result = value;

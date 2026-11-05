@@ -93,7 +93,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SameLine(0, 3);
         ImGui.SetNextItemWidth(width);
-        ImGui.InputText("##" + id, ref text, 128);
+        ImGui.InputText("##" + id, ref text, 128, ImGuiInputTextFlags.AutoSelectAll);
         var inputActive = ImGui.IsItemActive();
         var inputFinished = ImGui.IsItemDeactivatedAfterEdit();
 

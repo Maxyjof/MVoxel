@@ -11,7 +11,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.TextUnformatted("场景窗口可见图层");
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("只影响场景窗口，相机使用自己的图层遮罩");
             ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - 66F));
-            ImGui.InputTextWithHint("##新建场景图层", "新图层名称", ref _newSceneLayerName, 64);
+            ImGui.InputTextWithHint("##新建场景图层", "新图层名称", ref _newSceneLayerName, 64, ImGuiInputTextFlags.AutoSelectAll);
             ImGui.SameLine();
             if (ImGui.SmallButton("添加##新场景图层"))
             {
@@ -61,7 +61,7 @@ internal sealed partial class ImGuiEditorWindow
                 if (_renamingSceneLayer == i)
                 {
                     ImGui.SetNextItemWidth(Math.Max(90F, ImGui.GetContentRegionAvail().X - 95F));
-                    ImGui.InputText("##图层新名称", ref _sceneLayerRenameBuffer, 64);
+                    ImGui.InputText("##图层新名称", ref _sceneLayerRenameBuffer, 64, ImGuiInputTextFlags.AutoSelectAll);
                     ImGui.SameLine();
                     if (ImGui.SmallButton("确定##图层改名"))
                     {
@@ -82,7 +82,7 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.TreeNode("排序图层"))
             {
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅重叠体素参与排序；列表越靠下优先级越高。普通图层顺序不影响渲染。");
-                ImGui.InputTextWithHint("##新增排序图层", "排序图层名称", ref _newSortingLayerName, 128);
+                ImGui.InputTextWithHint("##新增排序图层", "排序图层名称", ref _newSortingLayerName, 128, ImGuiInputTextFlags.AutoSelectAll);
                 if (ImGui.Button("添加排序图层"))
                 {
                     if (layerDocument.AddSortingLayer(_newSortingLayerName))
@@ -94,7 +94,7 @@ internal sealed partial class ImGuiEditorWindow
                     ImGui.PushID(index + 1000);
                     var name = layerDocument.SortingLayerNames[index];
                     ImGui.SetNextItemWidth(ImGui.GetFontSize() * 9);
-                    if (ImGui.InputText("##排序名称", ref name, 128))
+                    if (ImGui.InputText("##排序名称", ref name, 128, ImGuiInputTextFlags.AutoSelectAll))
                     {
                         if (layerDocument.RenameSortingLayer(index, name)) MarkSceneDocumentDirty();
                         else SetStatus("默认排序图层不能改名，其他名称不能为空或重复");

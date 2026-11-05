@@ -300,7 +300,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PushID($"{title}{index}");
             ImGui.SetNextItemWidth(140F);
             var name = preset.Name;
-            if (ImGui.InputText("##name", ref name, 32))
+            if (ImGui.InputText("##name", ref name, 32, ImGuiInputTextFlags.AutoSelectAll))
             {
                 preset.Name = name;
                 ApplyRenderFrameChange();

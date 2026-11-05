@@ -27,7 +27,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         var colors = EditorPalette.CurrentColors();
         ImGui.SetNextItemWidth(Math.Max(120F, ImGui.GetContentRegionAvail().X * .5F));
-        ImGui.InputTextWithHint("##复制主题名称", "新主题名称", ref _themeCopyName, 80);
+        ImGui.InputTextWithHint("##复制主题名称", "新主题名称", ref _themeCopyName, 80, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.SameLine();
         if (ImGui.Button("复制主题"))
         {

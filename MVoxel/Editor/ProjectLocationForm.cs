@@ -22,11 +22,11 @@ internal sealed class ProjectLocationForm
         }
         ImGui.TextUnformatted("项目名称");
         ImGui.SetNextItemWidth(-1F);
-        ImGui.InputText("##ProjectName", ref _name, 160);
+        ImGui.InputText("##ProjectName", ref _name, 160, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.TextUnformatted("保存位置");
         var buttonWidth = ImGui.CalcTextSize("浏览…").X + ImGui.GetStyle().FramePadding.X * 2F;
         ImGui.SetNextItemWidth(Math.Max(80F, ImGui.GetContentRegionAvail().X - buttonWidth - ImGui.GetStyle().ItemSpacing.X));
-        ImGui.InputText("##ProjectLocation", ref _location, 2048);
+        ImGui.InputText("##ProjectLocation", ref _location, 2048, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.SameLine();
         if (ImGui.Button("浏览…"))
         {

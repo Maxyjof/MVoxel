@@ -412,7 +412,7 @@ internal sealed partial class ImGuiEditorWindow
             case GeneratorParameterType.String:
             {
                 var value = _generatorParameters.TryGetValue(parameter.Id, out var raw) ? raw?.ToString() ?? string.Empty : string.Empty;
-                if (ImGui.InputText(label, ref value, 256)) _generatorParameters[parameter.Id] = value;
+                if (ImGui.InputText(label, ref value, 256, ImGuiInputTextFlags.AutoSelectAll)) _generatorParameters[parameter.Id] = value;
                 break;
             }
 

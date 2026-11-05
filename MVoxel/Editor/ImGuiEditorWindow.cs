@@ -1542,7 +1542,7 @@ DockId=0x6A3C3007,0
         ImGui.SameLine();
         ImGui.TextDisabled(_project is null ? "未打开项目" : ActiveEditingName);
         ImGui.SetNextItemWidth(-1F);
-        ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128);
+        ImGui.InputTextWithHint("##层级搜索", "搜索对象", ref _hierarchySearch, 128, ImGuiInputTextFlags.AutoSelectAll);
         ImGui.Separator();
         if (_project is null)
         {
@@ -3950,7 +3950,7 @@ DockId=0x6A3C3007,0
             var layerWidth = Math.Max(ImGui.GetFontSize() * 5F, headerAvailable * 0.34F);
             var layerLabelWidth = ImGui.CalcTextSize("图层").X;
             ImGui.SetNextItemWidth(Math.Max(ImGui.GetFontSize() * 3F, headerAvailable - layerWidth - layerLabelWidth - (objectIconSize + 30F)));
-            if (ImGui.InputText("##InspectorObjectName", ref objectName, 128) &&
+            if (ImGui.InputText("##InspectorObjectName", ref objectName, 128, ImGuiInputTextFlags.AutoSelectAll) &&
                 !string.IsNullOrWhiteSpace(objectName) && objectName != selectedObject.Name)
             {
                 selectedObject.Name = objectName.Trim();
@@ -4167,7 +4167,7 @@ DockId=0x6A3C3007,0
         if (ImGui.BeginPopup("##InspectorAddComponentPopup"))
             {
                 ImGui.SetNextItemWidth(Math.Max(ImGui.GetFontSize() * 12F, ImGui.GetContentRegionAvail().X));
-                ImGui.InputTextWithHint("##ComponentSearch", "搜索组件或分类", ref _componentSearch, 128);
+                ImGui.InputTextWithHint("##ComponentSearch", "搜索组件或分类", ref _componentSearch, 128, ImGuiInputTextFlags.AutoSelectAll);
                 ImGui.Separator();
                 var query = _componentSearch.Trim();
                 var resultCount = 0;
@@ -4847,7 +4847,7 @@ DockId=0x6A3C3007,0
             var animation = SceneComponentTypes.ReadAnimation(component);
             var clip = animation.ClipAsset;
             BeginInspectorField("动画片段", "动画片段资产路径；可在动画窗口中创建和编辑。");
-            var changed = ImGui.InputText("##AnimationClip", ref clip, 512);
+            var changed = ImGui.InputText("##AnimationClip", ref clip, 512, ImGuiInputTextFlags.AutoSelectAll);
             var playing = animation.Playing;
             changed |= ImGui.Checkbox("播放", ref playing);
             var loop = animation.Loop;

@@ -273,11 +273,11 @@ internal sealed partial class ImGuiEditorWindow
             var markerFrame = marker.Frame;
             if (ImGui.DragInt("事件帧", ref markerFrame, 1F, 0, _timelineAsset.LengthFrames)) marker.Frame = markerFrame;
             var condition = marker.Condition;
-            if (ImGui.InputText("条件", ref condition, 256)) marker.Condition = condition;
+            if (ImGui.InputText("条件", ref condition, 256, ImGuiInputTextFlags.AutoSelectAll)) marker.Condition = condition;
             var action = marker.Action;
-            if (ImGui.InputText("动作", ref action, 256)) marker.Action = action;
+            if (ImGui.InputText("动作", ref action, 256, ImGuiInputTextFlags.AutoSelectAll)) marker.Action = action;
             var targetObject = marker.TargetObjectId;
-            if (ImGui.InputText("目标对象", ref targetObject, 128)) marker.TargetObjectId = targetObject;
+            if (ImGui.InputText("目标对象", ref targetObject, 128, ImGuiInputTextFlags.AutoSelectAll)) marker.TargetObjectId = targetObject;
             ImGui.PopID();
         }
         if (ImGui.Button("添加条件事件")) _timelineAsset.Events.Add(new TimelineEventMarker { Frame = _timelineFrame });

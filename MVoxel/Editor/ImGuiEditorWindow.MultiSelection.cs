@@ -380,7 +380,7 @@ internal sealed partial class ImGuiEditorWindow
             var draftKey = "text:" + key;
             if (!_multiMixedText.TryGetValue(draftKey, out var draft)) draft = mixedText ? "—" : values[0];
             ImGui.SetNextItemWidth(-1F);
-            if (ImGui.InputText("##MultiText_" + key, ref draft, 256))
+            if (ImGui.InputText("##MultiText_" + key, ref draft, 256, ImGuiInputTextFlags.AutoSelectAll))
             {
                 _multiMixedText[draftKey] = draft;
                 if (!mixedText || !string.Equals(draft, "—", StringComparison.Ordinal))
@@ -418,7 +418,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         if (!_multiMixedText.TryGetValue(key, out var text)) text = "—";
         ImGui.SetNextItemWidth(-1F);
-        if (ImGui.InputText("##Mixed_" + key, ref text, 32))
+        if (ImGui.InputText("##Mixed_" + key, ref text, 32, ImGuiInputTextFlags.AutoSelectAll))
         {
             _multiMixedText[key] = text;
             if (double.TryParse(text, out var parsed))

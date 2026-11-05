@@ -182,7 +182,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             ImGui.TextWrapped("把当前窗口停靠、位置和尺寸保存为自定义布局。");
             ImGui.SetNextItemWidth(-1F);
-            ImGui.InputTextWithHint("##布局名称", "布局名称", ref _layoutNameInput, 64);
+            ImGui.InputTextWithHint("##布局名称", "布局名称", ref _layoutNameInput, 64, ImGuiInputTextFlags.AutoSelectAll);
             if (ImGui.Button("保存", new Vector2(120F, 0F)))
             {
                 var name = SanitizeLayoutName(_layoutNameInput);
