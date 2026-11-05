@@ -232,7 +232,9 @@ public static class ProceduralTree
             switch (_data.CrownShape)
             {
                 case TreeCrownShape.Cone:
-                    StampConeCrown(center.X, bottom, bottom + crownHeight, horizontalRadius);
+                    // 锥形树冠必须盖住树干顶端，否则树干会从树冠上方戳出来
+                    var coneTop = MathF.Max(bottom + crownHeight, _height + 1.5F);
+                    StampConeCrown(center.X, center.Z, bottom, coneTop, horizontalRadius);
                     break;
                 case TreeCrownShape.Layered:
                     StampLayeredCrown(center.X, center.Z, bottom, bottom + crownHeight, horizontalRadius);
@@ -279,18 +281,21 @@ public static class ProceduralTree
         /// <summary>
         /// 针叶树的层叠锥形树冠
         /// </summary>
-        private void StampConeCrown(float centerX, float bottom, float top, float radius)
+        private void StampConeCrown(float centerX, float centerZ, float bottom, float top, float radius)
         {
             var span = MathF.Max(1F, top - bottom);
             var layers = Math.Clamp((int)MathF.Round(span / 2.4F), 3, 18);
+            // 收尖处留出树干顶端的半径，避免树干从锥顶戳出来
+            var tipRadius = MathF.Max(0.9F, TrunkRadiusAt(1F));
             for (var y = (int)MathF.Floor(bottom); y <= (int)MathF.Ceiling(top); y++)
             {
                 var t = Math.Clamp((y + 0.5F - bottom) / span, 0F, 1F);
                 var phase = t * layers;
                 phase -= MathF.Floor(phase);
                 var layerRadius = radius * (1F - t) * (0.55F + 0.45F * (1F - phase));
-                if (layerRadius < 0.5F) continue;
-                StampDisc(centerX, y, 0F, layerRadius, shellOnly: false);
+                if (layerRadius < tipRadius) layerRadius = tipRadius;
+                // 整层填实：锥形树冠的圆盘较小，留密度孔会让树干从缝里露出来
+                StampDisc(centerX, y, centerZ, layerRadius, shellOnly: false, solid: true);
                 if (Truncated) return;
             }
         }
@@ -344,7 +349,7 @@ public static class ProceduralTree
         /// <summary>
         /// 水平圆盘，密度仍按叶片参数过滤
         /// </summary>
-        private void StampDisc(float centerX, int y, float centerZ, float radius, bool shellOnly)
+        private void StampDisc(float centerX, int y, float centerZ, float radius, bool shellOnly, bool solid = false)
         {
             var minimumX = (int)MathF.Floor(centerX - radius);
             var maximumX = (int)MathF.Ceiling(centerX + radius);
@@ -358,7 +363,7 @@ public static class ProceduralTree
                 var distance = MathF.Sqrt(dx * dx + dz * dz);
                 if (distance > radius) continue;
                 if (shellOnly && distance < radius - 0.75F) continue;
-                if (NextFloat() > _data.LeafDensity) continue;
+                if (!solid && NextFloat() > _data.LeafDensity) continue;
                 if (!StampLeaf(x, y, z)) return;
             }
         }
@@ -509,9 +514,21 @@ public static class ProceduralTree
         /// <summary>
         /// 写入一个体素，重复坐标只记一次，超过上限立即截断
         /// </summary>
+        /// <summary>
+        /// 写入一个体素，重复坐标只记一次，超过上限立即截断
+        /// </summary>
+        /// <remarks>
+        /// 重复坐标要用后写入的值覆盖：树叶在树干之后盖章，必须能盖住树干中心，
+        /// 否则锥形树冠的尖端会露出一段棕色树干
+        /// </remarks>
         private bool SetVoxel(VoxelCoord64 coordinate, VoxelValue value)
         {
-            if (!_seen.Add(coordinate)) return true;
+            if (!_seen.Add(coordinate))
+            {
+                _writer.Set(coordinate, value);
+                return true;
+            }
+
             if (_seen.Count > _maximumVoxels)
             {
                 Truncated = true;
