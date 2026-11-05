@@ -1939,6 +1939,7 @@ DockId=0x6A3C3007,0
                     DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
                         GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
                 if (!gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+                if (showVoxelWorld && _project is not null) DrawCpuSelectionOutline(drawList, origin, size, camera);
             }
 
             drawList.PopClipRect();
@@ -2777,6 +2778,59 @@ DockId=0x6A3C3007,0
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// CPU 回退没有着色器的选中描边，用选中子树的包围盒线框给出选中提示
+    /// </summary>
+    /// <param name=drawList>场景绘制列表</param>
+    /// <param name=origin>视口左上角屏幕坐标</param>
+    /// <param name=size>视口尺寸</param>
+    /// <param name=camera>观察相机</param>
+    private void DrawCpuSelectionOutline(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (_sceneDocument is null || GetSelectedSceneObject() is not { } selected) return;
+        var ids = new HashSet<StableId> { selected.Id };
+        var children = _sceneDocument.Objects.Where(item => item.ParentId is not null)
+            .ToLookup(item => item.ParentId!.Value);
+        var queue = new Queue<StableId>();
+        queue.Enqueue(selected.Id);
+        while (queue.TryDequeue(out var parent))
+            foreach (var child in children[parent])
+                if (ids.Add(child.Id)) queue.Enqueue(child.Id);
+        long minimumX = long.MaxValue, minimumY = long.MaxValue, minimumZ = long.MaxValue;
+        long maximumX = long.MinValue, maximumY = long.MinValue, maximumZ = long.MinValue;
+        var any = false;
+        foreach (var id in ids)
+        {
+            if (!_objectVoxels.TryGetWorld(id, out var world) || !world.TryGetBounds(out var minimum, out var maximum))
+                continue;
+            any = true;
+            minimumX = Math.Min(minimumX, minimum.X); minimumY = Math.Min(minimumY, minimum.Y);
+            minimumZ = Math.Min(minimumZ, minimum.Z);
+            maximumX = Math.Max(maximumX, maximum.X); maximumY = Math.Max(maximumY, maximum.Y);
+            maximumZ = Math.Max(maximumZ, maximum.Z);
+        }
+
+        if (!any) return;
+        // 包围盒按格中心取整，最大侧加 1 得到格子边界
+        Span<Vector3> corners = stackalloc Vector3[8];
+        corners[0] = new Vector3(minimumX, minimumY, minimumZ);
+        corners[1] = new Vector3(maximumX + 1, minimumY, minimumZ);
+        corners[2] = new Vector3(maximumX + 1, maximumY + 1, minimumZ);
+        corners[3] = new Vector3(minimumX, maximumY + 1, minimumZ);
+        corners[4] = new Vector3(minimumX, minimumY, maximumZ + 1);
+        corners[5] = new Vector3(maximumX + 1, minimumY, maximumZ + 1);
+        corners[6] = new Vector3(maximumX + 1, maximumY + 1, maximumZ + 1);
+        corners[7] = new Vector3(minimumX, maximumY + 1, maximumZ + 1);
+        ReadOnlySpan<(int Start, int End)> edges = stackalloc (int, int)[]
+        {
+            (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
+        };
+        var color = ToPackedColor(EditorPalette.Accent);
+        foreach (var (start, end) in edges)
+            if (SceneProjection.ClipLine(corners[start], corners[end], origin, size, camera, out var a, out var b))
+                drawList.AddLine(a, b, color, 1.6F);
     }
 
     /// <summary>判断投影后的面片是否与视口矩形相交，用于跳过整面不可见的填充</summary>

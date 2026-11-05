@@ -611,6 +611,7 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
         else LoadObjectVoxelWorlds(project);
+        ClearPersistedComponentEditingStates();
         _activeTool = EditorTool.Pick;
         _voxelEditTargetId = null;
         _sceneGizmoMode = SceneGizmoMode.Select;
@@ -2823,7 +2824,9 @@ internal sealed partial class ImGuiEditorWindow
             if (!ids.Contains(item.Id)) continue;
             hash.Add(item.Id);
             var visible = IsSceneObjectVisible(item) && _sceneDocument.IsLayerVisible(item.LayerIndex) &&
-                item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled);
+                item.Components.Any(component => component.Enabled &&
+                    (SceneComponentTypes.IsVoxelModel(component) ||
+                     SceneComponentTypes.IsGeneratedVoxelComponent(component)));
             hash.Add(visible);
             if (visible && _objectVoxels.TryGetWorld(item.Id, out var objectWorld))
             {
@@ -2840,7 +2843,9 @@ internal sealed partial class ImGuiEditorWindow
             {
                 if (!ids.Contains(item.Id) || !IsSceneObjectVisible(item) ||
                     !_sceneDocument.IsLayerVisible(item.LayerIndex) ||
-                    !item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component) && component.Enabled) ||
+                    !item.Components.Any(component => component.Enabled &&
+                        (SceneComponentTypes.IsVoxelModel(component) ||
+                         SceneComponentTypes.IsGeneratedVoxelComponent(component))) ||
                     !_objectVoxels.TryGetWorld(item.Id, out var part)) continue;
                 foreach (var (coordinate, value) in part.EnumerateOccupied()) writer.Set(coordinate, value);
             }

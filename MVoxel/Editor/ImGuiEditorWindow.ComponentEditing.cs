@@ -16,6 +16,38 @@ internal sealed partial class ImGuiEditorWindow
     private StableId? _componentEditingScanSelection;
     private StableId? _componentEditingScanOwner;
 
+    /// <summary>
+    /// 打开场景后清掉文件里记录的组件编辑状态，避免带着“正在编辑”进入新会话
+    /// </summary>
+    private void ClearPersistedComponentEditingStates()
+    {
+        if (_sceneDocument is null) return;
+        foreach (var sceneObject in _sceneDocument.Objects)
+        foreach (var component in sceneObject.Components)
+        {
+            if (SceneComponentTypes.IsCurveRenderer(component))
+            {
+                var data = SceneComponentTypes.ReadCurveRenderer(component);
+                if (data.Editing) SceneComponentTypes.WriteCurveRenderer(component, data with { Editing = false });
+            }
+            else if (SceneComponentTypes.IsVoxelSelection(component))
+            {
+                var data = SceneComponentTypes.ReadVoxelSelection(component);
+                if (data.Editing) SceneComponentTypes.WriteVoxelSelection(component, data with { Editing = false });
+            }
+            else if (SceneComponentTypes.IsProbeVolume(component))
+            {
+                var data = SceneComponentTypes.ReadProbeVolume(component);
+                if (data.Editing) SceneComponentTypes.WriteProbeVolume(component, data with { Editing = false });
+            }
+        }
+
+        _componentEditingOwnerId = null;
+        _componentEditingScanned = false;
+        _componentEditingScanSelection = null;
+        _componentEditingScanOwner = null;
+    }
+
     /// <summary>记录用户主动进入编辑状态的对象</summary>
     /// <param name="id">对象标识</param>
     private void MarkComponentEditingOwner(StableId id) => _componentEditingOwnerId = id;

@@ -364,8 +364,7 @@ internal static class CurveRendererJson
         merged[MaterialSlotName] = normalized.MaterialSlot;
         merged[SortingLayerName] = normalized.SortingLayer;
         merged[SortingOrderName] = normalized.SortingOrder;
-        // 编辑状态是会话状态，不写进场景文件：否则重开场景或撤销都会把“正在编辑”一起带回来
-        merged.Remove(EditingName);
+        merged[EditingName] = normalized.Editing;
         component.Data = JsonSerializer.SerializeToElement(merged, Options);
     }
 
