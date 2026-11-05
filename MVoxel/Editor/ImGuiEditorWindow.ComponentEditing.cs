@@ -12,6 +12,31 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>由用户主动进入编辑状态的对象；文件里残留的编辑标记会被这里判为无效</summary>
     private StableId? _componentEditingOwnerId;
 
+    /// <summary>用户最近一次主动选择的变换工具，选中对象时自动切回来</summary>
+    private SceneGizmoMode _lastTransformMode = SceneGizmoMode.Move;
+
+    /// <summary>上一帧看到的选中对象，用于判断“刚选中”与“刚取消”</summary>
+    private StableId? _toolSelectionTracked;
+
+    /// <summary>
+    /// 按 Unity 的规则让工具跟随选择：刚选中对象时切到上次的变换工具，
+    /// 取消选中时回到选择工具
+    /// </summary>
+    private void SyncToolModeWithSelection()
+    {
+        var selected = _selectedSceneObjectId;
+        if (selected == _toolSelectionTracked) return;
+        var hadSelection = _toolSelectionTracked is not null;
+        _toolSelectionTracked = selected;
+        if (selected is null)
+        {
+            _sceneGizmoMode = SceneGizmoMode.Select;
+            return;
+        }
+
+        if (!hadSelection) _sceneGizmoMode = _lastTransformMode;
+    }
+
     private bool _componentEditingScanned;
     private StableId? _componentEditingScanSelection;
     private StableId? _componentEditingScanOwner;

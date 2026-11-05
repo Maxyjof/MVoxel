@@ -16,7 +16,7 @@ namespace MVoxel.Editor;
 /// </summary>
 internal sealed partial class ImGuiEditorWindow
 {
-    private enum SceneGizmoMode { Select, Move, Rotate, Scale }
+    private enum SceneGizmoMode { Select, Move, Rotate, Scale, All }
 
     private SceneGizmoMode _sceneGizmoMode = SceneGizmoMode.Select;
     private bool _sceneGizmoDragging;
@@ -197,6 +197,11 @@ internal sealed partial class ImGuiEditorWindow
                 DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel);
                 break;
             case SceneGizmoMode.Scale:
+                DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
+                break;
+            case SceneGizmoMode.All:
+                DrawMoveGizmo(drawList, origin, size, camera, pivot, pivotScreen, unitsPerPixel, selected);
+                DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel);
                 DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
                 break;
         }
@@ -764,7 +769,28 @@ internal sealed partial class ImGuiEditorWindow
         var pivot = GetObjectPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
-        switch (_sceneGizmoMode)
+        if (_sceneGizmoMode == SceneGizmoMode.All)
+        {
+            foreach (var mode in new[] { SceneGizmoMode.Move, SceneGizmoMode.Rotate, SceneGizmoMode.Scale })
+            {
+                if (TryBeginTransformGizmoDrag(mode, mouse, origin, size, camera, selected, pivot, pivotScreen,
+                        unitsPerPixel)) return true;
+            }
+
+            return false;
+        }
+
+        return TryBeginTransformGizmoDrag(_sceneGizmoMode, mouse, origin, size, camera, selected, pivot,
+            pivotScreen, unitsPerPixel);
+    }
+
+    /// <summary>
+    /// 按指定变换模式尝试开始对象手柄拖动；“全部”工具依次尝试移动、旋转、缩放
+    /// </summary>
+    private bool TryBeginTransformGizmoDrag(SceneGizmoMode mode, Vector2 mouse, Vector2 origin, Vector2 size,
+        SceneCamera camera, SceneObject selected, Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel)
+    {
+        switch (mode)
         {
             case SceneGizmoMode.Move:
                 for (var plane = 0; plane < 3; plane++)

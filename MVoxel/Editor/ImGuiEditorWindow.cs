@@ -1223,6 +1223,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         MeasureSince(mark, ref _analysisLive.DialogsMs);
         _applyPreset = false;
         SyncComponentEditingState();
+        SyncToolModeWithSelection();
         EndEditorHistory();
     }
 
@@ -2067,12 +2068,24 @@ DockId=0x6A3C3007,0
         var hovered = false;
         hovered |= DrawGizmoModeRow(top, buttonSize);
         var columnTop = top + new Vector2(0F, buttonSize + 4F);
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < 5; i++)
         {
             var position = columnTop + new Vector2(0F, i * (buttonSize + 3F));
             ImGui.SetCursorScreenPos(position);
             ImGui.PushID(i);
-            if (ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize))) _sceneGizmoMode = (SceneGizmoMode)i;
+            if (ImGui.InvisibleButton("##场景工具", new Vector2(buttonSize)))
+            {
+                var mode = (SceneGizmoMode)i;
+                // Unity 行为：切回选择工具就取消选中；切到变换工具则记住它，之后选中对象自动用这个工具
+                if (mode == SceneGizmoMode.Select && _selectedSceneObjectId is not null)
+                {
+                    _selectedSceneObjectId = null;
+                    _voxelEditTargetId = null;
+                }
+
+                _sceneGizmoMode = mode;
+                if (mode != SceneGizmoMode.Select) _lastTransformMode = mode;
+            }
             var over = ImGui.IsItemHovered(); hovered |= over;
             var color = ToPackedColor(i == (int)_sceneGizmoMode ? Color.FromArgb(230, EditorPalette.AccentSoft) :
                 over ? Color.FromArgb(220, EditorPalette.PanelHeader) : Color.FromArgb(190, EditorPalette.Window));
@@ -2081,7 +2094,15 @@ DockId=0x6A3C3007,0
             var c = position + new Vector2(buttonSize * .5F);
             var ink = ToPackedColor(EditorPalette.Text);
             DrawSceneToolIcon(draw, i, c, buttonSize, ink);
-            if (over) ImGui.SetTooltip(i switch { 0 => "选择", 1 => "移动", 2 => "旋转", _ => "缩放" });
+            if (over)
+                ImGui.SetTooltip(i switch
+                {
+                    0 => "选择：点击对象选中；再次点击退出选中",
+                    1 => "移动",
+                    2 => "旋转",
+                    3 => "缩放",
+                    _ => "全部：同时显示移动、旋转与缩放手柄",
+                });
             ImGui.PopID();
         }
         ImGui.SetCursorScreenPos(saved);
@@ -2215,6 +2236,24 @@ DockId=0x6A3C3007,0
             draw.AddTriangleFilled(P(-8.5F, -7.5F), P(-3.5F, -8F), P(-6.5F, -3.5F), color);
             return;
         }
+        if (tool == 4)
+        {
+            // 全部工具：十字箭头 + 旋转弧 + 缩放方块
+            draw.AddLine(P(-8F, -4F), P(9F, -4F), color, line);
+            draw.AddLine(P(3F, -9F), P(3F, 2F), color, line);
+            draw.AddTriangleFilled(P(9F, -4F), P(5F, -7F), P(5F, -1F), color);
+            draw.AddTriangleFilled(P(3F, 2F), P(0F, -2F), P(6F, -2F), color);
+            var previous = P(-2F, 6F);
+            for (var segment = 1; segment <= 12; segment++)
+            {
+                var angle = segment * (MathF.PI * 0.9F / 12F);
+                var next = P(-2F + MathF.Cos(angle) * 6F, 6F + MathF.Sin(angle) * 6F);
+                draw.AddLine(previous, next, color, line);
+                previous = next;
+            }
+            return;
+        }
+
         draw.AddRect(P(-7F, -7F), P(3F, 3F), color, 0F, ImDrawFlags.None, line);
         draw.AddLine(P(1F, 1F), P(8F, 8F), color, line);
         draw.AddRectFilled(P(5F, 5F), P(10F, 10F), color);
