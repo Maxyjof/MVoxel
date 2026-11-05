@@ -2192,9 +2192,8 @@ DockId=0x6A3C3007,0
         var changed = -1;
         for (var axis = 0; axis < 3; axis++)
         {
-            ImGui.SetNextItemWidth(110F);
-            var label = axis switch { 0 => "X##SnapX", 1 => "Y##SnapY", _ => "Z##SnapZ" };
-            if (ImGui.DragFloat(label, ref values[axis], .05F, .05F, 64F, "%.2f")) changed = axis;
+            var label = axis switch { 0 => "X", 1 => "Y", _ => "Z" };
+            if (InspectorDragFloatField(label, ref values[axis], .05F, .05F, 64F)) changed = axis;
         }
 
         if (changed >= 0)
@@ -2218,8 +2217,7 @@ DockId=0x6A3C3007,0
         if (ImGui.Checkbox("旋转吸附##GizmoRotationSnap", ref rotationSnap))
             _editorSettings.RotationSnapEnabled = rotationSnap;
         var degrees = _editorSettings.RotationSnapDegrees;
-        ImGui.SetNextItemWidth(110F);
-        if (ImGui.DragFloat("角度##GizmoRotationSnapDegrees", ref degrees, .5F, 1F, 180F, "%.0f°"))
+        if (InspectorDragFloatField("角度", ref degrees, .5F, 1F, 180F, "%.0f°"))
             _editorSettings.RotationSnapDegrees = Math.Clamp(degrees, 1F, 180F);
         ImGui.TextDisabled("拖动对象或曲线控制点时按步长吸附；开启旋转吸附后按固定角度转动");
     }
@@ -4395,16 +4393,55 @@ DockId=0x6A3C3007,0
         SetStatus($"已恢复“{sceneObject.Name}”的{SceneComponentTypes.GetDisplayName(component)}组件默认值");
     }
 
-    private static void BeginInspectorField(string label, string? tooltip = null)
+    private static float BeginInspectorField(string label, string? tooltip = null, bool draggable = false)
     {
         var start = ImGui.GetCursorPosX();
         var labelWidth = Math.Clamp(ImGui.GetContentRegionAvail().X * .31F, 94F, 158F);
         ImGui.AlignTextToFramePadding();
-        ImGui.TextDisabled(label);
-        if (tooltip is not null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
+        var dragPixels = 0F;
+        if (draggable)
+        {
+            // 标签本身当拖动条：按住左侧文字左右拖就能改值，和拖动输入框是同一套手感
+            var origin = ImGui.GetCursorScreenPos();
+            ImGui.PushID(label);
+            ImGui.InvisibleButton("##FieldLabelDrag", new Vector2(labelWidth, ImGui.GetFrameHeight()));
+            if (ImGui.IsItemActive()) dragPixels = ImGui.GetIO().MouseDelta.X;
+            var active = ImGui.IsItemActive();
+            var draw = ImGui.GetWindowDrawList();
+            draw.AddText(new Vector2(origin.X,
+                    origin.Y + (ImGui.GetFrameHeight() - ImGui.GetTextLineHeight()) * .5F),
+                ToPackedColor(active ? EditorPalette.Accent : EditorPalette.MutedText), label);
+            if (tooltip is not null && ImGui.IsItemHovered())
+                ImGui.SetTooltip(active ? tooltip : tooltip + "\n按住标签左右拖动即可改值");
+            ImGui.PopID();
+        }
+        else
+        {
+            ImGui.TextDisabled(label);
+            if (tooltip is not null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
+        }
+
         ImGui.SameLine();
         ImGui.SetCursorPosX(Math.Max(start + labelWidth, ImGui.GetCursorPosX()));
         ImGui.SetNextItemWidth(-1F);
+        return dragPixels;
+    }
+
+    /// <summary>
+    /// 检查器里的浮点字段：输入框可拖，左侧标签也可按住拖动改值
+    /// </summary>
+    private static bool InspectorDragFloatField(string label, ref float value, float speed, float minimum,
+        float maximum, string format = "%.2f", string? tooltip = null)
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.DragFloat("##" + label, ref value, speed, minimum, maximum, format);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            value = Math.Clamp(value + dragPixels * speed, minimum, maximum);
+            changed = true;
+        }
+
+        return changed;
     }
 
     /// <summary>

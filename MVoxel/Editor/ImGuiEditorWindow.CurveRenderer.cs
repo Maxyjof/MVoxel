@@ -283,8 +283,8 @@ internal sealed partial class ImGuiEditorWindow
         // 所以这里只暴露一个“截面旋转”，避免调了没反应
         var current = state.Data with { Points = state.Points.ToArray() };
         var roll = CurveSpline.RollDegrees(current, index);
-        BeginInspectorField("截面旋转", "截面绕曲线走向的滚转角，直接决定方块管与十字管的朝向；拖动场景里的旋转手柄改的是同一个角度。");
-        if (ImGui.DragFloat("##CurvePointRoll", ref roll, .5F, -180F, 180F, "%.1f°"))
+        if (InspectorDragFloatField("截面旋转", ref roll, .5F, -180F, 180F, "%.1f°",
+                "截面绕曲线走向的滚转角，直接决定方块管与十字管的朝向；拖动场景里的旋转手柄改的是同一个角度。"))
         {
             state.Points[index] = point with { Rotation = CurveSpline.WithRoll(current, index, roll) };
             point = state.Points[index];
@@ -393,8 +393,8 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var radius = state.Data.Radius;
-        BeginInspectorField("半径（格）", "截面半径，乘以每个控制点的宽度倍率得到实际粗细。");
-        if (ImGui.DragFloat("##CurveRadius", ref radius, .05F, .1F, 64F, "%.2f"))
+        if (InspectorDragFloatField("半径（格）", ref radius, .05F, .1F, 64F, "%.2f",
+                "截面半径，乘以每个控制点的宽度倍率得到实际粗细。"))
         {
             state.Data = state.Data with { Radius = radius };
             state.GeometryChanged = true;
@@ -404,8 +404,8 @@ internal sealed partial class ImGuiEditorWindow
         if (state.Data.Shape == CurveBrushShape.Beads)
         {
             var step = state.Data.Step;
-            BeginInspectorField("采样间距（格）", "珠链沿曲线排布球珠的间距；调大可以做出断续的点线效果。");
-            if (ImGui.DragFloat("##CurveStep", ref step, .02F, .1F, 8F, "%.2f"))
+            if (InspectorDragFloatField("采样间距（格）", ref step, .02F, .1F, 8F, "%.2f",
+                    "珠链沿曲线排布球珠的间距；调大可以做出断续的点线效果。"))
             {
                 state.Data = state.Data with { Step = step };
                 state.GeometryChanged = true;
