@@ -1910,10 +1910,23 @@ DockId=0x6A3C3007,0
 
         if (!gpuRendered)
         {
-            if (_showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-            if (showVoxelWorld && _project is not null)
-                DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
-                    GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
+            // 显卡管线初始化或单帧失败时先保留上一帧的画面，避免在显卡画面与 CPU 预览之间闪烁；
+            // 仅有此时仍无画面才退回 CPU 预览，并裁到视口内，防止投影到视口外的方块压到面板上
+            drawList.PushClipRect(origin, origin + size, true);
+            var cachedScenePipeline = _scenePipeline;
+            if (cachedScenePipeline is not null && cachedScenePipeline.DisplayTextureId != IntPtr.Zero)
+            {
+                DrawPipelineImage(drawList, cachedScenePipeline, origin, size);
+            }
+            else
+            {
+                if (_showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
+                if (showVoxelWorld && _project is not null)
+                    DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
+                        GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
+            }
+
+            drawList.PopClipRect();
         }
 
         drawList.PushClipRect(origin, origin + size, true);
