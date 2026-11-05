@@ -137,6 +137,8 @@ internal sealed partial class ImGuiEditorWindow
             if (component is null || _objectVoxels.TryGetWorld(sceneObject.Id, out _)) continue;
             if (!SceneComponentTypes.TryPrepareGeneratedVoxels(component, ProceduralVoxelBudget, out var local,
                     out var regenerated, out var truncated)) continue;
+            // 生成规则只产出基准形态；对象级的浮点旋转与缩放在这里套用，重新生成也不会丢
+            local = ApplyGeneratedRenderTransform(component, local);
             var origin = GetObjectGridOrigin(sceneObject);
             _objectVoxels.AssignWorld(sceneObject.Id,
                 origin == VoxelCoord64.Zero ? local : local.CloneShifted(origin.X, origin.Y, origin.Z));

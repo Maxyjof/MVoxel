@@ -139,7 +139,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="sceneObject">目标对象</param>
     /// <param name="component">模型组件</param>
     /// <returns>是否提交过</returns>
-    private bool CommitPendingModelRotation(SceneObject sceneObject, ComponentRecord component)
+    private bool CommitPendingModelRotation(SceneObject sceneObject, ComponentRecord? component)
     {
         if (_pendingModelRotation is not { Length: 3 } pending || _pendingModelRotationObjectId != sceneObject.Id)
             return false;
@@ -147,7 +147,16 @@ internal sealed partial class ImGuiEditorWindow
         _pendingModelRotation = null;
         _pendingModelRotationObjectId = null;
         var degrees = new Vector3((float)pending[0], (float)pending[1], (float)pending[2]);
-        ApplyModelRotation(sceneObject, component, RotationFromDegrees(degrees), degrees);
+        if (component is not null)
+        {
+            ApplyModelRotation(sceneObject, component, RotationFromDegrees(degrees), degrees);
+            return true;
+        }
+
+        // 没有体素模型组件的生成器对象：旋转参数写到生成器组件上并整体重建
+        var generated = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent);
+        if (generated is null) return false;
+        ApplyGeneratedObjectTransform(sceneObject, generated, rotation: degrees);
         return true;
     }
 

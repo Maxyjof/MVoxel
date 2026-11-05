@@ -147,7 +147,7 @@ internal sealed partial class ImGuiEditorWindow
             return new System.Numerics.Vector3((float)freeEuler.X, (float)freeEuler.Y, (float)freeEuler.Z);
         }
         var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return System.Numerics.Vector3.Zero;
+        if (component is null) return ReadGeneratedObjectTransform(item).Rotation;
         var data = SceneComponentTypes.ReadVoxelModel(component);
         return new System.Numerics.Vector3(data.RotationX, data.RotationY, data.RotationZ);
     }
@@ -189,6 +189,8 @@ internal sealed partial class ImGuiEditorWindow
             var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
             if (component is not null)
                 ApplyModelRotation(item, component, RotationFromDegrees(degrees), degrees);
+            else if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generated)
+                ApplyGeneratedObjectTransform(item, generated, rotation: degrees);
             else if (item.Transform.Mode == TransformMode.Free)
             {
                 item.Transform.SetFreeEuler(item.Transform.Free.Position,
@@ -211,6 +213,8 @@ internal sealed partial class ImGuiEditorWindow
             return new System.Numerics.Vector3(data.ScaleX, data.ScaleY, data.ScaleZ);
         }
 
+        if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generated)
+            return ReadGeneratedObjectTransform(item).Scale;
         return new System.Numerics.Vector3(item.Transform.ScaleX, item.Transform.ScaleY, item.Transform.ScaleZ);
     }
 
@@ -228,6 +232,19 @@ internal sealed partial class ImGuiEditorWindow
                 _ => (data.ScaleX, data.ScaleY, factor),
             };
             ApplyModelScale(item, scale.Item1, scale.Item2, scale.Item3);
+            return;
+        }
+
+        if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generatedScale)
+        {
+            var current = ReadGeneratedObjectTransform(item).Scale;
+            var next = axis switch
+            {
+                0 => new System.Numerics.Vector3(factor, current.Y, current.Z),
+                1 => new System.Numerics.Vector3(current.X, factor, current.Z),
+                _ => new System.Numerics.Vector3(current.X, current.Y, factor),
+            };
+            ApplyGeneratedObjectTransform(item, generatedScale, scale: next);
             return;
         }
 

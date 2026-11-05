@@ -203,12 +203,7 @@ internal sealed partial class ImGuiEditorWindow
             if (rotationComponent is not null)
             {
                 var modelData = SceneComponentTypes.ReadVoxelModel(rotationComponent);
-                // 显示口径与 Unity 一致：负数绕回 0 到 360
-                var modelRotation = new[]
-                {
-                    (double)WrapDegrees(modelData.RotationX), WrapDegrees(modelData.RotationY),
-                    WrapDegrees(modelData.RotationZ),
-                };
+                var modelRotation = new[] { (double)modelData.RotationX, modelData.RotationY, modelData.RotationZ };
                 DrawTransformRow("旋转", modelRotation, 5D, 12D, (axis, value) =>
                 {
                     modelRotation[axis] = value;
@@ -216,6 +211,22 @@ internal sealed partial class ImGuiEditorWindow
                     _pendingModelRotationObjectId = item.Id;
                 }, "浮点旋转：按角度对基准体素重新采集，结果是干净的整数体素而不是斜格子。\n拖动只预览，松开后整份重新生成；反复调整都以最近一次编辑的基准为准。");
                 CommitPendingModelRotation(item, rotationComponent);
+            }
+            else if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generated)
+            {
+                // 生成器对象：旋转参数存在组件里，重建体素时套用，不需要实例化
+                var generatedRotation = ReadGeneratedObjectTransform(item).Rotation;
+                var generatedValues = new[]
+                {
+                    (double)generatedRotation.X, generatedRotation.Y, generatedRotation.Z,
+                };
+                DrawTransformRow("旋转", generatedValues, 5D, 12D, (axis, value) =>
+                {
+                    generatedValues[axis] = value;
+                    _pendingModelRotation = generatedValues;
+                    _pendingModelRotationObjectId = item.Id;
+                }, "浮点旋转：按角度对生成体素重新采样。生成器参数保持不变，重新生成时会按这个角度重新套用。");
+                CommitPendingModelRotation(item, null);
             }
             else
             {
@@ -244,6 +255,8 @@ internal sealed partial class ImGuiEditorWindow
 
         if (item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } modelComponent)
             DrawModelScaleRow(item, modelComponent);
+        else if (!free && item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generatedScale)
+            DrawGeneratedScaleRow(item, generatedScale);
         else if (!free) DrawTransformScaleRow(item);
     }
 
@@ -303,6 +316,23 @@ internal sealed partial class ImGuiEditorWindow
         draw.AddCircle(center + new Vector2(3.4F, 0F), 3.2F, color, 10, 1.4F);
         if (hovered) ImGui.SetTooltip(locked ? "已锁定：改一个轴会同步其余两轴" : "点击锁定：改一个轴会同步其余两轴");
         ImGui.PopID();
+    }
+
+    /// <summary>
+    /// 生成器对象的缩放：倍数写在生成器组件里，重建体素时套用
+    /// </summary>
+    /// <param name="item">目标对象</param>
+    /// <param name="component">生成器组件</param>
+    private void DrawGeneratedScaleRow(SceneObject item, ComponentRecord component)
+    {
+        var scale = ReadGeneratedObjectTransform(item).Scale;
+        var values = new[] { (double)scale.X, scale.Y, scale.Z };
+        DrawTransformRow("缩放", values, .05D, 12D, (axis, value) =>
+        {
+            values[axis] = MathF.Max(0F, (float)value);
+            ApplyGeneratedObjectTransform(item, component,
+                scale: new System.Numerics.Vector3((float)values[0], (float)values[1], (float)values[2]));
+        }, "浮点缩放：0 表示隐藏，不能为负；按绝对倍数重新采样，反复调整不累积失真。");
     }
 
     /// <summary>
@@ -387,14 +417,6 @@ internal sealed partial class ImGuiEditorWindow
         {
             return false;
         }
-    }
-
-    /// <summary>角度规范到 0 到 360 度，负角度绕回正区间</summary>
-    private static float WrapDegrees(float degrees)
-    {
-        if (!float.IsFinite(degrees)) return 0F;
-        var wrapped = degrees % 360F;
-        return wrapped < 0F ? wrapped + 360F : wrapped;
     }
 
     private static Double3 GridEuler(OrthogonalRotation r)
