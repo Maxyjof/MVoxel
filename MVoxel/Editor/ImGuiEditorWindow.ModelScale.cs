@@ -168,6 +168,21 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
+        // 已有浮点旋转时先缩放再按同一角度旋转，保证先转后缩与先缩后转得到同一形态
+        var modelRotation = ReadModelRotation(sceneObject);
+        if (MathF.Abs(modelRotation.X) > .001F || MathF.Abs(modelRotation.Y) > .001F ||
+            MathF.Abs(modelRotation.Z) > .001F)
+        {
+            if (!ModelRotationRule.TryResample(scaled, RotationFromDegrees(modelRotation), origin, out var oriented,
+                    out var rotateError))
+            {
+                SetStatus($"缩放失败：{rotateError}");
+                return;
+            }
+
+            scaled = oriented;
+        }
+
         if (!ReplaceObjectVoxels(sceneObject, scaled, origin,
                 scale: (factorX, factorY, factorZ)))
         {

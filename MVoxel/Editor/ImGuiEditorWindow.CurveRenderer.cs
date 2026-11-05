@@ -314,8 +314,8 @@ internal sealed partial class ImGuiEditorWindow
             var nextDirection = ChordDirection(state.Points, index, true, state.Data.Closed);
             var previousDirection = ChordDirection(state.Points, index, false, state.Data.Closed);
             var width = point.Width;
-            BeginInspectorField("宽度倍率", "截面按这个倍率缩放，用来做曲线的粗细渐变。");
-            if (ImGui.DragFloat("##CurvePointWidth", ref width, .01F, .05F, 8F, "%.2f×"))
+            if (InspectorDragFloatField("宽度倍率", "截面按这个倍率缩放，用来做曲线的粗细渐变。", ref width, .01F,
+                    .05F, 8F, "%.2f×"))
             {
                 state.Points[index] = point with { Width = width };
                 point = state.Points[index];
@@ -416,9 +416,8 @@ internal sealed partial class ImGuiEditorWindow
         if (state.Data.Interpolation != CurveInterpolation.Linear)
         {
             var resolution = state.Data.Resolution;
-            BeginInspectorField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。");
-            if (ImGui.SliderInt("##CurveResolution", ref resolution, CurveRendererComponentData.MinimumResolution,
-                    CurveRendererComponentData.MaximumResolution))
+            if (InspectorSliderIntField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。", ref resolution,
+                    CurveRendererComponentData.MinimumResolution, CurveRendererComponentData.MaximumResolution))
             {
                 state.Data = state.Data with { Resolution = resolution };
                 state.GeometryChanged = true;
@@ -457,9 +456,9 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("给生成体素加上自发光标记，和笔刷的发光开关效果一致。");
-        BeginInspectorField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。");
         var materialSlot = (int)state.Data.MaterialSlot;
-        if (ImGui.DragInt("##CurveMaterialSlot", ref materialSlot, .2F, 0, ushort.MaxValue))
+        if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
+                ushort.MaxValue))
         {
             state.Data = state.Data with { MaterialSlot = (ushort)Math.Clamp(materialSlot, 0, ushort.MaxValue) };
             state.GeometryChanged = true;

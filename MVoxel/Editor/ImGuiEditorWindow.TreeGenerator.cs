@@ -162,9 +162,9 @@ internal sealed partial class ImGuiEditorWindow
         if (angle != data.BranchAngle) data = data with { BranchAngle = angle };
         DrawTreeFloatField("下垂", "##TreeDroop", data.BranchDroop, .01F, -1F, 1F, "枝条下垂程度，负值上扬", out var droop);
         if (droop != data.BranchDroop) data = data with { BranchDroop = droop };
-        BeginInspectorField("分叉层数", "枝条再分叉的层数，层数越多越繁茂，体素也越多。");
         var depth = data.BranchDepth;
-        if (ImGui.SliderInt("##TreeBranchDepth", ref depth, 0, 3)) data = data with { BranchDepth = depth };
+        if (InspectorSliderIntField("分叉层数", "枝条再分叉的层数，层数越多越繁茂，体素也越多。", ref depth, 0, 3))
+            data = data with { BranchDepth = depth };
     }
 
     /// <summary>

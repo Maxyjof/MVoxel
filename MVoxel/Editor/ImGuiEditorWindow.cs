@@ -4498,9 +4498,46 @@ DockId=0x6A3C3007,0
     private static bool InspectorDragFloatField(string label, string? tooltip, ref float value, float speed) =>
         InspectorDragFloatField(label, tooltip, ref value, speed, -float.MaxValue, float.MaxValue);
 
+    /// <summary>浮点滑块：标签可拖动，拖动灵敏度按量程换算</summary>
+    private static bool InspectorSliderFloatField(string label, string? tooltip, ref float value, float minimum,
+        float maximum, string format = "%.2f")
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.SliderFloat("##" + label, ref value, minimum, maximum, format);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var speed = MathF.Max(0.0001F, (maximum - minimum) / 200F);
+            value = Math.Clamp(value + dragPixels * speed, minimum, maximum);
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    /// <summary>整数滑块：标签可拖动，拖动按整格步进</summary>
+    private static bool InspectorSliderIntField(string label, string? tooltip, ref int value, int minimum, int maximum)
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.SliderInt("##" + label, ref value, minimum, maximum);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var steps = (int)MathF.Round(dragPixels);
+            if (steps != 0)
+            {
+                value = Math.Clamp(value + steps, minimum, maximum);
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
     /// <summary>
     /// 三分量浮点字段：标签可拖动，按同一增量同时调整三个分量
     /// </summary>
+    private static bool InspectorDragVector3Field(string label, string? tooltip, ref System.Numerics.Vector3 value,
+        float speed) => InspectorDragVector3Field(label, tooltip, ref value, speed, -float.MaxValue, float.MaxValue);
+
     private static bool InspectorDragVector3Field(string label, string? tooltip, ref System.Numerics.Vector3 value,
         float speed, float minimum, float maximum)
     {
@@ -4831,18 +4868,12 @@ DockId=0x6A3C3007,0
         {
             var data = SceneComponentTypes.ReadPostProcessOverride(component);
             var changed = ImGui.Checkbox("启用局部后处理", ref data.Enabled);
-            BeginInspectorField("覆盖权重", "按局部范围影响后处理参数的强度。");
-            changed |= ImGui.DragFloat("##PostProcessWeight", ref data.Weight, .01F, 0F, 1F);
-            BeginInspectorField("曝光偏移", "局部曝光覆盖，环境雾和天气不在此组件中配置。");
-            changed |= ImGui.DragFloat("##PostProcessExposure", ref data.Exposure, .01F, -16F, 16F);
-            BeginInspectorField("Bloom强度", "局部辉光强度覆盖。");
-            changed |= ImGui.DragFloat("##PostProcessBloom", ref data.BloomIntensity, .01F, 0F, 8F);
-            BeginInspectorField("Bloom阈值", "局部辉光亮度阈值。");
-            changed |= ImGui.DragFloat("##PostProcessBloomThreshold", ref data.BloomThreshold, .01F, 0F, 8F);
-            BeginInspectorField("Bloom半径", "局部辉光扩散半径。");
-            changed |= ImGui.DragFloat("##PostProcessBloomRadius", ref data.BloomRadius, .05F, .1F, 64F);
-            BeginInspectorField("暗角", "局部暗角强度。");
-            changed |= ImGui.DragFloat("##PostProcessVignette", ref data.Vignette, .01F, 0F, 1F);
+            changed |= InspectorDragFloatField("覆盖权重", "按局部范围影响后处理参数的强度。", ref data.Weight, .01F, 0F, 1F);
+            changed |= InspectorDragFloatField("曝光偏移", "局部曝光覆盖，环境雾和天气不在此组件中配置。", ref data.Exposure, .01F, -16F, 16F);
+            changed |= InspectorDragFloatField("Bloom强度", "局部辉光强度覆盖。", ref data.BloomIntensity, .01F, 0F, 8F);
+            changed |= InspectorDragFloatField("Bloom阈值", "局部辉光亮度阈值。", ref data.BloomThreshold, .01F, 0F, 8F);
+            changed |= InspectorDragFloatField("Bloom半径", "局部辉光扩散半径。", ref data.BloomRadius, .05F, .1F, 64F);
+            changed |= InspectorDragFloatField("暗角", "局部暗角强度。", ref data.Vignette, .01F, 0F, 1F);
             if (changed)
             {
                 SceneComponentTypes.WritePostProcessOverride(component, data);
@@ -4856,19 +4887,14 @@ DockId=0x6A3C3007,0
         {
             var data = SceneComponentTypes.ReadWindField(component);
             var changed = ImGui.Checkbox("启用局部风场", ref data.Enabled);
-            BeginInspectorField("风向 X/Y/Z", "局部风力方向，会自动归一化。");
-            changed |= ImGui.DragFloat3("##WindDirection", ref data.Direction, .01F);
-            BeginInspectorField("风力强度", "局部风场基础强度。");
-            changed |= ImGui.DragFloat("##WindStrength", ref data.Strength, .05F, 0F, 1000F);
-            BeginInspectorField("影响范围", "从风场对象原点开始的球形影响半径。");
-            changed |= ImGui.DragFloat("##WindRange", ref data.Range, .1F, .01F, 100000F);
-            BeginInspectorField("衰减", "距离越远风力按此指数衰减。");
-            changed |= ImGui.DragFloat("##WindFalloff", ref data.Falloff, .05F, 0F, 8F);
+            changed |= InspectorDragVector3Field("风向 X/Y/Z", "局部风力方向，会自动归一化。", ref data.Direction, .01F);
+            changed |= InspectorDragFloatField("风力强度", "局部风场基础强度。", ref data.Strength, .05F, 0F, 1000F);
+            changed |= InspectorDragFloatField("影响范围", "从风场对象原点开始的球形影响半径。", ref data.Range, .1F, .01F, 100000F);
+            changed |= InspectorDragFloatField("衰减", "距离越远风力按此指数衰减。", ref data.Falloff, .05F, 0F, 8F);
             changed |= ImGui.Checkbox("启用湍流", ref data.Turbulence);
             if (data.Turbulence)
             {
-                BeginInspectorField("湍流强度", "局部风场的动态扰动幅度。");
-                changed |= ImGui.DragFloat("##WindTurbulence", ref data.TurbulenceStrength, .05F, 0F, 1000F);
+                changed |= InspectorDragFloatField("湍流强度", "局部风场的动态扰动幅度。", ref data.TurbulenceStrength, .05F, 0F, 1000F);
             }
             if (changed)
             {
@@ -4886,12 +4912,9 @@ DockId=0x6A3C3007,0
             changed |= ImGui.Checkbox("接收局部风场", ref data.ReceiveLocalWind);
             changed |= ImGui.Checkbox("子对象一并接收", ref data.IncludeChildren);
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("启用后会将风力接收规则传播到当前对象层级下的子对象。");
-            BeginInspectorField("受力倍率", "体素模型对风场响应的强度。");
-            changed |= ImGui.DragFloat("##WindForceScale", ref data.ForceScale, .05F, 0F, 1000F);
-            BeginInspectorField("阻尼", "风力响应的速度阻尼。");
-            changed |= ImGui.DragFloat("##WindDrag", ref data.Drag, .01F, 0F, 1F);
-            BeginInspectorField("柔韧度", "体素模型受风形变的响应程度。");
-            changed |= ImGui.DragFloat("##WindFlexibility", ref data.Flexibility, .01F, 0F, 1F);
+            changed |= InspectorDragFloatField("受力倍率", "体素模型对风场响应的强度。", ref data.ForceScale, .05F, 0F, 1000F);
+            changed |= InspectorDragFloatField("阻尼", "风力响应的速度阻尼。", ref data.Drag, .01F, 0F, 1F);
+            changed |= InspectorDragFloatField("柔韧度", "体素模型受风形变的响应程度。", ref data.Flexibility, .01F, 0F, 1F);
             if (changed)
             {
                 SceneComponentTypes.WriteWindReceiver(component, data);
@@ -4911,8 +4934,7 @@ DockId=0x6A3C3007,0
             var physicalCamera = data.PhysicalCamera;
             if (!physicalCamera)
             {
-                BeginInspectorField("视场角", "非物理相机使用的垂直视野角度。");
-                var changedFov = ImGui.DragFloat("##InspectorCameraFov", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");
+                var changedFov = InspectorDragFloatField("视场角", "非物理相机使用的垂直视野角度。", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");
                 changed = changedFov;
             }
             else
@@ -4924,10 +4946,8 @@ DockId=0x6A3C3007,0
                 data = data with { PhysicalCamera = physicalCamera };
                 changed = true;
             }
-            BeginInspectorField("近裁剪", "相机近平面距离；过近可能导致几何体被裁掉。");
-            changed |= ImGui.DragFloat("##InspectorCameraNear", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
-            BeginInspectorField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。");
-            changed |= ImGui.DragFloat("##InspectorCameraFar", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
+            changed |= InspectorDragFloatField("近裁剪", "相机近平面距离；过近可能导致几何体被裁掉。", ref nearClip, 0.01F, 0.001F, 1_000_000F, "%.3f");
+            changed |= InspectorDragFloatField("远裁剪", "相机远平面距离；超过此距离的内容不会显示。", ref farClip, 1F, 0.002F, 100_000_000F, "%.1f");
             var aaMode = data.RealtimeAntiAliasingPattern == 2 ? 3 : data.RealtimeAntiAliasingSamples == 1 ? 0 : data.RealtimeAntiAliasingPattern + 1;
             BeginInspectorField("实时抗锯齿", "FXAA 在显示图上平滑边缘；超采样追踪多条完整光照射线。路径追踪使用独立累积采样。");
             if (ImGui.Combo("##CameraAAMode", ref aaMode, "关闭\0规则网格超采样\0旋转网格超采样\0FXAA\0", 4))
@@ -4945,8 +4965,7 @@ DockId=0x6A3C3007,0
                     changed = true;
                 }
                 var aaSpread = data.RealtimeAntiAliasingSpread;
-                BeginInspectorField("采样范围", "控制样本在像素内的分布范围；较小范围保留更多锐度，平滑效果减弱。");
-                if (ImGui.DragFloat("##CameraAASpread", ref aaSpread, .01F, .25F, 1F, "%.2f"))
+                if (InspectorDragFloatField("采样范围", "控制样本在像素内的分布范围；较小范围保留更多锐度，平滑效果减弱。", ref aaSpread, .01F, .25F, 1F, "%.2f"))
                 {
                     data = data with { RealtimeAntiAliasingSpread = aaSpread };
                     changed = true;
@@ -4955,15 +4974,12 @@ DockId=0x6A3C3007,0
             if (aaMode == 3)
             {
                 var threshold = data.FxaaThreshold;
-                BeginInspectorField("边缘阈值", "较低的阈值会平滑更多低对比度边缘。");
-                if (ImGui.DragFloat("##FxaaThreshold", ref threshold, .002F, .0312F, .333F, "%.3f")) { data = data with { FxaaThreshold = threshold }; changed = true; }
+                if (InspectorDragFloatField("边缘阈值", "较低的阈值会平滑更多低对比度边缘。", ref threshold, .002F, .0312F, .333F, "%.3f")) { data = data with { FxaaThreshold = threshold }; changed = true; }
                 var strength = data.FxaaStrength;
-                BeginInspectorField("平滑强度", "控制边缘平滑的混合比例。");
-                if (ImGui.DragFloat("##FxaaStrength", ref strength, .01F, 0F, 1F)) { data = data with { FxaaStrength = strength }; changed = true; }
+                if (InspectorDragFloatField("平滑强度", "控制边缘平滑的混合比例。", ref strength, .01F, 0F, 1F)) { data = data with { FxaaStrength = strength }; changed = true; }
             }
             var waterFiltering = data.WaterFootprintFiltering;
-            BeginInspectorField("水面斜视过滤", "按相机像素在水面上的方向和大小过滤高频波纹，减轻远处闪烁和条纹；适用于程序化水面，不是纹理采样器的各向异性倍数。");
-            if (ImGui.DragFloat("##WaterFootprintFiltering", ref waterFiltering, .02F, 0F, 2F, "%.2f"))
+            if (InspectorDragFloatField("水面斜视过滤", "按相机像素在水面上的方向和大小过滤高频波纹，减轻远处闪烁和条纹；适用于程序化水面，不是纹理采样器的各向异性倍数。", ref waterFiltering, .02F, 0F, 2F, "%.2f"))
             { data = data with { WaterFootprintFiltering = waterFiltering }; changed = true; }
             var postProcess = data.PostProcess?.Clone() ?? CameraPostProcessStack.Default;
             if (ImGui.CollapsingHeader("相机后处理", ImGuiTreeNodeFlags.DefaultOpen))
@@ -4999,10 +5015,8 @@ DockId=0x6A3C3007,0
                         changed |= ImGui.Checkbox("##CameraDofOverride", ref effect.OverrideDepthOfFieldParameters);
                         if (effect.OverrideDepthOfFieldParameters)
                         {
-                            BeginInspectorField("光圈半径", "镜头采样半径；零表示没有景深模糊。");
-                            changed |= ImGui.DragFloat("##CameraDofAperture", ref effect.DepthOfFieldAperture, .005F, 0F, .5F, "%.3f");
-                            BeginInspectorField("对焦距离", "沿相机前向到焦平面的距离。");
-                            changed |= ImGui.DragFloat("##CameraDofFocus", ref effect.DepthOfFieldFocusDistance, .1F, .01F, 1_000_000F);
+                            changed |= InspectorDragFloatField("光圈半径", "镜头采样半径；零表示没有景深模糊。", ref effect.DepthOfFieldAperture, .005F, 0F, .5F, "%.3f");
+                            changed |= InspectorDragFloatField("对焦距离", "沿相机前向到焦平面的距离。", ref effect.DepthOfFieldFocusDistance, .1F, .01F, 1_000_000F);
                         }
                     }
                     if (effect.Type is CameraPostProcessEffectType.AmbientOcclusion or CameraPostProcessEffectType.VoxelIndirectLight or CameraPostProcessEffectType.ProbeVolumeGi or CameraPostProcessEffectType.Vignette)
@@ -5017,32 +5031,22 @@ DockId=0x6A3C3007,0
                         var curve = (int)effect.ToneCurve;
                         BeginInspectorField("色调曲线", "线性截断、Reinhard、ACES 或 Filmic。");
                         if (ImGui.Combo("##ToneCurve", ref curve, "线性\0Reinhard\0ACES\0Filmic\0", 4)) { effect.ToneCurve = (ToneCurve)curve; changed = true; }
-                        BeginInspectorField("曝光偏移（EV）", "叠加到物理相机或项目曝光；Volume 曝光随后叠加。");
-                        changed |= ImGui.DragFloat("##ToneExposure", ref effect.ExposureOffset, .02F, -16F, 16F);
-                        BeginInspectorField("Gamma", "输出显示 Gamma。");
-                        changed |= ImGui.DragFloat("##ToneGamma", ref effect.Gamma, .01F, 1F, 3.5F);
-                        BeginInspectorField("白平衡（K）", "6500 K 为中性。");
-                        changed |= ImGui.DragFloat("##ToneWhiteBalance", ref effect.WhiteBalance, 10F, 1500F, 12000F, "%.0f");
+                        changed |= InspectorDragFloatField("曝光偏移（EV）", "叠加到物理相机或项目曝光；Volume 曝光随后叠加。", ref effect.ExposureOffset, .02F, -16F, 16F);
+                        changed |= InspectorDragFloatField("Gamma", "输出显示 Gamma。", ref effect.Gamma, .01F, 1F, 3.5F);
+                        changed |= InspectorDragFloatField("白平衡（K）", "6500 K 为中性。", ref effect.WhiteBalance, 10F, 1500F, 12000F, "%.0f");
                     }
                     if (effect.Type == CameraPostProcessEffectType.Bloom)
                     {
-                        BeginInspectorField("强度", "高光辉光强度。");
-                        changed |= ImGui.DragFloat("##BloomIntensity", ref effect.Intensity, .01F, 0F, 2F);
-                        BeginInspectorField("亮度阈值", "高于阈值的亮部产生辉光；全局 Volume 可以叠加阈值偏移。");
-                        changed |= ImGui.DragFloat("##BloomThreshold", ref effect.Threshold, .01F, 0F, 8F);
-                        BeginInspectorField("半径（像素）", "辉光扩散范围。");
-                        changed |= ImGui.DragFloat("##BloomRadius", ref effect.Radius, .1F, 1F, 64F);
+                        changed |= InspectorDragFloatField("强度", "高光辉光强度。", ref effect.Intensity, .01F, 0F, 2F);
+                        changed |= InspectorDragFloatField("亮度阈值", "高于阈值的亮部产生辉光；全局 Volume 可以叠加阈值偏移。", ref effect.Threshold, .01F, 0F, 8F);
+                        changed |= InspectorDragFloatField("半径（像素）", "辉光扩散范围。", ref effect.Radius, .1F, 1F, 64F);
                     }
                     if (effect.Type == CameraPostProcessEffectType.ColorGrading)
                     {
-                        BeginInspectorField("饱和度", "1 为原始饱和度。");
-                        changed |= ImGui.DragFloat("##GradeSaturation", ref effect.Saturation, .01F, 0F, 2.5F);
-                        BeginInspectorField("色相偏移", "色相旋转角度；相机覆盖启用时不使用项目色相循环。");
-                        changed |= ImGui.DragFloat("##GradeHue", ref effect.HueShift, .5F, -180F, 180F, "%.1f°");
-                        BeginInspectorField("对比度", "1 为原始对比度。");
-                        changed |= ImGui.DragFloat("##GradeContrast", ref effect.Contrast, .01F, .2F, 2.5F);
-                        BeginInspectorField("亮度", "1 为原始亮度。");
-                        changed |= ImGui.DragFloat("##GradeBrightness", ref effect.Brightness, .01F, .1F, 3F);
+                        changed |= InspectorDragFloatField("饱和度", "1 为原始饱和度。", ref effect.Saturation, .01F, 0F, 2.5F);
+                        changed |= InspectorDragFloatField("色相偏移", "色相旋转角度；相机覆盖启用时不使用项目色相循环。", ref effect.HueShift, .5F, -180F, 180F, "%.1f°");
+                        changed |= InspectorDragFloatField("对比度", "1 为原始对比度。", ref effect.Contrast, .01F, .2F, 2.5F);
+                        changed |= InspectorDragFloatField("亮度", "1 为原始亮度。", ref effect.Brightness, .01F, .1F, 3F);
                     }
                     if (effect.Type == CameraPostProcessEffectType.SplitToning)
                     {
@@ -5052,32 +5056,24 @@ DockId=0x6A3C3007,0
                         var highlights = new System.Numerics.Vector3(effect.HighlightR, effect.HighlightG, effect.HighlightB);
                         BeginInspectorField("亮部颜色", "亮部的颜色乘数；白色不改变颜色。");
                         if (ImGui.ColorEdit3("##SplitHighlights", ref highlights)) { effect.HighlightR = highlights.X; effect.HighlightG = highlights.Y; effect.HighlightB = highlights.Z; changed = true; }
-                        BeginInspectorField("明暗分界", "分界越低，越多中间调使用亮部颜色。");
-                        changed |= ImGui.DragFloat("##SplitBalance", ref effect.ToningBalance, .01F, .05F, .95F);
-                        BeginInspectorField("混合强度", "0 为原图，1 为完整染色。");
-                        changed |= ImGui.DragFloat("##SplitMix", ref effect.Intensity, .01F, 0F, 1F);
+                        changed |= InspectorDragFloatField("明暗分界", "分界越低，越多中间调使用亮部颜色。", ref effect.ToningBalance, .01F, .05F, .95F);
+                        changed |= InspectorDragFloatField("混合强度", "0 为原图，1 为完整染色。", ref effect.Intensity, .01F, 0F, 1F);
                     }
                     if (effect.Type == CameraPostProcessEffectType.FilmGrain)
                     {
-                        BeginInspectorField("强度", "固定屏幕空间颗粒的强度；不同帧保持稳定。");
-                        changed |= ImGui.DragFloat("##GrainIntensity", ref effect.Intensity, .01F, 0F, 1F);
-                        BeginInspectorField("颗粒尺寸（像素）", "较大数值形成更粗的颗粒。");
-                        changed |= ImGui.DragFloat("##GrainSize", ref effect.Radius, .1F, 1F, 8F);
+                        changed |= InspectorDragFloatField("强度", "固定屏幕空间颗粒的强度；不同帧保持稳定。", ref effect.Intensity, .01F, 0F, 1F);
+                        changed |= InspectorDragFloatField("颗粒尺寸（像素）", "较大数值形成更粗的颗粒。", ref effect.Radius, .1F, 1F, 8F);
                     }
                     if (effect.Type == CameraPostProcessEffectType.Posterize)
                     {
-                        BeginInspectorField("色阶数", "每个颜色通道保留的离散亮度级数。");
-                        changed |= ImGui.DragInt("##PosterizeLevels", ref effect.Samples, 1F, 2, 64);
-                        BeginInspectorField("混合强度", "0 为原图，1 为完全色阶分离。");
-                        changed |= ImGui.DragFloat("##PosterizeMix", ref effect.Intensity, .01F, 0F, 1F);
+                        changed |= InspectorDragIntField("色阶数", "每个颜色通道保留的离散亮度级数。", ref effect.Samples, 1F, 2, 64);
+                        changed |= InspectorDragFloatField("混合强度", "0 为原图，1 为完全色阶分离。", ref effect.Intensity, .01F, 0F, 1F);
                     }
                     if (effect.Type == CameraPostProcessEffectType.AmbientOcclusion)
                     {
                         var samples = effect.Samples;
-                        BeginInspectorField("采样数", "环境遮蔽采样数；更高的值增加渲染开销。");
-                        if (ImGui.DragInt("##CameraAoSamples", ref samples, 1F, 4, 64)) { effect.Samples = samples; changed = true; }
-                        BeginInspectorField("遮蔽曲线", "控制环境遮蔽的明暗分布。");
-                        changed |= ImGui.DragFloat("##CameraAoPower", ref effect.AoPower, .02F, .2F, 4F);
+                        if (InspectorDragIntField("采样数", "环境遮蔽采样数；更高的值增加渲染开销。", ref samples, 1F, 4, 64)) { effect.Samples = samples; changed = true; }
+                        changed |= InspectorDragFloatField("遮蔽曲线", "控制环境遮蔽的明暗分布。", ref effect.AoPower, .02F, .2F, 4F);
                     }
                     if (ImGui.SmallButton("删除")) { postProcess.Effects.Remove(effect); changed = true; }
                     ImGui.PopID();
@@ -5118,18 +5114,12 @@ DockId=0x6A3C3007,0
             data = data with { FieldOfViewDegrees = fieldOfView, NearClip = nearClip, FarClip = farClip, PostProcess = postProcess };
             if (physicalCamera)
             {
-                BeginInspectorField("焦距（mm）", "物理镜头焦距，影响视场角。");
-                var focal = data.FocalLengthMillimeters; changed |= ImGui.DragFloat("##CameraFocal", ref focal, .1F, 1F, 500F); data = data with { FocalLengthMillimeters = focal };
-                BeginInspectorField("传感器宽度（mm）", null);
-                var sensor = data.SensorWidthMillimeters; changed |= ImGui.DragFloat("##CameraSensor", ref sensor, .1F, 1F, 100F); data = data with { SensorWidthMillimeters = sensor };
-                BeginInspectorField("光圈（f）", null);
-                var aperture = data.ApertureFStop; changed |= ImGui.DragFloat("##CameraAperture", ref aperture, .05F, .7F, 64F); data = data with { ApertureFStop = aperture };
-                BeginInspectorField("快门（秒）", null);
-                var shutter = data.ShutterSpeed; changed |= ImGui.DragFloat("##CameraShutter", ref shutter, .001F, 1F / 8000F, 60F); data = data with { ShutterSpeed = shutter };
-                BeginInspectorField("ISO", null);
-                var iso = data.Iso; changed |= ImGui.DragFloat("##CameraIso", ref iso, 1F, 25F, 51200F); data = data with { Iso = iso };
-                BeginInspectorField("对焦距离", null);
-                var focus = data.FocusDistance; changed |= ImGui.DragFloat("##CameraFocus", ref focus, .1F, .01F, 1000000F); data = data with { FocusDistance = focus };
+                var focal = data.FocalLengthMillimeters; changed |= InspectorDragFloatField("焦距（mm）", "物理镜头焦距，影响视场角。", ref focal, .1F, 1F, 500F); data = data with { FocalLengthMillimeters = focal };
+                var sensor = data.SensorWidthMillimeters; changed |= InspectorDragFloatField("传感器宽度（mm）", null, ref sensor, .1F, 1F, 100F); data = data with { SensorWidthMillimeters = sensor };
+                var aperture = data.ApertureFStop; changed |= InspectorDragFloatField("光圈（f）", null, ref aperture, .05F, .7F, 64F); data = data with { ApertureFStop = aperture };
+                var shutter = data.ShutterSpeed; changed |= InspectorDragFloatField("快门（秒）", null, ref shutter, .001F, 1F / 8000F, 60F); data = data with { ShutterSpeed = shutter };
+                var iso = data.Iso; changed |= InspectorDragFloatField("ISO", null, ref iso, 1F, 25F, 51200F); data = data with { Iso = iso };
+                var focus = data.FocusDistance; changed |= InspectorDragFloatField("对焦距离", null, ref focus, .1F, .01F, 1000000F); data = data with { FocusDistance = focus };
             }
             var mask = data.CullingMask;
             var layerNames = _sceneDocument?.LayerNames ?? ["默认"];

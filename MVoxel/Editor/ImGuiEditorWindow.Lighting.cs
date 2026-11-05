@@ -72,17 +72,16 @@ internal sealed partial class ImGuiEditorWindow
 
         if (data.Shape == LightShape.Spot)
         {
-            BeginInspectorField("外角", "聚光锥的外角，边缘衰减到零。");
             var outer = data.SpotAngleDegrees;
-            if (ImGui.SliderFloat("##LightSpotOuter", ref outer, 0.1F, 179F, "%.1f°"))
+            if (InspectorSliderFloatField("外角", "聚光锥的外角，边缘衰减到零。", ref outer, 0.1F, 179F, "%.1f°"))
             {
                 data = data with { SpotAngleDegrees = outer };
                 changed = true;
             }
 
-            BeginInspectorField("内角", "聚光锥的完整亮度范围，从内角到外角逐渐衰减。");
             var inner = data.InnerSpotAngleDegrees;
-            if (ImGui.SliderFloat("##LightSpotInner", ref inner, 0F, data.SpotAngleDegrees, "%.1f°"))
+            if (InspectorSliderFloatField("内角", "聚光锥的完整亮度范围，从内角到外角逐渐衰减。", ref inner, 0F,
+                    data.SpotAngleDegrees, "%.1f°"))
             {
                 data = data with { InnerSpotAngleDegrees = inner };
                 changed = true;
