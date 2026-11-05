@@ -548,7 +548,7 @@ internal sealed partial class ImGuiEditorWindow
             // 三个面按各自所在的世界平面绘制，随相机朝向变化，而不是永远正对屏幕
             var (u, v) = AxisPlane(plane);
             var center = pivot + (u + v) * unitsPerPixel * 22F;
-            var half = unitsPerPixel * 6.5F * 1.3F;
+            var half = unitsPerPixel * 6.5F * 1.3F * 1.2F;
             corners[0] = center - u * half - v * half;
             corners[1] = center + u * half - v * half;
             corners[2] = center + u * half + v * half;
@@ -835,7 +835,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     var (u, v) = AxisPlane(plane);
                     if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _) ||
-                        Vector2.Distance(mouse, point) > unitsPerPixel * 6.5F * 1.3F * 1.6F ||
+                        Vector2.Distance(mouse, point) > 6.5F * 1.3F * 1.2F * 1.7F ||
                         !SceneProjection.Project(pivot + u, origin, size, camera, out var pu, out _) ||
                         !SceneProjection.Project(pivot + v, origin, size, camera, out var pv, out _)) continue;
                     var su = pu - pivotScreen; var sv = pv - pivotScreen;
@@ -1362,6 +1362,28 @@ internal sealed partial class ImGuiEditorWindow
 
         if (!rotated.TryGetBounds(out var newMinimum, out _)) return;
         var newRotation = sceneObject.Transform.Grid.Rotation.Compose(AxisRotation(axisIndex));
+        if (sceneObject.Components.All(component => !SceneComponentTypes.IsVoxelModel(component)))
+        {
+            // 生成器对象没有模型组件：只替换体素世界与格变换，并把这次变化记成一步撤销
+            var beforeGrid = sceneObject.Transform.Grid;
+            var afterGrid = new GridTransform(newMinimum, newRotation);
+            var generatedWorld = _objectVoxels.GetOrCreate(sceneObject.Id);
+            var changes = generatedWorld.EnumerateOccupied()
+                .ToDictionary(cell => cell.Coordinate, _ => default(VoxelValue));
+            foreach (var cell in rotated.EnumerateOccupied()) changes[cell.Coordinate] = cell.Value;
+            _voxelHistory.Execute(new VoxelStrokeCommand("旋转生成体素", generatedWorld,
+                changes.Select(cell => (cell.Key, cell.Value)), forward =>
+                {
+                    sceneObject.Transform.SetGrid(forward ? afterGrid : beforeGrid);
+                    UpdateTransformMarker(sceneObject);
+                    RebuildObjectVoxelWorld();
+                }));
+            MarkSceneDocumentDirty();
+            RebuildObjectVoxelWorld();
+            SetStatus("已旋转生成体素 90 度（参数不变，重新生成会恢复原朝向）");
+            return;
+        }
+
         if (!ReplaceObjectVoxels(sceneObject, rotated, newMinimum, newRotation))
             return;
         MarkSceneDocumentDirty();

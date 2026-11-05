@@ -203,7 +203,12 @@ internal sealed partial class ImGuiEditorWindow
             if (rotationComponent is not null)
             {
                 var modelData = SceneComponentTypes.ReadVoxelModel(rotationComponent);
-                var modelRotation = new[] { (double)modelData.RotationX, modelData.RotationY, modelData.RotationZ };
+                // 显示口径与 Unity 一致：负数绕回 0 到 360
+                var modelRotation = new[]
+                {
+                    (double)WrapDegrees(modelData.RotationX), WrapDegrees(modelData.RotationY),
+                    WrapDegrees(modelData.RotationZ),
+                };
                 DrawTransformRow("旋转", modelRotation, 5D, 12D, (axis, value) =>
                 {
                     modelRotation[axis] = value;
@@ -382,6 +387,14 @@ internal sealed partial class ImGuiEditorWindow
         {
             return false;
         }
+    }
+
+    /// <summary>角度规范到 0 到 360 度，负角度绕回正区间</summary>
+    private static float WrapDegrees(float degrees)
+    {
+        if (!float.IsFinite(degrees)) return 0F;
+        var wrapped = degrees % 360F;
+        return wrapped < 0F ? wrapped + 360F : wrapped;
     }
 
     private static Double3 GridEuler(OrthogonalRotation r)
