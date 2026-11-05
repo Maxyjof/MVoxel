@@ -44,6 +44,11 @@ internal sealed partial class ImGuiEditorWindow
     private Vector3 _sceneGizmoDragAxisWorld;
     /// <summary>拖动开始时对象自身的位置，和手柄支点可能不同（中心枢轴）</summary>
     private Vector3 _sceneGizmoDragStartObjectPosition;
+
+    /// <summary>网格对象拖动预览：起始世界副本、起始格变换与累计格位移</summary>
+    private VoxelWorld? _sceneGizmoGridDragStartWorld;
+    private GridTransform _sceneGizmoGridDragStartTransform;
+    private VoxelCoord64 _sceneGizmoGridDragCells;
     private float _sceneGizmoDragStartValue;
     private float _sceneGizmoDragPixelsPerUnit = 1F;
     private Vector2 _sceneGizmoDragScreenDirection;
@@ -536,12 +541,30 @@ internal sealed partial class ImGuiEditorWindow
         Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel, SceneObject? axisOwner = null)
     {
         var length = unitsPerPixel * 82F;
+        Span<Vector3> corners = stackalloc Vector3[4];
+        Span<Vector2> screen = stackalloc Vector2[4];
         for (var plane = 0; plane < 3; plane++)
         {
+            // 三个面按各自所在的世界平面绘制，随相机朝向变化，而不是永远正对屏幕
             var (u, v) = AxisPlane(plane);
-            if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _)) continue;
-            var color = ToPackedColor(Color.FromArgb(180, AxisColor(plane)));
-            drawList.AddRectFilled(point - new Vector2(5F), point + new Vector2(5F), color, 1F);
+            var center = pivot + (u + v) * unitsPerPixel * 22F;
+            var half = unitsPerPixel * 6.5F * 1.3F;
+            corners[0] = center - u * half - v * half;
+            corners[1] = center + u * half - v * half;
+            corners[2] = center + u * half + v * half;
+            corners[3] = center - u * half + v * half;
+            var visible = true;
+            for (var index = 0; index < 4; index++)
+                if (!SceneProjection.Project(corners[index], origin, size, camera, out screen[index], out _))
+                {
+                    visible = false;
+                    break;
+                }
+
+            if (!visible) continue;
+            var color = ToPackedColor(Color.FromArgb(190, AxisColor(plane)));
+            drawList.AddQuadFilled(screen[0], screen[1], screen[2], screen[3], color);
+            drawList.AddQuad(screen[0], screen[1], screen[2], screen[3], ToPackedColor(EditorPalette.Border), 1F);
         }
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
@@ -812,7 +835,7 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     var (u, v) = AxisPlane(plane);
                     if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera, out var point, out _) ||
-                        Vector2.Distance(mouse, point) > 9F ||
+                        Vector2.Distance(mouse, point) > unitsPerPixel * 6.5F * 1.3F * 1.6F ||
                         !SceneProjection.Project(pivot + u, origin, size, camera, out var pu, out _) ||
                         !SceneProjection.Project(pivot + v, origin, size, camera, out var pv, out _)) continue;
                     var su = pu - pivotScreen; var sv = pv - pivotScreen;
@@ -820,6 +843,7 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneGizmoDragPlane = plane; _sceneGizmoPlaneU = su; _sceneGizmoPlaneV = sv;
                     _sceneGizmoDragStartMouse = mouse; _sceneGizmoDragStartPosition = pivot;
                     _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
+                    BeginGridDragPreview(selected);
                     _sceneGizmoDragging = true; _sceneGizmoDragRotation = false;
                     return true;
                 }
@@ -837,6 +861,7 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneGizmoDragStartPosition = pivot;
                     _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
                     _sceneGizmoDragStartGrid = selected.Transform.Grid.Position;
+                    BeginGridDragPreview(selected);
                     _sceneGizmoDragPixelsPerUnit = MathF.Max(0.001F, pixelsPerUnit);
                     _sceneGizmoDragScreenDirection = Vector2.Normalize(end - pivotScreen);
                     _sceneGizmoDragging = true;
@@ -998,6 +1023,12 @@ internal sealed partial class ImGuiEditorWindow
             }
             return;
         }
+        if (selected.Transform.Mode == TransformMode.Grid && _sceneGizmoGridDragStartWorld is not null)
+        {
+            // 网格对象拖动时实时预览：直接把对象体素副本按整格位移摆到位，松手时才记一次撤销
+            UpdateGridDragPreview(selected, mouse, origin, size, camera);
+            return;
+        }
         if (_sceneGizmoDragPlane >= 0)
         {
             if (selected.Transform.Mode == TransformMode.Free)
@@ -1066,6 +1097,92 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 开始网格拖动预览：记住起始体素世界与格变换，之后每帧只是复制并平移
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    private void BeginGridDragPreview(SceneObject sceneObject)
+    {
+        _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+        _sceneGizmoGridDragStartTransform = sceneObject.Transform.Grid;
+        _sceneGizmoGridDragStartWorld = sceneObject.Transform.Mode == TransformMode.Grid
+            ? _objectVoxels.GetOrCreate(sceneObject.Id).Clone()
+            : null;
+    }
+
+    private void UpdateGridDragPreview(SceneObject sceneObject, Vector2 mouse, Vector2 origin, Vector2 size,
+        SceneCamera camera)
+    {
+        if (_sceneGizmoGridDragStartWorld is null) return;
+        var cells = ComputeGridDragCells(mouse, origin, size, camera);
+        if (cells == _sceneGizmoGridDragCells) return;
+        _sceneGizmoGridDragCells = cells;
+        var preview = _sceneGizmoGridDragStartWorld.CloneShifted(cells.X, cells.Y, cells.Z);
+        _objectVoxels.SetWorld(sceneObject.Id, preview);
+        sceneObject.Transform.SetGrid(new GridTransform(
+            _sceneGizmoGridDragStartTransform.Position + cells, _sceneGizmoGridDragStartTransform.Rotation));
+        UpdateTransformMarker(sceneObject);
+        MarkSceneDocumentDirty();
+        RebuildObjectVoxelWorld();
+        SetStatus($"移动中：{cells.X}, {cells.Y}, {cells.Z}");
+    }
+
+    private VoxelCoord64 ComputeGridDragCells(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (_sceneGizmoDragPlane >= 0)
+        {
+            // 平面拖动：把屏幕位移换成世界位移，再按格截断
+            var delta = PlaneDragDelta(mouse);
+            // 平面拖动拿到的已经是世界位移，按格截断（不做四舍五入）
+            return new VoxelCoord64(
+                (long)(SnapComponent(delta.X, GizmoSnapStep(0))),
+                (long)(SnapComponent(delta.Y, GizmoSnapStep(1))),
+                (long)(SnapComponent(delta.Z, GizmoSnapStep(2))));
+        }
+
+        var axis = _sceneGizmoDragAxisWorld.LengthSquared > 0.0001F
+            ? _sceneGizmoDragAxisWorld
+            : AxisVector(_sceneGizmoDragAxis);
+        if (!SceneProjection.Project(_sceneGizmoDragStartPosition, origin, size, camera, out var start, out _) ||
+            !SceneProjection.Project(_sceneGizmoDragStartPosition + axis, origin, size, camera, out var unit, out _))
+            return _sceneGizmoGridDragCells;
+        var direction = unit - start;
+        if (direction.LengthSquared() < 0.0001F) return _sceneGizmoGridDragCells;
+        var pixelsPerUnit = direction.Length();
+        var units = Vector2.Dot(mouse - _sceneGizmoDragStartMouse, direction / pixelsPerUnit) / pixelsPerUnit;
+        var snapped = SnapComponent(units, GizmoSnapStep(_sceneGizmoDragAxis));
+        return new VoxelCoord64(
+            (long)(axis.X * snapped), (long)(axis.Y * snapped), (long)(axis.Z * snapped));
+    }
+
+    /// <summary>
+    /// 结束网格拖动：恢复起始状态后走一次正式移动，撤销记录只有一步
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    private void FinishGridDragPreview(SceneObject sceneObject)
+    {
+        var cells = _sceneGizmoGridDragCells;
+        var startWorld = _sceneGizmoGridDragStartWorld;
+        var startTransform = _sceneGizmoGridDragStartTransform;
+        _sceneGizmoGridDragStartWorld = null;
+        _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+        if (startWorld is null) return;
+        if (cells == VoxelCoord64.Zero)
+        {
+            // 没有移动：恢复原状即可
+            _objectVoxels.SetWorld(sceneObject.Id, startWorld);
+            sceneObject.Transform.SetGrid(startTransform);
+            UpdateTransformMarker(sceneObject);
+            RebuildObjectVoxelWorld();
+            return;
+        }
+
+        _objectVoxels.SetWorld(sceneObject.Id, startWorld);
+        sceneObject.Transform.SetGrid(startTransform);
+        UpdateTransformMarker(sceneObject);
+        MoveModelObjectByGrid(sceneObject, cells);
+    }
+
     private void EndSceneGizmoDrag()
     {
         var selected = GetSelectedSceneObject();
@@ -1101,8 +1218,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             var delta = PlaneDragDelta(mouse);
             _sceneGizmoDragPlane = -1;
-            if (selected.Transform.Mode == TransformMode.Grid)
-                MoveModelObjectByGrid(selected, new VoxelCoord64((long)MathF.Round(delta.X), (long)MathF.Round(delta.Y), (long)MathF.Round(delta.Z)));
+            if (selected.Transform.Mode == TransformMode.Grid) FinishGridDragPreview(selected);
             else MarkSceneDocumentDirty();
             return;
         }
@@ -1153,18 +1269,7 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (selected.Transform.Mode == TransformMode.Grid)
-        {
-            var units = SnapComponent(
-                Vector2.Dot(mouse - _sceneGizmoDragStartMouse, _sceneGizmoDragScreenDirection) /
-                _sceneGizmoDragPixelsPerUnit, GizmoSnapStep(_sceneGizmoDragAxis));
-            if (MathF.Abs(units) < 0.5F) return;
-            var axis = _sceneGizmoDragAxisWorld.LengthSquared > 0.0001F
-                ? _sceneGizmoDragAxisWorld : AxisVector(_sceneGizmoDragAxis);
-            MoveModelObjectByGrid(selected, new VoxelCoord64(
-                (long)MathF.Round(axis.X * units), (long)MathF.Round(axis.Y * units),
-                (long)MathF.Round(axis.Z * units)));
-        }
+        if (selected.Transform.Mode == TransformMode.Grid) FinishGridDragPreview(selected);
         else
         {
             MarkSceneDocumentDirty();
