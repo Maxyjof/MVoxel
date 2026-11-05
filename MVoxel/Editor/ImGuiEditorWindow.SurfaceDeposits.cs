@@ -142,40 +142,27 @@ internal sealed partial class ImGuiEditorWindow
             }
             ImGui.EndCombo();
         }
-        BeginInspectorField("范围 X/Y/Z", "投射盒的局部宽度、深度和长度；Y 轴为投射深度。旋转和缩放跟随所属对象。");
-        changed |= ImGui.DragFloat3("##DepositSize", ref data.Size, .1F, .01F, 100000F);
-        BeginInspectorField("局部偏移", "投射盒中心相对所属对象原点的偏移。");
-        changed |= ImGui.DragFloat3("##DepositOffset", ref data.Offset, .1F);
-        BeginInspectorField("强度", "控制投射对表面颜色、粗糙度和法线的整体影响。");
-        changed |= ImGui.DragFloat("##DepositOpacity", ref data.Opacity, .01F, 0F, 1F);
-        BeginInspectorField("边缘淡化", "沿投射盒 X/Z 边缘向内淡化的比例。");
-        changed |= ImGui.DragFloat("##DepositEdge", ref data.EdgeFeather, .01F, 0F, 1F);
-        BeginInspectorField("深度淡化", "沿投射盒 Y 方向两端向内淡化的比例。");
-        changed |= ImGui.DragFloat("##DepositDepth", ref data.DepthFeather, .01F, 0F, 1F);
-        BeginInspectorField("角度开始", "表面法线与投射盒局部上方向的夹角达到此值时开始淡出。");
-        changed |= ImGui.DragFloat("##DepositAngleStart", ref data.NormalFadeStart, .5F, 0F, 180F, "%.0f°");
-        BeginInspectorField("角度结束", "达到此夹角时不再投射；不能小于开始角度。");
-        changed |= ImGui.DragFloat("##DepositAngleEnd", ref data.NormalFadeEnd, .5F, 0F, 180F, "%.0f°");
-        BeginInspectorField("覆盖率", "随机图案覆盖投射范围的比例；0 为无覆盖，1 为全部覆盖。");
-        changed |= ImGui.DragFloat("##DepositCoverage", ref data.Coverage, .01F, 0F, 1F);
-        BeginInspectorField("图案尺度", "控制局部噪声频率；数值越大斑块越细。");
-        changed |= ImGui.DragFloat("##DepositPatternScale", ref data.PatternScale, .01F, .001F, 100F);
-        BeginInspectorField("图案柔和度", "控制随机覆盖边界的过渡宽度。");
-        changed |= ImGui.DragFloat("##DepositPatternSoftness", ref data.PatternSoftness, .01F, 0F, 1F);
-        BeginInspectorField("随机种子", "更改局部覆盖图案；固定种子与对象变换时分布保持不变。");
-        changed |= ImGui.DragInt("##DepositSeed", ref data.Seed, 1F, 0, 65535);
+        changed |= InspectorDragVector3Field("范围 X/Y/Z",
+            "投射盒的局部宽度、深度和长度；Y 轴为投射深度。旋转和缩放跟随所属对象。", ref data.Size, .1F, .01F,
+            100000F);
+        changed |= InspectorDragVector3Field("局部偏移", "投射盒中心相对所属对象原点的偏移。", ref data.Offset, .1F,
+            -100000F, 100000F);
+        changed |= InspectorDragFloatField("强度", "控制投射对表面颜色、粗糙度和法线的整体影响。", ref data.Opacity, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("边缘淡化", "沿投射盒 X/Z 边缘向内淡化的比例。", ref data.EdgeFeather, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("深度淡化", "沿投射盒 Y 方向两端向内淡化的比例。", ref data.DepthFeather, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("角度开始", "表面法线与投射盒局部上方向的夹角达到此值时开始淡出。", ref data.NormalFadeStart, .5F, 0F, 180F, "%.0f°");
+        changed |= InspectorDragFloatField("角度结束", "达到此夹角时不再投射；不能小于开始角度。", ref data.NormalFadeEnd, .5F, 0F, 180F, "%.0f°");
+        changed |= InspectorDragFloatField("覆盖率", "随机图案覆盖投射范围的比例；0 为无覆盖，1 为全部覆盖。", ref data.Coverage, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("图案尺度", "控制局部噪声频率；数值越大斑块越细。", ref data.PatternScale, .01F, .001F, 100F);
+        changed |= InspectorDragFloatField("图案柔和度", "控制随机覆盖边界的过渡宽度。", ref data.PatternSoftness, .01F, 0F, 1F);
+        changed |= InspectorDragIntField("随机种子", "更改局部覆盖图案；固定种子与对象变换时分布保持不变。", ref data.Seed, 1F, 0, 65535);
         BeginInspectorField("颜色", "覆盖表面的颜色；颜色影响可单独调低，以保留底材外观。");
         changed |= ImGui.ColorEdit3("##DepositColor", ref data.Color);
-        BeginInspectorField("颜色影响", "在原表面颜色与投射颜色之间混合的强度。");
-        changed |= ImGui.DragFloat("##DepositColorStrength", ref data.ColorStrength, .01F, 0F, 1F);
-        BeginInspectorField("目标粗糙度", "积水通常较低，积雪通常较高；与原材质按粗糙度影响混合。");
-        changed |= ImGui.DragFloat("##DepositRoughness", ref data.Roughness, .01F, .01F, 1F);
-        BeginInspectorField("粗糙度影响", "独立控制投射对表面粗糙度的影响。");
-        changed |= ImGui.DragFloat("##DepositRoughnessStrength", ref data.RoughnessStrength, .01F, 0F, 1F);
-        BeginInspectorField("法线扰动", "根据覆盖图案轻微扰动表面法线，不生成真实几何厚度。");
-        changed |= ImGui.DragFloat("##DepositNormal", ref data.NormalStrength, .01F, 0F, 1F);
-        BeginInspectorField("叠加顺序", "多个投射盒重叠时从小到大依次应用；相同值按场景对象顺序应用。");
-        changed |= ImGui.DragInt("##DepositSort", ref data.SortOrder, 1F, -10000, 10000);
+        changed |= InspectorDragFloatField("颜色影响", "在原表面颜色与投射颜色之间混合的强度。", ref data.ColorStrength, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("目标粗糙度", "积水通常较低，积雪通常较高；与原材质按粗糙度影响混合。", ref data.Roughness, .01F, .01F, 1F);
+        changed |= InspectorDragFloatField("粗糙度影响", "独立控制投射对表面粗糙度的影响。", ref data.RoughnessStrength, .01F, 0F, 1F);
+        changed |= InspectorDragFloatField("法线扰动", "根据覆盖图案轻微扰动表面法线，不生成真实几何厚度。", ref data.NormalStrength, .01F, 0F, 1F);
+        changed |= InspectorDragIntField("叠加顺序", "多个投射盒重叠时从小到大依次应用；相同值按场景对象顺序应用。", ref data.SortOrder, 1F, -10000, 10000);
         if (changed)
         {
             SceneComponentTypes.WriteSurfaceDeposit(component, data);

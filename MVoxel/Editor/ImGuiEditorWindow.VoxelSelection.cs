@@ -207,9 +207,8 @@ internal sealed partial class ImGuiEditorWindow
             changed = true;
         }
 
-        BeginInspectorField("颜色容差", "逐通道允许的最大差值。0 只匹配完全相同的颜色；调大可容忍相近色，255 等于不按颜色筛选。");
         var tolerance = data.ColorTolerance;
-        if (ImGui.DragFloat("##VoxelSelectionTolerance", ref tolerance, .5F, 0F, 255F, "%.0f"))
+        if (InspectorDragFloatField("颜色容差", "逐通道允许的最大差值。0 只匹配完全相同的颜色；调大可容忍相近色，255 等于不按颜色筛选。", ref tolerance, .5F, 0F, 255F, "%.0f"))
         {
             data = data with { ColorTolerance = tolerance };
             changed = true;
@@ -389,8 +388,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>缩放栏</summary>
     private void DrawVoxelSelectionScale(SceneObject sceneObject)
     {
-        BeginInspectorField("倍率", "以选中体素的包围盒中心缩放。放大按最近邻复制方块，缩小按最近邻抽样，可能丢细节。");
-        ImGui.DragFloat("##VoxelSelectionScale", ref _voxelSelectionScale, .05F, .05F, 8F, "%.2f×");
+        InspectorDragFloatField("倍率", "以选中体素的包围盒中心缩放。放大按最近邻复制方块，缩小按最近邻抽样，可能丢细节。", ref _voxelSelectionScale, .05F, .05F, 8F, "%.2f×");
         if (ImGui.Button("应用缩放", new Vector2(-1F, 0F))) ApplyVoxelSelectionScale(sceneObject);
     }
 

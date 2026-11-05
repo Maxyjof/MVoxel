@@ -4491,6 +4491,46 @@ DockId=0x6A3C3007,0
     private static bool InspectorDragFloatField(string label, string? tooltip, ref float value, float speed) =>
         InspectorDragFloatField(label, tooltip, ref value, speed, -float.MaxValue, float.MaxValue);
 
+    /// <summary>
+    /// 三分量浮点字段：标签可拖动，按同一增量同时调整三个分量
+    /// </summary>
+    private static bool InspectorDragVector3Field(string label, string? tooltip, ref System.Numerics.Vector3 value,
+        float speed, float minimum, float maximum)
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.DragFloat3("##" + label, ref value, speed, minimum, maximum);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var delta = dragPixels * speed;
+            value = new System.Numerics.Vector3(
+                Math.Clamp(value.X + delta, minimum, maximum),
+                Math.Clamp(value.Y + delta, minimum, maximum),
+                Math.Clamp(value.Z + delta, minimum, maximum));
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    /// <summary>整数字段：带灵敏度参数的调用形式，灵敏度沿用 DragInt 的语义</summary>
+    private static bool InspectorDragIntField(string label, string? tooltip, ref int value, float speed, int minimum,
+        int maximum)
+    {
+        var dragPixels = BeginInspectorField(label, tooltip, draggable: true);
+        var changed = ImGui.DragInt("##" + label, ref value, speed, minimum, maximum);
+        if (MathF.Abs(dragPixels) > 0F)
+        {
+            var steps = (int)MathF.Round(dragPixels);
+            if (steps != 0)
+            {
+                value = Math.Clamp(value + steps, minimum, maximum);
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
     /// <summary>整数字段：标签与拖动框都能改值，拖动按整格步进</summary>
     private static bool InspectorDragIntField(string label, string? tooltip, ref int value, int minimum, int maximum)
     {
@@ -4733,10 +4773,10 @@ DockId=0x6A3C3007,0
             if (InspectorDragFloatField("偏移 Y", null, ref offsetY, 0.05F)) data = data with { OffsetY = offsetY };
             var offsetZ = data.OffsetZ;
             if (InspectorDragFloatField("偏移 Z", null, ref offsetZ, 0.05F)) data = data with { OffsetZ = offsetZ };
-            BeginInspectorField("尺寸 X/Y/Z", "探针体积范围和自动采样网格尺寸。");
             var probeSize = new System.Numerics.Vector3(data.SizeX, data.SizeY, data.SizeZ);
-            var sizeChanged = ImGui.DragFloat3("##ProbeSize", ref probeSize, 0.1F);
-            if (sizeChanged) data = data with { SizeX = probeSize.X, SizeY = probeSize.Y, SizeZ = probeSize.Z };
+            if (InspectorDragVector3Field("尺寸 X/Y/Z", "探针体积范围和自动采样网格尺寸。", ref probeSize, 0.1F,
+                    .1F, 512F))
+                data = data with { SizeX = probeSize.X, SizeY = probeSize.Y, SizeZ = probeSize.Z };
             var density = data.Density;
             if (InspectorDragFloatField("探针密度", "每格体积内的探针密度，首期烘焙使用规则三维网格。", ref density,
                     0.05F, 0.05F, 32F)) data = data with { Density = density };

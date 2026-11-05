@@ -129,9 +129,9 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawTreeTrunkSection(ref TreeGeneratorComponentData data)
     {
         ImGui.TextDisabled("树干");
-        BeginInspectorField("高度", "树干高度（格）；树冠从“树冠起始”比例处向上展开。");
         var height = data.TrunkHeight;
-        if (ImGui.DragInt("##TreeHeight", ref height, .5F, 2, TreeGeneratorComponentData.MaximumTrunkHeight))
+        if (InspectorDragIntField("高度", "树干高度（格）；树冠从“树冠起始”比例处向上展开。", ref height, .5F, 2,
+                TreeGeneratorComponentData.MaximumTrunkHeight))
             data = data with { TrunkHeight = height };
         DrawTreeFloatField("半径", "##TreeRadius", data.TrunkRadius, .05F, 0.4F, 12F, "树干底部半径（格）", out var radius);
         if (radius != data.TrunkRadius) data = data with { TrunkRadius = radius };
@@ -152,9 +152,9 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawTreeBranchSection(ref TreeGeneratorComponentData data)
     {
         ImGui.TextDisabled("枝条");
-        BeginInspectorField("主枝数量", "从树干上长出的主枝数量，0 表示没有枝条。");
         var count = data.BranchCount;
-        if (ImGui.DragInt("##TreeBranchCount", ref count, .2F, 0, 24)) data = data with { BranchCount = count };
+        if (InspectorDragIntField("主枝数量", "从树干上长出的主枝数量，0 表示没有枝条。", ref count, .2F, 0, 24))
+            data = data with { BranchCount = count };
         DrawTreeFloatField("枝条长度", "##TreeBranchLength", data.BranchLength, .1F, 0.5F, 64F, "主枝长度（格）", out var length);
         if (length != data.BranchLength) data = data with { BranchLength = length };
         DrawTreeFloatField("枝条粗细", "##TreeBranchThickness", data.BranchThickness, .05F, 0.3F, 8F, "主枝粗细（格）", out var thickness);
@@ -215,9 +215,9 @@ internal sealed partial class ImGuiEditorWindow
         var emissive = data.EmissiveLeaves;
         if (ImGui.Checkbox("树叶自发光", ref emissive)) data = data with { EmissiveLeaves = emissive };
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("给树叶加自发光标记，适合灵树、夜樱这类题材。");
-        BeginInspectorField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。");
         var materialSlot = (int)data.MaterialSlot;
-        if (ImGui.DragInt("##TreeMaterialSlot", ref materialSlot, .2F, 0, ushort.MaxValue))
+        if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
+                ushort.MaxValue))
             data = data with { MaterialSlot = (ushort)Math.Clamp(materialSlot, 0, ushort.MaxValue) };
         BeginInspectorField("排序图层", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
         var sortingLayer = data.SortingLayer;
@@ -301,8 +301,8 @@ internal sealed partial class ImGuiEditorWindow
     private static void DrawTreeFloatField(string label, string id, float value, float speed, float minimum,
         float maximum, string tooltip, out float result)
     {
-        BeginInspectorField(label, tooltip);
+        // 标签可拖动改值：和检查器其他数值字段一致
         result = value;
-        ImGui.DragFloat(id, ref result, speed, minimum, maximum, "%.2f");
+        InspectorDragFloatField(label, tooltip, ref result, speed, minimum, maximum);
     }
 }
