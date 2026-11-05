@@ -1956,6 +1956,16 @@ DockId=0x6A3C3007,0
             if (_sceneGizmoMode == SceneGizmoMode.Select && _activeTool == EditorTool.Pick &&
                 HandleObjectBoxSelection(origin, size, camera)) { }
             else HandleVoxelToolInput(origin, size, camera);
+
+            // 场景里双击对象时聚焦到它：先由单击选中，再按双击触发聚焦
+            if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) &&
+                ImGui.IsMouseHoveringRect(origin, origin + size) &&
+                GetSelectedSceneObject() is { } doubleClicked &&
+                TryGetObjectScreenRect(doubleClicked, origin, size, camera, out var objectMinimum,
+                    out var objectMaximum) &&
+                ImGui.GetIO().MousePos.X >= objectMinimum.X && ImGui.GetIO().MousePos.X <= objectMaximum.X &&
+                ImGui.GetIO().MousePos.Y >= objectMinimum.Y && ImGui.GetIO().MousePos.Y <= objectMaximum.Y)
+                FocusHierarchyObject(doubleClicked);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
         else if (_project is null && !gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&

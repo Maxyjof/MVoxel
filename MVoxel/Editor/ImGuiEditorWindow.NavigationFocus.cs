@@ -85,22 +85,17 @@ internal sealed partial class ImGuiEditorWindow
 
         // 聚焦目标跟随 Gizmo 支点设置：中心取包围盒中心，枢轴取对象原点
         var target = _editorSettings.GizmoPivotCenter ? bounds.Center : GetObjectPivot(sceneObject);
-        if (_centerTab == 1)
+        // 只有渲染窗口处于焦点且确实绑定了相机对象时才聚焦渲染相机，否则一律聚焦场景视角
+        if (_renderViewWasFocused && GetActiveRenderCameraObject() is { } cameraObject)
         {
-            if (GetActiveRenderCameraObject() is { } cameraObject)
-            {
-                BeginRenderCameraFocus(cameraObject, bounds, target);
-            }
-            else
-            {
-                // 没有相机对象时，渲染窗口使用编辑器内置相机；当前实现与场景视角
-                // 共用这组内置相机状态，因此仍然可以平滑移动而无需伪造场景对象。
-                BeginSceneCameraFocus(bounds, _lastRenderViewportSize, _sceneFieldOfView, target);
-            }
+            BeginRenderCameraFocus(cameraObject, bounds, target);
         }
         else
         {
-            BeginSceneCameraFocus(bounds, _lastSceneViewportSize, _sceneFieldOfView, target);
+            var viewport = _lastSceneViewportSize;
+            if (viewport.X < 32F || viewport.Y < 32F)
+                viewport = ImGui.GetMainViewport().Size;
+            BeginSceneCameraFocus(bounds, viewport, _sceneFieldOfView, target);
         }
 
         _selectedSceneObjectId = sceneObject.Id;
