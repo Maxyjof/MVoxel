@@ -576,6 +576,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 : null,
             freeFlyYawDegrees = _freeFlyActive ? _freeFlyYaw * 180F / MathF.PI : 0F,
             freeFlyPitchDegrees = _freeFlyActive ? _freeFlyPitch * 180F / MathF.PI : 0F,
+            mousePosition = new[] { ImGui.GetIO().MousePos.X, ImGui.GetIO().MousePos.Y },
                 timeline = DescribeTimelineState(),
                 pendingDialog = DescribePendingDialog(),
                 videoExports = _videoExportInfos.OrderByDescending(item => item.StartedAt).Take(5).Select(DescribeVideoExport).ToArray(),
@@ -1166,6 +1167,17 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void DrawEditorFrame()
     {
+        // 第一人称飞行：先取后端原始鼠标位置算增量，再把 ImGui 光标锚到视口中心
+        if (_freeFlyActive && _freeFlyViewportCenter is { } freeFlyCenter)
+        {
+            var rawMouse = ImGui.GetIO().MousePos;
+            var rawDelta = _freeFlyRawMouse is { } previousRaw ? rawMouse - previousRaw : Vector2.Zero;
+            _freeFlyRawMouse = rawMouse;
+            if (!ImGui.IsMouseDragging(ImGuiMouseButton.Middle)) UpdateFreeFlyLook(rawDelta);
+            ImGui.GetIO().MousePos = freeFlyCenter;
+        }
+
+
         if (_resetDockLayoutRequested)
         {
             ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
@@ -2531,16 +2543,14 @@ DockId=0x6A3C3007,0
             var camera = GetSceneCamera();
             if (captureTarget == ViewportCaptureTarget.Scene && _freeFlyActive)
             {
+                // 飞行时把鼠标位置锚定在视口中心，准星与交互都从中间开始
+                _freeFlyViewportCenter = origin + new Vector2(size.X * 0.5F, size.Y * 0.5F);
                 if (ImGui.IsMouseDragging(ImGuiMouseButton.Middle))
                 {
                     // 第一人称下的中键平移：沿相机右向量与上向量挪动位置
-                    var panScale = 0.05F;
+                    const float panScale = 0.05F;
                     var delta = camera.Right * io.MouseDelta.X * panScale - camera.Up * io.MouseDelta.Y * panScale;
                     _freeFlyPosition += delta;
-                }
-                else
-                {
-                    UpdateFreeFlyLook(io.MouseDelta);
                 }
 
                 UpdateFreeFlyMovement(camera, io.DeltaTime);

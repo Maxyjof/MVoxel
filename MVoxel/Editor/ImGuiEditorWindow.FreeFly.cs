@@ -13,6 +13,15 @@ internal sealed partial class ImGuiEditorWindow
     private const float FreeFlyExitOrbitDistance = 50F;
 
     private bool _freeFlyActive;
+
+    /// <summary>飞行时把鼠标锚在场景视口中心，保证准星、选择与视角都从中间开始</summary>
+    private Vector2? _freeFlyViewportCenter;
+
+    /// <summary>进入飞行后的前几帧忽略鼠标增量，避开捕获光标瞬间的跳变</summary>
+    private int _freeFlyLookGraceFrames;
+
+    /// <summary>上一次读到的原始鼠标位置，用来自己算增量，避免 ImGui 在捕获模式下的跳变</summary>
+    private Vector2? _freeFlyRawMouse;
     private Vector3 _freeFlyPosition;
     private float _freeFlyYaw;
     private float _freeFlyPitch;
@@ -28,6 +37,8 @@ internal sealed partial class ImGuiEditorWindow
         var forward = Vector3.Normalize(camera.Forward);
         _freeFlyYaw = MathF.Atan2(forward.X, forward.Z);
         _freeFlyPitch = MathF.Asin(Math.Clamp(forward.Y, -1F, 1F));
+        _freeFlyLookGraceFrames = 6;
+        _freeFlyRawMouse = null;
     }
 
     /// <summary>
@@ -80,9 +91,16 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="mouseDelta">鼠标位移</param>
     private void UpdateFreeFlyLook(Vector2 mouseDelta)
     {
+        if (_freeFlyLookGraceFrames > 0)
+        {
+            _freeFlyLookGraceFrames--;
+            return;
+        }
+
         // 捕获期间系统会把光标拉回中心，偶尔产生上百像素的跳变，这里限制单帧输入避免视角瞬间翻转
-        var deltaX = Math.Clamp(mouseDelta.X, -60F, 60F);
-        var deltaY = Math.Clamp(mouseDelta.Y, -60F, 60F);
+        if (MathF.Abs(mouseDelta.X) > 200F || MathF.Abs(mouseDelta.Y) > 200F) return;
+        var deltaX = Math.Clamp(mouseDelta.X, -40F, 40F);
+        var deltaY = Math.Clamp(mouseDelta.Y, -40F, 40F);
         _freeFlyYaw += ViewportInputPolicy.OrbitYawDelta(deltaX);
         // 第一人称：鼠标上移抬高视线、下移压低视线，与环绕相机的俯仰方向相反
         _freeFlyPitch = Math.Clamp(
