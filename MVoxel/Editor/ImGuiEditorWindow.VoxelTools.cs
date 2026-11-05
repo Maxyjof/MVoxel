@@ -2194,7 +2194,7 @@ internal sealed partial class ImGuiEditorWindow
             _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var owner, out _))
         {
             if (IsSceneSelectionLockedAgainst(owner)) return null;
-            _selectedSceneObjectId = owner;
+            SetSingleSceneSelection(owner);
             _revealHierarchySelection = owner;
             _hierarchySearch = string.Empty;
             return owner;

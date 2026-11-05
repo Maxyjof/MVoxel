@@ -34,6 +34,10 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     private void SyncToolModeWithSelection()
     {
+        // 层级或快捷键改了主选中对象时，多选列表跟着失效，避免检查器停在多选模式
+        if (_selectedSceneObjectIds.Count > 1 &&
+            (_selectedSceneObjectId is not { } primary || !_selectedSceneObjectIds.Contains(primary)))
+            _selectedSceneObjectIds.Clear();
         var selected = _selectedSceneObjectId;
         if (selected == _toolSelectionTracked) return;
         var hadSelection = _toolSelectionTracked is not null;

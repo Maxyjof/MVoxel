@@ -1,0 +1,122 @@
+using ImGuiNET;
+using MVoxel.Core;
+using MVoxel.Scene;
+using Vector2 = System.Numerics.Vector2;
+using Vector3 = OpenTK.Mathematics.Vector3;
+using Color = System.Drawing.Color;
+
+namespace MVoxel.Editor;
+
+/// <summary>
+/// 场景视图里的对象框选与多选状态。单击仍然走体素拾取，拖动超过阈值才进入框选。
+/// </summary>
+internal sealed partial class ImGuiEditorWindow
+{
+    /// <summary>多选中的对象；顺序与层级一致，最后一个是主对象</summary>
+    private readonly List<StableId> _selectedSceneObjectIds = new();
+
+    private bool _objectBoxSelecting;
+    private Vector2 _objectBoxStart;
+
+    /// <summary>多选数量大于 1 时检查器走聚合模式</summary>
+    private bool HasMultipleSelection => _selectedSceneObjectIds.Count > 1;
+
+    /// <summary>
+    /// 用一组对象替换当前选择，主对象取最后一个
+    /// </summary>
+    /// <param name="ids">目标对象集合</param>
+    private void SetSceneSelection(IReadOnlyList<StableId> ids)
+    {
+        _selectedSceneObjectIds.Clear();
+        _selectedSceneObjectIds.AddRange(ids);
+        _selectedSceneObjectId = ids.Count > 0 ? ids[^1] : null;
+        _revealHierarchySelection = _selectedSceneObjectId;
+        if (_selectedSceneObjectIds.Count <= 1) _selectedSceneObjectIds.Clear();
+    }
+
+    /// <summary>
+    /// 记录单击选中：清空多选，只保留一个对象
+    /// </summary>
+    /// <param name="id">选中的对象</param>
+    private void SetSingleSceneSelection(StableId id)
+    {
+        _selectedSceneObjectIds.Clear();
+        _selectedSceneObjectId = id;
+    }
+
+    /// <summary>
+    /// 场景拖拽框选：按下后拖动超过阈值才进入框选，松开时选中投影落在框内的对象
+    /// </summary>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <returns>本帧是否消费了这次输入</returns>
+    private bool HandleObjectBoxSelection(Vector2 origin, Vector2 size, SceneCamera camera)
+    {
+        if (_sceneDocument is null) return false;
+        var mouse = ImGui.GetIO().MousePos;
+        if (!_objectBoxSelecting)
+        {
+            if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left)) return false;
+            if (!ImGui.IsMouseHoveringRect(origin, origin + size)) return false;
+            _objectBoxStart = mouse;
+            _objectBoxSelecting = true;
+            return false;
+        }
+
+        var rectMinimum = Vector2.Min(_objectBoxStart, mouse);
+        var rectMaximum = Vector2.Max(_objectBoxStart, mouse);
+        var hasArea = (rectMaximum - rectMinimum).LengthSquared() > 36F;
+        if (hasArea)
+        {
+            var drawList = ImGui.GetWindowDrawList();
+            drawList.AddRectFilled(rectMinimum, rectMaximum, ToPackedColor(Color.FromArgb(48, EditorPalette.Accent)),
+                2F);
+            drawList.AddRect(rectMinimum, rectMaximum, ToPackedColor(EditorPalette.Accent), 2F, ImDrawFlags.None,
+                1.4F);
+        }
+
+        if (!ImGui.IsMouseReleased(ImGuiMouseButton.Left)) return hasArea;
+        _objectBoxSelecting = false;
+        if (!hasArea) return false;
+        var selection = new List<StableId>();
+        foreach (var item in _sceneDocument.Objects)
+        {
+            if (!IsSceneObjectVisible(item) || !_sceneDocument.IsLayerVisible(item.LayerIndex)) continue;
+            if (!TryGetObjectScreenRect(item, origin, size, camera, out var objectMinimum, out var objectMaximum))
+                continue;
+            var overlaps = objectMaximum.X >= rectMinimum.X && objectMinimum.X <= rectMaximum.X &&
+                           objectMaximum.Y >= rectMinimum.Y && objectMinimum.Y <= rectMaximum.Y;
+            if (overlaps) selection.Add(item.Id);
+        }
+
+        SetSceneSelection(selection);
+        SetStatus(selection.Count > 1 ? $"已框选 {selection.Count} 个对象" :
+            selection.Count == 1 ? "已选中 1 个对象" : "框选范围内没有对象");
+        return true;
+    }
+
+    /// <summary>
+    /// 取对象体素包围盒投影后的屏幕矩形
+    /// </summary>
+    private bool TryGetObjectScreenRect(SceneObject item, Vector2 origin, Vector2 size, SceneCamera camera,
+        out Vector2 minimum, out Vector2 maximum)
+    {
+        minimum = new Vector2(float.MaxValue);
+        maximum = new Vector2(float.MinValue);
+        if (!_objectVoxels.TryGetWorld(item.Id, out var world) ||
+            !world.TryGetBounds(out var boundsMinimum, out var boundsMaximum)) return false;
+        for (var index = 0; index < 8; index++)
+        {
+            var corner = new Vector3(
+                (index & 1) == 0 ? boundsMinimum.X : boundsMaximum.X + 1,
+                (index & 2) == 0 ? boundsMinimum.Y : boundsMaximum.Y + 1,
+                (index & 4) == 0 ? boundsMinimum.Z : boundsMaximum.Z + 1);
+            if (!SceneProjection.Project(corner, origin, size, camera, out var screen, out _)) continue;
+            minimum = Vector2.Min(minimum, screen);
+            maximum = Vector2.Max(maximum, screen);
+        }
+
+        return maximum.X >= minimum.X;
+    }
+}

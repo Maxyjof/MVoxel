@@ -1948,10 +1948,14 @@ DockId=0x6A3C3007,0
 
         drawList.PushClipRect(origin, origin + size, true);
         DrawSceneFloatingTools(drawList, origin, size);
-        if (!_screenColorSampling && _project is not null && !gizmoHovered && !floatingToolsHovered && !gizmoInput && _sceneGizmoMode == SceneGizmoMode.Select &&
+        // 工具模式不再挡住场景输入：否则切到移动/旋转/缩放后点别的对象选不中
+        if (!_screenColorSampling && _project is not null && !gizmoHovered && !floatingToolsHovered && !gizmoInput &&
             (showVoxelWorld || GetVoxelWorldObject() is null))
         {
-            HandleVoxelToolInput(origin, size, camera);
+            // 选择工具下拖动空白区域进入框选；单击未拖动时继续走体素拾取
+            if (_sceneGizmoMode == SceneGizmoMode.Select && _activeTool == EditorTool.Pick &&
+                HandleObjectBoxSelection(origin, size, camera)) { }
+            else HandleVoxelToolInput(origin, size, camera);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
         else if (_project is null && !gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
@@ -3872,6 +3876,12 @@ DockId=0x6A3C3007,0
     /// </summary>
     private void DrawInspectorProperties()
     {
+        if (HasMultipleSelection)
+        {
+            DrawMultiSelectionInspector();
+            return;
+        }
+
         if (_inspectorLockedObjectId is null && _selectedSceneObjectId is null &&
             (TryDrawSelectedPngInspector() || TryDrawSelectedMaterialInspector() || TryDrawSelectedEnvironmentInspector() ||
              TryDrawSelectedAssetInspector()))
