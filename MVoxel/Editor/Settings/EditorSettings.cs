@@ -84,6 +84,15 @@ public sealed class EditorSettingsDocument
     public float MoveSnapZ = 1F;
     /// <summary>吸附步长等比联动：改一个轴时其余轴按同一比例缩放</summary>
     public bool MoveSnapLinked = true;
+
+    /// <summary>Gizmo 位置：true 取选中包围盒中心，false 取对象原点</summary>
+    public bool GizmoPivotCenter;
+
+    /// <summary>旋转是否按固定角度吸附</summary>
+    public bool RotationSnapEnabled;
+
+    /// <summary>旋转吸附角度（度）</summary>
+    public float RotationSnapDegrees = 15F;
     public int ExportParallelism = 1;
     public bool AutoSave = true;
     public int AutoSaveSeconds = 600;

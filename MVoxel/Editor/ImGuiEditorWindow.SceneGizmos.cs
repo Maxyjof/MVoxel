@@ -42,6 +42,8 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelCoord64 _sceneGizmoDragStartGrid;
     /// <summary>本次轴拖动使用的世界轴方向，局部空间下与对象轴向一致</summary>
     private Vector3 _sceneGizmoDragAxisWorld;
+    /// <summary>拖动开始时对象自身的位置，和手柄支点可能不同（中心枢轴）</summary>
+    private Vector3 _sceneGizmoDragStartObjectPosition;
     private float _sceneGizmoDragStartValue;
     private float _sceneGizmoDragPixelsPerUnit = 1F;
     private Vector2 _sceneGizmoDragScreenDirection;
@@ -167,7 +169,7 @@ internal sealed partial class ImGuiEditorWindow
         if (selected is null) return;
         foreach (var component in selected.Components.Where(item => item.Enabled && SceneComponentTypes.IsSurfaceDeposit(item)))
             DrawSurfaceDepositBox(drawList, origin, size, camera, selected, component);
-        var pivot = GetObjectPivot(selected);
+        var pivot = GetGizmoPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return;
         var unitsPerPixel = Math.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         var probeComponent = selected.Components.FirstOrDefault(SceneComponentTypes.IsProbeVolume);
@@ -293,6 +295,19 @@ internal sealed partial class ImGuiEditorWindow
         draw.AddRect(center - new Vector2(5F), center + new Vector2(5F), color, 1F, ImDrawFlags.None, 1.3F);
         draw.AddLine(center - new Vector2(3F, 0F), center + new Vector2(3F, 0F), color);
         draw.AddLine(center - new Vector2(0F, 3F), center + new Vector2(0F, 3F), color);
+    }
+
+    /// <summary>Gizmo 使用的支点：按设置取对象原点或选中包围盒中心</summary>
+    private Vector3 GetGizmoPivot(SceneObject sceneObject)
+    {
+        if (!_editorSettings.GizmoPivotCenter) return GetObjectPivot(sceneObject);
+        if (!_objectVoxels.TryGetWorld(sceneObject.Id, out var world) ||
+            !world.TryGetBounds(out var minimum, out var maximum))
+            return GetObjectPivot(sceneObject);
+        return new Vector3(
+            (float)((minimum.X + maximum.X + 1) * 0.5),
+            (float)((minimum.Y + maximum.Y + 1) * 0.5),
+            (float)((minimum.Z + maximum.Z + 1) * 0.5));
     }
 
     private Vector3 GetObjectPivot(SceneObject sceneObject)
@@ -766,7 +781,7 @@ internal sealed partial class ImGuiEditorWindow
         if (TryBeginVoxelSelectionGizmoDrag(mouse, origin, size, camera, selected)) return true;
         // 曲线编辑时手柄属于当前控制点，对象级手柄既不画也不该抢输入
         if (IsCurveEditing(selected)) return false;
-        var pivot = GetObjectPivot(selected);
+        var pivot = GetGizmoPivot(selected);
         if (!SceneProjection.Project(pivot, origin, size, camera, out var pivotScreen, out var depth)) return false;
         var unitsPerPixel = MathF.Max(0.0001F, depth / MathF.Max(1F, SceneProjection.FocalLength(size, camera)));
         if (_sceneGizmoMode == SceneGizmoMode.All)
@@ -804,6 +819,7 @@ internal sealed partial class ImGuiEditorWindow
                     if (MathF.Abs(su.X * sv.Y - su.Y * sv.X) < .0001F) continue;
                     _sceneGizmoDragPlane = plane; _sceneGizmoPlaneU = su; _sceneGizmoPlaneV = sv;
                     _sceneGizmoDragStartMouse = mouse; _sceneGizmoDragStartPosition = pivot;
+                    _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
                     _sceneGizmoDragging = true; _sceneGizmoDragRotation = false;
                     return true;
                 }
@@ -819,6 +835,7 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneGizmoDragAxisWorld = gizmoAxis;
                     _sceneGizmoDragStartMouse = mouse;
                     _sceneGizmoDragStartPosition = pivot;
+                    _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
                     _sceneGizmoDragStartGrid = selected.Transform.Grid.Position;
                     _sceneGizmoDragPixelsPerUnit = MathF.Max(0.001F, pixelsPerUnit);
                     _sceneGizmoDragScreenDirection = Vector2.Normalize(end - pivotScreen);
@@ -847,6 +864,8 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneGizmoDragAxis = axisIndex;
                     _sceneGizmoDragStartMouse = mouse;
                     _sceneGizmoPivotScreen = pivotScreen;
+                    _sceneGizmoDragStartPosition = pivot;
+                    _sceneGizmoDragStartObjectPosition = GetObjectPivot(selected);
                     _sceneGizmoStartAngle = MathF.Atan2(mouse.Y - pivotScreen.Y, mouse.X - pivotScreen.X);
                     _sceneGizmoStartRotation = selected.Transform.Free.Rotation;
                     _sceneGizmoRotationDelta = 0F;
@@ -948,11 +967,33 @@ internal sealed partial class ImGuiEditorWindow
         {
             var angle = MathF.Atan2(mouse.Y - _sceneGizmoPivotScreen.Y, mouse.X - _sceneGizmoPivotScreen.X);
             _sceneGizmoRotationDelta = MathF.Atan2(MathF.Sin(angle - _sceneGizmoStartAngle), MathF.Cos(angle - _sceneGizmoStartAngle));
+            if (_editorSettings.RotationSnapEnabled)
+            {
+                var step = MathF.Max(1F, _editorSettings.RotationSnapDegrees) * (MathF.PI / 180F);
+                _sceneGizmoRotationDelta = MathF.Round(_sceneGizmoRotationDelta / step) * step;
+            }
             if (selected.Transform.Mode == TransformMode.Free)
             {
                 var axis = AxisVector(_sceneGizmoDragAxis);
                 var delta = Quaternion.CreateFromAxisAngle(new System.Numerics.Vector3(axis.X, axis.Y, axis.Z), _sceneGizmoRotationDelta);
-                selected.Transform.SetFree(new FreeTransform(selected.Transform.Free.Position, Quaternion.Normalize(delta * _sceneGizmoStartRotation)));
+                var rotation = Quaternion.Normalize(delta * _sceneGizmoStartRotation);
+                if (_editorSettings.GizmoPivotCenter)
+                {
+                    // 中心枢轴旋转时让包围盒中心保持不动，等价于绕中心转
+                    var pivot = _sceneGizmoDragStartPosition;
+                    var offset = new System.Numerics.Vector3(
+                        pivot.X - _sceneGizmoDragStartObjectPosition.X,
+                        pivot.Y - _sceneGizmoDragStartObjectPosition.Y,
+                        pivot.Z - _sceneGizmoDragStartObjectPosition.Z);
+                    var rotated = System.Numerics.Vector3.Transform(offset, delta);
+                    var position = pivot - new Vector3(rotated.X, rotated.Y, rotated.Z);
+                    selected.Transform.SetFree(new FreeTransform(
+                        new Double3(position.X, position.Y, position.Z), rotation));
+                }
+                else
+                {
+                    selected.Transform.SetFree(new FreeTransform(selected.Transform.Free.Position, rotation));
+                }
                 UpdateTransformMarker(selected); _pipeline?.ResetAccumulation();
             }
             return;
@@ -962,7 +1003,7 @@ internal sealed partial class ImGuiEditorWindow
             if (selected.Transform.Mode == TransformMode.Free)
             {
                 var delta = SnapGizmoDelta(PlaneDragDelta(mouse));
-                var position = _sceneGizmoDragStartPosition + delta;
+                var position = _sceneGizmoDragStartObjectPosition + delta;
                 selected.Transform.SetFree(new FreeTransform(new Double3(position.X, position.Y, position.Z), selected.Transform.Free.Rotation));
                 UpdateTransformMarker(selected); _pipeline?.ResetAccumulation();
             }
@@ -1015,7 +1056,7 @@ internal sealed partial class ImGuiEditorWindow
             var deltaPixels = Vector2.Dot(mouse - _sceneGizmoDragStartMouse, direction);
             var step = GizmoSnapStep(_sceneGizmoDragAxis);
             var units = SnapComponent(deltaPixels / pixelsPerUnit, step);
-            var position = _sceneGizmoDragStartPosition + axis * units;
+            var position = _sceneGizmoDragStartObjectPosition + axis * units;
             var rotation = selected.Transform.Free.Rotation;
             selected.Transform.SetFree(new FreeTransform(
                 new Double3(position.X, position.Y, position.Z), rotation));

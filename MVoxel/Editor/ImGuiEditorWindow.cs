@@ -2126,9 +2126,18 @@ DockId=0x6A3C3007,0
             SetStatus(_editorSettings.GizmoLocalSpace ? "Gizmo 已切换到对象局部坐标轴" : "Gizmo 已切换到世界坐标轴");
         }, "Gizmo 显示空间：全局使用世界轴，局部使用对象自身旋转后的轴");
 
+        var pivotText = _editorSettings.GizmoPivotCenter ? "中心" : "枢轴";
+        var pivotWidth = Math.Max(size * 1.3F, ImGui.CalcTextSize(pivotText).X + 14F);
+        var pivotTop = top + new Vector2(spaceWidth + 4F, 0F);
+        DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered, () =>
+        {
+            _editorSettings.GizmoPivotCenter = !_editorSettings.GizmoPivotCenter;
+            SetStatus(_editorSettings.GizmoPivotCenter ? "Gizmo 支点：选中包围盒中心" : "Gizmo 支点：对象原点");
+        }, "Gizmo 支点：中心使用选中包围盒的中心，枢轴使用对象原点");
+
         var snapText = "吸附";
         var snapWidth = Math.Max(size * 1.1F, ImGui.CalcTextSize(snapText).X + 14F);
-        var snapTop = top + new Vector2(spaceWidth + 4F, 0F);
+        var snapTop = top + new Vector2(spaceWidth + pivotWidth + 8F, 0F);
         DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
             () => ImGui.OpenPopup("##GizmoSnapPopup"),
             "移动吸附步长 X " + _editorSettings.MoveSnapX.ToString("0.##") +
@@ -2199,7 +2208,15 @@ DockId=0x6A3C3007,0
             _editorSettings.MoveSnapZ = values[2];
         }
 
-        ImGui.TextDisabled("拖动对象或曲线控制点时按步长吸附");
+        ImGui.Separator();
+        var rotationSnap = _editorSettings.RotationSnapEnabled;
+        if (ImGui.Checkbox("旋转吸附##GizmoRotationSnap", ref rotationSnap))
+            _editorSettings.RotationSnapEnabled = rotationSnap;
+        var degrees = _editorSettings.RotationSnapDegrees;
+        ImGui.SetNextItemWidth(110F);
+        if (ImGui.DragFloat("角度##GizmoRotationSnapDegrees", ref degrees, .5F, 1F, 180F, "%.0f°"))
+            _editorSettings.RotationSnapDegrees = Math.Clamp(degrees, 1F, 180F);
+        ImGui.TextDisabled("拖动对象或曲线控制点时按步长吸附；开启旋转吸附后按固定角度转动");
     }
 
     /// <summary>使用方向箭头、旋转箭头和缩放手柄区分变换工具。</summary>
