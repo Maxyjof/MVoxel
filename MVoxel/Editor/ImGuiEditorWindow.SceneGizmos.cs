@@ -45,6 +45,12 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>拖动开始时对象自身的位置，和手柄支点可能不同（中心枢轴）</summary>
     private Vector3 _sceneGizmoDragStartObjectPosition;
 
+    /// <summary>当前鼠标悬停的坐标轴 / 平面 / 旋转圆环 / 缩放手柄，-1 表示没有</summary>
+    private int _gizmoHoverAxis = -1;
+    private int _gizmoHoverPlane = -1;
+    private int _gizmoHoverRotateAxis = -1;
+    private bool _gizmoHoverScale;
+
     /// <summary>网格对象拖动预览：起始世界副本、起始格变换与累计格位移</summary>
     private VoxelWorld? _sceneGizmoGridDragStartWorld;
     private GridTransform _sceneGizmoGridDragStartTransform;
@@ -195,6 +201,7 @@ internal sealed partial class ImGuiEditorWindow
 
         // 曲线编辑期间不叠对象变换手柄，避免和曲线控制点的点击区域互相抢输入
         if (IsCurveEditing(selected)) return;
+        UpdateGizmoHover(pivot, pivotScreen, unitsPerPixel, origin, size, camera);
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
@@ -213,6 +220,64 @@ internal sealed partial class ImGuiEditorWindow
                 break;
         }
     }
+
+    /// <summary>
+    /// 计算鼠标当前悬停的手柄，供绘制时高亮；拖动中由拖动状态决定高亮
+    /// </summary>
+    private void UpdateGizmoHover(Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel, Vector2 origin,
+        Vector2 size, SceneCamera camera)
+    {
+        _gizmoHoverAxis = -1;
+        _gizmoHoverPlane = -1;
+        _gizmoHoverRotateAxis = -1;
+        _gizmoHoverScale = false;
+        if (_sceneGizmoDragging) return;
+        var mouse = ImGui.GetIO().MousePos;
+        if (!ImGui.IsMouseHoveringRect(origin, origin + size)) return;
+        for (var plane = 0; plane < 3; plane++)
+        {
+            var (u, v) = AxisPlane(plane);
+            if (!SceneProjection.Project(pivot + (u + v) * unitsPerPixel * 22F, origin, size, camera,
+                    out var point, out _)) continue;
+            if (Vector2.Distance(mouse, point) <= 6.5F * 1.3F * 1.2F * 1.5F) _gizmoHoverPlane = plane;
+        }
+
+        for (var axisIndex = 0; axisIndex < 3; axisIndex++)
+        {
+            if (!TryProjectAxis(origin, size, camera, pivot, AxisVector(axisIndex), out var end, out _)) continue;
+            if (DistanceToSegment(mouse, pivotScreen, end) <= 9F) _gizmoHoverAxis = axisIndex;
+            var (u, v) = AxisPlane(axisIndex);
+            var radius = unitsPerPixel * 58F;
+            var best = float.MaxValue;
+            for (var step = 0; step < 32; step++)
+            {
+                var angle = MathF.Tau * step / 32F;
+                var world = pivot + u * (MathF.Cos(angle) * radius) + v * (MathF.Sin(angle) * radius);
+                if (!SceneProjection.Project(world, origin, size, camera, out var screen, out _)) continue;
+                best = MathF.Min(best, Vector2.Distance(mouse, screen));
+            }
+
+            if (best <= 9F) _gizmoHoverRotateAxis = axisIndex;
+        }
+
+        if (Vector2.Distance(mouse, pivotScreen + new Vector2(0F, -72F)) <= 12F) _gizmoHoverScale = true;
+    }
+
+    /// <summary>某条轴是否处于悬停或拖动状态</summary>
+    private bool IsAxisHighlighted(int axisIndex) =>
+        _gizmoHoverAxis == axisIndex ||
+        (_sceneGizmoDragging && _sceneGizmoDragPlane < 0 && !_sceneGizmoDragRotation && !_sceneGizmoDragScale &&
+         _sceneGizmoDragAxis == axisIndex);
+
+    private bool IsPlaneHighlighted(int planeIndex) =>
+        _gizmoHoverPlane == planeIndex || (_sceneGizmoDragging && _sceneGizmoDragPlane == planeIndex);
+
+    private bool IsRotateHighlighted(int axisIndex) =>
+        _gizmoHoverRotateAxis == axisIndex || (_sceneGizmoDragging && _sceneGizmoDragRotation &&
+                                              _sceneGizmoDragAxis == axisIndex);
+
+    private bool IsScaleHighlighted() =>
+        _gizmoHoverScale || (_sceneGizmoDragging && _sceneGizmoDragScale);
 
     private void DrawSurfaceDepositBox(ImDrawListPtr drawList, Vector2 origin, Vector2 size,
         SceneCamera camera, SceneObject owner, ComponentRecord component)
@@ -562,16 +627,23 @@ internal sealed partial class ImGuiEditorWindow
                 }
 
             if (!visible) continue;
-            var color = ToPackedColor(Color.FromArgb(190, AxisColor(plane)));
+            var highlighted = IsPlaneHighlighted(plane);
+            var color = ToPackedColor(highlighted
+                ? Color.FromArgb(235, EditorPalette.Accent)
+                : Color.FromArgb(190, AxisColor(plane)));
             drawList.AddQuadFilled(screen[0], screen[1], screen[2], screen[3], color);
-            drawList.AddQuad(screen[0], screen[1], screen[2], screen[3], ToPackedColor(EditorPalette.Border), 1F);
+            drawList.AddQuad(screen[0], screen[1], screen[2], screen[3],
+                ToPackedColor(highlighted ? EditorPalette.Text : EditorPalette.Border), highlighted ? 1.8F : 1F);
         }
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
             var axis = axisOwner is null ? AxisVector(axisIndex) : GizmoAxisFor(axisOwner, axisIndex);
             if (!TryProjectAxis(origin, size, camera, pivot, axis, out var end, out _)) continue;
-            var color = ToPackedColor(AxisColor(axisIndex));
-            drawList.AddLine(pivotScreen, end, color, 2.4F);
+            var highlighted = axisOwner is null ? false : IsAxisHighlighted(axisIndex);
+            var color = ToPackedColor(highlighted
+                ? Color.FromArgb(255, EditorPalette.Accent)
+                : AxisColor(axisIndex));
+            drawList.AddLine(pivotScreen, end, color, highlighted ? 3.6F : 2.4F);
             var direction = Vector2.Normalize(end - pivotScreen);
             var normal = new Vector2(-direction.Y, direction.X);
             var tip = end;
@@ -589,9 +661,12 @@ internal sealed partial class ImGuiEditorWindow
         var radius = unitsPerPixel * 58F;
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
-            var color = ToPackedColor(AxisColor(axisIndex));
+            var highlighted = IsRotateHighlighted(axisIndex);
+            var color = ToPackedColor(highlighted
+                ? Color.FromArgb(255, EditorPalette.Accent)
+                : AxisColor(axisIndex));
             var (u, v) = AxisPlane(axisIndex);
-            DrawWorldCircle(drawList, origin, size, camera, pivot, u, v, radius, color, 2F);
+            DrawWorldCircle(drawList, origin, size, camera, pivot, u, v, radius, color, highlighted ? 3.4F : 2F);
         }
     }
 
@@ -599,9 +674,10 @@ internal sealed partial class ImGuiEditorWindow
         SceneObject sceneObject, Vector3 pivot, Vector2 pivotScreen)
     {
         var handle = pivotScreen + new Vector2(0F, -72F);
-        var color = ToPackedColor(EditorPalette.Accent);
-        drawList.AddLine(pivotScreen, handle, color, 2F);
-        drawList.AddRectFilled(handle - new Vector2(5F), handle + new Vector2(5F), color);
+        var highlighted = IsScaleHighlighted();
+        var color = ToPackedColor(highlighted ? Color.FromArgb(255, EditorPalette.Text) : EditorPalette.Accent);
+        drawList.AddLine(pivotScreen, handle, color, highlighted ? 3F : 2F);
+        drawList.AddRectFilled(handle - new Vector2(highlighted ? 7F : 5F), handle + new Vector2(highlighted ? 7F : 5F), color);
         var data = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel) is { } model
             ? SceneComponentTypes.ReadVoxelModel(model)
             : default;

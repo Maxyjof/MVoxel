@@ -85,6 +85,9 @@ public sealed class EditorSettingsDocument
     /// <summary>吸附步长等比联动：改一个轴时其余轴按同一比例缩放</summary>
     public bool MoveSnapLinked = true;
 
+    /// <summary>变换组件的数值调整是否立即应用到场景，默认开启</summary>
+    public bool ApplyTransformImmediately = true;
+
     /// <summary>Gizmo 位置：true 取选中包围盒中心，false 取对象原点</summary>
     public bool GizmoPivotCenter;
 

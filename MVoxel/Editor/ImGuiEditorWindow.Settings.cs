@@ -618,6 +618,9 @@ internal sealed partial class ImGuiEditorWindow
                 DrawSettingsSectionHeader("场景辅助显示", "网格与体素轮廓");
                 ImGui.Checkbox("显示场景网格", ref _editorSettings.ShowSceneGrid);
                 ImGui.Checkbox("显示体素轮廓", ref _editorSettings.ShowVoxelOutlines);
+                ImGui.Checkbox("变换数值立即应用", ref _editorSettings.ApplyTransformImmediately);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("开启后，检查器里改旋转/缩放/位置会实时重建场景；关闭时拖动只预览，松手或输入结束后才应用。");
                 DrawSettingsSectionHeader("场景 LOD", "远距离显示策略");
                 DrawLodSection(_editorSettings.RenderViewSettings);
                 DrawSettingsSectionHeader("场景相机", "视口导航和裁剪范围");

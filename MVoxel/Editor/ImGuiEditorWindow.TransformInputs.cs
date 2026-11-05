@@ -207,9 +207,18 @@ internal sealed partial class ImGuiEditorWindow
                 DrawTransformRow("旋转", modelRotation, 5D, 12D, (axis, value) =>
                 {
                     modelRotation[axis] = value;
+                    if (_editorSettings.ApplyTransformImmediately)
+                    {
+                        // 设置开启时立即重建，拖动过程中就能看到旋转结果
+                        var degrees = new System.Numerics.Vector3((float)modelRotation[0],
+                            (float)modelRotation[1], (float)modelRotation[2]);
+                        ApplyModelRotation(item, rotationComponent, RotationFromDegrees(degrees), degrees);
+                        return;
+                    }
+
                     _pendingModelRotation = modelRotation;
                     _pendingModelRotationObjectId = item.Id;
-                }, "浮点旋转：按角度对基准体素重新采集，结果是干净的整数体素而不是斜格子。\n拖动只预览，松开后整份重新生成；反复调整都以最近一次编辑的基准为准。");
+                }, "浮点旋转：按角度对基准体素重新采集，结果是干净的整数体素而不是斜格子。");
                 CommitPendingModelRotation(item, rotationComponent);
             }
             else if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generated)
@@ -223,6 +232,14 @@ internal sealed partial class ImGuiEditorWindow
                 DrawTransformRow("旋转", generatedValues, 5D, 12D, (axis, value) =>
                 {
                     generatedValues[axis] = value;
+                    if (_editorSettings.ApplyTransformImmediately)
+                    {
+                        ApplyGeneratedObjectTransform(item, generated,
+                            rotation: new System.Numerics.Vector3((float)generatedValues[0],
+                                (float)generatedValues[1], (float)generatedValues[2]));
+                        return;
+                    }
+
                     _pendingModelRotation = generatedValues;
                     _pendingModelRotationObjectId = item.Id;
                 }, "浮点旋转：按角度对生成体素重新采样。生成器参数保持不变，重新生成时会按这个角度重新套用。");

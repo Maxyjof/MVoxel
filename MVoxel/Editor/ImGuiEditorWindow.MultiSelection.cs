@@ -171,12 +171,24 @@ internal sealed partial class ImGuiEditorWindow
         var current = _multiRotationPending.TryGetValue(item.Id, out var pending)
             ? pending
             : ReadMultiRotationDegrees(item);
-        _multiRotationPending[item.Id] = axis switch
+        var target = axis switch
         {
             0 => new System.Numerics.Vector3((float)value, current.Y, current.Z),
             1 => new System.Numerics.Vector3(current.X, (float)value, current.Z),
             _ => new System.Numerics.Vector3(current.X, current.Y, (float)value),
         };
+        if (_editorSettings.ApplyTransformImmediately)
+        {
+            // 设置开启时立即重建，拖动就能看到旋转结果
+            var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is not null)
+                ApplyModelRotation(item, component, RotationFromDegrees(target), target);
+            else if (item.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent) is { } generated)
+                ApplyGeneratedObjectTransform(item, generated, rotation: target);
+            return;
+        }
+
+        _multiRotationPending[item.Id] = target;
     }
 
     private void CommitMultiRotation(SceneObject[] objects)
