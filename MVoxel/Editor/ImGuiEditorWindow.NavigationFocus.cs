@@ -209,7 +209,8 @@ internal sealed partial class ImGuiEditorWindow
         // 距离 = 3 * 半径 / tan(半视角) 时，外轮廓直径正好约占屏幕三分之一
         const float screenFraction = 1F / 3F;
         var required = radius / MathF.Max(MathF.Tan(visibleHalfFov) * screenFraction, 0.02F);
-        return Math.Clamp(required, limits.MinimumDistance, limits.MaximumDistance);
+        // 聚焦同样允许更远的距离，只保证为正
+        return Math.Clamp(required, 0.001F, 1_000_000_000F);
     }
 
     private bool TryGetHierarchyObjectBounds(SceneObject sceneObject, out FocusBounds bounds)

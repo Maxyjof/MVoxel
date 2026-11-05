@@ -1893,6 +1893,8 @@ DockId=0x6A3C3007,0
         var gizmoCenter = origin + new Vector2(size.X - 58F, 76F);
         var gizmoRadius = Math.Clamp(Math.Min(size.X, size.Y) * 0.07F, 28F, 36F);
         CancelFocusOnManualNavigation(origin, size, renderViewport: false);
+        // 距离永远为正：旧状态或异常输入留下的负值在这里纠正
+        _sceneCameraDistance = ClampSceneDistance(_sceneCameraDistance);
         AdvanceSceneCameraFocus(ImGui.GetIO().DeltaTime);
         var gizmoHovered = HandleSceneNavigation(origin, size, gizmoCenter, gizmoRadius,
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
@@ -2014,7 +2016,8 @@ DockId=0x6A3C3007,0
             MathF.Cos(_sceneOrbitPitch) * MathF.Sin(_sceneOrbitYaw),
             MathF.Sin(_sceneOrbitPitch),
             MathF.Cos(_sceneOrbitPitch) * MathF.Cos(_sceneOrbitYaw));
-        var position = target + direction * _sceneCameraDistance;
+        // 距离必须为正：即使外部状态异常也不会让相机穿过目标点
+        var position = target + direction * MathF.Max(0.001F, _sceneCameraDistance);
         var forward = Vector3.Normalize(target - position);
         var right = Vector3.Cross(forward, Vector3.UnitY);
         if (right.LengthSquared < 0.0001F)
@@ -2523,11 +2526,10 @@ DockId=0x6A3C3007,0
         if (ViewportInputPolicy.ShouldApplyWheelZoom(
                 io.MouseWheel, ImGui.IsMouseDown(ImGuiMouseButton.Right)) && !gizmoHovered)
         {
-            var limits = GetSceneZoomLimits();
             var continuousFactor = MathF.Exp(-io.MouseWheel * 0.2F);
-            _sceneCameraDistance = Math.Clamp(_sceneCameraDistance * continuousFactor,
-                limits.MinimumDistance, limits.MaximumDistance);
-            _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.07F, 4F);
+            // 乘法缩放、不设上限，只保证距离永远为正
+            _sceneCameraDistance = ClampSceneDistance(_sceneCameraDistance * continuousFactor);
+            _sceneZoom = Math.Clamp(18F / _sceneCameraDistance, 0.0001F, 100000F);
         }
 
         var orbitRight = !gizmoHovered && !capsLockMode && ImGui.IsMouseDragging(ImGuiMouseButton.Right);

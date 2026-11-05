@@ -726,6 +726,14 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 场景相机距离的硬性范围：永远为正，上限足够大以接近无限缩放
+    /// </summary>
+    /// <param name="distance">目标距离</param>
+    /// <returns>夹取后的距离</returns>
+    private static float ClampSceneDistance(float distance) =>
+        float.IsFinite(distance) ? Math.Clamp(distance, 0.001F, 1_000_000_000F) : 18F;
+
     private SceneZoomLimits GetSceneZoomLimits()
     {
         if (!TryGetCachedWorldBounds(out var min, out var max))

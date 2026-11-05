@@ -1083,7 +1083,7 @@ internal sealed partial class ImGuiEditorWindow
         var direction = delta / distance;
         _sceneOrbitPitch = Math.Clamp(MathF.Asin(Math.Clamp(direction.Y, -1F, 1F)), -1.35F, 1.35F);
         _sceneOrbitYaw = MathF.Atan2(direction.X, direction.Z);
-        _sceneCameraDistance = distance;
+        _sceneCameraDistance = ClampSceneDistance(distance);
         _scenePan = new System.Numerics.Vector2(target.X, target.Z);
         _sceneFreeMoveHeight = target.Y;
         if (ReadNumber(arguments, "fieldOfView") is { } fieldOfView)
