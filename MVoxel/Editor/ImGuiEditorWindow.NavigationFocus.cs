@@ -197,15 +197,17 @@ internal sealed partial class ImGuiEditorWindow
         SceneZoomLimits limits)
     {
         var extent = bounds.Extent;
-        var radius = MathF.Max(extent.Length * 0.5F, 0.5F) + 0.5F;
+        // 用最长边长度的 0.85 倍近似“外轮廓半径”，比包围盒对角线更贴近实际观感
+        var longest = MathF.Max(extent.X, MathF.Max(extent.Y, extent.Z));
+        var radius = MathF.Max(longest * 0.5F * 0.85F, extent.Length * 0.5F * 0.6F) + 0.5F;
         var width = MathF.Max(viewportSize.X, 1F);
         var height = MathF.Max(viewportSize.Y, 1F);
         var verticalHalfFov = Math.Clamp(fieldOfView, 20F, 120F) * MathF.PI / 360F;
         var aspect = width / height;
         var horizontalHalfFov = MathF.Atan(MathF.Tan(verticalHalfFov) * aspect);
         var visibleHalfFov = MathF.Min(verticalHalfFov, horizontalHalfFov);
-        // 让外轮廓直径约占屏幕三分之一，半径对应半屏的六分之一
-        const float screenFraction = 1F / 6F;
+        // 距离 = 3 * 半径 / tan(半视角) 时，外轮廓直径正好约占屏幕三分之一
+        const float screenFraction = 1F / 3F;
         var required = radius / MathF.Max(MathF.Tan(visibleHalfFov) * screenFraction, 0.02F);
         return Math.Clamp(required, limits.MinimumDistance, limits.MaximumDistance);
     }
