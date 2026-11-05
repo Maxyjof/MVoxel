@@ -4815,6 +4815,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 // 湖底上方会浮出与体素网格锁定的规则点阵
                 if (backfaceHit)
                 {
+                    // 单面渲染：从实心体素内部看到的背面不是可见表面，直接透过模型看到背景
+                    float backfaceOpacity = materialSlots[int(hitSlot)].optics.z >= 0.0
+                        ? materialSlots[int(hitSlot)].optics.z : hitColor.a;
+                    if (backfaceOpacity >= 0.999)
+                    {
+                        // 实心背面不参与着色，把射线推过这个面继续前进，看到模型后方的真实表面或背景
+                        rayOrigin = hitPoint + rayDirection * max(0.0005, abs(hitDistance) * 1e-4);
+                        hasPendingInterface = false;
+                        continue;
+                    }
+
                     if (hasPendingInterface)
                     {
                         hitPoint = pendingInterface;
@@ -4826,6 +4837,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     }
                 }
                 hasPendingInterface = false;
+                // 单面渲染：两个实心体素之间的交界面对相机不可见，跳过继续前进
+                float facingOpacity = materialSlots[int(hitSlot)].optics.z >= 0.0
+                    ? materialSlots[int(hitSlot)].optics.z : hitColor.a;
+                if (!backfaceHit && facingOpacity >= 0.999)
+                {
+                    ivec3 frontCell = hitCell + ivec3(int(round(hitNormal.x)), int(round(hitNormal.y)),
+                        int(round(hitNormal.z)));
+                    if (VoxelAt(frontCell).a > 0.0)
+                    {
+                        rayOrigin = hitPoint + rayDirection * max(0.0005, abs(hitDistance) * 1e-4);
+                        continue;
+                    }
+                }
+
                 if (bounce == 0)
                 {
                     primarySurfaceHit = true;
