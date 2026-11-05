@@ -14,6 +14,8 @@ MVoxel 是一个面向创作者的体素建模与渲染编辑器。它使用纯�
 
 制作绿色版：双击仓库根目录的 `打包绿色版.bat` 即可，脚本会自动执行 Windows x64 自包含发布再打包 ZIP，不需要先手动编译。包内自带 .NET 运行时，用户完整解压后直接双击 `MVoxel.exe` 就能用。初始压缩包不包含个人项目、配置和缓存；程序默认把编辑器配置、缓存、日志和恢复数据写入 `%LocalAppData%\MVoxel`。需要真正便携运行时，可使用 `MVoxel.exe --portable`，或在程序目录放置空文件 `MVoxel.portable`，此时数据写入程序目录的 `MVoxelData`。旧版本程序目录中的 `MVoxelData` 会在首次默认启动时复制到新的用户数据目录，原目录保留不删除。
 
+打包不会在仓库里生成发布副本：自包含发布先写到系统临时目录 `%TEMP%\MVoxel-portable-stage`，压缩完成即删除，运行被中断留下的半成品也会在下次打包时被清空。仓库根目录只留 ZIP，`打包绿色版.bat` 默认保留最近 5 个，更早的会在下次打包成功后被删除；想一次看清将要做什么，可以运行 `powershell -File tools\package-portable.ps1 -PlanOnly`。构建中间产物仍在 `MVoxel\obj` 与 `MVoxel\bin` 下，需要清理时用 `dotnet clean` 或手动删除；`MVoxel\bin\Release\net10.0-windows\MVoxelData` 是便携运行时的数据目录，可能包含配置、缓存、日志与恢复数据，删除前请先确认。
+
 MVoxel 的主要工作对象是场景和预制体。对象默认带有坐标组件，再按需要添加模型、光照或相机组件；体素数据文件属于内部数据，由这些对象和组件使用，不需要单独理解文件格式才能开始创作。
 
 ## 文档
