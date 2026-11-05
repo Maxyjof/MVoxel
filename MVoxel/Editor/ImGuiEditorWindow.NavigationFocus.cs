@@ -203,9 +203,10 @@ internal sealed partial class ImGuiEditorWindow
         var verticalHalfFov = Math.Clamp(fieldOfView, 20F, 120F) * MathF.PI / 360F;
         var aspect = width / height;
         var horizontalHalfFov = MathF.Atan(MathF.Tan(verticalHalfFov) * aspect);
-        var visibleHalfFov = MathF.Min(verticalHalfFov, horizontalHalfFov) * 0.82F;
-        // 留出更大的边距，大对象聚焦时相机不会被塞进模型内部
-        var required = MathF.Max(radius * 1.8F, radius / MathF.Max(MathF.Tan(visibleHalfFov), 0.05F) * 1.35F);
+        var visibleHalfFov = MathF.Min(verticalHalfFov, horizontalHalfFov);
+        // 让外轮廓直径约占屏幕三分之一，半径对应半屏的六分之一
+        const float screenFraction = 1F / 6F;
+        var required = radius / MathF.Max(MathF.Tan(visibleHalfFov) * screenFraction, 0.02F);
         return Math.Clamp(required, limits.MinimumDistance, limits.MaximumDistance);
     }
 
@@ -255,12 +256,12 @@ internal sealed partial class ImGuiEditorWindow
         void IncludeObject(SceneObject item)
         {
             if (!visited.Add(item.Id)) return;
-            var hasModel = item.Components.Any(SceneComponentTypes.IsVoxelModel);
-            if (hasModel && _objectVoxels.TryGetWorld(item.Id, out var objectWorld))
+            // 生成器对象的体素也存在 _objectVoxels 里，必须按实际体素外轮廓计算，否则聚焦会落到原点
+            if (_objectVoxels.TryGetWorld(item.Id, out var objectWorld))
             {
                 foreach (var cell in objectWorld.EnumerateOccupied()) IncludeVoxel(cell.Coordinate);
             }
-            else if (!hasModel)
+            else
             {
                 IncludeTransform(item);
             }

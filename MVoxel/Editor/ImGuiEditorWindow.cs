@@ -2081,11 +2081,8 @@ DockId=0x6A3C3007,0
         var top = origin + new Vector2(8F, 10F);
         var hovered = false;
         hovered |= DrawGizmoModeRow(top, buttonSize);
-        // 面板展开时把竖排工具列往下推，避免被面板盖住
-        var panelHeight = _gizmoPanel == GizmoPanelKind.None
-            ? 0F
-            : MathF.Max(0F, _gizmoPanelMaximum.Y - _gizmoPanelMinimum.Y) + 6F;
-        var columnTop = top + new Vector2(0F, buttonSize + 4F + panelHeight);
+        // 面板按浮层绘制，不推动竖排工具列
+        var columnTop = top + new Vector2(0F, buttonSize + 4F);
         for (var i = 0; i < 5; i++)
         {
             var position = columnTop + new Vector2(0F, i * (buttonSize + 3F));
@@ -2258,25 +2255,27 @@ DockId=0x6A3C3007,0
         ImGui.TextDisabled("锁定后改一轴，其余两轴按同一比例缩放");
     }
 
-    /// <summary>一组吸附步长：锁定 + X/Y/Z</summary>
+    /// <summary>一组吸附步长：锁定 + X/Y/Z，紧凑排列</summary>
     private static void DrawGizmoSnapRow(string title, string id, ref bool linked, ref float x, ref float y,
         ref float z, float speed, float minimum, float maximum)
     {
         ImGui.PushID(id);
         ImGui.AlignTextToFramePadding();
         ImGui.TextDisabled(title);
-        ImGui.SameLine(0F, 8F);
+        ImGui.SameLine(0F, 6F);
         DrawChainToggle(ref linked);
-        ImGui.SameLine(0F, 4F);
         var values = new[] { x, y, z };
         var previous = values.ToArray();
         var changed = -1;
         for (var axis = 0; axis < 3; axis++)
         {
-            var label = axis switch { 0 => "X", 1 => "Y", _ => "Z" };
-            ImGui.SetNextItemWidth(72F);
-            if (InspectorDragFloatField(label, ref values[axis], speed, minimum, maximum)) changed = axis;
-            if (axis != 2) ImGui.SameLine(0F, 4F);
+            ImGui.SameLine(0F, 4F);
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextDisabled(axis switch { 0 => "X", 1 => "Y", _ => "Z" });
+            ImGui.SameLine(0F, 2F);
+            ImGui.SetNextItemWidth(52F);
+            var label = axis switch { 0 => "##SnapX", 1 => "##SnapY", _ => "##SnapZ" };
+            if (ImGui.DragFloat(label, ref values[axis], speed, minimum, maximum, "%.2f")) changed = axis;
         }
 
         if (changed >= 0)
@@ -2359,19 +2358,15 @@ DockId=0x6A3C3007,0
         }
         if (tool == 4)
         {
-            // 全部工具：十字箭头 + 旋转弧 + 缩放方块
-            draw.AddLine(P(-8F, -4F), P(9F, -4F), color, line);
-            draw.AddLine(P(3F, -9F), P(3F, 2F), color, line);
-            draw.AddTriangleFilled(P(9F, -4F), P(5F, -7F), P(5F, -1F), color);
-            draw.AddTriangleFilled(P(3F, 2F), P(0F, -2F), P(6F, -2F), color);
-            var previous = P(-2F, 6F);
-            for (var segment = 1; segment <= 12; segment++)
-            {
-                var angle = segment * (MathF.PI * 0.9F / 12F);
-                var next = P(-2F + MathF.Cos(angle) * 6F, 6F + MathF.Sin(angle) * 6F);
-                draw.AddLine(previous, next, color, line);
-                previous = next;
-            }
+            // 全部工具：一个立方体加双向箭头，表示移动/旋转/缩放的组合
+            draw.AddRect(P(-8F, -5F), P(2F, 5F), color, 0F, ImDrawFlags.None, line);
+            draw.AddLine(P(-8F, -5F), P(-4F, -9F), color, line);
+            draw.AddLine(P(2F, -5F), P(6F, -9F), color, line);
+            draw.AddLine(P(-4F, -9F), P(6F, -9F), color, line);
+            draw.AddLine(P(2F, 5F), P(6F, 1F), color, line);
+            draw.AddLine(P(6F, -9F), P(6F, 1F), color, line);
+            draw.AddLine(P(-8F, 1F), P(9F, 1F), color, line);
+            draw.AddTriangleFilled(P(9F, 1F), P(4F, -2F), P(4F, 4F), color);
             return;
         }
 
