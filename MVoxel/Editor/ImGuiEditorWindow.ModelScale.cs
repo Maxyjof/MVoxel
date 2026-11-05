@@ -206,12 +206,13 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="x">X 倍率</param>
     /// <param name="y">Y 倍率</param>
     /// <param name="z">Z 倍率</param>
-    private void ApplyObjectIntegerScale(SceneObject sceneObject, int x, int y, int z)
+    private void ApplyObjectScale(SceneObject sceneObject, float x, float y, float z)
     {
         var transform = sceneObject.Transform;
-        x = Math.Clamp(x, 0, 64);
-        y = Math.Clamp(y, 0, 64);
-        z = Math.Clamp(z, 0, 64);
+        // 缩放不能为负，无上限；0 表示隐藏
+        x = MathF.Max(0F, x);
+        y = MathF.Max(0F, y);
+        z = MathF.Max(0F, z);
         if (transform.ScaleX == x && transform.ScaleY == y && transform.ScaleZ == z) return;
         transform.ScaleX = x;
         transform.ScaleY = y;
@@ -219,7 +220,7 @@ internal sealed partial class ImGuiEditorWindow
         // 先清掉当前世界并按参数重生成一份基准，再按绝对倍率缩放，避免反复缩放累积误差
         _objectVoxels.Remove(sceneObject.Id);
         EnsureGeneratedVoxelWorlds();
-        if (x > 0 && y > 0 && z > 0 && _objectVoxels.TryGetWorld(sceneObject.Id, out var world))
+        if (x > 0F && y > 0F && z > 0F && _objectVoxels.TryGetWorld(sceneObject.Id, out var world))
         {
             var anchor = world.TryGetBounds(out var minimum, out _) ? minimum : VoxelCoord64.Zero;
             if (ModelScaleRule.TryResample(world, x, y, z, anchor, out var scaled, out var error,

@@ -1123,9 +1123,9 @@ internal sealed partial class ImGuiEditorWindow
             {
                 var multiplier = MathF.Pow(2F, -(mouse.Y - _sceneGizmoDragStartMouse.Y) / 80F);
                 var before = SceneSerializer.CloneObject(selected);
-                selected.Transform.ScaleX = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleX * multiplier));
-                selected.Transform.ScaleY = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleY * multiplier));
-                selected.Transform.ScaleZ = Math.Max(1, (int)MathF.Round(selected.Transform.ScaleZ * multiplier));
+                selected.Transform.ScaleX = MathF.Max(0F, selected.Transform.ScaleX * multiplier);
+                selected.Transform.ScaleY = MathF.Max(0F, selected.Transform.ScaleY * multiplier);
+                selected.Transform.ScaleZ = MathF.Max(0F, selected.Transform.ScaleZ * multiplier);
                 var after = SceneSerializer.CloneObject(selected);
                 if (!SceneSerializer.ObjectsEqual(before, after))
                 {

@@ -308,11 +308,11 @@ internal sealed partial class ImGuiEditorWindow
     {
         var transform = item.Transform;
         var values = new[] { (double)transform.ScaleX, transform.ScaleY, transform.ScaleZ };
-        DrawTransformRowLocked("缩放", values, 1D, 12D, ref _transformScaleLocked, (axis, value) =>
+        DrawTransformRowLocked("缩放", values, .05D, 12D, ref _transformScaleLocked, (axis, value) =>
         {
-            var clamped = Math.Clamp((int)Math.Round(value), 0, 64);
+            var clamped = MathF.Max(0F, (float)value);
             values[axis] = clamped;
-            ApplyObjectIntegerScale(item, (int)values[0], (int)values[1], (int)values[2]);
+            ApplyObjectScale(item, (float)values[0], (float)values[1], (float)values[2]);
         });
     }
 

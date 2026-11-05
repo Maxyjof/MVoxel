@@ -325,9 +325,9 @@ public enum TransformMode
 public sealed class TransformComponent
 {
     /// <summary>各轴整数缩放倍数。</summary>
-    public int ScaleX { get; set; } = 1;
-    public int ScaleY { get; set; } = 1;
-    public int ScaleZ { get; set; } = 1;
+    public float ScaleX { get; set; } = 1F;
+    public float ScaleY { get; set; } = 1F;
+    public float ScaleZ { get; set; } = 1F;
 
     private static readonly OrthogonalRotation[] VoxelRotations = BuildVoxelRotations();
     /// <summary>
