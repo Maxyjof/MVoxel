@@ -2112,10 +2112,9 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var capsLockMode = IsCapsLockEnabled();
-        if (capsLockMode)
+        if (capsLockMode && _activeTool is EditorTool.Pick or EditorTool.Eyedropper)
         {
-            // 大小写锁定是第一人称游戏式操作：左键放置、右键破坏（MC 模式两者互换），
-            // 不能因为当前工具是选择工具就吞掉右键破坏
+            // 锁定模式下选择工具不能吞掉游戏式左右键：直接按左放置、右破坏处理
             var lockedLeftAction = ViewportInputPolicy.Resolve(EditorMouseButton.Left, false, true,
                 _editorSettings.McMode);
             var lockedRightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, false, true,
