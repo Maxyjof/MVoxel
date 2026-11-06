@@ -73,6 +73,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
     private void PrepareSunDepthMap(RenderSettings settings, float[] parameters)
     {
         SunShadowFallbackReason = null;
+        // 场景窗口（编辑视口）不渲染任何阴影，太阳深度图与屏幕空间半影重建都不必准备
+        if (parameters[VoxelRenderParameters.ScenePreview] > 0.5F) return;
         // 角尺寸为零时三种模式共用硬阴影查询，不需要分配或重建预通道。
         if (settings.ShadowSoftness <= 0.0001F) return;
         if (settings.SunEnabled && settings.SunShadowMethod == SunShadowMethod.Reconstructed && parameters[115] < 0.5F)

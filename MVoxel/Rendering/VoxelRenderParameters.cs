@@ -147,7 +147,11 @@ public sealed class VoxelRenderParameters
     /// <summary>薄板玻璃近似开关与厚度上限（世界格）</summary>
     public const int ThinGlassEnabled = 209, ThinGlassMaxThickness = 210;
     public const int WeatherSeed = 211, WeatherTime = 212, WeatherViewDistance = 213, SurfaceDepositCount = 214, SurfaceReceiverSlots = 215;
-    public const int SlotCount = 216;
+    /// <summary>当前加速结构是否与工作集同版本；为 0 时主射线退回软件 BVH，阴影仍走加速结构快照</summary>
+    public const int HardwareShadowCurrent = 216;
+    /// <summary>加速结构快照覆盖的体素数量，供硬件阴影按快照索引取半透明标记</summary>
+    public const int HardwareShadowCellCount = 217;
+    public const int SlotCount = 218;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -245,6 +249,7 @@ public sealed class VoxelRenderParameters
             ("P_WEATHER_WIND_STRENGTH", WeatherWindStrength), ("P_WEATHER_WIND_DIRECTION", WeatherWindDirection),
             ("P_WEATHER_RAIN", WeatherRain), ("P_WEATHER_SNOW", WeatherSnow),
             ("P_WEATHER_STORM", WeatherStorm), ("P_WEATHER_HEAT_HAZE", WeatherHeatHaze), ("P_WEATHER_LIGHTNING", WeatherLightning),
+            ("P_HW_RT_CURRENT", HardwareShadowCurrent), ("P_HW_RT_CELL_COUNT", HardwareShadowCellCount),
         };
 
         var builder = new StringBuilder();

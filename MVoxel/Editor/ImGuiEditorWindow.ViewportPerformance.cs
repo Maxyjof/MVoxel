@@ -27,6 +27,13 @@ internal sealed partial class ImGuiEditorWindow
     {
         var allocatedKb = (GC.GetAllocatedBytesForCurrentThread() - allocatedBytesBefore) / 1024.0;
         var gpuProfiling = pipeline.GpuProfilingEnabled;
+        // 归因来自管线最近一次提交：等待已提交计算完成、硬件阴影加速结构重建，
+        // 再补上交换链的采集与呈现等待，便于判断卡在 CPU、GPU 还是呈现
+        var attribution = new ViewportPerformanceLog.FrameAttribution(
+            pipeline.LastComputeIdleWaitMs, pipeline.LastShadowAccelerationBuildMs,
+            pipeline.HardwareShadowsActive, pipeline.SoftwareBvhVariantName,
+            _vulkan?.LastPresentMs ?? 0, _vulkan?.LastAcquireMs ?? 0,
+            pipeline.DeviceName);
         log.Record(ImGui.GetIO().DeltaTime * 1000.0, cpuMs, pipeline.SubmitCount - submitsBefore,
             pipeline.FenceWaitTotalMs - fenceBefore, pipeline.SyncCompletedCount, pipeline.SyncTotalMs,
             pipeline.LastDispatchCount, width, height, pipeline.SyncTotalCells,
@@ -34,6 +41,6 @@ internal sealed partial class ImGuiEditorWindow
             gpuProfiling ? pipeline.LastGpuSamplingMs : 0,
             gpuProfiling ? pipeline.LastGpuFinishMs : 0,
             pipeline.AccumulatedSamples,
-            allocatedKb);
+            allocatedKb, attribution);
     }
 }

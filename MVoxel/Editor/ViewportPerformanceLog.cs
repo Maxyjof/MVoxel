@@ -12,6 +12,19 @@ namespace MVoxel.Editor;
 /// </remarks>
 internal sealed class ViewportPerformanceLog
 {
+    /// <summary>
+    /// 本帧卡顿归因：区分等待已提交计算完成、硬件阴影加速结构重建与窗口呈现，
+    /// 用于在没有 GPU 时间戳时也能判断卡在哪一步
+    /// </summary>
+    internal readonly record struct FrameAttribution(
+        double ComputeIdleWaitMs,
+        double AccelerationBuildMs,
+        bool HardwareShadows,
+        string SoftwareVariant,
+        double WindowPresentMs,
+        double WindowAcquireMs,
+        string Device);
+
     /// <summary>常态统计的汇总周期</summary>
     private const double ReportIntervalMs = 5000;
 
@@ -43,6 +56,13 @@ internal sealed class ViewportPerformanceLog
     private double _gpuSamplingSum;
     private double _gpuFinishSum;
     private double _allocSum;
+    private double _idleWaitSum;
+    private double _accelBuildMax;
+    private double _presentMax;
+    private double _presentSum;
+    private int _hardwareShadowFrames;
+    private int _softwareShadowFrames;
+    private string _device = "未知设备";
     // 路径追踪样本吞吐：记录窗口内的起点与终点样本数，
     // 计数器回退（重置、换相机）时把起点挪到新值，避免算出负数
     private int _samplesFirst;
@@ -73,10 +93,11 @@ internal sealed class ViewportPerformanceLog
     /// <param name="gpuFinishMs">最近一次回读的收尾段耗时</param>
     /// <param name="accumulatedSamples">当前累积样本数，用于统计样本吞吐</param>
     /// <param name="allocatedKb">本帧线程分配字节数换算的 KB</param>
+    /// <param name="attribution">本帧卡顿归因；未提交计算时传入的数值不会计入统计</param>
     internal void Record(double frameMs, double cpuMs, long submits, double fenceWaitMs,
         int syncCount, double syncMs, int dispatches, int width, int height, int cells,
         double gpuMs, double gpuSamplingMs, double gpuFinishMs, int accumulatedSamples,
-        double allocatedKb)
+        double allocatedKb, FrameAttribution attribution)
     {
         var now = Environment.TickCount64;
         if (_windowStartMs == 0)
@@ -112,6 +133,25 @@ internal sealed class ViewportPerformanceLog
         _lastWidth = width;
         _lastHeight = height;
         _lastCells = cells;
+        if (attribution.Device.Length > 0) _device = attribution.Device;
+        // 归因数值是“最近一次提交”的静态结果，只有本帧真的派发过计算才计入，
+        // 否则复用画面的空闲帧会把历史峰值反复累加
+        if (dispatches > 0)
+        {
+            _idleWaitSum += Math.Max(0, attribution.ComputeIdleWaitMs);
+            _accelBuildMax = Math.Max(_accelBuildMax, attribution.AccelerationBuildMs);
+            if (attribution.HardwareShadows)
+            {
+                _hardwareShadowFrames++;
+            }
+            else
+            {
+                _softwareShadowFrames++;
+            }
+        }
+
+        _presentSum += Math.Max(0, attribution.WindowPresentMs);
+        _presentMax = Math.Max(_presentMax, attribution.WindowPresentMs);
 
         // 只有真正提交过 GPU 工作的帧才可能是视口渲染卡顿，
         // 项目加载等阻塞操作产生的长帧不归到视口头上
@@ -122,7 +162,12 @@ internal sealed class ViewportPerformanceLog
             MVoxelLog.Warn($"视口掉帧｜{_viewport}：本帧 {frameMs:0.0}ms，" +
                 $"CPU 提交 {cpuMs:0.0}ms，栅栏等待 {Math.Max(0, fenceWaitMs):0.0}ms，" +
                 $"队列提交 {submits} 次，工作集同步 {frameSyncMs:0.0}ms，" +
-                $"派发 {dispatches} 次，分配 {allocatedKb:0}KB，输出 {width}x{height}，体素 {cells:N0}");
+                $"派发 {dispatches} 次，分配 {allocatedKb:0}KB，输出 {width}x{height}，体素 {cells:N0}；" +
+                $"归因 等待计算空闲 {attribution.ComputeIdleWaitMs:0.0}ms，" +
+                $"加速结构重建 {attribution.AccelerationBuildMs:0.0}ms，" +
+                $"求交 {ShadowBackend(attribution.HardwareShadows, attribution.SoftwareVariant)}，" +
+                $"呈现等待 {attribution.WindowPresentMs:0.0}ms，" +
+                $"采集等待 {attribution.WindowAcquireMs:0.0}ms，设备 {_device}");
         }
 
         if (now - _windowStartMs < ReportIntervalMs)
@@ -139,9 +184,20 @@ internal sealed class ViewportPerformanceLog
             $"派发峰值 {_dispatchMax} 次，同步峰值 {_syncMax:0.0}ms，" +
             $"GPU {(_gpuSamples > 0 ? $"{_gpuSum / _gpuSamples:0.0}ms 均值（采样 {_gpuSamplingSum / _gpuSamples:0.0} + 收尾 {_gpuFinishSum / _gpuSamples:0.0}） 峰值 {_gpuMax:0.0}ms" : "未采样")}，" +
             $"样本吞吐 {samplesPerSecond:0.00} spp/s，" +
-            $"分配 {_allocSum / frames:0}KB/帧，输出 {_lastWidth}x{_lastHeight}，体素 {_lastCells:N0}");
+            $"分配 {_allocSum / frames:0}KB/帧，" +
+            $"求交后端 硬件 {_hardwareShadowFrames} 帧/软件 {_softwareShadowFrames} 帧，" +
+            $"等待计算空闲 {_idleWaitSum / frames:0.0}ms/帧，加速重建峰值 {_accelBuildMax:0.0}ms，" +
+            $"呈现等待 {_presentSum / frames:0.0}ms/帧 峰值 {_presentMax:0.0}ms，" +
+            $"输出 {_lastWidth}x{_lastHeight}，体素 {_lastCells:N0}，设备 {_device}");
         Reset(now);
     }
+
+    /// <summary>
+    /// 阴影求交后端名称
+    /// </summary>
+    private static string ShadowBackend(bool hardware, string softwareVariant) =>
+        hardware ? "硬件 Ray Query"
+        : softwareVariant.Length > 0 ? $"软件 BVH（{softwareVariant}）" : "软件 BVH";
 
     /// <summary>
     /// 清空统计，进入下一个汇总周期
@@ -167,5 +223,11 @@ internal sealed class ViewportPerformanceLog
         _samplesFirst = 0;
         _samplesLast = 0;
         _allocSum = 0;
+        _idleWaitSum = 0;
+        _accelBuildMax = 0;
+        _presentMax = 0;
+        _presentSum = 0;
+        _hardwareShadowFrames = 0;
+        _softwareShadowFrames = 0;
     }
 }

@@ -1,4 +1,5 @@
-﻿using System.Numerics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
@@ -20,7 +21,16 @@ namespace MVoxel.Editor.Rendering.Vulkan;
 /// </remarks>
 internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
 {
-    internal const int MaxHardwareRayTracingVoxels = 250_000;
+    /// <summary>
+    /// 硬件加速体素的绝对上限，实际可用数量还会按本机显存预算与图元上限收缩
+    /// </summary>
+    internal const int MaxHardwareRayTracingVoxels = 1_000_000;
+    /// <summary>
+    /// 每个体素在几何缓冲、BLAS 与构建 scratch 上的保守显存估算（字节）。
+    /// 几何缓冲 288B（顶点 96 + 索引 144 + 体素快照 48），其余按约 1.7KB 留给 BLAS 与 scratch
+    /// </summary>
+    private const ulong EstimatedBytesPerVoxel = 2048;
+    private const double SlowAccelerationBuildMs = 50;
     private const int VerticesPerVoxel = 8;
     private const int IndicesPerVoxel = 36;
     private const int PrimitivesPerVoxel = 12;
@@ -87,6 +97,13 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private int _oversizedWarningVersion = -1;
     private bool _disposed;
     private string? _lastError;
+    private double _lastBuildMs;
+    private double _lastBuildIdleMs;
+    private double _lastGeometryMs;
+    private double _lastBlasMs;
+    private double _lastTlasMs;
+    private int _lastBuildCellCount;
+    private readonly int _maxAccelerationVoxels;
 
     /// <summary>
     /// 创建硬件光追资源管理器
@@ -106,6 +123,39 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _api.GetPhysicalDeviceProperties(context.PhysicalDevice, &deviceProperties);
         _coreBufferDeviceAddress = deviceProperties.ApiVersion >= Vk.Version12;
         _properties = QueryProperties(out _accelerationProperties, out _scratchAlignment);
+        _maxAccelerationVoxels = ComputeMaxAccelerationVoxels(_accelerationProperties.MaxPrimitiveCount);
+    }
+
+    /// <summary>
+    /// 按本机显存预算、加速结构图元上限与绝对上限计算可承载的体素数量
+    /// </summary>
+    /// <remarks>
+    /// 原来的固定 250k 只是没测过更大场景时的保守值，并不是设备能力。
+    /// 改成显存预算后，10GB 级显卡能覆盖更多体素，同时弱卡不会强行分配导致分配失败或驱动异常。
+    /// 与厂商无关：同一份估算同时作用于 NVIDIA 与 AMD
+    /// </remarks>
+    private int ComputeMaxAccelerationVoxels(ulong maxPrimitiveCount)
+    {
+        PhysicalDeviceMemoryProperties memory = default;
+        _api.GetPhysicalDeviceMemoryProperties(_context.PhysicalDevice, &memory);
+        ulong deviceLocalBytes = 0;
+        for (var heap = 0; heap < memory.MemoryHeapCount; heap++)
+        {
+            var candidate = memory.MemoryHeaps[(int)heap];
+            if ((candidate.Flags & MemoryHeapFlags.DeviceLocalBit) != 0 && candidate.Size > deviceLocalBytes)
+                deviceLocalBytes = candidate.Size;
+        }
+
+        // 最多只占显存的八分之一，且给交换链、场景网格、材质与驱动留至少 256MB 余量
+        var budget = Math.Max(deviceLocalBytes / 8, 256UL * 1024UL * 1024UL);
+        var byMemory = budget / EstimatedBytesPerVoxel;
+        var byPrimitives = maxPrimitiveCount / (ulong)PrimitivesPerVoxel;
+        var limit = Math.Min(byMemory, byPrimitives);
+        var voxels = (int)Math.Min(limit, (ulong)MaxHardwareRayTracingVoxels);
+        // 用户日志里要能直接看出这台机器为什么回退：写明上限由显存预算还是图元上限决定
+        MVoxelLog.Info($"硬件加速容量：本机上限 {voxels:N0} 格（显存 {deviceLocalBytes / (1024UL * 1024UL)} MB，" +
+            $"预算 {budget / (1024UL * 1024UL)} MB，图元上限 {maxPrimitiveCount:N0}，绝对上限 {MaxHardwareRayTracingVoxels:N0}）");
+        return voxels;
     }
 
     /// <summary>
@@ -127,6 +177,40 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// 获取最近一次硬件 RT 错误
     /// </summary>
     internal string? LastError => _lastError;
+
+    /// <summary>最近一次加速结构重建总耗时毫秒（含等待设备空闲）</summary>
+    internal double LastBuildMs => _lastBuildMs;
+
+    /// <summary>最近一次加速结构重建里等待设备空闲的耗时毫秒</summary>
+    internal double LastBuildIdleMs => _lastBuildIdleMs;
+
+    /// <summary>最近一次加速结构重建里生成几何缓冲的耗时毫秒</summary>
+    internal double LastGeometryMs => _lastGeometryMs;
+
+    /// <summary>最近一次加速结构重建里构建 BLAS 的耗时毫秒</summary>
+    internal double LastBlasMs => _lastBlasMs;
+
+    /// <summary>最近一次加速结构重建里构建 TLAS 的耗时毫秒</summary>
+    internal double LastTlasMs => _lastTlasMs;
+
+    /// <summary>最近一次加速结构重建覆盖的体素数量</summary>
+    internal int LastBuildCellCount => _lastBuildCellCount;
+
+    /// <summary>
+    /// 本机实际可承载的硬件加速体素上限：显存预算、图元上限与绝对上限取最小值。
+    /// 与显卡厂商无关，NVIDIA 与 AMD 走同一套判定
+    /// </summary>
+    internal int MaxAccelerationVoxels => _maxAccelerationVoxels;
+
+    /// <summary>
+    /// 与当前加速结构同序的体素快照缓冲。
+    /// 工作集在编辑中变化时加速结构会晚一拍重建，硬件阴影必须按快照取半透明标记，
+    /// 否则图元索引会和新的 Compute 体素缓冲错位
+    /// </summary>
+    internal VkBuffer AccelerationCellBuffer => _cellBuffer;
+
+    /// <summary>与当前加速结构同序的体素数量</summary>
+    internal int AccelerationCellCount => _lastBuildCellCount;
 
     /// <summary>
     /// 获取当前显示纹理
@@ -242,9 +326,9 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             return false;
         }
 
-        if (workset.Cells.Count > MaxHardwareRayTracingVoxels)
+        if (workset.Cells.Count > MaxAccelerationVoxels)
         {
-            _lastError = $"硬件 RT 体素数量超过安全上限 {MaxHardwareRayTracingVoxels:N0}，已回退 Vulkan Compute";
+            _lastError = $"硬件 RT 体素数量 {workset.Cells.Count:N0} 超过本机显存预算上限 {MaxAccelerationVoxels:N0}，已回退 Vulkan Compute";
             if (_oversizedWarningVersion != workset.SourceVersion)
             {
                 _oversizedWarningVersion = workset.SourceVersion;
@@ -296,29 +380,52 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// <returns>加速结构可用时返回 true</returns>
     internal bool EnsureShadowAcceleration(IReadOnlyList<VoxelGpuCell> cells, int sourceVersion)
     {
-        if (_disposed || cells.Count == 0 || cells.Count > MaxHardwareRayTracingVoxels)
+        if (_disposed || cells.Count == 0 || cells.Count > MaxAccelerationVoxels)
         {
             return false;
         }
 
         if (!FitsAccelerationLimits(cells.Count))
         {
-            _lastError = "场景超过此设备的加速结构容量，已回退软件遍历";
+            _lastError = $"场景 {cells.Count:N0} 格超过此设备的加速结构容量上限 {MaxAccelerationVoxels:N0}，已回退软件遍历";
             return false;
         }
 
         if (_sourceVersion == sourceVersion && _tlas.Handle != 0) return true;
+        _lastBuildMs = 0;
+        _lastBuildIdleMs = 0;
+        _lastGeometryMs = 0;
+        _lastBlasMs = 0;
+        _lastTlasMs = 0;
+        var buildWatch = Stopwatch.StartNew();
         try
         {
             _lastError = null;
+            var phaseWatch = Stopwatch.StartNew();
             // 几何顺序必须与 Compute 的 binding 0 完全一致，否则命中图元换算出的
-            // 半透明标记会错位，阴影就会错误地穿过水面或玻璃
+            // 半透明标记会错位，阴影就会错误地穿过水面或玻璃。
+            // 这里同时保留一份与加速结构同序的体素快照：编辑期加速结构还没重建时，
+            // 硬件阴影仍按快照读取半透明标记，不必退回整帧软件 BVH
             Check(_api.DeviceWaitIdle(_device), "等待硬件阴影加速结构重建");
+            _lastBuildIdleMs = phaseWatch.Elapsed.TotalMilliseconds;
+            phaseWatch.Restart();
             DestroyAccelerationResources();
-            CreateGeometryBuffers(cells, includeCellBuffer: false);
+            CreateGeometryBuffers(cells, includeCellBuffer: true);
+            _lastGeometryMs = phaseWatch.Elapsed.TotalMilliseconds;
+            phaseWatch.Restart();
             CreateBlas(cells.Count);
+            _lastBlasMs = phaseWatch.Elapsed.TotalMilliseconds;
+            phaseWatch.Restart();
             CreateTlas();
+            _lastTlasMs = phaseWatch.Elapsed.TotalMilliseconds;
             _sourceVersion = sourceVersion;
+            _lastBuildCellCount = cells.Count;
+            _lastBuildMs = buildWatch.Elapsed.TotalMilliseconds;
+            if (_lastBuildMs >= SlowAccelerationBuildMs)
+            {
+                MVoxelLog.Warn(
+                    $"硬件阴影加速结构重建偏慢：总计 {_lastBuildMs:0.0}ms（等待设备 {_lastBuildIdleMs:0.0}ms，几何 {_lastGeometryMs:0.0}ms，BLAS {_lastBlasMs:0.0}ms，TLAS {_lastTlasMs:0.0}ms），体素 {cells.Count:N0}，设备 {_context.DeviceName}");
+            }
             return _tlas.Handle != 0;
         }
         catch (Exception exception)
@@ -853,6 +960,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// </summary>
     /// <returns>设备 RT 属性</returns>
     private bool FitsAccelerationLimits(int cellCount) =>
+        cellCount <= MaxAccelerationVoxels &&
         (ulong)cellCount * PrimitivesPerVoxel <= _accelerationProperties.MaxPrimitiveCount &&
         _accelerationProperties.MaxGeometryCount >= 1 && _accelerationProperties.MaxInstanceCount >= 1;
 

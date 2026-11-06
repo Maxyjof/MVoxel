@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
@@ -51,6 +52,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private VulkanHardwareRayTracingPipeline? _shadowAcceleration;
     private Pipeline _hardwareShadowPipeline;
     private bool _hardwareShadowsActive;
+    // 加速结构是否与当前工作集同版本。编辑中工作集每笔都变，而加速结构要等稳定后才重建；
+    // 此时阴影继续用加速结构 + 同序体素快照，主射线则按当前体素走软件 BVH
+    private bool _hardwareShadowGeometryCurrent;
+    private int _hardwareShadowCellCount;
+    // 加速结构快照对应的世界与 LOD。切换场景/模型/视图时世界实例或 LOD 会变，
+    // 这时旧快照的几何完全是另一个场景，不能拿来投阴影
+    private VoxelWorld? _shadowSnapshotSource;
+    private long _shadowSnapshotLodSignature = -1;
+    private double _lastComputeIdleWaitMs;
+    private double _lastShadowAccelerationBuildMs;
     private bool? _lastHardwareBackend;
     private bool _hardwareAccelerationDisabledByUser;
     private bool _hardwareShadowPipelineFailed;
@@ -60,9 +71,20 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool _shadowAccelerationBuildValid;
     private long _shadowAccelerationSeenAtMs;
     private long _shadowAccelerationRetryAtMs;
+    private long _shadowAccelerationLastBuildAtMs;
+    private double _shadowAccelerationLastCostMs;
     private bool _shadowAccelerationUnsupportedLogged;
     /// <summary>工作集停止变化后等待多久再建 BLAS，避免连续编辑时反复重建</summary>
     private const int ShadowAccelerationStableMs = 320;
+
+    /// <summary>
+    /// 连续编辑中强制刷新加速结构的最短间隔。只有上次重建足够便宜才启用，
+    /// 这样小场景的阴影不会被一整笔拖拽拖成几十秒前的样子，大场景仍保持原来的重建节奏
+    /// </summary>
+    private const int ContinuousEditRebuildIntervalMs = 800;
+
+    /// <summary>上次重建耗时低于该值时，才允许在连续编辑中强制刷新，避免大场景反复卡顿</summary>
+    private const double ContinuousEditRebuildBudgetMs = 35;
     private VkBuffer _voxelBuffer;
     private DeviceMemory _voxelMemory;
     private ulong _voxelBufferCapacity;
@@ -309,6 +331,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 当前软件 BVH 的遍历形态，用于日志归因；全部设备共用同一份着色器
+    /// </summary>
+    internal string SoftwareBvhVariantName => "遮挡专用遍历";
+
+    /// <summary>
     /// 获取显示纹理句柄
     /// </summary>
     internal IntPtr DisplayTextureId => _usingHardwareRayTracing && _hardwareRayTracingPipeline is not null
@@ -345,8 +372,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         : _hardwareShadowsActive ? "ray query 求交已启用"
         : _hardwareShadowFailure is { Length: > 0 } failure ? $"硬件加速不可用：{failure}"
         : _shadowAcceleration?.LastError is { Length: > 0 } error ? $"加速结构不可用：{error}"
-        : _workset.Cells.Count > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels
-            ? $"工作集 {_workset.Cells.Count:N0} 格超过硬件加速上限 {VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels:N0}"
+        : _workset.Cells.Count > (_shadowAcceleration?.MaxAccelerationVoxels ??
+            VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels)
+            ? $"工作集 {_workset.Cells.Count:N0} 格超过本机硬件加速上限 {(_shadowAcceleration?.MaxAccelerationVoxels ?? VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels):N0}"
             : "等待工作集稳定后建立加速结构";
 
     /// <summary>
@@ -1012,7 +1040,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal int SyncCompletedCount { get; private set; }
 
     /// <summary>
-    /// 是否启用 GPU 时间戳采样，由性能分析器在渲染前设置
+    /// 是否启用 GPU 时间戳采样。视口性能日志用它区分 CPU 等待与 GPU 计算，
+    /// 性能分析器另有自己的帧标识；采样异步回读，不阻塞 GPU
     /// </summary>
     internal bool GpuProfilingEnabled { get; set; }
 
@@ -1040,6 +1069,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 当前设备是否支持 GPU 时间戳采样
     /// </summary>
     internal bool GpuTimingSupported => _context?.SupportsTimestamps == true && !_gpuTimingBroken;
+
+    /// <summary>本帧重建硬件阴影前等待已提交 Compute 完成的耗时毫秒</summary>
+    internal double LastComputeIdleWaitMs => _lastComputeIdleWaitMs;
+
+    /// <summary>本帧硬件阴影加速结构重建（含工作集快照）的耗时毫秒</summary>
+    internal double LastShadowAccelerationBuildMs => _lastShadowAccelerationBuildMs;
+
+    /// <summary>当前渲染设备名称，用于日志归因</summary>
+    internal string DeviceName => _context?.DeviceName ?? "未知设备";
 
     /// <summary>
     /// 重置渐进渲染累积
@@ -1144,6 +1182,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
         parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
         parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
+        parameters[VoxelRenderParameters.HardwareShadowCurrent] = _hardwareShadowGeometryCurrent ? 1F : 0F;
+        parameters[VoxelRenderParameters.HardwareShadowCellCount] = _hardwareShadowCellCount;
         parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
@@ -1637,7 +1677,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         try
         {
             _hardwareShadowPipeline = task.GetAwaiter().GetResult();
-            MVoxelLog.Info("硬件光追阴影加速已就绪，太阳阴影改由 ray query 求交");
+            MVoxelLog.Info("硬件光追加速结构已就绪，视口求交改由 ray query（场景窗口不渲染阴影）");
         }
         catch (Exception exception)
         {
@@ -1693,17 +1733,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (_context is null || _api is null) return;
         PhysicalDeviceProperties deviceProperties = default;
         _api.GetPhysicalDeviceProperties(_context.PhysicalDevice, &deviceProperties);
-        // binding 0、1、5、6、7、9、10、14 共 8 个存储缓冲；3 为 uniform 缓冲，
-        // 2、4、8、11、12 共 5 个存储图；仅硬件变体再加一个加速结构。
+        // binding 0、1、5、6、7、9、10、14 共 8 个存储缓冲，光追设备再加 15（加速结构
+        // 同序体素快照）；3 为 uniform 缓冲，2、4、8、11、12 共 5 个存储图。
         // 低于限制时提前给出明确错误并交由上层回退，不能创建无效布局。
-        uint resourceCount = _context.SupportsHardwareRayQuery ? 15U : 14U;
+        uint resourceCount = _context.SupportsHardwareRayQuery ? 16U : 14U;
+        uint requiredStorageBuffers = _context.SupportsHardwareRayQuery ? 9U : 8U;
         var limits = deviceProperties.Limits;
-        if (limits.MaxPerStageDescriptorStorageBuffers < 8 || limits.MaxDescriptorSetStorageBuffers < 8 ||
+        if (limits.MaxPerStageDescriptorStorageBuffers < requiredStorageBuffers ||
+            limits.MaxDescriptorSetStorageBuffers < requiredStorageBuffers ||
             limits.MaxPerStageDescriptorUniformBuffers < 1 || limits.MaxDescriptorSetUniformBuffers < 1 ||
             limits.MaxUniformBufferRange < VoxelRenderParameters.SlotCount * 4 * sizeof(float) ||
             limits.MaxPerStageDescriptorStorageImages < 5 || limits.MaxDescriptorSetStorageImages < 5 ||
             limits.MaxPerStageResources < resourceCount)
-            throw new InvalidOperationException($"Vulkan 设备 {_context.DeviceName} 的 Compute 描述符上限不足：需要 8 个存储缓冲、1 个 uniform 缓冲、5 个存储图和 {resourceCount} 个阶段资源；当前缓冲 {limits.MaxPerStageDescriptorStorageBuffers}/{limits.MaxDescriptorSetStorageBuffers}，存储图 {limits.MaxPerStageDescriptorStorageImages}/{limits.MaxDescriptorSetStorageImages}，阶段资源 {limits.MaxPerStageResources}");
+            throw new InvalidOperationException($"Vulkan 设备 {_context.DeviceName} 的 Compute 描述符上限不足：需要 {requiredStorageBuffers} 个存储缓冲、1 个 uniform 缓冲、5 个存储图和 {resourceCount} 个阶段资源；当前缓冲 {limits.MaxPerStageDescriptorStorageBuffers}/{limits.MaxDescriptorSetStorageBuffers}，存储图 {limits.MaxPerStageDescriptorStorageImages}/{limits.MaxDescriptorSetStorageImages}，阶段资源 {limits.MaxPerStageResources}");
         foreach (var (format, required) in new[]
         {
             (Format.R8G8B8A8Unorm, FormatFeatureFlags.StorageImageBit | FormatFeatureFlags.SampledImageBit),
@@ -1719,16 +1761,23 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
-    /// 决定本帧太阳阴影是否走硬件 Ray Query，并在工作集稳定后建立加速结构
+    /// 决定本帧是否绑定 ray query 求交管线，并在工作集稳定后建立加速结构
     /// </summary>
     /// <remarks>
     /// 加速结构要整份重建，不能在每次笔刷提交时都做：只有工作集版本停下
-    /// 约 320 毫秒才动手，连续编辑期间继续用 Compute 的软件 BVH，
-    /// 因此默认开启不会把编辑手感拖慢。工作集超过硬件上限时同样自动回退
+    /// 约 320 毫秒才动手，连续编辑期间主射线继续用 Compute 的软件 BVH，
+    /// 因此默认开启不会把编辑手感拖慢。工作集超过硬件上限时同样自动回退。
+    /// 场景窗口不渲染阴影，但主射线仍优先走 ray query，AMD 与 NVIDIA 共用同一判定
     /// </remarks>
     private void UpdateShadowAcceleration(RenderSettings settings)
     {
         _hardwareShadowsActive = false;
+        _hardwareShadowGeometryCurrent = false;
+        _hardwareShadowCellCount = 0;
+        _lastComputeIdleWaitMs = 0;
+        _lastShadowAccelerationBuildMs = 0;
+        // 场景窗口按设计不渲染任何阴影（着色器里由 P_SCENE_PREVIEW 拦掉全部阴影查询），
+        // 但主射线求交仍然优先用 ray query：能开硬件光追就开，AMD 与 NVIDIA 走同一判定
         _hardwareAccelerationDisabledByUser = settings.ForceComputePath ||
             (!settings.HardwareRayTracingAuto && !settings.UseHardwareRayTracing);
         if (_hardwareAccelerationDisabledByUser || _context is null || !_context.SupportsHardwareRayQuery) return;
@@ -1747,7 +1796,6 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             _shadowAccelerationSeenVersion = version;
             _shadowAccelerationSeenAtMs = now;
-            return;
         }
 
         // 显存压力可能只是暂时的；保持软件渲染期间定期重试，设备容量等固定失败则不重试。
@@ -1759,12 +1807,26 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
         if (_shadowAccelerationBuiltVersion != version)
         {
-            if (now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs) return;
+            // 工作集还在连续变化：沿用上一份加速结构与同序体素快照。
+            // 阴影只延迟到下一次重建，但不再整帧退回软件 BVH，AMD 上编辑期间也不会掉到秒级。
+            // 若上一次重建足够便宜，即使一直在拖拽也按固定间隔强制刷新一次，
+            // 避免长笔触把阴影拖成整笔之前的几何
+            var forcedRefresh = _shadowAccelerationLastBuildAtMs > 0 &&
+                now - _shadowAccelerationLastBuildAtMs >= ContinuousEditRebuildIntervalMs &&
+                _shadowAccelerationLastCostMs <= ContinuousEditRebuildBudgetMs;
+            if (now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs && !forcedRefresh)
+            {
+                ActivateHardwareShadowSnapshot();
+                return;
+            }
             if (_imguiRenderer is null) return;
+            var idleWatch = Stopwatch.StartNew();
             WaitForComputeIdle();
+            _lastComputeIdleWaitMs = idleWatch.Elapsed.TotalMilliseconds;
             _shadowAccelerationBuildValid = false;
             _shadowAccelerationRetryAtMs = 0;
             if (!_hardwareShadowPipelineFailed) _hardwareShadowFailure = null;
+            var buildWatch = Stopwatch.StartNew();
             try
             {
                 _shadowAcceleration ??= new VulkanHardwareRayTracingPipeline(_context, _imguiRenderer);
@@ -1794,7 +1856,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 MVoxelLog.Warn($"{_hardwareShadowFailure}：{exception.Message}");
                 return;
             }
-            if (!_shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version))
+            var built = _shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version);
+            _lastShadowAccelerationBuildMs = buildWatch.Elapsed.TotalMilliseconds;
+            if (!built)
             {
                 // 记住失败版本避免逐帧重建；临时内存不足会延迟重试。
                 _shadowAccelerationBuiltVersion = version;
@@ -1809,6 +1873,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
             _shadowAccelerationBuiltVersion = version;
             _shadowAccelerationBuildValid = true;
+            _shadowAccelerationLastBuildAtMs = now;
+            _shadowAccelerationLastCostMs = _lastShadowAccelerationBuildMs;
             if (!_hardwareShadowPipelineFailed) _hardwareShadowFailure = null;
             // 加速结构句柄变了，binding 13 必须重写
             UpdateComputeDescriptors();
@@ -1816,8 +1882,36 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
         if (!_shadowAccelerationBuildValid || _context.IsDeviceLost) return;
         EnsureHardwareShadowPipeline();
-        _hardwareShadowsActive = _hardwareShadowPipeline.Handle != 0 &&
-            _shadowAcceleration?.HasAccelerationStructure == true;
+        if (_hardwareShadowPipeline.Handle == 0 || _shadowAcceleration?.HasAccelerationStructure != true) return;
+        _hardwareShadowsActive = true;
+        _hardwareShadowGeometryCurrent = true;
+        _hardwareShadowCellCount = _shadowAcceleration.AccelerationCellCount;
+        _shadowSnapshotSource = _lastSyncSource;
+        _shadowSnapshotLodSignature = _worksetLodSignature;
+    }
+
+    /// <summary>
+    /// 加速结构还没跟上当前工作集时，仍用上一份加速结构与同序快照做阴影
+    /// </summary>
+    /// <remarks>
+    /// 阴影读的是快照里的半透明标记，因此图元索引不会和新工作集错位；
+    /// 主射线由 <see cref="VoxelRenderParameters.HardwareShadowCurrent"/> 判定退回软件 BVH，
+    /// 保证刚画上去的方块立即可见。重建会在工作集稳定后照原节奏进行。
+    /// 只有同一个世界与同一个 LOD 的连续编辑才沿用快照，切换场景/模型/视图时仍走软件 BVH
+    /// </remarks>
+    private void ActivateHardwareShadowSnapshot()
+    {
+        if (_context is null || _context.IsDeviceLost) return;
+        if (!ReferenceEquals(_lastSyncSource, _shadowSnapshotSource) ||
+            _worksetLodSignature != _shadowSnapshotLodSignature) return;
+        if (_shadowAcceleration is not { } acceleration) return;
+        if (!acceleration.HasAccelerationStructure ||
+            acceleration.AccelerationCellBuffer.Handle == 0 ||
+            acceleration.AccelerationCellCount <= 0) return;
+        EnsureHardwareShadowPipeline();
+        if (_hardwareShadowPipeline.Handle == 0) return;
+        _hardwareShadowsActive = true;
+        _hardwareShadowCellCount = acceleration.AccelerationCellCount;
     }
 
     private static bool IsTransientHardwareMemoryFailure(string? error) => error is not null &&
@@ -2790,8 +2884,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        var bindingCount = 15;
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[15];
+        var bindingCount = 16;
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[16];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -2807,8 +2901,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bindings[12] = new(12, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
         bindings[13] = new(14, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         if (_context?.SupportsHardwareRayQuery == true)
+        {
             bindings[14] = new(13, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.ComputeBit);
-        else bindingCount = 14;
+            // binding 15 是与加速结构同序的体素快照，硬件阴影按它取半透明标记；
+            // 软件管线不声明该绑定，因此仅光追设备把它加入布局
+            bindings[15] = new(15, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+        }
+        else bindingCount = 15;
         DescriptorSetLayoutCreateInfo createInfo = new()
         {
             SType = StructureType.DescriptorSetLayoutCreateInfo,
@@ -2829,7 +2928,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         var hardwareRayQuery = _context?.SupportsHardwareRayQuery == true;
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[4]
         {
-            new(DescriptorType.StorageBuffer, 8 * TileRingDepth),
+            // 0、1、5、6、7、9、10、14，光追设备再多一个 15（加速结构同序体素快照）
+            new(DescriptorType.StorageBuffer, 9 * TileRingDepth),
             new(DescriptorType.StorageImage, 5 * TileRingDepth),
             new(DescriptorType.UniformBuffer, TileRingDepth),
             new(DescriptorType.AccelerationStructureKhr, hardwareRayQuery ? (uint)TileRingDepth : 0U)
@@ -2969,7 +3069,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[15];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[16];
         // binding 13 只有设备支持 Ray Query 时才出现在布局里；加速结构尚未建好时
         // 不写该绑定，软件管线本来也不读取它
         AccelerationStructureKHR accelerationStructure = _shadowAcceleration?.AccelerationStructure ?? default;
@@ -2980,6 +3080,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             PAccelerationStructures = &accelerationStructure
         };
         var writeAcceleration = _context?.SupportsHardwareRayQuery == true;
+        // binding 15 是与加速结构同序的体素快照；加速结构重建时它一起换新，
+        // 编辑期加速结构滞后时硬件阴影仍读这份快照，不会出现索引错位
+        VkBuffer shadowCellBuffer = _shadowAcceleration?.AccelerationCellBuffer ?? default;
+        var shadowCellCount = _shadowAcceleration?.AccelerationCellCount ?? 0;
+        var withShadowCells = writeAcceleration && shadowCellBuffer.Handle != 0 && shadowCellCount > 0;
+        DescriptorBufferInfo shadowCellInfo = withShadowCells
+            ? new(shadowCellBuffer, 0, (ulong)shadowCellCount * PackedCellSize) : default;
         if (writeAcceleration)
         {
             writes[14] = new()
@@ -2991,6 +3098,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.AccelerationStructureKhr,
                 PNext = &accelerationWrite
             };
+            if (withShadowCells)
+            {
+                writes[15] = new()
+                {
+                    SType = StructureType.WriteDescriptorSet,
+                    DstSet = default,
+                    DstBinding = 15,
+                    DescriptorCount = 1,
+                    DescriptorType = DescriptorType.StorageBuffer,
+                    PBufferInfo = &shadowCellInfo
+                };
+            }
         }
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
@@ -3107,7 +3226,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 PBufferInfo = &sunDepthInfo };
             var withAcceleration = writeAcceleration && accelerationStructure.Handle != 0;
             if (withAcceleration) writes[14].DstSet = _ringSets[slot];
-            _api!.UpdateDescriptorSets(_device, withAcceleration ? 15U : 14U, writes, 0, null);
+            if (withAcceleration && withShadowCells) writes[15].DstSet = _ringSets[slot];
+            // 加速结构可用时 binding 15 必须一起写入：硬件着色器会无条件引用它
+            var writeCount = withAcceleration ? (withShadowCells ? 16U : 15U) : 14U;
+            _api!.UpdateDescriptorSets(_device, writeCount, writes, 0, null);
         }
     }
 
@@ -3267,6 +3389,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         #ifdef P_HW_RT
         // 只有硬件光追变体声明该绑定；软件变体的描述符布局里它是未使用的槽位
         layout(set = 0, binding = 13) uniform accelerationStructureEXT shadowTopLevel;
+        // 与加速结构同序的体素快照。编辑期工作集已变、加速结构尚未重建时，
+        // 图元索引必须按这份快照取半透明标记，不能读新的 cells[]
+        layout(set = 0, binding = 15, std430) readonly buffer HardwareCellBuffer
+        {
+            VoxelCell hardwareCells[];
+        };
         #endif
 
         struct MaterialSlotData
@@ -3436,7 +3564,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
             out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit, bool preferContaining)
         {
-            ivec2 stack[64];
+            // 32 层私有栈对全部设备生效：工作集上限 250k 体素时 BVH 深度不超过 20。
+            // 私有栈越短，编译器越不容易把它落到私有内存/scratch，AMD 上尤其明显
+            #ifndef P_SOFT_BVH_STACK
+            #define P_SOFT_BVH_STACK 32
+            #endif
+            ivec2 stack[P_SOFT_BVH_STACK];
             int stackSize = 1;
             stack[0] = ivec2(0, floatBitsToInt(0.0));
             closestDistance = maxDistance;
@@ -3452,7 +3585,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             #ifdef P_HW_RT
             // 从根包围盒外进入时，候选三角形可以安全筛出受射线影响的体素；
             // 起点在内部/贴边、介质连续性查询仍走软件 BVH 的精确边界逻辑。
-            if (!preferContaining && nodeCount > 0 && voxelCount > 0)
+            // 加速结构落后于当前工作集时（编辑期间）主射线也走软件 BVH，
+            // 这样新画上去的方块立即用当前 cells[] 参与求交
+            if (!preferContaining && values[P_HW_RT_CURRENT] > 0.5 && nodeCount > 0 && voxelCount > 0)
             {
                 vec3 rootMin = regionOrigin + vec3(nodes[0].minimum.xyz);
                 vec3 rootMax = regionOrigin + vec3(nodes[0].maximum.xyz);
@@ -3538,7 +3673,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
                 else
                 {
-                    if (stackSize + 2 <= 64)
+                    if (stackSize + 2 <= P_SOFT_BVH_STACK)
                     {
                         float leftDistance;
                         float rightDistance;
@@ -3586,24 +3721,98 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 hitColor, hitFlags, hitSlot, hitCell, hitExtent, ignoreTranslucent, false);
         }
 
+        // 阴影遮挡查询只要“有没有更近的不透明命中”。
+        // 和 TraceClosestWithin(anyHit=true) 的判定完全一致，但去掉 7 个 out 参数，
+        // 避免每条阴影射线都把法线、颜色、槽位、格子等结果压进寄存器/私有内存
+        bool TraceAnyHitOccluder(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
+        {
+            #ifndef P_SOFT_BVH_STACK
+            #define P_SOFT_BVH_STACK 32
+            #endif
+            ivec2 stack[P_SOFT_BVH_STACK];
+            int stackSize = 1;
+            stack[0] = ivec2(0, floatBitsToInt(0.0));
+            float closestDistance = maxDistance;
+            int voxelCount = int(values[94]);
+            int nodeCount = int(values[95]);
+            vec3 regionOrigin = vec3(values[16], values[17], values[18]);
+            while (stackSize > 0)
+            {
+                ivec2 pendingNode = stack[--stackSize];
+                int nodeIndex = pendingNode.x;
+                if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+                if (intBitsToFloat(pendingNode.y) > closestDistance) continue;
+                BvhNode node = nodes[nodeIndex];
+                if (node.links.x < 0)
+                {
+                    int endIndex = min(node.links.z + node.links.w, voxelCount);
+                    for (int index = node.links.z; index < endIndex; index++)
+                    {
+                        VoxelCell cell = cells[index];
+                        if (cell.color.a <= 0.0) continue;
+                        // 阴影只被不透明体素遮挡，半透明格与完全透明格都放行
+                        if ((cell.metadata.x >> 16 & 1u) != 0u) continue;
+                        ivec3 packedExtent = ivec3(
+                            max(cell.position.w & 0xFF, 1),
+                            max((cell.position.w >> 8) & 0xFF, 1),
+                            max((cell.position.w >> 16) & 0xFF, 1));
+                        vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
+                        vec3 voxelMax = voxelMin + vec3(packedExtent);
+                        float distance;
+                        vec3 normal;
+                        if (IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax,
+                            distance, normal, false) && distance < closestDistance)
+                            return true;
+                    }
+                }
+                else
+                {
+                    if (stackSize + 2 <= P_SOFT_BVH_STACK)
+                    {
+                        float leftDistance;
+                        float rightDistance;
+                        bool leftHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.x], leftDistance) && leftDistance <= closestDistance;
+                        bool rightHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.y], rightDistance) && rightDistance <= closestDistance;
+                        // 先访问近节点，让最近命中尽早排除远节点
+                        if (leftHit && rightHit)
+                        {
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.y, floatBitsToInt(rightDistance))
+                                : ivec2(node.links.x, floatBitsToInt(leftDistance));
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.x, floatBitsToInt(leftDistance))
+                                : ivec2(node.links.y, floatBitsToInt(rightDistance));
+                        }
+                        else if (leftHit) stack[stackSize++] = ivec2(node.links.x, floatBitsToInt(leftDistance));
+                        else if (rightHit) stack[stackSize++] = ivec2(node.links.y, floatBitsToInt(rightDistance));
+                    }
+                }
+            }
+            return false;
+        }
+
         bool TraceShadow(vec3 rayOrigin, vec3 rayDirection, float maxDistance)
         {
+            // 场景窗口（编辑视口）按设计不渲染任何阴影：太阳、局部灯与天空遮挡全部视为无遮挡，
+            // 只保留受光方向带来的明暗，方便看清模型结构
+            if (values[P_SCENE_PREVIEW] > 0.5) return false;
             #ifdef P_HW_RT
             // 阴影只需要“是否有不透明遮挡”。硬件光追的加速结构用工作集相对坐标，
             // 因此射线起点先减去区域原点；命中图元号除以 12 得到体素索引，
-            // 再按与 Compute 路径相同的规则跳过半透明格
+            // 再按与 Compute 路径相同的规则跳过半透明格。
+            // 索引与半透明标记都取加速结构同序快照：编辑期加速结构滞后时也不会错位
             vec3 relativeOrigin = rayOrigin - vec3(values[16], values[17], values[18]);
+            int hardwareCount = int(values[P_HW_RT_CELL_COUNT]);
             rayQueryEXT query;
             rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsNoOpaqueEXT, 0xFF,
                 relativeOrigin, 0.0, rayDirection, maxDistance);
-            int voxelCount = int(values[94]);
             while (rayQueryProceedEXT(query))
             {
                 if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT)
                     continue;
                 int cellIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, false) / 12;
-                if (cellIndex < 0 || cellIndex >= voxelCount) continue;
-                VoxelCell candidate = cells[cellIndex];
+                if (cellIndex < 0 || cellIndex >= hardwareCount) continue;
+                VoxelCell candidate = hardwareCells[cellIndex];
                 if ((candidate.metadata.x >> 16 & 1u) != 0u || candidate.color.a <= 0.0) continue;
                 ivec3 extent = ivec3(max(candidate.position.w & 255, 1),
                     max((candidate.position.w >> 8) & 255, 1), max((candidate.position.w >> 16) & 255, 1));
@@ -3614,15 +3823,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
             return false;
             #else
-            float distance;
-            vec3 normal;
-            vec4 color;
-            uint flags;
-            uint slot;
-            ivec3 cell;
-            ivec3 cellExtent;
-            return TraceClosestWithin(rayOrigin, rayDirection, distance, normal, color, flags,
-                slot, cell, cellExtent, true, maxDistance, true);
+            // 遮挡专用遍历：语义与下面的 anyHit 查询一致，但不携带 7 个 out 参数
+            return TraceAnyHitOccluder(rayOrigin, rayDirection, maxDistance);
             #endif
         }
 
@@ -3691,6 +3893,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 质量档位 1~8 在参数层展开成 2~16 条射线的预算。
         float TraceSoftShadow(vec3 rayOrigin, vec3 surfaceNormal, vec3 rayDirection, float maxDistance, inout uint state)
         {
+            // 场景窗口不渲染任何阴影，直接返回完全受光，省掉整段采样循环
+            if (values[P_SCENE_PREVIEW] > 0.5) return 1.0;
             float softness = max(values[31], 0.0);
             if (softness <= 0.0001)
                 return TraceShadow(rayOrigin, rayDirection, maxDistance) ? 0.0 : 1.0;
@@ -4411,6 +4615,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             vec3 baseColor = groundHit
                 ? max(groundLinearColor, vec3(0.0))
                 : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
+            // 场景窗口（编辑视口）完全没有任何光照明暗：不计算太阳方向光、局部灯、
+            // 环境遮蔽、高光与环境反射，直接输出体素本色，避免任何像阴影的暗部干扰读图
+            if (values[P_SCENE_PREVIEW] > 0.5) return baseColor;
             vec3 skyAmbient = Sky(hitNormal);
             // 给背光面保留稳定的环境填充，避免实时模式像只开了一盏聚光灯；
             // 这不是把阴影抹平，而是把最低亮度托到可读范围，接近 Eevee 的世界光照。

@@ -1787,7 +1787,9 @@ internal sealed partial class ImGuiEditorWindow
                 showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
             var submitsBefore = pipeline.SubmitCount;
             var fenceBefore = pipeline.FenceWaitTotalMs;
-            pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+            // 视口性能日志需要 GPU 时间戳来区分 CPU 等待与 GPU 计算；
+            // 采样是异步回读，不阻塞 GPU，也只在真正提交 Compute 的帧生效
+            pipeline.GpuProfilingEnabled = pipeline.GpuTimingSupported;
             // 设备创建前生效，运行中切换需要重建渲染设备
             VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
             pipeline.GpuTimingToken = _analysisLive.Serial;
@@ -1915,7 +1917,7 @@ internal sealed partial class ImGuiEditorWindow
                     pathMode: false, outlines: false);
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
-                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.GpuProfilingEnabled = pipeline.GpuTimingSupported;
             // 设备创建前生效，运行中切换需要重建渲染设备
             VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
@@ -1969,7 +1971,7 @@ internal sealed partial class ImGuiEditorWindow
                             pipeline.AccumulatedSamples < renderSettings.PathMaxAccumulatedSamples;
             if (wantTrace)
             {
-                pipeline.GpuProfilingEnabled = PerformanceProbeActive;
+                pipeline.GpuProfilingEnabled = pipeline.GpuTimingSupported;
             // 设备创建前生效，运行中切换需要重建渲染设备
             VulkanWindowContext.ForceComputePath = _renderSettings.ForceComputePath;
                 pipeline.GpuTimingToken = _analysisLive.Serial;
