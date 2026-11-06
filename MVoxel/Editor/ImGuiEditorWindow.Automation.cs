@@ -78,9 +78,11 @@ internal sealed partial class ImGuiEditorWindow
         new("camera.setTransform", "相机", "设置相机位姿", "写入相机对象的位置与注视点",
             [.. TargetIdOrName, Param("position", "number[3]", true, "相机位置 x/y/z"),
              Param("target", "number[3]", true, "注视点 x/y/z")]),
-        new("camera.setParams", "相机", "设置相机参数", "写入视场角与裁剪面",
+        new("camera.setParams", "相机", "设置相机参数", "写入视场角、裁剪面与投影方式",
             [.. TargetIdOrName, Param("fieldOfView", "number", false, "视场角（度）"),
-             Param("nearClip", "number", false, "近裁剪面"), Param("farClip", "number", false, "远裁剪面")]),
+             Param("nearClip", "number", false, "近裁剪面"), Param("farClip", "number", false, "远裁剪面"),
+             Param("projection", "string", false, "投影方式：perspective 或 orthographic"),
+             Param("orthoHalfHeight", "number", false, "正交投影视口半高（世界格，横向按宽高比自动推导）")]),
         new("camera.setActive", "相机", "设为渲染相机", "让渲染窗口使用指定相机",
             [.. TargetIdOrName]),
         new("view.setCamera", "相机", "设置视口轨道相机", "直接把视口/渲染视图的观察点与机位放到指定位姿，供脚本取图与画面对比",
@@ -175,6 +177,8 @@ internal sealed partial class ImGuiEditorWindow
              Param("softFillColor", "color", false, "环境柔光颜色，[r,g,b] 或 \"r,g,b\"，取值 0 到 1"),
              Param("softFillSize", "number", false, "柔光板半边长相对场景包围盒的倍率"),
              Param("softFillDistance", "number", false, "柔光板到相机的距离相对包围盒的倍率"),
+             Param("cameraProjection", "string", false, "投影方式：perspective 或 orthographic，正交时视场角不参与主射线"),
+             Param("orthoHalfHeight", "number", false, "正交投影视口半高（世界格，横向按宽高比自动推导）"),
              Param("denoise", "boolean", false, "是否降噪")]),
         new("render.resetAccumulation", "渲染", "重置累积", "丢弃已累积样本，重新开始采样", []),
         new("model.scale", "模型", "设置模型缩放", "按三轴倍率重采样体素模型",
@@ -1028,6 +1032,14 @@ internal sealed partial class ImGuiEditorWindow
         return new { id = target.Id.ToString(), name = target.Name };
     });
 
+    /// <summary>解析投影方式文本，兼容 MagicaVoxel 的 ortho/pers 缩写</summary>
+    private static bool IsOrthographic(string text) =>
+        string.Equals(text, "orthographic", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(text, "orthogonal", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(text, "ortho", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(text, "orth", StringComparison.OrdinalIgnoreCase) ||
+        text == "1";
+
     private object SetCameraParameters(JsonElement arguments) => RunOnUi(() =>
     {
         var target = RequireObject(arguments);
@@ -1037,13 +1049,25 @@ internal sealed partial class ImGuiEditorWindow
         var fieldOfView = ReadNumber(arguments, "fieldOfView");
         var nearClip = ReadNumber(arguments, "nearClip");
         var farClip = ReadNumber(arguments, "farClip");
-        if (fieldOfView is null && nearClip is null && farClip is null)
-            throw new ArgumentException("fieldOfView、nearClip、farClip 至少给一个");
-        SceneComponentTypes.WriteCamera(camera, new CameraComponentData(
-            (float)(fieldOfView ?? data.FieldOfViewDegrees),
-            (float)(nearClip ?? data.NearClip),
-            (float)(farClip ?? data.FarClip), data.CullingMask));
-        MarkSceneDocumentDirty();
+        var projectionText = ReadString(arguments, "projection");
+        var orthoHalfHeight = ReadNumber(arguments, "orthoHalfHeight");
+        if (fieldOfView is null && nearClip is null && farClip is null &&
+            projectionText is null && orthoHalfHeight is null)
+            throw new ArgumentException("fieldOfView、nearClip、farClip、projection、orthoHalfHeight 至少给一个");
+        if (fieldOfView is not null || nearClip is not null || farClip is not null)
+        {
+            SceneComponentTypes.WriteCamera(camera, new CameraComponentData(
+                (float)(fieldOfView ?? data.FieldOfViewDegrees),
+                (float)(nearClip ?? data.NearClip),
+                (float)(farClip ?? data.FarClip), data.CullingMask));
+            MarkSceneDocumentDirty();
+        }
+        // 投影方式属于渲染窗口设置，与视场角同一层级；相机命令直接写入以便脚本一次调用完成
+        if (projectionText is not null)
+            _renderSettings.CameraProjection = IsOrthographic(projectionText)
+                ? CameraProjectionMode.Orthographic : CameraProjectionMode.Perspective;
+        if (orthoHalfHeight is not null)
+            _renderSettings.CameraOrthoHalfHeight = (float)Math.Clamp((double)orthoHalfHeight.Value, 0.01, 10_000_000);
         _pipeline?.ResetAccumulation();
         return new
         {
@@ -1051,6 +1075,8 @@ internal sealed partial class ImGuiEditorWindow
             fieldOfView = (float)(fieldOfView ?? data.FieldOfViewDegrees),
             nearClip = (float)(nearClip ?? data.NearClip),
             farClip = (float)(farClip ?? data.FarClip),
+            projection = _renderSettings.CameraProjection.ToString().ToLowerInvariant(),
+            orthoHalfHeight = _renderSettings.CameraOrthoHalfHeight,
         };
     });
 
@@ -1340,6 +1366,8 @@ internal sealed partial class ImGuiEditorWindow
             sunAzimuth = settings.SunAzimuthDegrees,
             sunElevation = settings.SunElevationDegrees,
             sunIntensity = settings.SunIntensity,
+            cameraProjection = settings.CameraProjection.ToString().ToLowerInvariant(),
+            orthoHalfHeight = settings.CameraOrthoHalfHeight,
             skyAmbient = settings.SkyAmbient,
             skyTop = settings.SkyTop,
             skyHorizon = settings.SkyHorizon,
@@ -1415,6 +1443,11 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadNumber(arguments, "sunAzimuth") is { } azimuth) settings.SunAzimuthDegrees = (float)azimuth;
         if (ReadNumber(arguments, "sunElevation") is { } elevation) settings.SunElevationDegrees = (float)elevation;
         if (ReadNumber(arguments, "sunIntensity") is { } intensity) settings.SunIntensity = (float)intensity;
+        if (ReadString(arguments, "cameraProjection") is { } projection)
+            settings.CameraProjection = IsOrthographic(projection)
+                ? CameraProjectionMode.Orthographic : CameraProjectionMode.Perspective;
+        if (ReadNumber(arguments, "orthoHalfHeight") is { } orthoHalfHeight)
+            settings.CameraOrthoHalfHeight = (float)Math.Clamp((double)orthoHalfHeight, 0.01, 10_000_000);
         if (ReadNumber(arguments, "skyAmbient") is { } ambient) settings.SkyAmbient = (float)ambient;
         if (ReadColor(arguments, "skyTop") is { } skyTop) settings.SkyTop = skyTop;
         if (ReadColor(arguments, "skyHorizon") is { } skyHorizon) settings.SkyHorizon = skyHorizon;

@@ -486,7 +486,15 @@ public sealed class VoxelRenderParameters
         parameters[DepthOfField] = settings.DepthOfField ? 1F : 0F;
         parameters[MisEnabled] = settings.SunDirectLighting ? 1F : 0F;
         parameters[ModePath] = frame.PathMode ? 1F : 0F;
-        parameters[FovDegrees] = settings.CameraFovDegrees;
+        // 正交投射盒（Unity 语义）：相机位置与朝向完全不变，投射体积是沿视线延伸的
+        // 长方体。视场角槽位写负值，绝对值为视口半高（世界格）；GLSL 主射线、
+        // 太阳阴影重建、天气粒子场、网格辅助通道都按同一个 worldPerPixel 平移
+        // 射线起点并保持方向平行。起点仍位于相机平面，因此雾、雨、雪沿射线
+        // 累积的世界距离与透视一致，不会被放大，所有天气效果照常工作。
+        parameters[FovDegrees] = settings.CameraProjection == CameraProjectionMode.Orthographic
+            ? -Math.Clamp(float.IsFinite(settings.CameraOrthoHalfHeight) ? settings.CameraOrthoHalfHeight : 10F,
+                0.001F, 10_000_000F)
+            : settings.CameraFovDegrees;
         parameters[GridStep] = frame.GridStep;
         parameters[GridShown] = frame.ShowGrid ? 1F : 0F;
         parameters[DenoiseEnabled] = settings.PathDenoising ? 1F : 0F;

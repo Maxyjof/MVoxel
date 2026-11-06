@@ -799,7 +799,19 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("camera", "相机", () =>
         {
                 DrawSettingsSectionHeader("渲染相机", "仅影响渲染画面，不改变场景相机");
-                SliderFloat("视场角 FOV", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");
+                int projection = settings.CameraProjection == CameraProjectionMode.Orthographic ? 1 : 0;
+                if (ImGui.Combo("投影方式", ref projection, "透视 Perspective\0正交 Orthographic\0", 2))
+                {
+                    settings.CameraProjection = projection == 1
+                        ? CameraProjectionMode.Orthographic : CameraProjectionMode.Perspective;
+                    _pipeline?.ResetAccumulation();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("正交投影的主射线彼此平行、无近大远小，适合等轴测展示；\n正交时用半高控制取景范围，视场角不再参与主射线计算。");
+                if (projection == 1)
+                    SliderFloat("正交半高", ref settings.CameraOrthoHalfHeight, 0.5F, 4096F, "%.1f 格");
+                else
+                    SliderFloat("视场角 FOV", ref settings.CameraFovDegrees, 20F, 120F, "%.0f°");
                 ImGui.Checkbox("景深", ref settings.DepthOfField);
                 SliderFloat("光圈半径", ref settings.ApertureRadius, 0F, 0.5F, "%.3f");
                 SliderFloat("对焦距离", ref settings.FocusDistance, 1F, 256F, "%.1f 格");

@@ -4759,8 +4759,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                              float dySafe = sign(rayDirection.y) * max(abs(rayDirection.y), 0.01);
                              vec3 right = vec3(values[8],values[9],values[10]);
                              vec3 up = vec3(values[12],values[13],values[14]);
-                             vec2 dx = (right - rayDirection * right.y / dySafe).xz * hitDistance / focal;
-                             vec2 dy = (up - rayDirection * up.y / dySafe).xz * hitDistance / focal;
+                             // 正交下像素足迹恒定，与命中距离无关。
+                             float pixelFootprint = values[87] < 0.0
+                                 ? -values[87] * 2.0 / max(values[15],1.0) : hitDistance / focal;
+                             vec2 dx = (right - rayDirection * right.y / dySafe).xz * pixelFootprint;
+                             vec2 dy = (up - rayDirection * up.y / dySafe).xz * pixelFootprint;
                              vec2 gradient = d1 * cos(dot(warped, d1) * 6.2831853 - t + phase) * 0.36 * WaterFootprintFilter(d1,k,dx,dy)
                                  + d2 * cos(dot(warped, d2) * 4.5867253 - t * 0.81 - phase * 0.7 + 1.7) * 0.31 * WaterFootprintFilter(d2,k*0.73,dx,dy)
                                  + d3 * cos(dot(warped, d3) * 8.230087 - t * 1.13 + phase * 0.4 + 3.1) * 0.21 * WaterFootprintFilter(d3,k*1.31,dx,dy)
@@ -5688,11 +5691,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 }
                 vec2 screenPosition = ((vec2(pixel) + 0.5 + jitter) / vec2(width, height)) * 2.0 - 1.0;
                 vec3 sampleOrigin = origin;
-                if (pathMode && values[87] > 0.0)
-                    focalPixels = float(height) / (2.0 * tan(radians(clamp(values[87], 20.0, 120.0)) * 0.5));
-                vec3 direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
-                    + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
-                if (pathMode && values[84] > 0.5 && values[82] > 0.0)
+                bool orthographic = values[87] < 0.0;
+                vec3 direction;
+                if (orthographic)
+                {
+                    // 正交投射盒：相机位置不动，射线起点沿相机平面按屏幕坐标平移，
+                    // 所有主射线彼此平行（forward）。每世界格对应的像素数由视口半高给出。
+                    float halfHeight = max(-values[87], 0.001);
+                    float worldPerPixel = 2.0 * halfHeight / max(float(height), 1.0);
+                    vec2 screenPixels = (vec2(pixel) + 0.5 + jitter) - vec2(width, height) * 0.5;
+                    sampleOrigin = origin + right * (screenPixels.x * worldPerPixel)
+                        - up * (screenPixels.y * worldPerPixel);
+                    direction = normalize(forward);
+                }
+                else
+                {
+                    if (pathMode && values[87] > 0.0)
+                        focalPixels = float(height) / (2.0 * tan(radians(clamp(values[87], 20.0, 120.0)) * 0.5));
+                    direction = normalize(forward + right * screenPosition.x * float(width) * 0.5 / focalPixels
+                        + up * -screenPosition.y * float(height) * 0.5 / focalPixels);
+                }
+                if (!orthographic && pathMode && values[84] > 0.5 && values[82] > 0.0)
                 {
                     float radius = sqrt(Random(state)) * values[82];
                     float angle = 6.28318530718 * Random(state);
@@ -5773,10 +5792,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             {
                 // 无限解析平面；像素足迹决定局部层级，不依赖有限补丁或整屏线数预算。
                 vec2 offset = vec2(pixel) + 0.5 - vec2(width, height) * 0.5;
-                vec3 ray = forward + right * offset.x / focalPixels - up * offset.y / focalPixels;
-                if (abs(ray.y) > 1e-7 && -origin.y / ray.y > 0.0)
+                vec3 gridOrigin = origin;
+                vec3 ray;
+                if (values[87] < 0.0)
                 {
-                    float t = -origin.y / ray.y;
+                    float wpp = -values[87] * 2.0 / max(float(height), 1.0);
+                    gridOrigin += right * (offset.x * wpp) - up * (offset.y * wpp);
+                    ray = normalize(forward);
+                }
+                else ray = forward + right * offset.x / focalPixels - up * offset.y / focalPixels;
+                if (abs(ray.y) > 1e-7 && -gridOrigin.y / ray.y > 0.0)
+                {
+                    float t = -gridOrigin.y / ray.y;
                     // 网格是 y=0 上的真实辅助平面：只有它比该像素的体素命中更近时才覆盖模型。
                     // 用射线的空间距离与 TracePath 的归一化射线距离比较，避免相机角度变化
                     // 时参数化射线造成的深度不一致；模型在网格前方时则保持模型颜色。
@@ -5787,9 +5814,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         StoreSceneOutput(pixel, vec4(PostProcess(color, pixel, width, height, primarySurfaceDistance), outputAlpha));
                         return;
                     }
-                    vec2 p = (origin + t * ray).xz;
-                    vec3 dx = right / focalPixels;
-                    vec3 dy = -up / focalPixels;
+                    vec2 p = (gridOrigin + t * ray).xz;
+                    float gridWpp = values[87] < 0.0
+                        ? -values[87] * 2.0 / max(float(height), 1.0) : 1.0 / focalPixels;
+                    vec3 dx = right * gridWpp;
+                    vec3 dy = -up * gridWpp;
                     vec2 dpdx = (t * (dx - ray * dx.y / ray.y)).xz;
                     vec2 dpdy = (t * (dy - ray * dy.y / ray.y)).xz;
                     vec2 footprint = max(abs(dpdx) + abs(dpdy), vec2(1e-6));
@@ -5859,7 +5888,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     {
                         float separation = length(origin + ray * alongRay - particlePoint);
                         float radius = snow ? mix(0.045, 0.09, randomCenter.x) : mix(0.015, 0.03, randomCenter.x);
-                        float footprint = max(alongRay / max(focal, 1.0), 0.001);
+                        // 正交下每个像素的世界足迹恒定，不随射线行进距离放大。
+                        float footprint = values[87] < 0.0
+                            ? max(-values[87] * 2.0 / max(values[15], 1.0), 0.001)
+                            : max(alongRay / max(focal, 1.0), 0.001);
                         float alpha = (1.0 - smoothstep(radius, radius + footprint, separation)) *
                             min(1.0, radius * 2.0 / footprint);
                         // 镜头附近的粒子渐隐，避免单滴雨在近裁剪面放大成遮住视野的巨条。
@@ -5922,7 +5954,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 if (values[P_MODE_PATH] > 0.5 && values[87] > 0.0)
                     focal = float(height) / (2.0 * tan(radians(clamp(values[87], 20.0, 120.0)) * 0.5));
                 vec2 screen = vec2(pixel) + 0.5 - vec2(width, height) * 0.5;
-                vec3 ray = normalize(forward + right * screen.x / focal - up * screen.y / focal);
+                vec3 ray;
+                if (values[87] < 0.0)
+                {
+                    // 正交：雨雪粒子场从该像素对应的相机平面位置出发，方向平行；
+                    // 世界距离与透视一致，粒子密度、雾浓度都不会被放大。
+                    float wpp = -values[87] * 2.0 / max(float(height), 1.0);
+                    camera += right * (screen.x * wpp) - up * (screen.y * wpp);
+                    ray = normalize(forward);
+                }
+                else ray = normalize(forward + right * screen.x / focal - up * screen.y / focal);
                 float maxDistance = min(values[P_FAR_CLIP], values[P_WEATHER_VIEW_DISTANCE]);
                 if (surfaceDistance < 0.0)
                 {

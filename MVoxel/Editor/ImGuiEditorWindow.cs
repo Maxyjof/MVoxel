@@ -5135,6 +5135,24 @@ DockId=0x6A3C3007,0
             var farClip = data.FarClip;
             var changed = false;
             var physicalCamera = data.PhysicalCamera;
+            BeginInspectorField("投影方式", "透视产生近大远小；正交主射线彼此平行、无透视收敛，适合等轴测展示。该设置作用于渲染窗口。");
+            var projectionIndex = _renderSettings.CameraProjection == CameraProjectionMode.Orthographic ? 1 : 0;
+            if (ImGui.Combo("##InspectorCameraProjection", ref projectionIndex, "透视 Perspective\0正交 Orthographic\0", 2))
+            {
+                _renderSettings.CameraProjection = projectionIndex == 1
+                    ? CameraProjectionMode.Orthographic : CameraProjectionMode.Perspective;
+                _pipeline?.ResetAccumulation();
+            }
+            if (projectionIndex == 1)
+            {
+                var orthoHalfHeight = _renderSettings.CameraOrthoHalfHeight;
+                if (InspectorSliderFloatField("正交半高", "视口纵向覆盖的世界格半径；数值越大模型越小，横向范围按宽高比自动推导。",
+                        ref orthoHalfHeight, 0.5F, 4096F, "%.1f 格"))
+                {
+                    _renderSettings.CameraOrthoHalfHeight = orthoHalfHeight;
+                    _pipeline?.ResetAccumulation();
+                }
+            }
             if (!physicalCamera)
             {
                 var changedFov = InspectorDragFloatField("视场角", "非物理相机使用的垂直视野角度。", ref fieldOfView, 0.1F, 20F, 120F, "%.1f°");

@@ -5,6 +5,18 @@ using System.Text.Json.Serialization;
 namespace MVoxel.Rendering;
 
 /// <summary>
+/// 渲染相机的投影方式
+/// </summary>
+public enum CameraProjectionMode
+{
+    /// <summary>透视投影，按视场角产生近大远小的收敛</summary>
+    Perspective = 0,
+
+    /// <summary>正交投影，所有主射线平行、无透视收敛，适合等轴测展示</summary>
+    Orthographic = 1,
+}
+
+/// <summary>
 /// 色调曲线，作用于线性色到显示色的最后一步
 /// </summary>
 public enum ToneCurve
@@ -587,6 +599,16 @@ public sealed class RenderSettings
     public float CameraFovDegrees = 50F;
 
     /// <summary>
+    /// 渲染相机投影方式；正交时 <see cref="CameraFovDegrees"/> 不参与主射线计算
+    /// </summary>
+    public CameraProjectionMode CameraProjection = CameraProjectionMode.Perspective;
+
+    /// <summary>
+    /// 正交投影的视口半高（世界格）。画面横向范围按宽高比自动推导
+    /// </summary>
+    public float CameraOrthoHalfHeight = 10F;
+
+    /// <summary>
     /// 创建渲染设置控件交互期间使用的 GPU 参数副本。相机导航不使用此副本；
     /// 编辑器控件拖动时每次提交一个路径样本，保留所选光照与后处理。
     /// </summary>
@@ -787,6 +809,8 @@ public sealed class RenderSettings
         ApertureRadius = Math.Clamp(ApertureRadius, 0F, 1F);
         FocusDistance = Math.Clamp(FocusDistance, 1F, 512F);
         CameraFovDegrees = Math.Clamp(CameraFovDegrees, 20F, 120F);
+        CameraProjection = Enum.IsDefined(CameraProjection) ? CameraProjection : CameraProjectionMode.Perspective;
+        CameraOrthoHalfHeight = Math.Clamp(CameraOrthoHalfHeight, 0.01F, 10_000_000F);
         Backend = Enum.IsDefined(Backend) ? Backend : RenderBackend.Gpu;
         (SceneLod ??= new VoxelLodSettings()).ClampAll();
         (RenderLod ??= new VoxelLodSettings()).ClampAll();
@@ -928,6 +952,8 @@ public sealed class RenderSettings
         ApertureRadius = Safe(ApertureRadius, 0.08F);
         FocusDistance = Safe(FocusDistance, 18F);
         CameraFovDegrees = Safe(CameraFovDegrees, 50F);
+        CameraOrthoHalfHeight = Safe(CameraOrthoHalfHeight, 10F);
+        if (!Enum.IsDefined(CameraProjection)) CameraProjection = CameraProjectionMode.Perspective;
         GroundColor = SafeChannel(GroundColor, Vector3.One);
         SceneBackgroundColor = SafeChannel(SceneBackgroundColor, new Vector3(0.025F, 0.035F, 0.05F));
         SunColor = SafeChannel(SunColor, Vector3.One);

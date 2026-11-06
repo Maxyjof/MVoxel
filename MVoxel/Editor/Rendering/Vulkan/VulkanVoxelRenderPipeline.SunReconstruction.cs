@@ -9,6 +9,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
         vec3 SunPosition(int i) { return vec3(sunDepth[i],sunDepth[i+1],sunDepth[i+2]); }
         vec3 SunNormal(int i) { return vec3(sunDepth[i+4],sunDepth[i+5],sunDepth[i+6]); }
         float SunFocal() { return values[86]>0.5 && values[87]>0.0 ? values[15]/(2.0*tan(radians(clamp(values[87],20.0,120.0))*0.5)) : max(values[3],1.0); }
+        // 正交投射盒：相机位置不动，射线沿相机平面按每像素世界尺寸平移，方向平行。
+        float SunWorldPerPixel() { return values[87]<0.0 ? -values[87]*2.0/max(values[15],1.0) : 0.0; }
         void BuildSunReconstruction(ivec2 pixel)
         {
             ivec2 size=ivec2(values[11],values[15]);
@@ -16,8 +18,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             int i=SunRecord(pixel);
             vec3 camera=vec3(values[0],values[1],values[2]);
             vec3 forward=vec3(values[4],values[5],values[6]);
+            vec3 right=vec3(values[8],values[9],values[10]);
+            vec3 up=vec3(values[12],values[13],values[14]);
             vec2 offset=vec2(pixel)+0.5-vec2(size)*0.5;
-            vec3 dir=normalize(forward+(vec3(values[8],values[9],values[10])*offset.x-vec3(values[12],values[13],values[14])*offset.y)/SunFocal());
+            vec3 dir;
+            if(values[87]<0.0)
+            {
+                float wpp=SunWorldPerPixel();
+                camera+=right*(offset.x*wpp)-up*(offset.y*wpp);
+                dir=normalize(forward);
+            }
+            else dir=normalize(forward+(right*offset.x-up*offset.y)/SunFocal());
             float distance; vec3 normal; vec4 color; uint flags,slot; ivec3 cell,extent;
             bool hit=TraceClosest(camera,dir,distance,normal,color,flags,slot,cell,extent,false);
             float ground=(values[35]>0.5 || (values[86]<0.5 && values[90]>0.5 && values[115]<0.5)) && abs(dir.y)>0.00001
@@ -65,7 +76,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             int i=SunRecord(pixel);
             if(sunDepth[i+3]<=0.0) return;
             vec3 point=SunPosition(i),normal=SunNormal(i);
-            float footprint=max(sunDepth[i+3]/SunFocal(),0.0001);
+            float footprint=values[87]<0.0 ? max(SunWorldPerPixel(),0.0001)
+                : max(sunDepth[i+3]/SunFocal(),0.0001);
             float blocker=sunDepth[i+8];
             for(int y=-2;y<=2;y++) for(int x=-2;x<=2;x++)
             {
@@ -96,13 +108,26 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline
             float z=dot(delta,vec3(values[4],values[5],values[6]));
             if(z<=0.0) return -1.0;
             vec2 size=vec2(values[11],values[15]);
-            vec2 p=vec2(dot(delta,vec3(values[8],values[9],values[10])),-dot(delta,vec3(values[12],values[13],values[14])))*SunFocal()/z+size*0.5;
+            vec2 p;
+            float footprint;
+            if(values[87]<0.0)
+            {
+                // 正交反投影不带 1/z 透视除法；一个像素恒对应 wpp 个世界单位。
+                float wpp=SunWorldPerPixel();
+                p=vec2(dot(delta,vec3(values[8],values[9],values[10])),-dot(delta,vec3(values[12],values[13],values[14])))/wpp+size*0.5;
+                footprint=wpp;
+            }
+            else
+            {
+                p=vec2(dot(delta,vec3(values[8],values[9],values[10])),-dot(delta,vec3(values[12],values[13],values[14])))*SunFocal()/z+size*0.5;
+                footprint=z/SunFocal();
+            }
             if(any(lessThan(p,vec2(0))) || any(greaterThanEqual(p,size))) return -1.0;
             int i=SunRecord(ivec2(p));
-            if(sunDepth[i+3]<=0.0 || length(SunPosition(i)-point)>max(0.01,z/SunFocal()*1.5)) return -1.0;
+            if(sunDepth[i+3]<=0.0 || length(SunPosition(i)-point)>max(0.01,footprint*1.5)) return -1.0;
             vec3 guideNormal = SunNormal(i);
             if(dot(guideNormal,normal)<0.98 ||
-                abs(dot(SunPosition(i)-point,guideNormal))>max(0.005,z/SunFocal()*0.25)) return -1.0;
+                abs(dot(SunPosition(i)-point,guideNormal))>max(0.005,footprint*0.25)) return -1.0;
             return sunDepth[i+9];
         }
         """;
