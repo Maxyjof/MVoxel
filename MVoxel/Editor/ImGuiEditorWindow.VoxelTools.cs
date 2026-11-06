@@ -2189,10 +2189,34 @@ internal sealed partial class ImGuiEditorWindow
             _editorSettings.McMode);
         var rightAction = ViewportInputPolicy.Resolve(EditorMouseButton.Right, shiftPressed, capsLockMode,
             _editorSettings.McMode);
-        var hoverHit = PickVoxel(mouse, origin, size, camera);
-        var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
-        _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
-        _brushPreviewErase = hoverErase;
+
+        // 大小写锁定是游戏式操作：右键（默认破坏、MC 模式放置）必须独立派发。
+        // 绘制/擦除/直线/长方体/填充工具的拖拽状态机会把右键当作“取消拖拽”或直接吞掉，
+        // 导致进入绘制模式后开第一人称右键破坏失效。
+        if (capsLockMode && rightAction is ViewportMouseAction.Place or ViewportMouseAction.Destroy &&
+            ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+        {
+            if (_toolDragAnchor is not null)
+            {
+                _toolDragAnchor = null;
+                _toolDragCurrent = null;
+                _toolDragTargetId = null;
+            }
+            _ = ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
+            return;
+        }
+
+        // 普通绘制模式保持跟随鼠标的悬停落点框，行为与改动前完全一致。
+        // 只有 Caps Lock 第一人称的准星固定在视口中心，才取消每帧刷新：
+        // 那里描边只由放置/破坏后的结果，或左键拖拽范围框产生。
+        if (!capsLockMode)
+        {
+            var hoverHit = PickVoxel(mouse, origin, size, camera);
+            var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
+            _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
+            _brushPreviewErase = hoverErase;
+        }
+
         if (_activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box &&
             HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
         {
@@ -2422,6 +2446,13 @@ internal sealed partial class ImGuiEditorWindow
             _toolDragAnchor = null;
             _toolDragCurrent = null;
             _toolDragTargetId = null;
+            // 仅第一人称：松手提交后留下蓝色放置框或红色擦除框；
+            // 普通模式继续由下一帧的悬停框接管，不改动原有外观
+            if (IsCapsLockEnabled())
+            {
+                _brushPreview = releaseHit;
+                _brushPreviewErase = _toolDragErase;
+            }
         }
 
         return true;
@@ -2849,6 +2880,8 @@ internal sealed partial class ImGuiEditorWindow
         _previewShapeAnchor = null;
         _previewShapeCells = [];
         if (_brushPreview is not { } hit) return;
+        // 两种模式共用同一套单格描边：放置蓝色框落在新格子，破坏红色框落在被删格子。
+        // 第一人称只是不刷新悬停框，破坏后的红色框照常显示。
         var previewCell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
         DrawCellWireframe(drawList, origin, size, camera, previewCell, 0.52F,
             ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,

@@ -39,6 +39,9 @@ internal sealed partial class ImGuiEditorWindow
         _freeFlyPitch = MathF.Asin(Math.Clamp(forward.Y, -1F, 1F));
         _freeFlyLookGraceFrames = 6;
         _freeFlyRawMouse = null;
+        // 切进第一人称时丢掉普通模式留下的悬停落点框，避免准星处挂着旧描边
+        _brushPreview = null;
+        _brushPreviewErase = false;
     }
 
     /// <summary>
