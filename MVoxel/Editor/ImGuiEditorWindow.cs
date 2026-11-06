@@ -6360,10 +6360,11 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 打开项目时的体素预读：优先用恢复区快照，读不出来再退回正式场景
+    /// 打开项目时的体素预读：有恢复快照时把它物化成一个独立场景文件，读不出来再退回正式场景
     /// </summary>
     /// <remarks>
-    /// 恢复快照存在时最终画面用的是恢复场景，先准备正式场景等于白算一整套世界。
+    /// 崩溃前的未保存工作绝不覆盖用户最后主动保存的场景：快照会另存为同目录下的
+    /// 「&lt;场景名&gt;-恢复快照.mvox」，预读结果指向这个新文件，编辑器打开它。
     /// 恢复数据损坏或引用的资产已经不在了，才退回正式场景，回退语义保持不变
     /// </remarks>
     /// <param name="project">目标项目</param>
@@ -6383,10 +6384,19 @@ DockId=0x6A3C3007,0
             {
                 using (StartupTimeline.Begin("打开·预读恢复数据"))
                 {
-                    var scene = Scene.SceneSerializer.LoadFromJson(loaded.SceneJson);
+                    // 先确认快照本身可用，再物化；任一步失败都保留恢复区，改用正式场景。
+                    _ = Scene.SceneSerializer.LoadFromJson(loaded.SceneJson);
+                    var sourceRelative = FindStartupSceneRelativePath(project);
+                    var recoveredRelative = RecoveryStore.MaterializeAsScene(
+                        project.AssetsPath, sourceRelative, loaded.SceneJson);
+                    var recoveredPath = Path.Combine(project.AssetsPath,
+                        recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
+                    // 从物化后的文件读回来，保证内存场景与磁盘上的「恢复快照」完全一致。
+                    var scene = Scene.SceneSerializer.Load(recoveredPath);
                     var recovered = PreloadProjectModels(project, cancellation, report, scene, materials: materials);
+                    RecoveryStore.Clear(project.RootPath);
                     snapshot = loaded;
-                    return recovered;
+                    return recovered with { ScenePath = recoveredRelative };
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
@@ -6441,12 +6451,12 @@ DockId=0x6A3C3007,0
         LoadWorldForProject(project, preloadedModels);
         if (prepared?.Snapshot is { } snapshot && preloadedModels?.Scene is not null)
         {
-            // 恢复场景已经是预读时选好的那一份，这里只补上“未保存工作”的语义
+            // 预读阶段已把快照物化成独立场景文件，这里打开的就是那个新文件：
+            // 内容已经落盘，不是「未保存」状态，也不需要用户确认覆盖原场景。
             _voxelHistory.Clear();
-            MarkSceneDocumentDirty();
             FrameCameraOnWorld();
-            SetStatus($"已从恢复区还原未保存工作（{snapshot.SavedAt.ToLocalTime():MM-dd HH:mm}），确认无误后请正式保存");
-            MVoxelLog.Info($"已套用恢复区快照：{project.Manifest.Name}，保存于 {snapshot.SavedAt:O}");
+            SetStatus($"崩溃前的未保存工作已另存为「{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}」场景，原场景未改动");
+            MVoxelLog.Info($"恢复快照已物化为独立场景：{_activeSceneRelativePath}，快照保存于 {snapshot.SavedAt:O}");
         }
         else if (prepared is null) TryRestoreRecovery(project);
         var synchronizedPrefabs = SyncPendingPrefabRevisions();
@@ -6762,17 +6772,25 @@ DockId=0x6A3C3007,0
         if (!RecoveryStore.TryLoad(project.RootPath, out var snapshot) || snapshot is null) return;
         try
         {
-            var restored = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
-            _sceneDocument = restored;
+            // 与预读路径保持一致：原场景不动，快照物化成旁边的「恢复快照」场景文件后打开它。
+            _ = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
+            var recoveredRelative = RecoveryStore.MaterializeAsScene(
+                project.AssetsPath, _activeSceneRelativePath, snapshot.SceneJson);
+            var recoveredPath = Path.Combine(project.AssetsPath,
+                recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
+            _sceneDocument = Scene.SceneSerializer.Load(recoveredPath);
+            _activeSceneRelativePath = recoveredRelative;
             LoadObjectVoxelWorlds(project);
             _voxelHistory.Clear();
-            MarkSceneDocumentDirty();
-            SetStatus($"已从恢复区还原未保存工作（{snapshot.SavedAt.ToLocalTime():MM-dd HH:mm}），确认无误后请正式保存");
-            MVoxelLog.Info($"已套用恢复区快照：{project.Manifest.Name}，保存于 {snapshot.SavedAt:O}");
+            _sceneDocumentDirty = false;
+            RecoveryStore.Clear(project.RootPath);
+            FrameCameraOnWorld();
+            SetStatus($"崩溃前的未保存工作已另存为「{Path.GetFileNameWithoutExtension(recoveredRelative)}」场景，原场景未改动");
+            MVoxelLog.Info($"恢复快照已物化为独立场景：{recoveredRelative}，快照保存于 {snapshot.SavedAt:O}");
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException or InvalidDataException)
         {
-            MVoxelLog.Error("恢复区快照套用失败，已按正式保存内容打开", exception);
+            MVoxelLog.Error("恢复区快照物化失败，已按正式保存内容打开", exception);
             SetStatus($"恢复区快照不可用，已打开正式保存内容：{exception.Message}");
         }
     }

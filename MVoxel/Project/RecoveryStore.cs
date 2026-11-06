@@ -14,7 +14,9 @@ public sealed record RecoverySnapshot(DateTimeOffset SavedAt, string SceneJson);
 
 /// <summary>
 /// 自动保存恢复区：按项目根路径派生独立目录，存放包含对象体素的场景快照，
-/// 正式保存成功即清空；恢复区永不覆盖用户的正式保存文件
+/// 正式保存成功即清空。崩溃后重新打开时快照不会写回原场景，而是由
+/// MaterializeAsScene 物化为同目录下的「&lt;场景名&gt;-恢复快照.mvox」独立文件，
+/// 用户最后一次主动保存的场景始终保持不变
 /// </summary>
 public static class RecoveryStore
 {
@@ -83,6 +85,44 @@ public static class RecoveryStore
             MVoxelLog.Warn($"恢复区快照读取失败，保留原始数据：{exception.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// 把恢复快照物化为原场景旁边的独立场景文件，绝不覆盖用户最后主动保存的场景。
+    /// 新文件与源场景同目录、以「&lt;源场景名&gt;-恢复快照.mvox」命名，重名时追加序号；
+    /// 场景内部的显示名同步改为「恢复快照」，便于在层级与场景列表里辨认。
+    /// </summary>
+    /// <param name="assetsPath">项目 Assets 绝对路径</param>
+    /// <param name="sceneRelativePath">源场景相对 Assets 的路径，如 Scenes/主场景.mvox</param>
+    /// <param name="sceneJson">快照中的场景文档 JSON</param>
+    /// <returns>新建场景文件相对 Assets 的路径；写入失败时抛出异常由调用方回退</returns>
+    public static string MaterializeAsScene(string assetsPath, string sceneRelativePath, string sceneJson)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(assetsPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sceneRelativePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sceneJson);
+
+        var sourcePath = Path.GetFullPath(Path.Combine(assetsPath,
+            sceneRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var directory = Path.GetDirectoryName(sourcePath)
+            ?? throw new InvalidDataException("源场景路径没有有效目录");
+        var stem = Path.GetFileNameWithoutExtension(sourcePath);
+        if (string.IsNullOrWhiteSpace(stem)) stem = "主场景";
+        // 已经是恢复快照文件时不再叠加后缀，避免每次崩溃产生「恢复快照-恢复快照」
+        const string suffix = "-恢复快照";
+        if (stem.EndsWith(suffix, StringComparison.Ordinal)) stem = stem[..^suffix.Length];
+        if (stem.EndsWith("恢复快照", StringComparison.Ordinal)) stem = "主场景";
+
+        var relative = (string relativePath) => Path.GetRelativePath(assetsPath, relativePath).Replace('\\', '/');
+        var target = Path.Combine(directory, stem + suffix + ".mvox");
+        for (var index = 2; File.Exists(target); index++)
+            target = Path.Combine(directory, $"{stem}{suffix} {index}.mvox");
+
+        var scene = MVoxel.Scene.SceneSerializer.LoadFromJson(sceneJson);
+        scene.Name = "恢复快照";
+        MVoxel.Scene.SceneSerializer.Save(target, scene);
+        MVoxelLog.Info($"已把未保存工作另存为独立场景文件：{relative(target)}（原场景保持不变）");
+        return relative(target);
     }
 
     /// <summary>
