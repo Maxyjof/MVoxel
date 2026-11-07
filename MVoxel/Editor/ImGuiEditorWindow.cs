@@ -5059,8 +5059,6 @@ DockId=0x6A3C3007,0
             {
                 _voxelEditTargetId = editing ? null : selectedObject.Id;
                 _activeTool = editing ? EditorTool.Pick : EditorTool.Draw;
-                // 进入绘制模式前把拖动实例世界准备完：没预热完就同步补完，避免第一次拖动按下时卡顿
-                if (!editing) EnsureDragPreviewPrewarmed();
                 if (!editing) MarkComponentEditingOwner(selectedObject.Id);
                 // 进入绘制模式时收起变换手柄；退出时恢复上一次的变换工具。
                 // 主选中对象在这一进一出之间没有变化，SyncToolModeWithSelection 不会重新推导，
