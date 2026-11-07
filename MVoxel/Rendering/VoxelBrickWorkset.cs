@@ -256,7 +256,7 @@ public sealed class VoxelBrickWorkset
     }
 
     /// <summary>
-    /// 构建单个区块的合并格片（坐标相对锚点，贪心合并，稳定序）
+    /// 构建单个区块格片：渲染路径可贪心合并，场景视口可保留逐格图元
     /// </summary>
     internal static VoxelGpuCell[] BuildChunkCells(VoxelWorld world, SparseVoxelChunk chunk, ChunkCoord64 coordinate,
         VoxelCoord64 anchor, bool greedyMerge = true, bool includeInterior = false)
