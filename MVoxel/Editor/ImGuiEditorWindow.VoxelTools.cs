@@ -2229,6 +2229,9 @@ internal sealed partial class ImGuiEditorWindow
                 : 0L;
             var renderWorld = GetRenderWorld(GetActiveRenderCullingMask());
             var renderModelLod = BuildModelLodView(effective.RenderLod, camera, renderWorld);
+            // 渲染视图优先硬件 ray query；遵循项目设置，本会话一旦因驱动问题回退就保持软件
+            pipeline.HardwareRayTracingPreferred = !_pathViewForceSoftware && !effective.ForceComputePath &&
+                (effective.HardwareRayTracingAuto || effective.UseHardwareRayTracing);
             pipeline.SyncWorld(renderWorld, 0, effective.RenderLod,
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 chunkFilter: renderChunkFilter, visibilitySignature: renderVisibilitySignature,
@@ -2250,10 +2253,14 @@ internal sealed partial class ImGuiEditorWindow
             var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
             // 交互渲染每帧只追加一个路径样本：累加样本上限和最终画质不变，
             // 但单帧 GPU 时间减半，转视角和进度刷新不再被整帧路径追踪拖住
-            previewSettings.PathSamplesPerFrame = 1;
+            // 只在交互时压到每帧 1 个样本；空闲时按项目设置批量推进，避免被帧率卡住
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
+            // 导航期间每帧都会重置累积、采样轮完不成，允许用当前部分样本刷新显示，
+            // 拖动过程中至少能看到实时更新的画面；松手后恢复正常累积到目标质量
+            pipeline.DisplayWhileTracing = cameraNavigating;
             var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;
+            if (cameraNavigating || settingsInteracting) previewSettings.PathSamplesPerFrame = 1;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
@@ -2364,7 +2371,23 @@ internal sealed partial class ImGuiEditorWindow
                 renderWatch.Stop();
                 if (!submitted)
                 {
+                    // 路径追踪提交失败：本会话渲染视图退回软件求交，并在日志里留下原因
+                    if (!_pathViewForceSoftware)
+                    {
+                        _pathViewForceSoftware = true;
+                        pipeline.HardwareRayTracingPreferred = false;
+                        MVoxelLog.Warn($"渲染视图回退软件求交：路径追踪提交失败，" +
+                            $"设备 {_renderSettings.ForceComputePath}，请把本条与前后日志一起反馈");
+                    }
+
                     return false;
+                }
+
+                if (renderWatch.Elapsed.TotalMilliseconds >= 250.0)
+                {
+                    MVoxelLog.Warn($"渲染视图单帧偏慢：{renderWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                        $"硬件求交 {pipeline.UsingHardwareRayTracing}，累计样本 {pipeline.AccumulatedSamples}，" +
+                        $"尺寸 {width}x{height}");
                 }
                 if (_capturePath is not null) _captureRendered = true;
 

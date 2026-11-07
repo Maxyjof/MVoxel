@@ -165,6 +165,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string _accumulationDisplaySignature = string.Empty;
     private string _pipelineStatus = string.Empty;
     private bool _gpuRenderingDisabled;
+    // 渲染视图本会话是否已回退软件求交：一旦提交失败就保持，避免反复触发驱动问题
+    private bool _pathViewForceSoftware;
     private bool _pipelineInitializationAttempted;
     private long _lastRenderGpuSubmitMs;
     private bool _renderViewNeedsInitialRender = true;

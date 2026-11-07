@@ -76,6 +76,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private bool? _lastHardwareBackend;
     private bool _hardwareAccelerationDisabledByUser;
     private bool _hardwareShadowPipelineFailed;
+
+    /// <summary>
+    /// 渲染视图是否优先使用硬件 ray query：设备不支持或驱动异常时由编辑器关闭
+    /// </summary>
+    internal bool HardwareRayTracingPreferred { get; set; } = true;
+
+    /// <summary>
+    /// 采样轮未完成时也刷新显示图：相机导航期间每帧都会重置累积，
+    /// 不刷新会让拖动中的画面停在上一轮结果上
+    /// </summary>
+    internal bool DisplayWhileTracing { get; set; }
+
+    private bool _pathViewHardwareActive;
     private string? _hardwareShadowFailure;
     private int _shadowAccelerationSeenVersion = -1;
     private int _shadowAccelerationBuiltVersion = -1;
@@ -574,8 +587,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭。
         // 区块级可见性过滤时改走可见区块常驻池，因此不再受整份世界格数上限约束
         using var syncPhase = StartupTimeline.Begin("同步工作集");
+        // 能上硬件 ray query 时不再走砖驻留：砖路径的索引无法喂给加速结构
+        var hardwarePreferred = HardwareRayTracingPreferred && _context?.SupportsHardwareRayQuery == true &&
+                                _context.IsDeviceLost == false;
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
-            lodSignature == 0 && !_usingHardwareRayTracing && greedyMerge &&
+            lodSignature == 0 && !_usingHardwareRayTracing && !hardwarePreferred && greedyMerge &&
             (chunkFilter is not null || world.OccupiedVoxelCount <= MaxFullWorksetCells);
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
         SyncCompletedCount++;
@@ -1456,7 +1472,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal bool RenderPathView(RenderSettings settings, in VoxelRenderParameters.FrameState frameState,
         int widthPixels, int heightPixels)
     {
-        _usingHardwareRayTracing = false;
+        // 渲染视图同样优先走硬件 ray query：软件 BVH 在主射线上是数量级的差距。
+        // 设备不支持或已被判定需要回退时退回软件，着色与光照完全一致
+        var hardwareAvailable = _context?.SupportsHardwareRayQuery == true && _context.IsDeviceLost == false;
+        _usingHardwareRayTracing = HardwareRayTracingPreferred && hardwareAvailable;
+        if (_usingHardwareRayTracing != _pathViewHardwareActive)
+        {
+            _pathViewHardwareActive = _usingHardwareRayTracing;
+            MVoxelLog.Info(_usingHardwareRayTracing
+                ? $"渲染视图求交使用硬件 ray query；设备 {_context?.DeviceName ?? "未知设备"}"
+                : $"渲染视图求交使用软件 BVH；设备 {_context?.DeviceName ?? "未知设备"}，" +
+                  $"原因 {(HardwareRayTracingPreferred ? "设备不支持或已丢失" : "本会话已回退软件")}");
+        }
+
         if (_context?.IsDeviceLost == true) return false;
         // 硬件加速只替换 TraceShadow 的求交后端，完整着色、光源、自发光、
         // 相机效果与三种太阳方案都走同一份 Compute 着色器，因此这里不再有
@@ -2586,8 +2614,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 路径轮完成但没有启用的收尾通道时补一次纯显示刷新：采样阶段已经不写显示图，
-        // 这一轮新增的样本必须经过色调映射才能看到，否则画面会停在上一条完整轮的结果上
-        if (pathMode && roundComplete && !finishPassDispatched)
+        // 这一轮新增的样本必须经过色调映射才能看到，否则画面会停在上一条完整轮的结果上。
+        // 相机导航时每帧都会重置累积，采样轮永远完不成，必须允许用当前部分样本刷新显示，
+        // 否则拖动过程中画面会完全冻结
+        if (pathMode && (roundComplete || DisplayWhileTracing) && !finishPassDispatched)
         {
             DispatchDisplayPass(api, parameters, widthPixels, heightPixels);
         }
