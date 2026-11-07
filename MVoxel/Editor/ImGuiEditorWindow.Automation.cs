@@ -1166,6 +1166,14 @@ internal sealed partial class ImGuiEditorWindow
             scenePackMs = _scenePipeline?.SyncPackMs ?? 0,
             sceneUploadMs = _scenePipeline?.SyncUploadMs ?? 0,
             sceneEmissiveSyncCpuMs = _scenePipeline?.EmissiveSyncMilliseconds ?? 0,
+            hardwareCurrent = _scenePipeline?.DiagnosticHardwareCurrent ?? false,
+            hardwareFlag = _scenePipeline?.DiagnosticHardwareFlag ?? -1F,
+            accelerationBuiltVersion = _scenePipeline?.DiagnosticAccelerationBuiltVersion ?? -1,
+            accelerationSeenVersion = _scenePipeline?.DiagnosticAccelerationSeenVersion ?? -1,
+            accelerationCells = _scenePipeline?.DiagnosticAccelerationCells ?? 0,
+            accelerationOrigin = _scenePipeline?.DiagnosticAccelerationOrigin is { } origin
+                ? new[] { (double)origin.X, origin.Y, origin.Z }
+                : null,
             objects,
         };
     }

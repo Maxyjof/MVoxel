@@ -1224,6 +1224,32 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>诊断：当前连续复用旧画面的帧数</summary>
     internal int DiagnosticConvergedFrames => _realtimeConvergedFrames;
 
+    /// <summary>诊断：主射线是否使用硬件加速结构</summary>
+    internal bool DiagnosticHardwareCurrent => _hardwareShadowGeometryCurrent;
+
+    /// <summary>诊断：加速结构构建时对应的工作集同步序号</summary>
+    internal long DiagnosticAccelerationBuiltVersion => _shadowAccelerationBuiltVersion;
+
+    /// <summary>诊断：加速结构已看到的同步序号</summary>
+    internal long DiagnosticAccelerationSeenVersion => _shadowAccelerationSeenVersion;
+
+    /// <summary>诊断：加速结构中的格数</summary>
+    internal int DiagnosticAccelerationCells => _shadowAcceleration?.AccelerationCellCount ?? 0;
+
+    /// <summary>诊断：加速结构原点是否有效及原点</summary>
+    internal VoxelCoord64? DiagnosticAccelerationOrigin =>
+        _shadowAccelerationOriginValid ? _shadowAccelerationOrigin : null;
+
+    /// <summary>诊断：当前帧参数里 P_HW_RT_CURRENT 的实际取值</summary>
+    internal float DiagnosticHardwareFlag
+    {
+        get
+        {
+            if (_lastParameters is null) return -1F;
+            return _lastParameters[VoxelRenderParameters.HardwareShadowCurrent];
+        }
+    }
+
     /// <summary>诊断：前三个格的世界坐标，用于确认几何是否真的移动</summary>
     internal IReadOnlyList<VoxelCoord64> DiagnosticFirstCells()
     {
@@ -1383,8 +1409,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 笔划编辑期间加速结构落后于工作集，但仍可用：差异全部落在编辑区域内，
         // 着色器在区域内退回当前工作集的软件 BVH，区域外继续用加速结构
         var editRegion = _editRegionActive && _hardwareShadowsActive;
+        // 防御：加速结构必须确实对应本帧工作集。同步序号或格数对不上时，
+        // 主射线一律退回当前 cells[] 的软件求交，杜绝按旧几何出画面
+        var accelerationMatchesWorkset = _hardwareShadowGeometryCurrent &&
+            _shadowAccelerationBuiltVersion == SyncCompletedCount &&
+            _shadowAcceleration is { } acceleration && acceleration.AccelerationCellCount == _workset.Cells.Count;
         parameters[VoxelRenderParameters.HardwareShadowCurrent] =
-            _hardwareShadowGeometryCurrent || editRegion || _dragPreviewAccelerationCurrent ? 1F : 0F;
+            accelerationMatchesWorkset || editRegion || _dragPreviewAccelerationCurrent ? 1F : 0F;
         parameters[VoxelRenderParameters.EditRegionActive] = editRegion ? 1F : 0F;
         if (editRegion)
         {
@@ -2045,16 +2076,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 因此默认开启不会把编辑手感拖慢。工作集超过硬件上限时同样自动回退。
     /// 场景窗口不渲染阴影，但主射线仍优先走 ray query，AMD 与 NVIDIA 共用同一判定
     /// </remarks>
-    private void UpdateShadowAcceleration(RenderSettings settings, bool scenePreview)
+    private void UpdateShadowAcceleration(RenderSettings settings)
     {
         _hardwareShadowsActive = false;
         _hardwareShadowGeometryCurrent = false;
         _hardwareShadowCellCount = 0;
         _lastComputeIdleWaitMs = 0;
         _lastShadowAccelerationBuildMs = 0;
-        // 场景预览不渲染阴影，主射线直接读当前 cells[] 与工作集原点，几何永远与编辑结果一致；
-        // 硬件加速结构只服务渲染视图，避免对象位置变化后仍按旧加速结构求交
-        if (scenePreview) return;
         // 场景窗口按设计不渲染任何阴影（着色器里由 P_SCENE_PREVIEW 拦掉全部阴影查询），
         // 但主射线求交仍然优先用 ray query：能开硬件光追就开，AMD 与 NVIDIA 走同一判定
         _hardwareAccelerationDisabledByUser = settings.ForceComputePath ||
@@ -2163,9 +2191,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
             // 拖动实例把对象快照、局部原点、累计平移一起交给加速结构；
             // 之后同一拖动的后续帧不会走到这里，只更新 TLAS 实例变换
+            // 加速结构必须用当前工作集原点：砖路径不会更新 _sceneOrderedOrigin，
+            // 用旧原点配当前相对格坐标会让整个模型偏移到旧位置
+            var worksetOrigin = _workset.Origin;
             var built = _shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version, dragCells,
                 _dragPreviewOrigin, _dragPreviewOffset,
-                dragCells is not null ? _dragPreviewGeometryVersion : -1, _sceneOrderedOrigin);
+                dragCells is not null ? _dragPreviewGeometryVersion : -1, worksetOrigin);
             _lastShadowAccelerationBuildMs = buildWatch.Elapsed.TotalMilliseconds;
             if (!built)
             {
@@ -2185,7 +2216,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _shadowAccelerationLastBuildAtMs = now;
             _shadowAccelerationLastCostMs = _lastShadowAccelerationBuildMs;
             // 加速结构用的是本次工作集的相对坐标，区域回退必须保持同一个原点
-            _shadowAccelerationOrigin = _sceneOrderedOrigin;
+            _shadowAccelerationOrigin = worksetOrigin;
             _shadowAccelerationOriginValid = true;
             // 快照与加速结构同序，逐格标记需要按这份列表补写
             _shadowAccelerationCells = hardwareCells;
@@ -2216,7 +2247,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             // 拖动结束但静态版本恰好未变：只隐藏实例 1，不重建静态 BLAS
             _shadowAcceleration.EnsureShadowAcceleration(_shadowAccelerationCells ?? _sceneOrderedCells,
-                version, null, default, default, -1, _sceneOrderedOrigin);
+                version, null, default, default, -1, _workset.Origin);
             _dragPreviewAccelerationCurrent = false;
         }
 
@@ -2275,7 +2306,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
-        UpdateShadowAcceleration(settings, frameState.ScenePreview);
+        UpdateShadowAcceleration(settings);
         bool backendChanged = _lastHardwareBackend.HasValue && _lastHardwareBackend.Value != _hardwareShadowsActive;
         _lastHardwareBackend = _hardwareShadowsActive;
         if (backendChanged)
@@ -7102,14 +7133,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             if (residency.IsEmpty)
             {
-                if (_voxelBuffer.Handle != 0)
-                {
-                    api.DeviceWaitIdle(_device);
-                    DestroyBvhBuffer(api);
-                    DestroyVoxelBuffer(api);
-                    DestroyBrickTableBuffer(api);
-                    _bvhNodeCount = 0;
-                }
+                // 空静态世界在拖动预览里很常见（场景只有一个被拖对象）：此时主几何来自
+                // 加速结构的拖动实例，GPU 路径必须保持可用，否则会掉回无深度的 CPU 预览
+                UploadWorkset(VoxelGpuWorkset.Empty);
+                _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
             }
             else if (incremental && plan is not null)
             {
@@ -7171,14 +7198,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             if (pool.IsEmpty)
             {
-                if (_voxelBuffer.Handle != 0)
-                {
-                    api.DeviceWaitIdle(_device);
-                    DestroyBvhBuffer(api);
-                    DestroyVoxelBuffer(api);
-                    DestroyBrickTableBuffer(api);
-                    _bvhNodeCount = 0;
-                }
+                // 与 SyncBrick 一致：空静态世界也要保留占位资源，拖动实例才能继续走 GPU
+                UploadWorkset(VoxelGpuWorkset.Empty);
+                _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
             }
             else if (plan.FullRebuild)
             {
