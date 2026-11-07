@@ -606,7 +606,10 @@ internal sealed partial class ImGuiEditorWindow
         if (materials.Count > 0) MVoxelLog.Info($"已加载 {materials.Count} 个共享材质资产");
     }
 
-    private void ApplyPreloadedBounds(PreloadedModels preload)    {
+    private void ApplyPreloadedBounds(PreloadedModels preload)
+    {
+        // 场景视图在这一份世界上绘制，坐标轴遮挡也必须用它，避免沿用欢迎页阶段的空世界
+        _axisOcclusionWorld = preload.Composed;
         _axisOcclusionBoundsWorld = preload.Composed;
         _axisOcclusionBoundsVersion = preload.Composed!.ContentVersion;
         _axisOcclusionHasBounds = preload.HasBounds;
@@ -624,6 +627,11 @@ internal sealed partial class ImGuiEditorWindow
         _selectedSceneObjectId = null;
         _pinnedVoxelModelId = null;
         _sceneDocument = preload?.Scene ?? LoadSceneDocument(project);
+        // 欢迎页阶段绘制的是空世界，载入项目前必须丢掉这份引用，否则包围盒与取景会沿用空世界
+        _axisOcclusionWorld = null;
+        _axisOcclusionBoundsWorld = null;
+        _axisOcclusionBoundsVersion = -1;
+        _axisOcclusionHasBounds = false;
         _sceneFallbackSeconds = StaleFrameGraceSeconds;
         _sceneGpuRenderedAtMs = 0;
         if (!_sceneDocument.HasSerializedEnvironment)
@@ -727,9 +735,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     private static VoxelCoord64 GetSceneModelOrigin(SceneObject? sceneObject) =>
-        sceneObject?.Transform.Mode == TransformMode.Grid
-            ? sceneObject.Transform.Grid.Position
-            : VoxelCoord64.Zero;
+        sceneObject?.Transform.VoxelOrigin ?? VoxelCoord64.Zero;
 
     private static bool HasModelReference(Scene.SceneDocument? document) => document?.Objects
         .SelectMany(item => item.Components)
@@ -1347,13 +1353,17 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelCoord64 _axisOcclusionMaximum;
     private bool _axisOcclusionHasBounds;
 
+    /// <summary>场景视口实际绘制的世界，坐标轴遮挡必须与它保持一致，不能查另一份组合世界</summary>
+    private VoxelWorld? _axisOcclusionWorld;
+
     private void UpdateAxisOcclusionBounds()
     {
-        if (ReferenceEquals(_axisOcclusionBoundsWorld, _world) &&
-            _axisOcclusionBoundsVersion == _world.ContentVersion) return;
-        _axisOcclusionHasBounds = _world.TryGetBounds(out _axisOcclusionMinimum, out _axisOcclusionMaximum);
-        _axisOcclusionBoundsWorld = _world;
-        _axisOcclusionBoundsVersion = _world.ContentVersion;
+        var world = _axisOcclusionWorld ?? _world;
+        if (ReferenceEquals(_axisOcclusionBoundsWorld, world) &&
+            _axisOcclusionBoundsVersion == world.ContentVersion) return;
+        _axisOcclusionHasBounds = world.TryGetBounds(out _axisOcclusionMinimum, out _axisOcclusionMaximum);
+        _axisOcclusionBoundsWorld = world;
+        _axisOcclusionBoundsVersion = world.ContentVersion;
     }
 
     private bool TryGetCachedWorldBounds(out VoxelCoord64 minimum, out VoxelCoord64 maximum)

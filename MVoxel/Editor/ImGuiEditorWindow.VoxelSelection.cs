@@ -501,16 +501,7 @@ internal sealed partial class ImGuiEditorWindow
     /// </summary>
     /// <param name="sceneObject">目标对象</param>
     /// <returns>对象的格原点</returns>
-    private static VoxelCoord64 GetObjectGridOrigin(SceneObject sceneObject)
-    {
-        if (sceneObject.Transform.Mode == TransformMode.Free)
-        {
-            var free = sceneObject.Transform.Free.Position;
-            return new VoxelCoord64((long)Math.Floor(free.X), (long)Math.Floor(free.Y), (long)Math.Floor(free.Z));
-        }
-
-        return sceneObject.Transform.Grid.Position;
-    }
+    private static VoxelCoord64 GetObjectGridOrigin(SceneObject sceneObject) => sceneObject.Transform.VoxelOrigin;
 
     /// <summary>
     /// 取框选范围的世界原点：对象原点 + 组件局部原点

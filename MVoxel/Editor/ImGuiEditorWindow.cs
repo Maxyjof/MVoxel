@@ -2040,6 +2040,10 @@ DockId=0x6A3C3007,0
             var keepStaleFrame = _sceneFallbackSeconds < StaleFrameGraceSeconds;
             drawList.PushClipRect(origin, origin + size, true);
             var cachedScenePipeline = _scenePipeline;
+            // 显卡管线还在后台创建时，CPU回退没有深度缓冲，画家算法会把内部面画到前面，
+            // 看起来像整栋房子半透明。初始化窗口内只显示网格与提示，等显卡首帧成功再显示体素
+            var gpuStarting = cachedScenePipeline is null || cachedScenePipeline.IsInitializing;
+            var showCpuVoxelPreview = !gpuStarting || _sceneFallbackSeconds >= 3.5F;
             if (keepStaleFrame && cachedScenePipeline is not null &&
                 cachedScenePipeline.DisplayTextureId != IntPtr.Zero)
             {
@@ -2051,12 +2055,18 @@ DockId=0x6A3C3007,0
                 // 相机在地面上方时网格先画（被模型遮住），在地面下方时网格位于模型前方，必须后画
                 var gridBehindModel = camera.Position.Y >= 0F;
                 if (gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-                if (showVoxelWorld && _project is not null)
+                if (showVoxelWorld && _project is not null && showCpuVoxelPreview)
                     DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines && IsVoxelEditingMode,
                         GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
                 if (!gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-                if (showVoxelWorld && _project is not null && !IsVoxelDrawingMode)
+                if (showVoxelWorld && _project is not null && !IsVoxelDrawingMode && showCpuVoxelPreview)
                     DrawCpuSelectionOutline(drawList, origin, size, camera);
+                if (!showCpuVoxelPreview)
+                {
+                    var text = "正在准备显卡视图…";
+                    var textSize = ImGui.CalcTextSize(text);
+                    drawList.AddText(origin + (size - textSize) * .5F, ToPackedColor(EditorPalette.MutedText), text);
+                }
             }
 
             drawList.PopClipRect();
@@ -2906,7 +2916,10 @@ DockId=0x6A3C3007,0
 
     private void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_world.OccupiedVoxelCount > 0 && IsVoxelWorldVisible())
+        // 场景视口绘制的是按可见性/图层组成的视图世界，拖动预览还会带上位移；
+        // 遮挡查询必须使用同一份世界，否则轴线会按旧位置被错误遮挡
+        _axisOcclusionWorld = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true));
+        if (_axisOcclusionWorld.OccupiedVoxelCount > 0 && IsVoxelWorldVisible())
             UpdateAxisOcclusionBounds();
         var axisLength = GetInfiniteAxisLength(camera);
         DrawBidirectionalAxis(drawList, Vector3.UnitX, axisLength, origin, size, camera,
@@ -3046,11 +3059,8 @@ DockId=0x6A3C3007,0
             return true;
         }
 
-        if (_sceneGizmoGridDragObjectId is not null)
-            return true;
-
         // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
-        return !VoxelDda.HasHitInBounds(_world, cameraPosition, direction,
+        return !VoxelDda.HasHitInBounds(_axisOcclusionWorld ?? _world, cameraPosition, direction,
             MathF.Max(pointDistance - 0.01F, near), _axisOcclusionMinimum, _axisOcclusionMaximum,
             ignoreOriginCell: true);
     }

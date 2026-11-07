@@ -177,37 +177,8 @@ internal sealed partial class ImGuiEditorWindow
         var rotationValues = new[] { rotation.X, rotation.Y, rotation.Z };
         DrawTransformRow("位置", positionValues, 1D, 12D, (axis, value) =>
         {
-            if (free)
-            {
-                if (!double.IsFinite(value) || value < long.MinValue || value >= (double)long.MaxValue)
-                { SetStatus("位置超出整数范围"); return; }
-                positionValues[axis] = value;
-                var previousPosition = transform.Free.Position;
-                var previousGridOrigin = new VoxelCoord64((long)Math.Floor(previousPosition.X),
-                    (long)Math.Floor(previousPosition.Y), (long)Math.Floor(previousPosition.Z));
-                var nextFreePosition = new Double3(positionValues[0], positionValues[1], positionValues[2]);
-                var nextGridOrigin = new VoxelCoord64((long)Math.Floor(nextFreePosition.X),
-                    (long)Math.Floor(nextFreePosition.Y), (long)Math.Floor(nextFreePosition.Z));
-                var delta = nextGridOrigin - previousGridOrigin;
-                transform.SetFree(new FreeTransform(nextFreePosition, transform.Free.Rotation));
-                if (delta != VoxelCoord64.Zero && _objectVoxels.TryGetWorld(item.Id, out var freeWorld))
-                    _objectVoxels.AssignWorld(item.Id, freeWorld.CloneShifted(delta.X, delta.Y, delta.Z));
-                UpdateTransformMarker(item); MarkSceneDocumentDirty();
-                if (delta != VoxelCoord64.Zero) RebuildObjectVoxelWorld();
-                else InvalidateComposedWorldCache();
-            }
-            else
-            {
-                if (value < long.MinValue || value >= (double)long.MaxValue) { SetStatus("位置超出整数范围"); return; }
-                var target = (long)Math.Truncate(value);
-                var current = transform.Grid.Position;
-                try
-                {
-                    var delta = checked(target - (axis == 0 ? current.X : axis == 1 ? current.Y : current.Z));
-                    MoveModelObjectByGrid(item, new VoxelCoord64(axis == 0 ? delta : 0, axis == 1 ? delta : 0, axis == 2 ? delta : 0));
-                }
-                catch (OverflowException) { SetStatus("位置变化超出整数范围"); }
-            }
+            positionValues[axis] = value;
+            ApplyObjectPosition(item, new Double3(positionValues[0], positionValues[1], positionValues[2]));
         });
         if (!free)
         {
@@ -290,9 +261,65 @@ internal sealed partial class ImGuiEditorWindow
         else if (!free) DrawTransformScaleRow(item);
     }
 
+    /// <summary>
+    /// 把对象位置应用到场景：格模式按最近整数格平移体素，自由模式同步整数格位移并保留小数位置
+    /// 检查器与自动化共用这一条路径，避免只改Transform而体素世界留在旧坐标
+    /// </summary>
+    /// <param name="item">目标对象</param>
+    /// <param name="position">目标位置，格模式会吸附到最近整数格</param>
+    private void ApplyObjectPosition(SceneObject item, Double3 position)
+    {
+        if (!double.IsFinite(position.X) || !double.IsFinite(position.Y) || !double.IsFinite(position.Z) ||
+            position.X < long.MinValue || position.X >= (double)long.MaxValue ||
+            position.Y < long.MinValue || position.Y >= (double)long.MaxValue ||
+            position.Z < long.MinValue || position.Z >= (double)long.MaxValue)
+        {
+            SetStatus("位置超出整数范围");
+            return;
+        }
+
+        if (item.Transform.Mode == TransformMode.Grid)
+        {
+            var target = new VoxelCoord64((long)Math.Round(position.X), (long)Math.Round(position.Y),
+                (long)Math.Round(position.Z));
+            try
+            {
+                var delta = target - item.Transform.Grid.Position;
+                if (delta != VoxelCoord64.Zero) MoveModelObjectByGrid(item, delta);
+            }
+            catch (OverflowException) { SetStatus("位置变化超出整数范围"); }
+            return;
+        }
+
+        var beforeFree = item.Transform.Free;
+        var previousOrigin = item.Transform.VoxelOrigin;
+        var nextFree = new FreeTransform(new Double3(position.X, position.Y, position.Z), beforeFree.Rotation);
+        var nextOrigin = new VoxelCoord64((long)Math.Floor(position.X), (long)Math.Floor(position.Y),
+            (long)Math.Floor(position.Z));
+        var worldDelta = nextOrigin - previousOrigin;
+        if (worldDelta == VoxelCoord64.Zero)
+        {
+            item.Transform.SetFree(nextFree);
+            UpdateTransformMarker(item);
+            MarkSceneDocumentDirty();
+            InvalidateComposedWorldCache();
+            return;
+        }
+
+        // 位移与对象体素一起记入同一条命令，撤回时位置和体素同时回到原处
+        var command = _objectVoxels.CreateTransform(item.Id, "移动模型",
+            coordinate => coordinate + worldDelta, forward =>
+            {
+                item.Transform.SetFree(forward ? nextFree : beforeFree);
+                UpdateTransformMarker(item);
+                RebuildObjectVoxelWorld();
+            });
+        _voxelHistory.Execute(command);
+        MarkSceneDocumentDirty();
+    }
+
     /// <summary>缩放行的联动锁定状态，和 Unity 的链式按钮一致</summary>
     private bool _transformScaleLocked;
-
     /// <summary>体素模型倍数缩放的联动锁定状态</summary>
     private bool _modelScaleLocked;
 

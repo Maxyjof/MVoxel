@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 
 namespace MVoxel.Core;
 
@@ -357,6 +357,17 @@ public sealed class TransformComponent
     /// 自由变换值，仅 Mode 为 Free 时具有意义
     /// </summary>
     public FreeTransform Free { get; private set; }
+
+    /// <summary>
+    /// 对象体素数据使用的世界原点：格模式直接用格位置，自由模式用位置向下取整
+    /// 模型资产按局部坐标保存，加载与选择都必须用这个原点还原世界坐标
+    /// </summary>
+    public VoxelCoord64 VoxelOrigin => Mode == TransformMode.Grid
+        ? Grid.Position
+        : new VoxelCoord64(
+            (long)Math.Floor(Free.Position.X),
+            (long)Math.Floor(Free.Position.Y),
+            (long)Math.Floor(Free.Position.Z));
 
     /// <summary>
     /// 以格变换模式创建组件

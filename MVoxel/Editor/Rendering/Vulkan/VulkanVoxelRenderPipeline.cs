@@ -1203,6 +1203,40 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     internal int SyncCompletedCount { get; private set; }
 
+    /// <summary>诊断：当前是否走砖驻留路径</summary>
+    internal bool DiagnosticUsingBrickPath => _usingBrickPath;
+
+    /// <summary>诊断：主射线是否绑定硬件 ray query</summary>
+    internal bool DiagnosticHardwareShadowsActive => _hardwareShadowsActive;
+
+    /// <summary>诊断：当前工作集原点</summary>
+    internal VoxelCoord64 DiagnosticWorksetOrigin => _workset.Origin;
+
+    /// <summary>诊断：当前工作集格数</summary>
+    internal int DiagnosticWorksetCells => _workset.Cells.Count;
+
+    /// <summary>诊断：当前工作集源内容版本</summary>
+    internal int DiagnosticWorksetSourceVersion => _workset.SourceVersion;
+
+    /// <summary>诊断：累计真正派发 Compute 的帧数</summary>
+    internal long DiagnosticDispatchFrames { get; private set; }
+
+    /// <summary>诊断：当前连续复用旧画面的帧数</summary>
+    internal int DiagnosticConvergedFrames => _realtimeConvergedFrames;
+
+    /// <summary>诊断：前三个格的世界坐标，用于确认几何是否真的移动</summary>
+    internal IReadOnlyList<VoxelCoord64> DiagnosticFirstCells()
+    {
+        var cells = _workset.Cells;
+        var origin = _workset.Origin;
+        var count = Math.Min(3, cells.Count);
+        var result = new VoxelCoord64[count];
+        for (var index = 0; index < count; index++)
+            result[index] = new VoxelCoord64(origin.X + cells[index].X, origin.Y + cells[index].Y, origin.Z + cells[index].Z);
+        return result;
+    }
+
+
     /// <summary>
     /// 是否启用 GPU 时间戳采样。视口性能日志用它区分 CPU 等待与 GPU 计算，
     /// 性能分析器另有自己的帧标识；采样异步回读，不阻塞 GPU
@@ -2011,13 +2045,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 因此默认开启不会把编辑手感拖慢。工作集超过硬件上限时同样自动回退。
     /// 场景窗口不渲染阴影，但主射线仍优先走 ray query，AMD 与 NVIDIA 共用同一判定
     /// </remarks>
-    private void UpdateShadowAcceleration(RenderSettings settings)
+    private void UpdateShadowAcceleration(RenderSettings settings, bool scenePreview)
     {
         _hardwareShadowsActive = false;
         _hardwareShadowGeometryCurrent = false;
         _hardwareShadowCellCount = 0;
         _lastComputeIdleWaitMs = 0;
         _lastShadowAccelerationBuildMs = 0;
+        // 场景预览不渲染阴影，主射线直接读当前 cells[] 与工作集原点，几何永远与编辑结果一致；
+        // 硬件加速结构只服务渲染视图，避免对象位置变化后仍按旧加速结构求交
+        if (scenePreview) return;
         // 场景窗口按设计不渲染任何阴影（着色器里由 P_SCENE_PREVIEW 拦掉全部阴影查询），
         // 但主射线求交仍然优先用 ray query：能开硬件光追就开，AMD 与 NVIDIA 走同一判定
         _hardwareAccelerationDisabledByUser = settings.ForceComputePath ||
@@ -2238,7 +2275,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
-        UpdateShadowAcceleration(settings);
+        UpdateShadowAcceleration(settings, frameState.ScenePreview);
         bool backendChanged = _lastHardwareBackend.HasValue && _lastHardwareBackend.Value != _hardwareShadowsActive;
         _lastHardwareBackend = _hardwareShadowsActive;
         if (backendChanged)
@@ -2334,6 +2371,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         bool roundComplete = true;
         if (!pathMode)
         {
+            DiagnosticDispatchFrames++;
             DispatchRealtimeFrame(api, parameters, historyUsed, bloomActive, selectionActive,
                 realtimeFinish, widthPixels, heightPixels);
         }

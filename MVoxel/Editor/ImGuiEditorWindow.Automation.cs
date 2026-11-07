@@ -417,6 +417,7 @@ internal sealed partial class ImGuiEditorWindow
             "camera.setParams" => SetCameraParameters(payload),
             "camera.setActive" => SetActiveCamera(payload),
             "view.setCamera" => SetViewportCamera(payload),
+            "scene.worldState" => DescribeWorldState(),
             "material.list" => ListMaterials(),
             "material.get" => GetMaterial(payload),
             "material.create" => CreateMaterial(payload),
@@ -722,6 +723,8 @@ internal sealed partial class ImGuiEditorWindow
         var camera = item.Components.FirstOrDefault(SceneComponentTypes.IsCamera);
         var layerName = _sceneDocument is not null && item.LayerIndex >= 0 && item.LayerIndex < _sceneDocument.LayerNames.Count
             ? _sceneDocument.LayerNames[item.LayerIndex] : null;
+        var mode = item.Transform.Mode;
+        var grid = item.Transform.Grid;
         var free = item.Transform.Free;
         return new
         {
@@ -739,7 +742,13 @@ internal sealed partial class ImGuiEditorWindow
             scaleX = modelData.ScaleX,
             scaleY = modelData.ScaleY,
             scaleZ = modelData.ScaleZ,
-            position = new[] { free.Position.X, free.Position.Y, free.Position.Z },
+            mode = mode.ToString(),
+            // position 是当前生效模式的位置；两套原始值同时给出，避免诊断只看 Free 而误判 Grid 对象
+            position = mode == TransformMode.Grid
+                ? new[] { (double)grid.Position.X, grid.Position.Y, grid.Position.Z }
+                : new[] { free.Position.X, free.Position.Y, free.Position.Z },
+            gridPosition = new[] { (double)grid.Position.X, grid.Position.Y, grid.Position.Z },
+            freePosition = new[] { free.Position.X, free.Position.Y, free.Position.Z },
         };
     }
 
@@ -875,23 +884,25 @@ internal sealed partial class ImGuiEditorWindow
         var position = ReadVector(arguments, "position");
         var rotation = ReadVector(arguments, "rotation");
         if (position is null && rotation is null) throw new ArgumentException("position 与 rotation 至少给一个");
-        var before = SceneSerializer.CloneObject(target);
-        var free = target.Transform.Free;
-        var nextPosition = position is null
-            ? free.Position
-            : new Double3(position[0], position[1], position[2]);
-        var nextRotation = rotation is null
-            ? free.Rotation
-            : NumQuaternion.CreateFromYawPitchRoll(
-                (float)(rotation[1] * Math.PI / 180D),
-                (float)(rotation[0] * Math.PI / 180D),
-                (float)(rotation[2] * Math.PI / 180D));
-        target.Transform.SetFree(new FreeTransform(nextPosition, nextRotation));
-        var after = SceneSerializer.CloneObject(target);
-        _voxelHistory.RecordExecuted(new SceneObjectStateCommand(target, before, after,
-            () => { MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }));
+
+        // 格模式对象必须同时移动对象体素；只改 Transform 会让模型停在旧坐标
+        if (target.Transform.Mode == TransformMode.Grid)
+        {
+            if (rotation is not null)
+                throw new ArgumentException("网格模式对象的位置与旋转分开设置：位置用 position，旋转用 scene.setModelRotation");
+            ApplyObjectPosition(target, new Double3(position![0], position[1], position[2]));
+            return DescribeSceneObject(target);
+        }
+
+        if (rotation is not null)
+        {
+            target.Transform.SetFreeEuler(target.Transform.Free.Position,
+                new Double3(rotation[0], rotation[1], rotation[2]));
+            MarkSceneDocumentDirty();
+        }
+        if (position is { } value)
+            ApplyObjectPosition(target, new Double3(value[0], value[1], value[2]));
         UpdateTransformMarker(target);
-        MarkSceneDocumentDirty();
         _pipeline?.ResetAccumulation();
         return DescribeSceneObject(target);
     });
@@ -1092,6 +1103,67 @@ internal sealed partial class ImGuiEditorWindow
         _accumulationSignature = string.Empty;
         return new { activeId = target.Id.ToString(), name = target.Name };
     });
+
+    /// <summary>
+    /// 诊断：列出对象体素世界、合并世界与场景视图组合世界的包围盒
+    /// 用于排查“改了对象位置但画面不动”这类世界不同步问题
+    /// </summary>
+    /// <returns>各层世界的占用数与包围盒</returns>
+    private object DescribeWorldState()
+    {
+        static object Bounds(VoxelWorld? world)
+        {
+            if (world is null) return new { exists = false };
+            var hasBounds = world.TryGetBounds(out var minimum, out var maximum);
+            return new
+            {
+                exists = true,
+                occupied = world.OccupiedVoxelCount,
+                version = world.ContentVersion,
+                hasBounds,
+                minimum = hasBounds ? new[] { (double)minimum.X, minimum.Y, minimum.Z } : null,
+                maximum = hasBounds ? new[] { (double)maximum.X, maximum.Y, maximum.Z } : null,
+            };
+        }
+
+        var objects = (_sceneDocument?.Objects ?? []).Select(item =>
+        {
+            _objectVoxels.TryGetWorld(item.Id, out var world);
+            var transform = item.Transform;
+            return new
+            {
+                id = item.Id.ToString(),
+                name = item.Name,
+                mode = transform.Mode.ToString(),
+                gridPosition = new[] { (double)transform.Grid.Position.X, transform.Grid.Position.Y, transform.Grid.Position.Z },
+                voxelOrigin = new[] { (double)transform.VoxelOrigin.X, transform.VoxelOrigin.Y, transform.VoxelOrigin.Z },
+                world = Bounds(world),
+            };
+        }).ToArray();
+        return new
+        {
+            merged = Bounds(_world),
+            sceneView = Bounds(GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true))),
+            composedCacheCount = _composedWorlds.Count,
+            sceneWorksetSyncCount = _scenePipeline?.SyncCompletedCount ?? 0,
+            sceneWorksetCells = _scenePipeline?.SyncTotalCells ?? 0,
+            pipelineWorksetCells = _scenePipeline?.DiagnosticWorksetCells ?? 0,
+            pipelineWorksetOrigin = _scenePipeline is null ? null : new[]
+            {
+                (double)_scenePipeline.DiagnosticWorksetOrigin.X,
+                _scenePipeline.DiagnosticWorksetOrigin.Y,
+                _scenePipeline.DiagnosticWorksetOrigin.Z,
+            },
+            pipelineFirstCells = _scenePipeline?.DiagnosticFirstCells()
+                .Select(point => new[] { (double)point.X, point.Y, point.Z }).ToArray(),
+            pipelineUsesBrickPath = _scenePipeline?.DiagnosticUsingBrickPath ?? false,
+            pipelineHardwareRayQuery = _scenePipeline?.DiagnosticHardwareShadowsActive ?? false,
+            pipelineSourceVersion = _scenePipeline?.DiagnosticWorksetSourceVersion ?? -1,
+            pipelineDispatchFrames = _scenePipeline?.DiagnosticDispatchFrames ?? 0,
+            pipelineConvergedFrames = _scenePipeline?.DiagnosticConvergedFrames ?? 0,
+            objects,
+        };
+    }
 
     /// <summary>
     /// 把视口轨道相机直接放到指定位姿，供脚本取图与画面对比
