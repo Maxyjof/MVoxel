@@ -1991,50 +1991,30 @@ internal sealed partial class ImGuiEditorWindow
             pipeline.SetEditRegion(strokeEditing, _strokeEditRegionMinimum, _strokeEditRegionMaximum);
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
-            // 拖动对象实例：静态世界在拖动开始时已算好并排除被拖对象，
-            // 每步只改实例平移；不支持 Ray Query 的设备仍用原来的整份合成路径
-            var dragTargetId = _sceneGizmoGridDragObjectId;
-            var dragInstance = showGeometry && dragTargetId is not null &&
-                _dragInstanceObjectId == dragTargetId &&
-                _dragInstanceStaticWorld is not null && _dragInstanceObjectWorld is not null &&
-                pipeline.CanUseDragPreview(_dragInstanceObjectWorld.OccupiedVoxelCount);
-            var sceneWorld = dragInstance
-                ? _dragInstanceStaticWorld
-                : showGeometry ? GetRenderWorld(uint.MaxValue, sceneVisibility: true) : null;
+            // 场景预览走软件 BVH，主射线直接读当前工作集。拖动预览必须走同一条路径：
+            // 合成世界在 GetRenderWorld 里按拖动位移叠加，每步重新同步工作集。
+            // 不能再交给「拖动实例」（那是硬件求交专用路径，禁用硬件后画面不会跟随）。
+            var sceneWorld = showGeometry ? GetRenderWorld(uint.MaxValue, sceneVisibility: true) : null;
             // 小中型场景整份常驻即可：按视角区块剔除会让每次转动相机都重建工作集，
             // 反而把稳定的帧率拖到三四十帧。只有超大世界才值得付出这个重建代价。
-            var frustumCulling = !dragInstance && showGeometry &&
+            var frustumCulling = showGeometry &&
                 sceneWorld is { OccupiedVoxelCount: > SceneFrustumCullingThreshold };
             var sceneChunkFilter = frustumCulling ? SceneProjection.CreateChunkFilter(camera, size) : null;
             var sceneVisibilitySignature = frustumCulling
                 ? SceneProjection.ChunkVisibilitySignature(camera, size)
                 : 0L;
-            var sceneModelLod = !dragInstance && sceneWorld is not null
+            var sceneModelLod = sceneWorld is not null
                 ? BuildModelLodView(settings.SceneLod, camera, sceneWorld)
                 : null;
-            if (dragInstance)
-            {
-                var dragObjectWorld = _sceneSliceEnabled
-                    ? VoxelWorldSlice.CreateHalfSpace(_dragInstanceObjectWorld!, _sceneSliceAxis, _sceneSliceCoordinate,
-                        _sceneSliceKeepGreater)
-                    : _dragInstanceObjectWorld!;
-                pipeline.SyncWorldDragPreview(GetSceneInspectionWorld(_dragInstanceStaticWorld!), dragObjectWorld,
-                    _sceneGizmoGridDragCells, 0, settings.SceneLod,
-                    new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                    greedyMerge: false, includeInterior: IsCameraInsideOccupiedVoxel(camera));
-            }
-            else
-            {
-                pipeline.ClearDragPreview();
-                pipeline.SyncWorld(sceneWorld is not null ? GetSceneInspectionWorld(sceneWorld) : _emptyScenePreviewWorld,
-                    0, settings.SceneLod,
-                    new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                    greedyMerge: false,
-                    includeInterior: IsCameraInsideOccupiedVoxel(camera),
-                    chunkFilter: sceneChunkFilter,
-                    visibilitySignature: sceneVisibilitySignature,
-                    modelLod: sceneModelLod);
-            }
+            pipeline.ClearDragPreview();
+            pipeline.SyncWorld(sceneWorld is not null ? GetSceneInspectionWorld(sceneWorld) : _emptyScenePreviewWorld,
+                0, settings.SceneLod,
+                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                greedyMerge: false,
+                includeInterior: IsCameraInsideOccupiedVoxel(camera),
+                chunkFilter: sceneChunkFilter,
+                visibilitySignature: sceneVisibilitySignature,
+                modelLod: sceneModelLod);
             if (!pipeline.IsAvailable)
             {
                 if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
@@ -2043,9 +2023,8 @@ internal sealed partial class ImGuiEditorWindow
             var sceneDeposits = CollectSurfaceDeposits(uint.MaxValue);
             pipeline.SetSurfaceDeposits(sceneDeposits, ResolveReceiverLayerTable(sceneDeposits, uint.MaxValue,
                 sceneVisibility: true, pipeline.Workset.Origin));
-            // 拖动实例的体素快照已经在建结构时带上选中标记，拖动期间不需要
-            // 再为 29 万体素重建一份选中世界；其它选中子对象的外轮廓在松手后恢复
-            pipeline.SetSceneSelection(showGeometry && !IsVoxelDrawingMode && !dragInstance
+            // 拖动预览期间选中外轮廓由工作集位移体现，不再单独上传旧坐标的外轮廓
+            pipeline.SetSceneSelection(showGeometry && !IsVoxelDrawingMode && _sceneGizmoGridDragObjectId is null
                 ? GetSelectedSubtreeWorld()
                 : null);
             // 描边只在体素编辑模式下出现，并且只描边当前编辑模型；退出编辑一律不描边。
