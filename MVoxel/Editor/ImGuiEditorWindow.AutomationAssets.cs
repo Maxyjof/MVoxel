@@ -268,6 +268,35 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>读取体素资产内的材质定义与槽位绑定，核对导入后的金属度与粗糙度</summary>
+    /// <param name="payload">参数：path 为相对 Assets 的路径</param>
+    /// <returns>材质定义与绑定列表</returns>
+    private object DescribeAssetMaterials(JsonElement payload)
+    {
+        var project = _project ?? throw new InvalidOperationException("请先打开项目");
+        var path = (ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))
+            .Replace('\\', '/').Trim('/');
+        var absolute = ProjectAssetOperations.Resolve(project, path)
+            ?? throw new ArgumentException("资产路径无效");
+        if (File.Exists(absolute) is false) throw new FileNotFoundException("资产不存在", absolute);
+        var metadata = LargeWorldFormat.ReadMaterials(absolute);
+        var definitions = metadata.Definitions.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new Dictionary<string, object?>
+            {
+                ["id"] = pair.Key,
+                ["name"] = pair.Value.Name,
+                ["metallic"] = pair.Value.Metallic,
+                ["roughness"] = pair.Value.Roughness,
+                ["specular"] = pair.Value.Specular,
+                ["ior"] = pair.Value.Ior,
+                ["opacity"] = pair.Value.Opacity,
+                ["emissive"] = pair.Value.EmissiveScale,
+            }).ToArray();
+        var bindings = metadata.Bindings.OrderBy(pair => pair.Key)
+            .Select(pair => new { slot = pair.Key, id = pair.Value }).ToArray();
+        return new { path, definitions, bindings };
+    }
+
     /// <summary>把当前编辑的资产另存为副本并切换编辑副本</summary>
     /// <returns>原路径、新路径与状态</returns>
     private object SaveAssetStageCopyFromAutomation() => RunOnUi(() =>

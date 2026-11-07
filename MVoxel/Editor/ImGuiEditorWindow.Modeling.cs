@@ -160,10 +160,31 @@ internal sealed partial class ImGuiEditorWindow
             objectSlots[sceneObject.Id] = localSlots;
         }
 
-        var signature = string.Join("|", runtimeMaterials.OrderBy(item => item.Key)
-            .Select(item => embeddedMaterials is not null && embeddedMaterials.Values.Any(value => ReferenceEquals(value, item.Value))
-                ? $"{item.Key}:embedded:{System.Text.Json.JsonSerializer.Serialize(item.Value)}"
-                : $"{item.Key}:{item.Value.SourcePath}:{File.GetLastWriteTimeUtc(item.Value.SourcePath).Ticks}")) +
+        // 指纹里要能容纳“内联材质”：资产编辑空间导入的 .vox 材质没有独立文件路径，
+        // 直接取文件时间会在空路径上抛异常，这里按来源分别取指纹
+        var fingerprints = new List<string>(runtimeMaterials.Count);
+        foreach (var item in runtimeMaterials.OrderBy(pair => pair.Key))
+        {
+            var asset = item.Value;
+            if (embeddedMaterials is not null &&
+                embeddedMaterials.Values.Any(value => ReferenceEquals(value, asset)))
+            {
+                fingerprints.Add($"{item.Key}:embedded:{System.Text.Json.JsonSerializer.Serialize(asset)}");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(asset.SourcePath))
+            {
+                fingerprints.Add($"{item.Key}:inline:{System.Text.Json.JsonSerializer.Serialize(asset)}");
+                continue;
+            }
+
+            fingerprints.Add(File.Exists(asset.SourcePath)
+                ? $"{item.Key}:{asset.SourcePath}:{File.GetLastWriteTimeUtc(asset.SourcePath).Ticks}"
+                : $"{item.Key}:missing:{asset.SourcePath}");
+        }
+
+        var signature = string.Join("|", fingerprints) +
             ";" + string.Join("|", objectSlots.OrderBy(item => item.Key.Value)
                 .SelectMany(item => item.Value.OrderBy(slot => slot.Key)
                     .Select(slot => $"{item.Key}:{slot.Key}>{slot.Value}")));
