@@ -285,26 +285,38 @@ internal sealed partial class ImGuiEditorWindow
             AddContext(entry.World, entry.Mask, entry.SceneVisibility, entry.ChunkOwners);
         }
 
-        var updates = new List<(uint Mask, bool SceneVisibility, VoxelCoord64 Coordinate,
-            VoxelValue Value, StableId Owner)>();
+        var updates = new List<(uint Mask, bool SceneVisibility, VoxelCoord64 Coordinate, VoxelValue Value)>();
         foreach (var context in contexts)
-        foreach (var coordinate in changedCells)
         {
-            var hasValue = _objectVoxels.TryGetVisibleVoxel(_sceneDocument, context.Mask,
-                context.SceneVisibility, coordinate, out var owner, out var value);
-            // 空结果会改变区块结构，先让全量合成处理，避免缓存世界部分更新后再回退
-            if (!hasValue) return false;
-            updates.Add((context.Mask, context.SceneVisibility, coordinate,
-                RemapRuntimeMaterial(owner, value), owner));
+            var visibleVoxels = _objectVoxels.ResolveVisibleVoxels(_sceneDocument, context.Mask,
+                context.SceneVisibility, changedCells);
+            foreach (var coordinate in changedCells)
+            {
+                var hasValue = visibleVoxels.TryGetValue(coordinate, out var visible);
+                updates.Add((context.Mask, context.SceneVisibility, coordinate,
+                    hasValue ? RemapRuntimeMaterial(visible.Owner, visible.Value) : default));
+            }
         }
 
         foreach (var context in contexts)
-        foreach (var update in updates.Where(item => item.Mask == context.Mask &&
-                     item.SceneVisibility == context.SceneVisibility))
         {
-            context.World.Set(update.Coordinate, update.Value);
-            if (context.Owners is Dictionary<ChunkCoord64, StableId> owners)
-                owners[VoxelWorld.Split(update.Coordinate).Chunk] = update.Owner;
+            var touchedChunks = new HashSet<ChunkCoord64>();
+            foreach (var update in updates.Where(item => item.Mask == context.Mask &&
+                         item.SceneVisibility == context.SceneVisibility))
+            {
+                if (!context.World.TryGet(update.Coordinate, out var existing) || existing != update.Value)
+                    context.World.Set(update.Coordinate, update.Value);
+                touchedChunks.Add(VoxelWorld.Split(update.Coordinate).Chunk);
+            }
+            if (context.Owners is not Dictionary<ChunkCoord64, StableId> owners) continue;
+            foreach (var chunk in touchedChunks)
+            {
+                if (_objectVoxels.TryGetVisibleChunkOwner(_sceneDocument, context.Mask,
+                        context.SceneVisibility, chunk, out var chunkOwner))
+                    owners[chunk] = chunkOwner;
+                else
+                    owners.Remove(chunk);
+            }
         }
 
         var signature = RenderStateSignature();

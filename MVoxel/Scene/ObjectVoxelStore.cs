@@ -259,6 +259,44 @@ internal sealed class ObjectVoxelStore
         return false;
     }
 
+    internal Dictionary<VoxelCoord64, (StableId Owner, VoxelValue Value)> ResolveVisibleVoxels(
+        SceneDocument scene, uint cameraMask, bool useSceneVisibility, IReadOnlyCollection<VoxelCoord64> coordinates)
+    {
+        var entries = GetVisibleEntries(scene, cameraMask, useSceneVisibility)
+            .Select((value, index) => (value, index))
+            .OrderByDescending(item => item.value.SortingLayer)
+            .ThenByDescending(item => item.value.SortingOrder)
+            .ThenByDescending(item => item.index)
+            .ToArray();
+        var result = new Dictionary<VoxelCoord64, (StableId, VoxelValue)>(coordinates.Count);
+        foreach (var coordinate in coordinates)
+        foreach (var entry in entries)
+        {
+            if (!_objects.TryGetValue(entry.value.ObjectId, out var world) ||
+                !world.TryGet(coordinate, out var value)) continue;
+            result[coordinate] = (entry.value.ObjectId, value);
+            break;
+        }
+        return result;
+    }
+
+    internal bool TryGetVisibleChunkOwner(SceneDocument scene, uint cameraMask, bool useSceneVisibility,
+        ChunkCoord64 coordinate, out StableId owner)
+    {
+        owner = StableId.Empty;
+        foreach (var entry in GetVisibleEntries(scene, cameraMask, useSceneVisibility)
+                     .Select((value, index) => (value, index))
+                     .OrderBy(item => item.value.SortingLayer)
+                     .ThenBy(item => item.value.SortingOrder)
+                     .ThenBy(item => item.index))
+        {
+            if (!_objects.TryGetValue(entry.value.ObjectId, out var world) ||
+                !world.TryGetChunk(coordinate, out _)) continue;
+            owner = entry.value.ObjectId;
+        }
+        return owner != StableId.Empty;
+    }
+
     /// <summary>
     /// 按排序图层、排序顺序和调用方提供的层级顺序覆盖重叠坐标
     /// </summary>
