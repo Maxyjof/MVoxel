@@ -1485,8 +1485,8 @@ internal sealed partial class ImGuiEditorWindow
         _dragInstanceStaticWorld = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
             remap: RemapRuntimeMaterial, excludeObjectId: sceneObject.Id);
         var staticMs = watch.Elapsed.TotalMilliseconds;
-        MVoxelLog.Info($"拖动实例准备：对象世界 {objectMs:0.0}ms（{_dragInstanceObjectWorld.OccupiedVoxelCount:N0} 格，缓存命中={objectCacheHit}），" +
-            $"静态世界 {staticMs:0.0}ms（{_dragInstanceStaticWorld.OccupiedVoxelCount:N0} 格）");
+        MVoxelLog.Info($"拖动实例准备：对象世界 {objectMs:0.0}ms（{_dragInstanceObjectWorld?.OccupiedVoxelCount ?? 0:N0} 格，缓存命中={objectCacheHit}），" +
+            $"静态世界 {staticMs:0.0}ms（{_dragInstanceStaticWorld?.OccupiedVoxelCount ?? 0:N0} 格）");
         _dragInstanceObjectId = sceneObject.Id;
     }
 
