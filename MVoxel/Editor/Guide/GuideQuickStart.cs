@@ -72,7 +72,7 @@ internal static class GuideQuickStart
                 "移动渲染视角会写回相机对象，所以调构图就是调相机。",
                 "渲染工具栏的导出菜单可以输出当前相机 PNG/HDR 或全部相机 PNG，任务队列会显示路径和进度。",
                 "模型和场景用“项目 → 导出”输出原生 .mvmodel / .mvworld，保留颜色、材质槽和标记；完整场景层级用“另存项目”。",
-                "最后 Ctrl+S 保存。自动保存默认写入恢复快照，也可在编辑器设置中选择正式保存。",
+                "最后 Ctrl+S 保存。自动保存默认开启，每 10 分钟按与手动保存相同的流程写入正式项目文件。",
             ],
             null,
             [new GuideAction("渲染页", GuideActionId.RenderTab), new GuideAction("保存项目", GuideActionId.SaveProject)]),

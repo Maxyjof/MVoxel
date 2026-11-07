@@ -17,7 +17,6 @@ internal sealed partial class ImGuiEditorWindow
     private bool _historyConfirmationResolved;
     private bool _historyAwaitKeyRelease;
     private bool _historyPriming = true;
-    private int _historyLayoutRestoreFrame = -2;
     private long _historySceneRevision;
     private bool _historyInitialized, _historyReplaying, _historyCommitting;
     private EditorHistoryState? _historyBefore;
@@ -77,20 +76,16 @@ internal sealed partial class ImGuiEditorWindow
         if (confirm) ExecuteHistory(pending.Command, pending.Forward);
     }
 
-    // Only user-controlled values, never timers, GPU objects, diagnostics or transient popup state.
+    // 只记录用户可撤销的编辑器值；自动活动相机、停靠布局、资产选择和场景加载上下文不进入历史。
     private static readonly FieldInfo[] HistoryUiFields = new[]
     {
         nameof(_activeTool), nameof(_voxelEditTargetId), nameof(_inspectorLockedObjectId), nameof(_selectedSceneObjectId), nameof(_pinnedVoxelModelId),
         nameof(_sceneGizmoMode), nameof(_brushShape), nameof(_brushRadius), nameof(_paletteIndex), nameof(_brushEmissive), nameof(_brushMaterialSlot),
-        nameof(_renderCameraId), nameof(_showGrid), nameof(_showVoxelOutlines),
-        nameof(_showHierarchy), nameof(_showInspector), nameof(_showProjectAssets), nameof(_showModelingTools), nameof(_showRenderConfig),
-        nameof(_showGeneratorPanel), nameof(_showVoxelMeasurements), nameof(_showPerformanceAnalyzer), nameof(_showRenderStatistics),
-        nameof(_activeLayoutFile), nameof(_activeLayoutName), nameof(_layoutPreset), nameof(_activeSceneRelativePath),
+        nameof(_showGrid), nameof(_showVoxelOutlines),
         nameof(_generatorSource), nameof(_generatorRelativePath), nameof(_generatorDirty), nameof(_paletteIsProjectLevel), nameof(_selectedProjectPalettePath),
         nameof(_sampledBrushColor), nameof(_hollowBox), nameof(_sceneSliceEnabled), nameof(_sceneSliceAxis), nameof(_sceneSliceCoordinate),
         nameof(_sceneSliceKeepGreater), nameof(_worldLoadFailed),
-        nameof(_editingMaterialPath), nameof(_centerTab), nameof(_showSceneStatistics), nameof(_editPanelLayout),
-        nameof(_showSettingsWindow), nameof(_settingsScope), nameof(_editorSettingsCategory), nameof(_projectSettingsCategory),
+        nameof(_editingMaterialPath),
     }.Select(name => typeof(ImGuiEditorWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic))
         .Select(field => field ?? throw new InvalidOperationException("撤销状态字段不存在")).ToArray();
 
@@ -145,9 +140,9 @@ internal sealed partial class ImGuiEditorWindow
             HistoryUiFields.Select(field => field.GetValue(this)).ToArray(), (Rgba32[])_palette.Clone(),
             new Dictionary<string, object?>(_generatorParameters), _historySceneRevision,
             _generatorAsset is null ? null : SettingsStore.Snapshot(_generatorAsset),
-            CaptureLayout(), SettingsStore.Snapshot(_extraInspectors), _visiblePluginPanels.ToArray(),
+            _selectedSceneObjectIds.ToArray(), SettingsStore.Snapshot(_extraInspectors), _visiblePluginPanels.ToArray(),
             _editingMaterial is null ? null : SettingsStore.Snapshot(_editingMaterial),
-            _assetBrowser.SelectedAssetPath, _historyEnvironment);
+            _assetBrowser.SelectedAssetPath, _assetBrowser.EditingAssetPath, _historyEnvironment);
     }
 
     private void EndEditorHistory(bool force = false)
@@ -160,12 +155,12 @@ internal sealed partial class ImGuiEditorWindow
             _sceneFocusAnimation is not null || _renderFocusAnimation is not null)) return;
         var before = _historyBefore!;
         var after = CaptureEditorHistory(before);
-        // ImGui 在后续帧把恢复的停靠布局应用到活动窗口；这不是用户的新编辑。
-        if (ImGui.GetFrameCount() <= _historyLayoutRestoreFrame + 1) before = before with { Layout = after.Layout };
         var files = _historyFiles.Complete();
         var changed = before.SceneJson != after.SceneJson || before.EditorSettings != after.EditorSettings ||
-            before.Generator != after.Generator || before.Layout != after.Layout || before.Inspectors != after.Inspectors ||
+            before.Generator != after.Generator || before.Inspectors != after.Inspectors ||
+            !before.SelectedSceneObjectIds.SequenceEqual(after.SelectedSceneObjectIds) ||
             before.Material != after.Material || before.AssetSelection != after.AssetSelection ||
+            before.EditingAssetPath != after.EditingAssetPath ||
             !ReferenceEquals(before.Environment, after.Environment) ||
             !before.PluginPanels.SequenceEqual(after.PluginPanels) ||
             before.ProjectSettings != after.ProjectSettings || !before.Ui.SequenceEqual(after.Ui) ||
@@ -191,8 +186,9 @@ internal sealed partial class ImGuiEditorWindow
     private sealed record EditorHistoryState(SceneDocument? Scene, string? SceneJson,
         Dictionary<StableId, SceneObject> Objects, Dictionary<StableId, VoxelWorld> Worlds,
         string EditorSettings, string ProjectSettings, object?[] Ui, Rgba32[] Palette,
-        Dictionary<string, object?> Parameters, long Revision, string? Generator, string Layout,
-        string Inspectors, string[] PluginPanels, string? Material, string AssetSelection, HistoryEnvironment Environment);
+        Dictionary<string, object?> Parameters, long Revision, string? Generator,
+        StableId[] SelectedSceneObjectIds, string Inspectors, string[] PluginPanels, string? Material, string AssetSelection,
+        string EditingAssetPath, HistoryEnvironment Environment);
 
     private static bool WorldReferencesChanged(EditorHistoryState before, EditorHistoryState after) =>
         before.Worlds.Keys.Union(after.Worlds.Keys).Any(id =>
@@ -242,6 +238,8 @@ internal sealed partial class ImGuiEditorWindow
         ApplyEditorSettingsToUi();
         if (_project is not null) ApplyProjectSettingsToUi();
         for (var index = 0; index < HistoryUiFields.Length; index++) HistoryUiFields[index].SetValue(this, state.Ui[index]);
+        _selectedSceneObjectIds.Clear();
+        _selectedSceneObjectIds.AddRange(state.SelectedSceneObjectIds);
         _palette = (Rgba32[])state.Palette.Clone();
         _editingMaterial = state.Material is null ? null : SettingsStore.Restore<MaterialAsset>(state.Material);
         if (_editingMaterial is not null) _editingMaterial.SourcePath = _editingMaterialPath;
@@ -256,8 +254,6 @@ internal sealed partial class ImGuiEditorWindow
         _generatorAsset = state.Generator is null ? null : SettingsStore.Restore<GeneratorAsset>(state.Generator);
         if (generatorChanged && _generatorAsset is not null) DescribeGeneratorForUi(_generatorAsset);
         if (_generatorAsset is null) _generatorDefinition = null;
-        if (CaptureLayout() != state.Layout) ImGui.LoadIniSettingsFromMemory(state.Layout);
-        _historyLayoutRestoreFrame = ImGui.GetFrameCount();
         _requestedCenterTab = _centerTab;
         _extraInspectors.Clear();
         _extraInspectors.AddRange(SettingsStore.Restore<List<ExtraInspector>>(state.Inspectors));
@@ -271,9 +267,8 @@ internal sealed partial class ImGuiEditorWindow
         ApplyImGuiStyle();
         _voxelModelReferenceCacheRoot = null;
         _assetPreviewPath = string.Empty;
-        _assetBrowser.Reset();
-        if (!string.IsNullOrEmpty(state.AssetSelection)) _assetBrowser.SelectAsset(state.AssetSelection);
-        _lastAssetSelectionPath = state.AssetSelection;
+        _assetBrowser.SelectAsset(state.AssetSelection);
+        _assetBrowser.EditingAssetPath = state.EditingAssetPath;
         _prefabCache.Clear();
         if (assetsChanged) ReloadMaterialTable();
         _selectedVoxel = null;

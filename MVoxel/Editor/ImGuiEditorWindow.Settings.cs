@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using MVoxel.Editor.Settings;
 using MVoxel.Project;
 using MVoxel.Rendering;
@@ -528,19 +528,11 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("自动保存", "editor.general.autosave"))
             {
                 var changed = ImGui.Checkbox("启用自动保存", ref _editorSettings.AutoSave);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按所选方式定期保存。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按设定周期使用与手动保存相同的正式项目保存流程。");
                 ImGui.BeginDisabled(!_editorSettings.AutoSave);
-                var modeLabel = _editorSettings.AutoSaveMode == AutoSaveMode.Project ? "保存项目" : "恢复快照";
-                if (ImGui.BeginCombo("保存方式", modeLabel))
-                {
-                    if (ImGui.Selectable("恢复快照", _editorSettings.AutoSaveMode == AutoSaveMode.RecoverySnapshot))
-                        _editorSettings.AutoSaveMode = AutoSaveMode.RecoverySnapshot;
-                    if (ImGui.Selectable("保存项目", _editorSettings.AutoSaveMode == AutoSaveMode.Project))
-                        _editorSettings.AutoSaveMode = AutoSaveMode.Project;
-                    ImGui.EndCombo();
-                }
-                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip("恢复快照：写入恢复区，项目仍显示未保存。\n保存项目：与手动保存相同，写入正式项目并清除未保存状态。");
+                ImGui.Text("保存方式：正式项目（与手动保存相同）");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("自动保存直接原子写入正式项目文件；保存成功后清除未保存状态，失败时保留未保存状态。");
                 SetSettingsSliderWidth("间隔（秒）");
                 changed |= ImGui.SliderInt("间隔（秒）", ref _editorSettings.AutoSaveSeconds, 10, 3600);
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))

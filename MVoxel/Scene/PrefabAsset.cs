@@ -83,6 +83,17 @@ public static class PrefabSerializer
     }
 
     /// <summary>
+    /// 深拷贝预制体资产，供撤回快照和阶段切换保存独立上下文
+    /// </summary>
+    public static PrefabAsset Clone(PrefabAsset source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        var json = JsonSerializer.Serialize(source, Options);
+        return JsonSerializer.Deserialize<PrefabAsset>(json, Options)
+            ?? throw new InvalidDataException("无法复制预制体资产");
+    }
+
+    /// <summary>
     /// 原子保存预制体资产
     /// </summary>
     /// <param name="path">.prefab 文件路径</param>

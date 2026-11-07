@@ -6398,10 +6398,8 @@ DockId=0x6A3C3007,0
                         {
                             Fraction = .18F + (progress.Fraction - .18F) * .65F,
                         });
-                        // 恢复快照优先：有可用的恢复数据时只准备恢复场景。
-                        // 先完整准备正式场景再准备恢复场景，会白算一套最终不进画面的世界
-                        report(new BlockingOperationProgress("正在检查恢复数据…", .63F, true));
-                        var preload = PreloadForOpen(project, cancellation, ReportModels, materials, out var snapshot);
+
+                        var preload = PreloadForOpen(project, cancellation, ReportModels, materials);
 
                         cancellation.ThrowIfCancellationRequested();
                         report(new BlockingOperationProgress("正在启动项目插件…", .88F, true));
@@ -6415,7 +6413,7 @@ DockId=0x6A3C3007,0
 
                             cancellation.ThrowIfCancellationRequested();
                             report(new BlockingOperationProgress("正在应用编辑器工作区…", .96F, false));
-                            return new PreparedOpenProject(project, preload, snapshot, materials, runtime);
+                            return new PreparedOpenProject(project, preload, materials, runtime);
                         }
                         catch { runtime.Dispose(); throw; }
                     },
@@ -6473,52 +6471,16 @@ DockId=0x6A3C3007,0
     }
 
     /// <summary>
-    /// 打开项目时的体素预读：有恢复快照时把它物化成一个独立场景文件，读不出来再退回正式场景
+    /// 打开项目时预读正式场景与模型文件；崩溃后按最近一次成功保存的项目内容普通打开
     /// </summary>
-    /// <remarks>
-    /// 崩溃前的未保存工作绝不覆盖用户最后主动保存的场景：快照会另存为同目录下的
-    /// 「&lt;场景名&gt;-恢复快照.mvox」，预读结果指向这个新文件，编辑器打开它。
-    /// 恢复数据损坏或引用的资产已经不在了，才退回正式场景，回退语义保持不变
-    /// </remarks>
     /// <param name="project">目标项目</param>
     /// <param name="cancellation">取消令牌</param>
     /// <param name="report">进度回调</param>
     /// <param name="materials">项目材质资产，可为空</param>
-    /// <param name="snapshot">实际采用的恢复快照，没有恢复数据时为空</param>
     /// <returns>要显示的那个场景的预读结果</returns>
     private static PreloadedModels PreloadForOpen(ProjectHandle project, CancellationToken cancellation,
-        Action<BlockingOperationProgress> report, IReadOnlyList<MaterialAsset>? materials,
-        out RecoverySnapshot? snapshot)
+        Action<BlockingOperationProgress> report, IReadOnlyList<MaterialAsset>? materials)
     {
-        snapshot = null;
-        if (RecoveryStore.TryLoad(project.RootPath, out var loaded) && loaded is not null)
-        {
-            try
-            {
-                using (StartupTimeline.Begin("打开·预读恢复数据"))
-                {
-                    // 先确认快照本身可用，再物化；任一步失败都保留恢复区，改用正式场景。
-                    var sourceRelative = FindStartupSceneRelativePath(project);
-                    var recoveredRelative = RecoveryStore.MaterializeAsScene(
-                        project.AssetsPath, sourceRelative, loaded.ScenePath);
-                    var recoveredPath = Path.Combine(project.AssetsPath,
-                        recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
-                    // 从物化后的文件读回来，保证内存场景与磁盘上的「恢复快照」完全一致。
-                    var scene = Scene.SceneSerializer.Load(recoveredPath);
-                    var recovered = PreloadProjectModels(project, cancellation, report, scene, materials: materials);
-                    RecoveryStore.Clear(project.RootPath);
-                    snapshot = loaded;
-                    return recovered with { ScenePath = recoveredRelative };
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
-                InvalidOperationException or InvalidDataException or JsonException)
-            {
-                snapshot = null;
-                MVoxelLog.Error("恢复区快照预读失败，改用正式场景", exception);
-            }
-        }
-
         using (StartupTimeline.Begin("打开·预读场景与模型"))
         {
             return PreloadProjectModels(project, cancellation, report, materials: materials);
@@ -6561,16 +6523,6 @@ DockId=0x6A3C3007,0
         _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
         _autoSaveQueued = false;
         LoadWorldForProject(project, preloadedModels);
-        if (prepared?.Snapshot is { } snapshot && preloadedModels?.Scene is not null)
-        {
-            // 预读阶段已把快照物化成独立场景文件，这里打开的就是那个新文件：
-            // 内容已经落盘，不是「未保存」状态，也不需要用户确认覆盖原场景。
-            _voxelHistory.Clear();
-            FrameCameraOnWorld();
-            SetStatus($"崩溃前的未保存工作已另存为「{Path.GetFileNameWithoutExtension(_activeSceneRelativePath)}」场景，原场景未改动");
-            MVoxelLog.Info($"恢复快照已物化为独立场景：{_activeSceneRelativePath}，快照保存于 {snapshot.SavedAt:O}");
-        }
-        else if (prepared is null) TryRestoreRecovery(project);
         var synchronizedPrefabs = SyncPendingPrefabRevisions();
         if (synchronizedPrefabs > 0) MVoxelLog.Info($"已合并 {synchronizedPrefabs} 个场景预制体实例的资产更新");
         _activeTool = EditorTool.Pick;
@@ -6831,7 +6783,6 @@ DockId=0x6A3C3007,0
                 _sceneDocumentDirty = true;
                 return;
             }
-            RecoveryStore.Clear(_project.RootPath);
             _sceneDocumentDirty = false;
             _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
             SetStatus(automatic
@@ -6853,65 +6804,17 @@ DockId=0x6A3C3007,0
         if (_project is null || _worldLoadFailed || !_editorSettings.AutoSave || !_sceneDocumentDirty) return;
         if (IsAssetStage)
         {
-            // 恢复区属于原场景，不能用资产编辑空间覆盖；仅项目自动保存模式写回资产。
-            if (_editorSettings.AutoSaveMode == AutoSaveMode.Project) SaveAssetStage();
+            SaveAssetStage();
             _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
-            return;
-        }
-        if (_editorSettings.AutoSaveMode == AutoSaveMode.Project)
-        {
-            SaveProject(automatic: true);
             return;
         }
 
-        try
-        {
-            // 恢复快照包含各对象的独立体素，不再生成冗余的合成世界副本。
-            if (_sceneDocument is not null)
-            {
-                var reencoded = SaveObjectVoxelWorlds(_project);
-                RecoveryStore.WriteSnapshot(_project.RootPath, _sceneDocument, reencoded);
-            }
-            _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
-            SetStatus("已保存快照到恢复区（只重编码改动区块，正式保存后自动清理）");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            MVoxelLog.Error("自动保存恢复区快照失败", exception);
-            SetStatus($"自动保存失败：{exception.Message}");
-        }
+        SaveProject(automatic: true);
     }
 
     /// <summary>
     /// 打开项目后尝试套用恢复区快照，存在即视为比正式保存更新的工作，载入并标记为未保存
     /// </summary>
-    private void TryRestoreRecovery(ProjectHandle project)
-    {
-        if (!RecoveryStore.TryLoad(project.RootPath, out var snapshot) || snapshot is null) return;
-        try
-        {
-            // 与预读路径保持一致：原场景不动，快照物化成旁边的「恢复快照」场景文件后打开它。
-            var recoveredRelative = RecoveryStore.MaterializeAsScene(
-                project.AssetsPath, _activeSceneRelativePath, snapshot.ScenePath);
-            var recoveredPath = Path.Combine(project.AssetsPath,
-                recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
-            _sceneDocument = Scene.SceneSerializer.Load(recoveredPath);
-            _activeSceneRelativePath = recoveredRelative;
-            LoadObjectVoxelWorlds(project);
-            _voxelHistory.Clear();
-            _sceneDocumentDirty = false;
-            RecoveryStore.Clear(project.RootPath);
-            FrameCameraOnWorld();
-            SetStatus($"崩溃前的未保存工作已另存为「{Path.GetFileNameWithoutExtension(recoveredRelative)}」场景，原场景未改动");
-            MVoxelLog.Info($"恢复快照已物化为独立场景：{recoveredRelative}，快照保存于 {snapshot.SavedAt:O}");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException or InvalidDataException)
-        {
-            MVoxelLog.Error("恢复区快照物化失败，已按正式保存内容打开", exception);
-            SetStatus($"恢复区快照不可用，已打开正式保存内容：{exception.Message}");
-        }
-    }
-
     private void RefreshProjectAssets()
     {
         _assetBrowser.Reset();

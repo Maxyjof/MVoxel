@@ -243,8 +243,7 @@ internal sealed partial class ImGuiEditorWindow
     private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels? Models);
 
     private sealed record PreparedOpenProject(ProjectHandle Project, PreloadedModels Models,
-        RecoverySnapshot? Snapshot, IReadOnlyList<MaterialAsset>? Materials,
-        PluginScriptRuntime Runtime) : IDisposable
+        IReadOnlyList<MaterialAsset>? Materials, PluginScriptRuntime Runtime) : IDisposable
     {
         public void Dispose() => Runtime.Dispose();
     }

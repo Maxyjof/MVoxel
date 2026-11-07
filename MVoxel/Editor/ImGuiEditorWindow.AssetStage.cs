@@ -136,6 +136,7 @@ internal sealed partial class ImGuiEditorWindow
         var extension = Path.GetExtension(path).ToLowerInvariant();
         if (extension is ".vox" or ".qb" or ".schem") { ImportExternalVoxelForEditing(path); return; }
         if (extension is not (".mvmodel" or ".mvworld")) { SetStatus("不支持的体素资产格式"); return; }
+        BeginStageTransition();
         try
         {
             var hash = HashAssetFile(path);
@@ -180,8 +181,6 @@ internal sealed partial class ImGuiEditorWindow
                 _objectVoxels.CaptureReferences(), _sceneDocumentDirty, _worldLoadFailed,
                 _selectedSceneObjectId, _voxelEditTargetId, model.Id, _inspectorLockedObjectId, _pinnedVoxelModelId, _voxelHistory, CaptureAssetStageCamera(), segmentIds,
                 multiDocument?.Objects.ToDictionary(segment => segment.ObjectId, segment => segment.Origin, StringComparer.Ordinal));
-            _voxelHistory = new CommandHistory();
-            _historyInitialized = false;
             _historyBefore = null;
             _historyPriming = true;
             _voxelStage = previous;
@@ -204,9 +203,11 @@ internal sealed partial class ImGuiEditorWindow
             _assetBrowser.SelectAsset(relativePath);
             _assetBrowser.EditingAssetPath = relativePath;
             SetStatus($"正在编辑体素资产：{relativePath}");
+            CommitStageTransition($"打开体素资产：{relativePath}");
+
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
-        { SetStatus($"打开体素资产失败：{exception.Message}"); }
+        { AbortStageTransition(); SetStatus($"打开体素资产失败：{exception.Message}"); }
     }
 
     private void ImportExternalVoxelForEditing(string sourcePath)
@@ -275,6 +276,7 @@ internal sealed partial class ImGuiEditorWindow
                 : "请先返回场景，再打开其他资产");
             return;
         }
+        BeginStageTransition();
         try
         {
             var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_project.AssetsPath)) + Path.DirectorySeparatorChar;
@@ -338,7 +340,7 @@ internal sealed partial class ImGuiEditorWindow
             _prefabStage = new PrefabStage(relativePath, path, asset, effective, basePath, baseHashes, hash, _sceneDocument,
                 _objectVoxels.CaptureReferences(), _sceneDocumentDirty, _worldLoadFailed,
                 _selectedSceneObjectId, _voxelEditTargetId, _inspectorLockedObjectId, _pinnedVoxelModelId, _voxelHistory, CaptureAssetStageCamera());
-            _voxelHistory = new CommandHistory(); _historyInitialized = false; _historyBefore = null; _historyPriming = true;
+            _historyBefore = null; _historyPriming = true;
             _sceneDocument = editScene;
             _objectVoxels.RestoreReferences(editWorlds);
             _worldLoadFailed = false; _sceneDocumentDirty = false;
@@ -351,10 +353,11 @@ internal sealed partial class ImGuiEditorWindow
             else FrameCameraOnWorld();
             _assetBrowser.SelectAsset(relativePath);
             _assetBrowser.EditingAssetPath = relativePath;
+            CommitStageTransition("进入预制体编辑");
             SetStatus($"正在编辑预制体：{relativePath}");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or System.Text.Json.JsonException or ArgumentException)
-        { SetStatus($"打开预制体失败：{exception.Message}"); }
+        { AbortStageTransition(); SetStatus($"打开预制体失败：{exception.Message}"); }
     }
 
     private bool SavePrefabAssetStage()
@@ -417,7 +420,8 @@ internal sealed partial class ImGuiEditorWindow
     private void ReturnFromPrefabAssetStage()
     {
         if (_prefabStage is not { } stage) return;
-        _voxelHistory.Clear(); _voxelHistory = stage.SceneHistory; _historyInitialized = true; _historyBefore = null; _historyPriming = true;
+        BeginStageTransition();
+        _historyBefore = null; _historyPriming = true;
         _sceneDocument = stage.Scene; _objectVoxels.RestoreReferences(stage.Worlds);
         _sceneDocumentDirty = stage.SceneDirty; _worldLoadFailed = stage.LoadFailed;
         _selectedSceneObjectId = stage.Selection; _voxelEditTargetId = stage.EditTarget; _selectedVoxel = null;
@@ -428,6 +432,7 @@ internal sealed partial class ImGuiEditorWindow
         var updated = stage.Saved ? SyncPendingPrefabRevisions(stage.AbsolutePath) : 0;
         RebuildObjectVoxelWorld(); RestoreAssetStageCamera(stage.Camera);
         SetStatus(stage.Saved ? $"已返回场景，更新 {updated} 个实例；已补入可同步的新对象；受覆盖保护的删除、嵌套结构及其他场景同步尚未完成" : "已返回场景");
+        CommitStageTransition("返回主场景");
     }
 
     private bool SaveVoxelAssetStage()
@@ -590,10 +595,8 @@ internal sealed partial class ImGuiEditorWindow
     private void ReturnFromVoxelAssetStage(bool saveChanges)
     {
         if (_voxelStage is not { } stage || (saveChanges && _sceneDocumentDirty && !SaveVoxelAssetStage())) return;
+        BeginStageTransition();
         stage = _voxelStage!;
-        _voxelHistory.Clear();
-        _voxelHistory = stage.SceneHistory;
-        _historyInitialized = true;
         _historyBefore = null;
         _historyPriming = true;
         _sceneDocument = stage.Scene;
@@ -615,11 +618,12 @@ internal sealed partial class ImGuiEditorWindow
             // 场景仍保留原有内存数据；未能确认共享资产状态前不能覆盖保存。
             _worldLoadFailed = true;
             SetStatus($"返回场景，但刷新引用失败，已阻止覆盖保存：{exception.Message}");
-            RebuildObjectVoxelWorld();
+            AbortStageTransition();
             return;
         }
         RebuildObjectVoxelWorld();
         SetStatus("已返回场景");
+        CommitStageTransition("返回主场景");
     }
 
     /// <summary>
