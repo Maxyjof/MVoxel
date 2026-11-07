@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Numerics;
 using MVoxel.Core;
 using OpenTK.Windowing.Desktop;
@@ -838,9 +838,26 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         // Vulkan 的驱动版本号按 22/10/12 位打包，同时保留原始值便于对照厂商自己的版本号
         var driver = properties.DriverVersion;
         var driverText = $"{driver >> 22}.{(driver >> 12) & 0x3FF}.{driver & 0xFFF}（0x{driver:X8}）";
-        MVoxelLog.Info($"Vulkan 设备候选：{name}，类型 {properties.DeviceType}，" +
-            $"厂商 0x{properties.VendorID:X4}，设备 0x{properties.DeviceID:X4}，" +
+        // 厂商名直接写出来：跨厂商排查（尤其 AMD）时不必再查 0x1002 这类编号
+        var vendorName = properties.VendorID switch
+        {
+            0x1002 => "AMD",
+            0x10DE => "NVIDIA",
+            0x8086 => "Intel",
+            0x13B5 => "ARM",
+            0x5143 => "Qualcomm",
+            0x1010 => "Imagination",
+            _ => "未知厂商",
+        };
+        MVoxelLog.Info($"Vulkan 设备候选：{name}，厂商 {vendorName}，类型 {properties.DeviceType}，" +
+            $"厂商编号 0x{properties.VendorID:X4}，设备 0x{properties.DeviceID:X4}，" +
             $"驱动 {driverText}，队列族 {queueFamilyIndex}，评分 {score}");
+        if (properties.VendorID == 0x1002)
+        {
+            // AMD 在不同驱动版本上对光追/Compute 的调度差异较大，单独留一条醒目记录便于对照日志
+            MVoxelLog.Info("检测到 AMD 显卡：后续视口性能日志会记录求交后端（硬件/软件）、" +
+                "加速结构版本与重建耗时，排查卡顿时优先看这几项");
+        }
         // 上限与显存一起打出来：跨厂商排查时这几项决定工作集能不能装下、单次缓冲够不够大
         PhysicalDeviceMemoryProperties memoryProperties = default;
         _api.GetPhysicalDeviceMemoryProperties(device, &memoryProperties);

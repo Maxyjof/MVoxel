@@ -1224,6 +1224,44 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>诊断：当前连续复用旧画面的帧数</summary>
     internal int DiagnosticConvergedFrames => _realtimeConvergedFrames;
 
+    /// <summary>场景视口当前求交后端，取值为「硬件 ray query」或「软件 BVH」</summary>
+    internal string RayBackendStatus => _rayBackendStatus;
+
+    /// <summary>回退软件求交时的原因，硬件生效时为空</summary>
+    internal string RayFallbackReason => _rayFallbackReason;
+
+    private string _rayBackendStatus = "未初始化";
+    private string _rayFallbackReason = string.Empty;
+    private string _rayFallbackLogged = string.Empty;
+
+    /// <summary>
+    /// 记录一次软件回退，并在原因变化时写日志：AMD 驱动问题排查主要依赖这条记录
+    /// </summary>
+    /// <param name="reason">回退原因</param>
+    private void SetRayFallback(string reason)
+    {
+        _rayBackendStatus = "软件 BVH";
+        _rayFallbackReason = reason;
+        if (string.Equals(_rayFallbackLogged, reason, StringComparison.Ordinal)) return;
+        _rayFallbackLogged = reason;
+        MVoxelLog.Warn($"场景视口求交回退软件 BVH：{reason}；设备 {_context?.DeviceName ?? "未知设备"}，" +
+            $"工作集 {_workset.Cells.Count:N0} 格，同步序号 {SyncCompletedCount}");
+    }
+
+    /// <summary>
+    /// 记录硬件求交已生效：从软件回退恢复到硬件时写一条日志，便于确认恢复时机
+    /// </summary>
+    private void SetRayHardwareActive()
+    {
+        if (string.Equals(_rayBackendStatus, "硬件 ray query", StringComparison.Ordinal) &&
+            _rayFallbackReason.Length == 0) return;
+        _rayBackendStatus = "硬件 ray query";
+        _rayFallbackReason = string.Empty;
+        _rayFallbackLogged = string.Empty;
+        MVoxelLog.Info($"场景视口求交使用硬件 ray query；设备 {_context?.DeviceName ?? "未知设备"}，" +
+            $"加速结构 {_hardwareShadowCellCount:N0} 格，同步序号 {SyncCompletedCount}");
+    }
+
     /// <summary>诊断：主射线是否使用硬件加速结构</summary>
     internal bool DiagnosticHardwareCurrent => _hardwareShadowGeometryCurrent;
 
@@ -2087,14 +2125,39 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 但主射线求交仍然优先用 ray query：能开硬件光追就开，AMD 与 NVIDIA 走同一判定
         _hardwareAccelerationDisabledByUser = settings.ForceComputePath ||
             (!settings.HardwareRayTracingAuto && !settings.UseHardwareRayTracing);
-        if (_hardwareAccelerationDisabledByUser || _context is null || !_context.SupportsHardwareRayQuery) return;
+        if (_hardwareAccelerationDisabledByUser)
+        {
+            SetRayFallback(settings.ForceComputePath ? "用户强制Compute路径" : "用户关闭硬件光追");
+            return;
+        }
+        if (_context is null)
+        {
+            SetRayFallback("渲染设备不可用");
+            return;
+        }
+        if (!_context.SupportsHardwareRayQuery)
+        {
+            SetRayFallback("设备不支持 Ray Query");
+            return;
+        }
         // 砖驻留与可见区块池包含预留槽或空洞，其索引必须与 GPU 池一致。
         var hardwareCellCount = _brickPool?.Cells.Length ?? _brickResidency?.Cells.Length ?? _sceneOrderedCells.Count;
         // 拖动实例路径允许静态世界为空（场景只有一个被拖对象时静态工作集没有体素）
         var dragCells = _dragPreviewActive && _dragPreviewCells.Count > 0 ? _dragPreviewCells : null;
-        if (_usingBrickPath || (hardwareCellCount == 0 && dragCells is null) ||
-            hardwareCellCount > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels)
+        if (_usingBrickPath)
         {
+            SetRayFallback("砖驻留索引与加速结构不通用");
+            return;
+        }
+        if (hardwareCellCount == 0 && dragCells is null)
+        {
+            SetRayFallback("工作集为空");
+            return;
+        }
+        if (hardwareCellCount > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels)
+        {
+            SetRayFallback($"格数 {hardwareCellCount:N0} 超过硬件上限 " +
+                $"{VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels:N0}");
             return;
         }
 
@@ -2144,8 +2207,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 _shadowAccelerationLastBuildAtMs > 0 &&
                 now - _shadowAccelerationLastBuildAtMs >= ContinuousEditRebuildIntervalMs &&
                 _shadowAccelerationLastCostMs <= ContinuousEditRebuildBudgetMs;
-            if (now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs && !forcedRefresh)
+            // 只有连续笔划才等稳定窗口：笔划期间每 120ms 就会提交一次，重建会把编辑手感拖慢。
+            // 普通编辑（移动对象、改参数、撤销）必须立即重建，主射线才能一直走硬件；
+            // 否则 AMD 上这 320ms 里每一帧都要退回软件 BVH，单帧会掉到秒级
+            if (_editRegionActive && now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs &&
+                !forcedRefresh)
             {
+                SetRayFallback($"笔划编辑中加速结构滞后 {now - _shadowAccelerationSeenAtMs}ms，区域内软件补交");
                 ActivateHardwareShadowSnapshot();
                 return;
             }
@@ -2254,6 +2322,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _hardwareShadowsActive = true;
         _hardwareShadowGeometryCurrent = true;
         _hardwareShadowCellCount = _shadowAcceleration.AccelerationCellCount;
+        SetRayHardwareActive();
         _shadowSnapshotSource = _lastSyncSource;
         _shadowSnapshotLodSignature = _worksetLodSignature;
     }

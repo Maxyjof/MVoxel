@@ -568,6 +568,22 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     }
 
     /// <summary>
+    /// 按设备名推断显卡厂商，供状态接口与日志快速区分 AMD/NVIDIA/Intel
+    /// </summary>
+    /// <param name="deviceName">Vulkan 设备名</param>
+    /// <returns>厂商名，无法识别时返回空字符串</returns>
+    private static string GpuVendorName(string? deviceName)
+    {
+        if (string.IsNullOrWhiteSpace(deviceName)) return string.Empty;
+        if (deviceName.Contains("AMD", StringComparison.OrdinalIgnoreCase) ||
+            deviceName.Contains("Radeon", StringComparison.OrdinalIgnoreCase)) return "AMD";
+        if (deviceName.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) ||
+            deviceName.Contains("GeForce", StringComparison.OrdinalIgnoreCase)) return "NVIDIA";
+        if (deviceName.Contains("Intel", StringComparison.OrdinalIgnoreCase)) return "Intel";
+        return string.Empty;
+    }
+
+    /// <summary>
     /// 处理 CLI 发来的只读状态和项目打开命令
     /// </summary>
     /// <param name="request">命令 JSON</param>
@@ -594,6 +610,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 autoSaveSeconds = _project is null ? 0 : _editorSettings.AutoSaveSeconds,
                 renderingDegraded = _gpuRenderingDisabled,
                 renderingStatus = _pipelineStatus,
+                deviceName = _vulkan?.DeviceName ?? string.Empty,
+                gpuVendor = GpuVendorName(_vulkan?.DeviceName),
+                sceneRayBackend = _scenePipeline?.RayBackendStatus ?? "未初始化",
+                sceneRayFallbackReason = _scenePipeline?.RayFallbackReason ?? string.Empty,
                 renderSamples = _pipeline?.AccumulatedSamples ?? 0,
                 renderPathTracing = _renderSettings.PathTracingEnabled,
                 renderWorksetCells = _pipeline?.SyncTotalCells ?? 0,

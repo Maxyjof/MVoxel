@@ -1174,6 +1174,8 @@ internal sealed partial class ImGuiEditorWindow
             accelerationOrigin = _scenePipeline?.DiagnosticAccelerationOrigin is { } origin
                 ? new[] { (double)origin.X, origin.Y, origin.Z }
                 : null,
+            rayBackend = _scenePipeline?.RayBackendStatus ?? "未初始化",
+            rayFallbackReason = _scenePipeline?.RayFallbackReason ?? string.Empty,
             objects,
         };
     }
