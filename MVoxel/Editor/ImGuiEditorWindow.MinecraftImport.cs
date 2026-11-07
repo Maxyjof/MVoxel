@@ -753,21 +753,34 @@ internal partial class ImGuiEditorWindow
         var extension = Path.GetExtension(path).ToLowerInvariant();
         try
         {
-            var world = extension switch
+            VoxelWorld world;
+            MaterialExchangeMetadata? materials = null;
+            if (extension == ".vox")
             {
-                ".mvmodel" or ".mvworld" => LargeWorldFormat.Read(path),
-                ".qb" => QubicleFormat.Read(path),
-                ".schem" => SchematicFormat.Read(path),
-                ".vox" => VoxFormat.Read(path),
-                _ => throw new InvalidDataException($"不支持导入的体素格式：{extension}")
-            };
+                // .vox 的材质写在 MATL 里（金属、玻璃、发光），必须随体素一起转成项目材质，
+                // 否则镜面数据在导入这一步就丢了
+                var document = VoxFormat.ReadDocument(path);
+                world = VoxFormat.Compose(document);
+                materials = VoxMaterialExchange.BuildImportMetadata(document,
+                    Path.GetFileNameWithoutExtension(path));
+            }
+            else
+            {
+                world = extension switch
+                {
+                    ".mvmodel" or ".mvworld" => LargeWorldFormat.Read(path),
+                    ".qb" => QubicleFormat.Read(path),
+                    ".schem" => SchematicFormat.Read(path),
+                    _ => throw new InvalidDataException($"不支持导入的体素格式：{extension}")
+                };
+            }
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
             var fileName = UniqueAssetFileName(worldsDirectory,
                 SanitizeFileName(Path.GetFileNameWithoutExtension(path)), ".mvmodel");
             var worldPath = Path.Combine(worldsDirectory, fileName);
-            if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(worldPath);
-            else LargeWorldFormat.Write(worldPath, world);
+            if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(worldPath, materials);
+            else LargeWorldFormat.Write(worldPath, world, materials);
             AssetMetaStore.EnsureMeta(worldPath);
             OpenWorldAsset("Worlds/" + fileName);
             SetStatus($"已导入 {Path.GetFileName(path)}：{world.OccupiedVoxelCount:N0} 个体素");

@@ -79,4 +79,70 @@ public static class VoxMaterialExchange
         }
         return result;
     }
+
+    /// <summary>
+    /// 把 .vox 的 MATL 材质转成项目材质元数据：材质按调色板索引绑定，
+    /// 导入时随世界一起写入，渲染视图才能拿到金属度与粗糙度做镜面反射
+    /// </summary>
+    /// <param name="document">解析后的 .vox 文档</param>
+    /// <param name="baseName">素材名，用于生成材质显示名</param>
+    /// <returns>可直接写入世界文件的材质元数据</returns>
+    public static MaterialExchangeMetadata BuildImportMetadata(VoxDocument document, string baseName)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var metadata = new MaterialExchangeMetadata();
+        foreach (var material in document.Materials)
+        {
+            if (material.Id <= 0 || material.Id >= MaterialAsset.TableSlots) continue;
+            var id = $"vox-material-{material.Id}";
+            metadata.Definitions[id] = ConvertToAsset(material, baseName);
+            metadata.Bindings[(ushort)material.Id] = id;
+        }
+
+        return metadata;
+    }
+
+    /// <summary>
+    /// 单个 MATL 材质到项目材质的映射：金属走金属度与粗糙度，玻璃走折射率与通透度，发光走自发光
+    /// </summary>
+    private static MaterialAsset ConvertToAsset(VoxMaterial material, string baseName)
+    {
+        var type = material.Type ?? string.Empty;
+        var isMetal = type.Contains("metal", StringComparison.OrdinalIgnoreCase) || material.Metal > 0F;
+        var isGlass = !isMetal && (type.Contains("glass", StringComparison.OrdinalIgnoreCase) ||
+                                   material.Transmission >= 0F || material.RefractionIndex > 0F);
+        var isEmissive = !isMetal && !isGlass && (type.Contains("emit", StringComparison.OrdinalIgnoreCase) ||
+                                                  material.Emissive > 0F);
+        var asset = new MaterialAsset { Name = $"{baseName} 材质 {material.Id}" };
+        if (isMetal)
+        {
+            // MagicaVoxel 的金属材质用 _metal 做权重、_rough 做粗糙度；
+            // 缺省 _metal 时按满金属处理，粗糙度缺省取 0 得到镜面反射
+            var metallic = material.Metal >= 0F ? material.Metal : Math.Max(material.Weight, 0F);
+            asset.Metallic = Math.Clamp(metallic <= 0F ? 1F : metallic, 0F, 1F);
+            asset.Roughness = material.Roughness >= 0F ? material.Roughness : 0F;
+            if (material.Specular >= 0F) asset.Specular = material.Specular;
+            return asset;
+        }
+
+        if (isGlass)
+        {
+            asset.Ior = material.RefractionIndex > 0F
+                ? material.RefractionIndex
+                : material.Ior > 0F ? 1F + material.Ior : 1.5F;
+            if (material.Transmission >= 0F) asset.Opacity = 1F - Math.Clamp(material.Transmission, 0F, 1F);
+            if (material.Roughness >= 0F) asset.Roughness = material.Roughness;
+            return asset;
+        }
+
+        if (isEmissive)
+        {
+            asset.EmissiveScale = material.Emissive > 0F ? material.Emissive : Math.Max(material.Flux, 0.01F);
+            return asset;
+        }
+
+        if (material.Roughness >= 0F) asset.Roughness = material.Roughness;
+        if (material.Specular >= 0F) asset.Specular = material.Specular;
+        return asset;
+    }
 }

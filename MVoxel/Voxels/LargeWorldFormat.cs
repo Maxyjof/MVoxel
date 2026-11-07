@@ -1334,8 +1334,7 @@ public static class LargeWorldFormat
         stream.Position = 0;
         var header = ReadV5Header(stream, stream.Length);
         if (!header.HasMetadata) return new MaterialExchangeMetadata();
-        stream.Position = header.MetadataOffset;
-        return ReadMetadata(stream);
+        return ReadRawMetadata(stream, header.MetadataOffset, header.MetadataLength);
     }
 
     /// <summary>
@@ -1663,8 +1662,26 @@ public static class LargeWorldFormat
     private static MaterialExchangeMetadata ReadV5Metadata(Stream stream, V5Header header)
     {
         if (!header.HasMetadata) return new MaterialExchangeMetadata();
-        stream.Position = header.MetadataOffset;
-        return ReadMetadata(stream);
+        return ReadRawMetadata(stream, header.MetadataOffset, header.MetadataLength);
+    }
+
+    /// <summary>
+    /// 读取 v5 元数据段：写入端在 metadataOffset 处直接写编码字节，长度记录在文件头，
+    /// 这里按头里的长度精确读取，不能再按旧格式去读前置长度字段
+    /// </summary>
+    /// <param name="stream">文件流</param>
+    /// <param name="offset">元数据偏移</param>
+    /// <param name="length">元数据字节数</param>
+    /// <returns>解析后的材质元数据</returns>
+    private static MaterialExchangeMetadata ReadRawMetadata(Stream stream, long offset, long length)
+    {
+        if (length < 1 || length > MaterialExchangeCodec.MaximumBytes ||
+            offset < 0 || offset + length > stream.Length)
+            throw new InvalidDataException("材质元数据长度无效");
+        stream.Position = offset;
+        var bytes = new byte[length];
+        ReadFully(stream, bytes, bytes.Length);
+        return MaterialExchangeCodec.Decode(bytes);
     }
 
     /// <summary>
