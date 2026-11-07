@@ -162,12 +162,20 @@ public static class VoxelFlags
 public sealed class SparseVoxelChunk
 {
     private readonly Dictionary<int, VoxelValue> _voxels;
+    // 全局单调修订号：不同区块实例的修订号不会相同，保存快照据此判断区块是否被替换或改写
+    private static long _revisionClock;
+    private long _revision = Interlocked.Increment(ref _revisionClock);
 
     public SparseVoxelChunk() => _voxels = new Dictionary<int, VoxelValue>();
 
     private SparseVoxelChunk(Dictionary<int, VoxelValue> voxels) => _voxels = voxels;
 
     internal SparseVoxelChunk Clone() => new(new Dictionary<int, VoxelValue>(_voxels));
+
+    /// <summary>
+    /// 区块内容修订号：每次写入自增，保存时据此判断区块是否自上次保存后被编辑
+    /// </summary>
+    public long Revision => _revision;
 
     /// <summary>
     /// 本区块已占用的体素数
@@ -200,6 +208,7 @@ public sealed class SparseVoxelChunk
     /// <param name="value">新的体素值</param>
     public void Set(LocalCoord coordinate, VoxelValue value)
     {
+        _revision = Interlocked.Increment(ref _revisionClock);
         if (value.IsEmpty)
         {
             _voxels.Remove(ToIndex(coordinate));
@@ -214,14 +223,22 @@ public sealed class SparseVoxelChunk
     /// </summary>
     /// <param name="coordinate">区块内局部坐标</param>
     /// <returns>确实删除了内容时返回 true</returns>
-    public bool Remove(LocalCoord coordinate) => _voxels.Remove(ToIndex(coordinate));
+    public bool Remove(LocalCoord coordinate)
+    {
+        _revision = Interlocked.Increment(ref _revisionClock);
+        return _voxels.Remove(ToIndex(coordinate));
+    }
 
     /// <summary>
     /// 按线性索引直接写入体素，供已经拿到索引的合成与复制路径省掉一次坐标还原
     /// </summary>
     /// <param name="index">区块内线性索引</param>
     /// <param name="value">新的体素值</param>
-    internal void SetIndex(int index, VoxelValue value) => _voxels[index] = value;
+    internal void SetIndex(int index, VoxelValue value)
+    {
+        _revision = Interlocked.Increment(ref _revisionClock);
+        _voxels[index] = value;
+    }
 
     /// <summary>
     /// 局部坐标压缩为单一字典索引（x 最快，z 最慢）

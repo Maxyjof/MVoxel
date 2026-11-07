@@ -19,11 +19,17 @@ public sealed class MaterialExchangeMetadata
     public Dictionary<string, MaterialAsset> Definitions { get; init; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// 预烘焙 LOD 链，按对象标识存放（单模型文件使用空键）；值为 <see cref="ModelLodChain.Encode"/> 的结果。
+    /// 独立模型资产因此把简化数据放在资产文件内部，与场景和预制体各自保存内嵌数据的做法一致。
+    /// </summary>
+    public Dictionary<string, string> BakedLod { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// 校验引用完整性，槽0始终保留为默认材质
     /// </summary>
     public void Validate()
     {
-        if (Bindings is null || ObjectBindings is null || Definitions is null)
+        if (Bindings is null || ObjectBindings is null || Definitions is null || BakedLod is null)
             throw new InvalidDataException("材质元数据缺少映射或定义");
         ValidateBindings(Bindings);
         foreach (var (objectId, bindings) in ObjectBindings)
@@ -36,6 +42,11 @@ public sealed class MaterialExchangeMetadata
         {
             if (string.IsNullOrWhiteSpace(id) || material is null)
                 throw new InvalidDataException("材质定义标识或内容为空");
+        }
+        foreach (var (objectId, encoded) in BakedLod)
+        {
+            if (objectId is null || string.IsNullOrWhiteSpace(encoded))
+                throw new InvalidDataException("预烘焙 LOD 数据标识或内容为空");
         }
     }
 

@@ -151,7 +151,27 @@ public sealed class VoxelRenderParameters
     public const int HardwareShadowCurrent = 216;
     /// <summary>加速结构快照覆盖的体素数量，供硬件阴影按快照索引取半透明标记</summary>
     public const int HardwareShadowCellCount = 217;
-    public const int SlotCount = 218;
+    /// <summary>
+    /// 编辑笔划区域：加速结构停留在笔划开始时的版本，区域内改由当前工作集的软件 BVH 求交，
+    /// 区域外继续走硬件加速结构，这样拖动绘制时不必每次提交都重建加速结构
+    /// </summary>
+    public const int EditRegionActive = 218;
+    public const int EditRegionMinX = 219, EditRegionMinY = 220, EditRegionMinZ = 221;
+    public const int EditRegionMaxX = 222, EditRegionMaxY = 223, EditRegionMaxZ = 224;
+    /// <summary>加速结构使用的体素相对原点；工作集原点变化后仍能正确换算硬件求交坐标</summary>
+    public const int ShadowOriginX = 225, ShadowOriginY = 226, ShadowOriginZ = 227;
+    /// <summary>描边蒙版是否启用：为 1 时只有蒙版标记的体素绘制棱线，场景预览据此只描边当前编辑模型</summary>
+    public const int OutlineMaskActive = 228;
+    /// <summary>
+    /// 拖动对象实例：加速结构里固定两个实例，实例 1 是正在拖动的对象，
+    /// 拖动时只改写它的实例变换并重建 TLAS，不重建整份 BLAS
+    /// </summary>
+    public const int DragInstanceActive = 229;
+    public const int DragOriginX = 230, DragOriginY = 231, DragOriginZ = 232;
+    public const int DragOffsetX = 233, DragOffsetY = 234, DragOffsetZ = 235;
+    /// <summary>拖动对象实例的体素数量与实例自定义索引</summary>
+    public const int DragCellCount = 236;
+    public const int SlotCount = 237;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -250,6 +270,18 @@ public sealed class VoxelRenderParameters
             ("P_WEATHER_RAIN", WeatherRain), ("P_WEATHER_SNOW", WeatherSnow),
             ("P_WEATHER_STORM", WeatherStorm), ("P_WEATHER_HEAT_HAZE", WeatherHeatHaze), ("P_WEATHER_LIGHTNING", WeatherLightning),
             ("P_HW_RT_CURRENT", HardwareShadowCurrent), ("P_HW_RT_CELL_COUNT", HardwareShadowCellCount),
+            ("P_EDIT_REGION_ACTIVE", EditRegionActive),
+            ("P_EDIT_REGION_MIN_X", EditRegionMinX), ("P_EDIT_REGION_MIN_Y", EditRegionMinY),
+            ("P_EDIT_REGION_MIN_Z", EditRegionMinZ),
+            ("P_EDIT_REGION_MAX_X", EditRegionMaxX), ("P_EDIT_REGION_MAX_Y", EditRegionMaxY),
+            ("P_EDIT_REGION_MAX_Z", EditRegionMaxZ),
+            ("P_SHADOW_ORIGIN_X", ShadowOriginX), ("P_SHADOW_ORIGIN_Y", ShadowOriginY),
+            ("P_SHADOW_ORIGIN_Z", ShadowOriginZ),
+            ("P_OUTLINE_MASK_ACTIVE", OutlineMaskActive),
+            ("P_DRAG_INSTANCE_ACTIVE", DragInstanceActive),
+            ("P_DRAG_ORIGIN_X", DragOriginX), ("P_DRAG_ORIGIN_Y", DragOriginY), ("P_DRAG_ORIGIN_Z", DragOriginZ),
+            ("P_DRAG_OFFSET_X", DragOffsetX), ("P_DRAG_OFFSET_Y", DragOffsetY), ("P_DRAG_OFFSET_Z", DragOffsetZ),
+            ("P_DRAG_CELL_COUNT", DragCellCount),
         };
 
         var builder = new StringBuilder();

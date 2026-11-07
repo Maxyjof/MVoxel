@@ -138,6 +138,7 @@ internal static class ProjectAssetCatalog
         {
             return Directory.EnumerateFileSystemEntries(folder)
                 .Where(path => !IsReparsePoint(path))
+                .Where(path => !IsTransactionFile(path))
                 .Select(path => ToEntry(project, path))
                 .Where(entry => entry is not null)
                 .Cast<ProjectAssetEntry>()
@@ -171,6 +172,7 @@ internal static class ProjectAssetCatalog
         {
             return Directory.EnumerateFileSystemEntries(folder, "*", SearchOption.AllDirectories)
                 .Where(path => !IsReparsePoint(path))
+                .Where(path => !IsTransactionFile(path))
                 .Select(path => ToEntry(project, path))
                 .Where(entry => entry is not null && entry.DisplayName.Contains(normalized, StringComparison.CurrentCultureIgnoreCase))
                 .Cast<ProjectAssetEntry>()
@@ -304,6 +306,10 @@ internal static class ProjectAssetCatalog
 
     private static string ToRelative(ProjectHandle project, string path) =>
         Path.GetRelativePath(project.AssetsPath, path).Replace('\\', '/');
+
+    /// <summary>原地保存回滚日志属于临时事务文件，不应出现在资产浏览器中</summary>
+    private static bool IsTransactionFile(string path) =>
+        path.EndsWith(Voxels.LargeWorldFormat.InPlaceJournalSuffix, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsReparsePoint(string path)
     {

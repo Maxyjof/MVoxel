@@ -75,7 +75,10 @@ internal partial class ImGuiEditorWindow
             {
                 var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                 if (component is not null && string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(component).Model) &&
-                    _objectVoxels.TryGetWorld(item.Id, out var world)) EmbeddedVoxelData.Write(component, world);
+                    _objectVoxels.TryGetWorld(item.Id, out var world))
+                {
+                    EmbeddedVoxelData.Write(component, world, BakeLodFor(world));
+                }
             }
             var stagedRoot = staged.Objects.First(item => item.Id == selected.Id);
             var asset = PrefabSystem.CreateAssetFromScene(staged, stagedRoot, selected.Name);
@@ -133,15 +136,30 @@ internal partial class ImGuiEditorWindow
             var instance = PrefabSystem.Instantiate(effective, relativePath, staged);
             var keys = GetObjectModelLoadKeys(_project, staged).ToDictionary(item => item.ObjectId, item => item.Key);
             var worlds = new Dictionary<StableId, VoxelWorld>();
+            var chains = new Dictionary<StableId, ModelLodChain>();
             foreach (var item in staged.Objects)
             {
                 var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                 if (component is null) continue;
                 var data = SceneComponentTypes.ReadVoxelModel(component);
-                worlds.Add(item.Id, string.IsNullOrWhiteSpace(data.Model)
-                    ? EmbeddedVoxelData.HasData(component) ? EmbeddedVoxelData.Read(component) : new VoxelWorld()
-                    : keys.TryGetValue(item.Id, out var key) ? ResolveAssetWorld(key, null, default)
+                if (string.IsNullOrWhiteSpace(data.Model))
+                {
+                    if (EmbeddedVoxelData.HasData(component))
+                    {
+                        var (embedded, chain) = EmbeddedVoxelData.ReadWithLod(component);
+                        worlds.Add(item.Id, embedded);
+                        if (chain.LevelCount > 1) chains[item.Id] = chain;
+                    }
+                    else
+                    {
+                        worlds.Add(item.Id, new VoxelWorld());
+                    }
+                }
+                else
+                {
+                    worlds.Add(item.Id, keys.TryGetValue(item.Id, out var key) ? ResolveAssetWorld(key, null, default)
                         : throw new InvalidDataException($"模型资产不存在：{data.Model}"));
+                }
             }
             var combined = _objectVoxels.CaptureReferences();
             foreach (var (id, world) in worlds)
@@ -151,6 +169,7 @@ internal partial class ImGuiEditorWindow
                 throw new InvalidDataException("预制体对象身份与当前场景冲突");
             _sceneDocument.Objects.AddRange(staged.Objects);
             _objectVoxels.RestoreReferences(combined);
+            foreach (var (id, chain) in chains) _objectLodChains[id] = chain;
             RebuildObjectVoxelWorld();
             _selectedSceneObjectId = instance.Id;
             _selectedVoxel = null;
@@ -341,15 +360,30 @@ internal partial class ImGuiEditorWindow
                 throw new InvalidDataException("所选对象不是预制体实例");
             var keys = GetObjectModelLoadKeys(_project!, staged).ToDictionary(item => item.ObjectId, item => item.Key);
             var replacementWorlds = new Dictionary<StableId, VoxelWorld>();
+            var replacementChains = new Dictionary<StableId, ModelLodChain>();
             foreach (var item in staged.Objects)
             {
                 var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                 if (component is null) continue;
                 var data = SceneComponentTypes.ReadVoxelModel(component);
-                replacementWorlds[item.Id] = string.IsNullOrWhiteSpace(data.Model)
-                    ? EmbeddedVoxelData.HasData(component) ? EmbeddedVoxelData.Read(component) : new VoxelWorld()
-                    : keys.TryGetValue(item.Id, out var key) ? ResolveAssetWorld(key, null, default)
+                if (string.IsNullOrWhiteSpace(data.Model))
+                {
+                    if (EmbeddedVoxelData.HasData(component))
+                    {
+                        var (embedded, chain) = EmbeddedVoxelData.ReadWithLod(component);
+                        replacementWorlds[item.Id] = embedded;
+                        if (chain.LevelCount > 1) replacementChains[item.Id] = chain;
+                    }
+                    else
+                    {
+                        replacementWorlds[item.Id] = new VoxelWorld();
+                    }
+                }
+                else
+                {
+                    replacementWorlds[item.Id] = keys.TryGetValue(item.Id, out var key) ? ResolveAssetWorld(key, null, default)
                         : throw new InvalidDataException($"模型资产不存在：{data.Model}");
+                }
             }
             var oldIds = PrefabSystem.CollectSubtree(_sceneDocument!, instanceRoot).Select(item => item.Id).ToHashSet();
             var otherIds = _sceneDocument!.Objects.Where(item => !oldIds.Contains(item.Id)).Select(item => item.Id).ToHashSet();
@@ -360,6 +394,8 @@ internal partial class ImGuiEditorWindow
             _sceneDocument.Objects.RemoveAll(item => oldIds.Contains(item.Id));
             _sceneDocument.Objects.AddRange(staged.Objects);
             _objectVoxels.RestoreReferences(worlds);
+            foreach (var id in oldIds) _objectLodChains.Remove(id);
+            foreach (var (id, chain) in replacementChains) _objectLodChains[id] = chain;
             _selectedSceneObjectId = instanceRoot.Id;
             _voxelEditTargetId = null;
             RebuildObjectVoxelWorld();
@@ -404,7 +440,10 @@ internal partial class ImGuiEditorWindow
                 var originalId = item.Id;
                 var component = item.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
                 if (component is not null && string.IsNullOrWhiteSpace(SceneComponentTypes.ReadVoxelModel(component).Model) &&
-                    _objectVoxels.TryGetWorld(originalId, out var world)) EmbeddedVoxelData.Write(component, world);
+                    _objectVoxels.TryGetWorld(originalId, out var world))
+                {
+                    EmbeddedVoxelData.Write(component, world, BakeLodFor(world));
+                }
                 item.Id = idMap[originalId];
                 item.ParentId = originalId == instanceRoot.Id ? null : item.ParentId is { } parent && idMap.TryGetValue(parent, out var mapped) ? mapped : null;
                 if (originalId == instanceRoot.Id) item.Prefab = null;

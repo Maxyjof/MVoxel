@@ -23,6 +23,12 @@ public static class VoxFormat
     /// <summary>单文件最多携带的模型数</summary>
     public const int MaximumModels = 4096;
 
+    /// <summary>MagicaVoxel 世界每轴范围：-1024 到 +1024，共 2048 格</summary>
+    public const int WorldRegionExtent = 2048;
+
+    /// <summary>MagicaVoxel 世界坐标的下限，-1024</summary>
+    public const int WorldRegionMinimum = -1024;
+
     private const int MaximumFileBytes = 128 * 1024 * 1024;
     private const int MaximumPaletteColors = 255;
 
@@ -33,20 +39,21 @@ public static class VoxFormat
     public readonly record struct VoxScenePart(string Name, VoxelWorld World, VoxelCoord64 Origin);
 
     /// <summary>
-    /// 把世界导出为 .vox。超过 256 格时按 256 边界切成多个模型，再用场景图拼回原位。
+    /// 把世界导出为 .vox。超过 256 格时按 256 边界切成子模型；
+    /// 超出 MagicaVoxel 的 2048 格世界时按分区写成多个文件。
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="world">要导出的体素世界</param>
     public static void Write(string path, VoxelWorld world)
     {
         ArgumentNullException.ThrowIfNull(world);
-        if (!world.TryGetBounds(out var minimum, out _))
+        if (!world.TryGetBounds(out _, out _))
             throw new InvalidOperationException("空模型不能导出 VOX，请先绘制方块。");
-        WriteScene(path, [new VoxScenePart("模型", world, VoxelCoord64.Zero)]);
+        WriteSceneFiles(path, [new VoxScenePart("模型", world, VoxelCoord64.Zero)]);
     }
 
     /// <summary>
-    /// 把多个世界导出成一个 .vox：每段按 256 边界切块，块之间用 nTRN 摆到各自位置。
+    /// 把多个世界导出为 .vox：每段按 256 边界切块，块之间用 nTRN 摆到各自位置。
     /// 所有段共用一张 255 色色板，超出的颜色按出现频率保留，其余映射到最近色。
     /// </summary>
     /// <param name="path">目标文件路径</param>
@@ -55,26 +62,60 @@ public static class VoxFormat
         WriteScene(path, parts, materials: null);
 
     /// <summary>
-    /// 把多个世界导出成一个 .vox，并把材质写成 MATL。
+    /// 把多个世界导出为 .vox，并把材质写成 MATL。
     /// 材质按调色板索引绑定：这里先算出每个颜色主要使用的材质槽，再按导出后的新索引写回。
     /// </summary>
     /// <param name="path">目标文件路径</param>
     /// <param name="parts">场景段列表</param>
     /// <param name="materials">材质列表，Id 为材质槽号；为空时不写 MATL</param>
     public static void WriteScene(string path, IReadOnlyList<VoxScenePart> parts,
-        IReadOnlyList<VoxMaterial>? materials)
+        IReadOnlyList<VoxMaterial>? materials) =>
+        WriteSceneFiles(path, parts, materials);
+
+    /// <summary>
+    /// 按世界分区把场景写成多个 .vox：每个文件最多覆盖 <see cref="WorldRegionExtent"/> 格见方，
+    /// 文件内每个对象是一个组节点，对象内超过 256 格的模型作为子对象分层摆放。
+    /// 只有一个分区时直接写 <paramref name="path"/>，否则按分区块坐标追加到文件名。
+    /// </summary>
+    /// <param name="path">目标文件路径，也是多文件命名的基名</param>
+    /// <param name="parts">场景段列表</param>
+    /// <param name="materials">材质列表；为空时不写 MATL</param>
+    /// <returns>实际写出的文件路径</returns>
+    public static IReadOnlyList<string> WriteSceneFiles(string path, IReadOnlyList<VoxScenePart> parts,
+        IReadOnlyList<VoxMaterial>? materials = null)
     {
+        ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(parts);
-        var chunks = new List<Chunk>();
-        foreach (var part in parts)
+        if (WorldRegionExtent % MaximumAxisExtent != 0 || WorldRegionExtent < MaximumAxisExtent)
+            throw new InvalidOperationException("VOX 世界分区必须大于等于单模型上限且为整数倍");
+
+        var regions = CollectRegions(parts);
+        if (regions.Count == 0) throw new InvalidOperationException("没有可导出的体素，请先绘制方块。");
+
+        var directory = Path.GetDirectoryName(path) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var extension = Path.GetExtension(path);
+        if (extension.Length == 0) extension = ".vox";
+        var written = new List<string>(regions.Count);
+        foreach (var (minimum, partChunks) in regions)
         {
-            if (part.World.OccupiedVoxelCount == 0) continue;
-            if (!part.World.TryGetBounds(out var minimum, out var maximum)) continue;
-            SplitIntoChunks(part.World, minimum, maximum, part.Origin, chunks);
+            if (partChunks.Sum(item => item.Chunks.Count) > MaximumModels)
+                throw new InvalidOperationException("场景切块后超过 VOX 模型数量上限。");
+            var target = regions.Count == 1
+                ? path
+                : Path.Combine(directory, FormattableString.Invariant(
+                    $"{stem}_X{minimum.X}_Y{minimum.Y}_Z{minimum.Z}{extension}"));
+            WriteDocument(target, partChunks, materials);
+            written.Add(target);
         }
 
-        if (chunks.Count == 0) throw new InvalidOperationException("没有可导出的体素，请先绘制方块。");
-        if (chunks.Count > MaximumModels) throw new InvalidOperationException("场景切块后超过 VOX 模型数量上限。");
+        return written;
+    }
+
+    private static void WriteDocument(string path, IReadOnlyList<PartChunks> parts,
+        IReadOnlyList<VoxMaterial>? materials)
+    {
+        var chunks = parts.SelectMany(part => part.Chunks).ToList();
         var palette = BuildPalette(chunks);
 
         var body = new MemoryStream();
@@ -101,7 +142,7 @@ public static class VoxFormat
 
             for (var index = palette.Colors.Count; index < 256; index++) writer.Write(0U);
             WriteMaterials(writer, palette, chunks, materials);
-            WriteSceneGraph(writer, chunks);
+            WriteSceneGraph(writer, parts);
             writer.Flush();
         }
 
@@ -116,6 +157,88 @@ public static class VoxFormat
         }
 
         AtomicFile.WriteBytes(path, file.ToArray());
+    }
+
+    /// <summary>
+    /// 按世界分区收集每个对象落在该分区内的体素块。
+    /// 分区按 MagicaVoxel 的 [-1024, 1024) 世界窗口对齐，每轴 2048 格；
+    /// 文件内的几何坐标平移到该窗口内，因此所有文件的场景图平移都落在世界范围内。
+    /// </summary>
+    private static List<(VoxelCoord64 Minimum, List<PartChunks> Parts)> CollectRegions(
+        IReadOnlyList<VoxScenePart> parts)
+    {
+        var offset = -WorldRegionMinimum;
+        var regions = new Dictionary<VoxelCoord64, RegionContent>();
+        for (var index = 0; index < parts.Count; index++)
+        {
+            var part = parts[index];
+            foreach (var (coordinate, value) in part.World.EnumerateOccupied())
+            {
+                if (value.Color.A == 0) continue;
+                var worldX = coordinate.X + part.Origin.X;
+                var worldY = coordinate.Y + part.Origin.Y;
+                var worldZ = coordinate.Z + part.Origin.Z;
+                var regionIndex = new VoxelCoord64(
+                    FloorDiv(worldX + offset, WorldRegionExtent),
+                    FloorDiv(worldY + offset, WorldRegionExtent),
+                    FloorDiv(worldZ + offset, WorldRegionExtent));
+                var localX = worldX - regionIndex.X * WorldRegionExtent;
+                var localY = worldY - regionIndex.Y * WorldRegionExtent;
+                var localZ = worldZ - regionIndex.Z * WorldRegionExtent;
+                var chunkMinimum = new VoxelCoord64(
+                    FloorDiv(localX, MaximumAxisExtent) * MaximumAxisExtent,
+                    FloorDiv(localY, MaximumAxisExtent) * MaximumAxisExtent,
+                    FloorDiv(localZ, MaximumAxisExtent) * MaximumAxisExtent);
+                var regionEdge = new VoxelCoord64(
+                    regionIndex.X * WorldRegionExtent + WorldRegionMinimum,
+                    regionIndex.Y * WorldRegionExtent + WorldRegionMinimum,
+                    regionIndex.Z * WorldRegionExtent + WorldRegionMinimum);
+                if (!regions.TryGetValue(regionEdge, out var region))
+                    regions[regionEdge] = region = new RegionContent();
+                if (!region.Parts.TryGetValue(index, out var chunks))
+                    region.Parts[index] = chunks = new Dictionary<VoxelCoord64, List<ChunkVoxel>>();
+                if (!chunks.TryGetValue(chunkMinimum, out var voxels))
+                    chunks[chunkMinimum] = voxels = [];
+                voxels.Add(new ChunkVoxel(
+                    (byte)(MaximumAxisExtent - 1 - (localX - chunkMinimum.X)),
+                    (byte)(localZ - chunkMinimum.Z),
+                    (byte)(localY - chunkMinimum.Y),
+                    value.Color, value.MaterialSlot));
+            }
+        }
+
+        var result = new List<(VoxelCoord64, List<PartChunks>)>(regions.Count);
+        foreach (var (minimum, region) in regions
+                     .OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y).ThenBy(item => item.Key.X))
+        {
+            var partChunks = new List<PartChunks>(region.Parts.Count);
+            foreach (var (index, chunks) in region.Parts.OrderBy(item => item.Key))
+            {
+                var models = chunks
+                    .OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y).ThenBy(item => item.Key.X)
+                    .Select(item => new Chunk(MaximumAxisExtent, MaximumAxisExtent, MaximumAxisExtent,
+                        item.Value, item.Key))
+                    .ToList();
+                partChunks.Add(new PartChunks(parts[index].Name, models));
+            }
+
+            result.Add((minimum, partChunks));
+        }
+
+        return result;
+    }
+
+    /// <summary>向下取整的整数除法，负坐标也按统一的世界网格分区</summary>
+    private static long FloorDiv(long value, int divisor)
+    {
+        var quotient = value / divisor;
+        if (value % divisor != 0 && value < 0) quotient--;
+        return quotient;
+    }
+
+    private sealed class RegionContent
+    {
+        internal Dictionary<int, Dictionary<VoxelCoord64, List<ChunkVoxel>>> Parts { get; } = new();
     }
 
     /// <summary>读取 .vox 并合并成单个世界；多模型按场景图摆位后合并</summary>
@@ -184,43 +307,6 @@ public static class VoxFormat
             writer.Set(coordinate, new VoxelValue(voxel.Color,
                 (ushort)Math.Clamp(voxel.PaletteIndex, 0, Project.MaterialAsset.TableSlots - 1),
                 voxel.Color.A < 255 ? VoxelFlags.Translucent : VoxelFlags.None));
-        }
-    }
-
-    /// <summary>按 256 边界切块，块内坐标从零开始，块在世界中的位置交给场景图</summary>
-    private static void SplitIntoChunks(VoxelWorld world, VoxelCoord64 minimum, VoxelCoord64 maximum,
-        VoxelCoord64 origin, List<Chunk> chunks)
-    {
-        var spanX = maximum.X - minimum.X + 1;
-        var spanY = maximum.Y - minimum.Y + 1;
-        var spanZ = maximum.Z - minimum.Z + 1;
-        var totalChunks = ((spanX + MaximumAxisExtent - 1) / MaximumAxisExtent) *
-                          ((spanY + MaximumAxisExtent - 1) / MaximumAxisExtent) *
-                          ((spanZ + MaximumAxisExtent - 1) / MaximumAxisExtent);
-        if (chunks.Count + totalChunks > MaximumModels)
-            throw new InvalidOperationException("场景切块后超过 VOX 模型数量上限。");
-        // 先按块收集体素，避免为每个块都遍历整张世界
-        var buckets = new Dictionary<(long X, long Y, long Z), List<ChunkVoxel>>();
-        foreach (var (coordinate, value) in world.EnumerateOccupied())
-        {
-            if (value.Color.A == 0) continue;
-            var cell = new VoxelCoord64(coordinate.X - minimum.X, coordinate.Y - minimum.Y, coordinate.Z - minimum.Z);
-            var key = (cell.X / MaximumAxisExtent, cell.Y / MaximumAxisExtent, cell.Z / MaximumAxisExtent);
-            if (!buckets.TryGetValue(key, out var bucket)) buckets[key] = bucket = [];
-            bucket.Add(new ChunkVoxel((byte)(cell.X % MaximumAxisExtent), (byte)(cell.Z % MaximumAxisExtent),
-                (byte)(cell.Y % MaximumAxisExtent), value.Color, value.MaterialSlot));
-        }
-
-        foreach (var (key, voxels) in buckets.OrderBy(item => item.Key.Z).ThenBy(item => item.Key.Y)
-                     .ThenBy(item => item.Key.X))
-        {
-            var chunkMinimum = new VoxelCoord64(minimum.X + key.X * MaximumAxisExtent,
-                minimum.Y + key.Y * MaximumAxisExtent, minimum.Z + key.Z * MaximumAxisExtent);
-            var sizeX = (int)Math.Min(MaximumAxisExtent, maximum.X - chunkMinimum.X + 1);
-            var sizeY = (int)Math.Min(MaximumAxisExtent, maximum.Z - chunkMinimum.Z + 1);
-            var sizeZ = (int)Math.Min(MaximumAxisExtent, maximum.Y - chunkMinimum.Y + 1);
-            var orientedVoxels = voxels.Select(voxel => voxel with { X = (byte)(sizeX - 1 - voxel.X) }).ToList();
-            chunks.Add(new Chunk(sizeX, sizeY, sizeZ, orientedVoxels, chunkMinimum - minimum + origin));
         }
     }
 
@@ -314,71 +400,110 @@ public static class VoxFormat
     private static string FloatText(float value) =>
         value.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>写出场景图：根变换 → 组 → 每个模型一个变换 + 形状节点</summary>
-    private static void WriteSceneGraph(BinaryWriter writer, List<Chunk> chunks)
+    /// <summary>
+    /// 写出分层场景图：根 → 每个对象一个组 → 对象内的子模型变换与形状节点。
+    /// MagicaVoxel 的场景图支持组节点，单个对象超过 256 格时按子对象分层，而不是把多个模型平铺在同一层。
+    /// </summary>
+    private static void WriteSceneGraph(BinaryWriter writer, IReadOnlyList<PartChunks> parts)
     {
         const int rootId = 0;
-        const int groupId = 1;
-        var transformStart = 2;
-        var shapeStart = transformStart + chunks.Count;
-
-        var rootPayload = new MemoryStream();
-        using (var node = new BinaryWriter(rootPayload, Encoding.ASCII, leaveOpen: true))
+        const int rootGroupId = 1;
+        var nextId = 2;
+        var nodes = new List<PartNode>(parts.Count);
+        foreach (var part in parts)
         {
-            node.Write(rootId);
-            WriteDictionary(node, ("_name", "Scene"));
-            node.Write(groupId);
+            var objectTransform = nextId++;
+            var objectGroup = nextId++;
+            var transformations = new int[part.Chunks.Count];
+            var shapes = new int[part.Chunks.Count];
+            for (var index = 0; index < part.Chunks.Count; index++)
+            {
+                transformations[index] = nextId++;
+                shapes[index] = nextId++;
+            }
+
+            nodes.Add(new PartNode(objectTransform, objectGroup, transformations, shapes));
+        }
+
+        WriteTransformNode(writer, rootId, "Scene", rootGroupId, 0, 0, 0);
+        WriteGroupNode(writer, rootGroupId, "Root", nodes.Select(node => node.ObjectTransform));
+
+        var modelIndex = 0;
+        for (var partIndex = 0; partIndex < parts.Count; partIndex++)
+        {
+            var part = parts[partIndex];
+            var node = nodes[partIndex];
+            WriteTransformNode(writer, node.ObjectTransform, part.Name, node.ObjectGroup, 0, 0, 0);
+            WriteGroupNode(writer, node.ObjectGroup, part.Name + " 子对象", node.Transformations);
+            for (var index = 0; index < part.Chunks.Count; index++)
+            {
+                var chunk = part.Chunks[index];
+                // MagicaVoxel 的平移是 Z 轴向上：MVoxel 的 Y 换到 vox 的 Z
+                WriteTransformNode(writer, node.Transformations[index],
+                    $"{part.Name} 子对象 {index + 1}", node.Shapes[index],
+                    -chunk.Origin.X - chunk.SizeX + chunk.SizeX / 2,
+                    chunk.Origin.Z + chunk.SizeY / 2,
+                    chunk.Origin.Y + chunk.SizeZ / 2);
+                WriteShapeNode(writer, node.Shapes[index], modelIndex++);
+            }
+        }
+    }
+
+    private static void WriteTransformNode(BinaryWriter writer, int nodeId, string name, int childId,
+        long x, long y, long z)
+    {
+        var payload = new MemoryStream();
+        using (var node = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
+        {
+            node.Write(nodeId);
+            WriteDictionary(node, ("_name", name));
+            node.Write(childId);
             node.Write(-1);
             node.Write(0);
             node.Write(1);
-            WriteTransformFrame(node, 0, 0, 0);
+            WriteTransformFrame(node, ToInt32(x), ToInt32(y), ToInt32(z));
+            node.Flush();
         }
 
-        WriteChunk(writer, "nTRN", rootPayload.ToArray());
-
-        var groupPayload = new MemoryStream();
-        using (var node = new BinaryWriter(groupPayload, Encoding.ASCII, leaveOpen: true))
-        {
-            node.Write(groupId);
-            WriteDictionary(node, ("_name", "Root"));
-            node.Write(chunks.Count);
-            for (var i = 0; i < chunks.Count; i++) node.Write(transformStart + i);
-        }
-
-        WriteChunk(writer, "nGRP", groupPayload.ToArray());
-
-        for (var i = 0; i < chunks.Count; i++)
-        {
-            var chunk = chunks[i];
-            var nodePayload = new MemoryStream();
-            using (var node = new BinaryWriter(nodePayload, Encoding.ASCII, leaveOpen: true))
-            {
-                node.Write(transformStart + i);
-                WriteDictionary(node, ("_name", $"Model {i + 1}"));
-                node.Write(shapeStart + i);
-                node.Write(-1);
-                node.Write(0);
-                node.Write(1);
-                // MagicaVoxel 的平移是 Z 轴向上：MVoxel 的 Y 换到 vox 的 Z
-                WriteTransformFrame(node, ToInt32(-chunk.Origin.X - chunk.SizeX + chunk.SizeX / 2),
-                    ToInt32(chunk.Origin.Z + chunk.SizeY / 2), ToInt32(chunk.Origin.Y + chunk.SizeZ / 2));
-            }
-
-            WriteChunk(writer, "nTRN", nodePayload.ToArray());
-
-            var shapePayload = new MemoryStream();
-            using (var node = new BinaryWriter(shapePayload, Encoding.ASCII, leaveOpen: true))
-            {
-                node.Write(shapeStart + i);
-                WriteDictionary(node);
-                node.Write(1);
-                node.Write(i);
-                WriteDictionary(node, ("_f", "0"));
-            }
-
-            WriteChunk(writer, "nSHP", shapePayload.ToArray());
-        }
+        WriteChunk(writer, "nTRN", payload.ToArray());
     }
+
+    private static void WriteGroupNode(BinaryWriter writer, int nodeId, string name, IEnumerable<int> children)
+    {
+        var payload = new MemoryStream();
+        using (var node = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
+        {
+            node.Write(nodeId);
+            WriteDictionary(node, ("_name", name));
+            var list = children.ToList();
+            node.Write(list.Count);
+            foreach (var child in list) node.Write(child);
+            node.Flush();
+        }
+
+        WriteChunk(writer, "nGRP", payload.ToArray());
+    }
+
+    private static void WriteShapeNode(BinaryWriter writer, int nodeId, int modelId)
+    {
+        var payload = new MemoryStream();
+        using (var node = new BinaryWriter(payload, Encoding.ASCII, leaveOpen: true))
+        {
+            node.Write(nodeId);
+            WriteDictionary(node);
+            node.Write(1);
+            node.Write(modelId);
+            WriteDictionary(node, ("_f", "0"));
+            node.Flush();
+        }
+
+        WriteChunk(writer, "nSHP", payload.ToArray());
+    }
+
+    private sealed record PartChunks(string Name, List<Chunk> Chunks);
+
+    private sealed record PartNode(int ObjectTransform, int ObjectGroup,
+        int[] Transformations, int[] Shapes);
 
     /// <summary>写出一帧变换：恒等旋转加平移。_r 的 4 对应单位矩阵（各行非零列依次为 0、1、2，全为正）</summary>
     private static void WriteTransformFrame(BinaryWriter node, int x, int y, int z)

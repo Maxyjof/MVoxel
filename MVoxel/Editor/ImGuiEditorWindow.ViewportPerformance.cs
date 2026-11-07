@@ -10,6 +10,10 @@ internal sealed partial class ImGuiEditorWindow
 {
     private readonly ViewportPerformanceLog _sceneViewportPerformance = new("场景窗口");
     private readonly ViewportPerformanceLog _renderViewportPerformance = new("渲染窗口");
+    // 视口采样发生在绘制过程中，本帧的 UI / ImGui 耗时要到帧尾才测出，
+    // 所以这里缓存上一帧的结果，避免汇总里永远是 0
+    private double _lastFrameUiMs;
+    private double _lastFrameImGuiMs;
 
     /// <summary>
     /// 记录一次 GPU 视口帧的提交、等待与同步开销
@@ -33,7 +37,12 @@ internal sealed partial class ImGuiEditorWindow
             pipeline.LastComputeIdleWaitMs, pipeline.LastShadowAccelerationBuildMs,
             pipeline.HardwareShadowsActive, pipeline.SoftwareBvhVariantName,
             _vulkan?.LastPresentMs ?? 0, _vulkan?.LastAcquireMs ?? 0,
-            pipeline.DeviceName);
+            _vulkan?.LastRecordMs ?? 0, _vulkan?.LastSubmitMs ?? 0,
+            _lastFrameUiMs, _lastFrameImGuiMs,
+            pipeline.DeviceName,
+            pipeline.WorksetBuildTiming.TotalMs, pipeline.SyncBvhBuildMs,
+            pipeline.SyncPackMs, pipeline.SyncUploadMs,
+            pipeline.EditRegionPrimaryActive);
         log.Record(ImGui.GetIO().DeltaTime * 1000.0, cpuMs, pipeline.SubmitCount - submitsBefore,
             pipeline.FenceWaitTotalMs - fenceBefore, pipeline.SyncCompletedCount, pipeline.SyncTotalMs,
             pipeline.LastDispatchCount, width, height, pipeline.SyncTotalCells,

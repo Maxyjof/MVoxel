@@ -23,7 +23,16 @@ internal sealed class ViewportPerformanceLog
         string SoftwareVariant,
         double WindowPresentMs,
         double WindowAcquireMs,
-        string Device);
+        double WindowRecordMs,
+        double WindowSubmitMs,
+        double UiDrawMs,
+        double ImGuiDrawMs,
+        string Device,
+        double WorksetBuildMs,
+        double BvhBuildMs,
+        double PackMs,
+        double UploadMs,
+        bool EditRegion);
 
     /// <summary>常态统计的汇总周期</summary>
     private const double ReportIntervalMs = 5000;
@@ -60,9 +69,21 @@ internal sealed class ViewportPerformanceLog
     private double _accelBuildMax;
     private double _presentMax;
     private double _presentSum;
+    private double _acquireSum;
+    private double _recordSum;
+    private double _cmdSubmitSum;
+    private double _uiSum;
+    private double _imguiSum;
     private int _hardwareShadowFrames;
     private int _softwareShadowFrames;
     private string _device = "未知设备";
+    // 工作集重建的分段峰值：拖动绘制时每次提交都会重建工作集，
+    // 需要看清构建、BVH、打包与上传各占多少
+    private double _worksetBuildMax;
+    private double _bvhBuildMax;
+    private double _packMax;
+    private double _uploadMax;
+    private int _editRegionFrames;
     // 路径追踪样本吞吐：记录窗口内的起点与终点样本数，
     // 计数器回退（重置、换相机）时把起点挪到新值，避免算出负数
     private int _samplesFirst;
@@ -107,6 +128,14 @@ internal sealed class ViewportPerformanceLog
 
         // 同步耗时只在真正发生重建的那一帧才算进本帧开销，避免把历史值当成常态
         var frameSyncMs = syncCount != _lastSyncCount ? syncMs : 0;
+        if (syncCount != _lastSyncCount)
+        {
+            _worksetBuildMax = Math.Max(_worksetBuildMax, attribution.WorksetBuildMs);
+            _bvhBuildMax = Math.Max(_bvhBuildMax, attribution.BvhBuildMs);
+            _packMax = Math.Max(_packMax, attribution.PackMs);
+            _uploadMax = Math.Max(_uploadMax, attribution.UploadMs);
+        }
+        if (attribution.EditRegion) _editRegionFrames++;
         _lastSyncCount = syncCount;
         _frames++;
         _frameMsSum += frameMs;
@@ -152,6 +181,13 @@ internal sealed class ViewportPerformanceLog
 
         _presentSum += Math.Max(0, attribution.WindowPresentMs);
         _presentMax = Math.Max(_presentMax, attribution.WindowPresentMs);
+        // 交换链采集 / 命令录制 / 队列提交 / UI 与 ImGui 绘制都按每帧累加，
+        // 用来把帧间隔里除去 GPU 的部分逐项拆开
+        _acquireSum += Math.Max(0, attribution.WindowAcquireMs);
+        _recordSum += Math.Max(0, attribution.WindowRecordMs);
+        _cmdSubmitSum += Math.Max(0, attribution.WindowSubmitMs);
+        _uiSum += Math.Max(0, attribution.UiDrawMs);
+        _imguiSum += Math.Max(0, attribution.ImGuiDrawMs);
 
         // 只有真正提交过 GPU 工作的帧才可能是视口渲染卡顿，
         // 项目加载等阻塞操作产生的长帧不归到视口头上
@@ -188,6 +224,10 @@ internal sealed class ViewportPerformanceLog
             $"求交后端 硬件 {_hardwareShadowFrames} 帧/软件 {_softwareShadowFrames} 帧，" +
             $"等待计算空闲 {_idleWaitSum / frames:0.0}ms/帧，加速重建峰值 {_accelBuildMax:0.0}ms，" +
             $"呈现等待 {_presentSum / frames:0.0}ms/帧 峰值 {_presentMax:0.0}ms，" +
+            $"采集 {_acquireSum / frames:0.0}ms 录制 {_recordSum / frames:0.0}ms " +
+            $"提交 {_cmdSubmitSum / frames:0.0}ms UI {_uiSum / frames:0.0}ms ImGui {_imguiSum / frames:0.0}ms，" +
+            $"工作集峰值 构建 {_worksetBuildMax:0.0}ms BVH {_bvhBuildMax:0.0}ms " +
+            $"打包 {_packMax:0.0}ms 上传 {_uploadMax:0.0}ms，编辑区域 {_editRegionFrames} 帧，" +
             $"输出 {_lastWidth}x{_lastHeight}，体素 {_lastCells:N0}，设备 {_device}");
         Reset(now);
     }
@@ -227,7 +267,17 @@ internal sealed class ViewportPerformanceLog
         _accelBuildMax = 0;
         _presentMax = 0;
         _presentSum = 0;
+        _acquireSum = 0;
+        _recordSum = 0;
+        _cmdSubmitSum = 0;
+        _uiSum = 0;
+        _imguiSum = 0;
         _hardwareShadowFrames = 0;
         _softwareShadowFrames = 0;
+        _worksetBuildMax = 0;
+        _bvhBuildMax = 0;
+        _packMax = 0;
+        _uploadMax = 0;
+        _editRegionFrames = 0;
     }
 }

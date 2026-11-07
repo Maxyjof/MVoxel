@@ -53,6 +53,12 @@ public static class AppPaths
     /// <summary>已关闭日志文件</summary>
     public static string OldLogFilePath => Path.Combine(DataDirectory, "old_log");
 
+    /// <summary>
+    /// 崩溃报告专用文件。运行日志在下次启动时会被归档覆盖，崩溃报告必须单独保留，
+    /// 否则连续两次启动后现场就丢了
+    /// </summary>
+    public static string CrashLogFilePath => Path.Combine(DataDirectory, "crash_log");
+
     /// <summary>返回指定名称的编辑器配置文件路径</summary>
     public static string ConfigPath(string fileName) => Path.Combine(ConfigDirectory, fileName);
 

@@ -60,6 +60,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     // 这时旧快照的几何完全是另一个场景，不能拿来投阴影
     private VoxelWorld? _shadowSnapshotSource;
     private long _shadowSnapshotLodSignature = -1;
+    // 拖动对象实例：场景视口拖动网格对象时，静态世界固定不变，被拖对象单独建
+    // 一份 BLAS 挂在 TLAS 实例 1 上；每步只改写实例平移并重建 TLAS
+    private bool _dragPreviewActive;
+    private IReadOnlyList<VoxelGpuCell> _dragPreviewCells = Array.Empty<VoxelGpuCell>();
+    private VoxelCoord64 _dragPreviewOrigin;
+    private VoxelCoord64 _dragPreviewOffset;
+    private VoxelWorld? _dragPreviewSource;
+    private int _dragPreviewSourceVersion = -1;
+    private int _dragPreviewGeometryVersion = -1;
+    private int _dragPreviewAccelerationVersion = -1;
+    private bool _dragPreviewAccelerationCurrent;
     private double _lastComputeIdleWaitMs;
     private double _lastShadowAccelerationBuildMs;
     private bool? _lastHardwareBackend;
@@ -74,6 +85,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private long _shadowAccelerationLastBuildAtMs;
     private double _shadowAccelerationLastCostMs;
     private bool _shadowAccelerationUnsupportedLogged;
+    // 笔划编辑区域：拖动绘制期间加速结构有意停留在笔划开始时的版本，
+    // 区域内改由当前工作集的软件 BVH 求交，区域外继续用加速结构，
+    // 这样每次提交都不必重建整份 BLAS（重建要 40ms 以上，拖动时每笔一次会把帧率压到 40 帧）
+    private bool _editRegionActive;
+    private VoxelCoord64 _editRegionMinimum;
+    private VoxelCoord64 _editRegionMaximum;
+    // 区域建立时加速结构已经追平工作集：只有这种情况才允许区域外继续信任加速结构
+    private bool _editRegionAnchored;
+    // 加速结构是从哪个工作集原点构建的：区域回退要求两者的相对坐标一致
+    private VoxelCoord64 _shadowAccelerationOrigin;
+    private bool _shadowAccelerationOriginValid;
+    // 笔划结束或区域失效时请求一次立即重建，避免笔划结束后长时间停留在软件回退
+    private bool _shadowRebuildRequested;
     /// <summary>工作集停止变化后等待多久再建 BLAS，避免连续编辑时反复重建</summary>
     private const int ShadowAccelerationStableMs = 320;
 
@@ -110,6 +134,21 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 砖驻留（可变常驻，跨同步保留以支持增量更新）
     /// </summary>
     private BrickResidency? _brickResidency;
+
+    /// <summary>
+    /// 可见区块常驻池：实时渲染视口只驻留可见与保守贡献范围内的区块
+    /// </summary>
+    private BrickResidencyPool? _brickPool;
+
+    /// <summary>
+    /// 可见区块常驻池当前对应的世界实例
+    /// </summary>
+    private VoxelWorld? _poolSourceWorld;
+
+    /// <summary>
+    /// 可见区块常驻池是否还有受每帧加载预算限制的待驻留区块
+    /// </summary>
+    private bool PoolAdmissionPending => _brickPool is { AwaitingAdmission: true };
 
     /// <summary>
     /// 最近一次砖路径同步是否走了增量（诊断用）
@@ -255,6 +294,22 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private int _sceneSelectionVersion = -1;
     private bool _sceneSelectionDirty = true;
     private bool _sceneSelectionActive;
+    // 描边蒙版：场景预览在绘制模式下只给它标记的体素画棱线，
+    // 没进绘制模式时描边整体关闭。与选中标记共用同一次标记上传
+    private VoxelWorld? _outlineMask;
+    private int _outlineMaskVersion = -1;
+    private bool _outlineMaskActive;
+    private bool _cellFlagsAllZero = true;
+    // 描边蒙版与工作集的匹配数：为 0 说明蒙版坐标与工作集对不上，
+    // 这时描边会整体消失，需要回落成“全部体素描边”保证仍能看到棱线
+    private int _outlineMaskMatchCount;
+    private bool _outlineMaskLogPending;
+    private long _outlineMaskLogAtMs;
+    // 加速结构构建时使用的体素列表与标记缓冲：编辑期间主射线按这份列表取格数据，
+    // 逐格标记必须同步写进快照，否则选中外轮廓与体素描边会消失
+    private IReadOnlyList<VoxelGpuCell>? _shadowAccelerationCells;
+    private uint[] _shadowMarkSelection = [];
+    private uint[] _shadowMarkOutline = [];
     private bool _disposed;
     private Task<Pipeline>? _computePipelineCreation;
     private Task<Pipeline>? _hardwarePipelineCreation;
@@ -267,9 +322,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     private bool _worksetGreedyMerge = true;
     private bool _worksetIncludesInterior;
+
+    /// <summary>
+    /// 区块可见性重建签名，相机位姿量化变化时触发场景视口工作集重建
+    /// </summary>
+    private long _worksetVisibilitySignature;
     private VoxelWorld? _lastSyncSource;
     private VoxelLodSettings? _activeLod;
     private System.Numerics.Vector3? _lodCamera;
+    private VoxelModelLodView? _activeModelLod;
     private long _worksetLodSignature;
 
     /// <summary>
@@ -365,6 +426,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>当前帧的太阳阴影是否真的由硬件光追加速</summary>
     internal bool HardwareShadowsActive => _hardwareShadowsActive;
 
+    /// <summary>
+    /// 笔划编辑期间主射线是否走“加速结构 + 区域软件回退”：此路径不重建 BLAS，
+    /// 代价是区域内每条射线多一次限区域遍历，性能日志据此判断拖动绘制是否受益
+    /// </summary>
+    internal bool EditRegionPrimaryActive => _editRegionActive && _editRegionAnchored;
+
+    /// <summary>描边蒙版是否生效：为真时场景预览只描边被标记的体素</summary>
+    internal bool OutlineMaskInUse => _outlineMaskActive;
+
     /// <summary>硬件阴影加速的状态说明，供自动化与状态栏显示</summary>
     internal string HardwareShadowStatus => _context is null ? "无 Vulkan 设备"
         : _hardwareAccelerationDisabledByUser ? "已由用户关闭硬件加速"
@@ -459,9 +529,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="camera">LOD 判距相机</param>
     /// <param name="greedyMerge">是否贪心盒体合并：场景视图 false，渲染与导出 true</param>
     /// <param name="includeInterior">是否保留完全被包围的内部体素；仅用于相机进入模型内部的场景编辑预览</param>
+    /// <param name="chunkFilter">区块可见性过滤；场景与实时视口按视锥剔除，路径追踪与导出传 null 保留完整世界</param>
+    /// <param name="visibilitySignature">过滤对应的相机位姿签名，变化时重建工作集</param>
+    /// <param name="modelLod">模型级 LOD 视图；场景与渲染视口传入，编辑类同步可省略以沿用上次视图</param>
     internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
         VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true,
-        bool includeInterior = false)
+        bool includeInterior = false, Func<ChunkCoord64, bool>? chunkFilter = null,
+        long visibilitySignature = 0, VoxelModelLodView? modelLod = null)
     {
         ArgumentNullException.ThrowIfNull(world);
         // 设备已经丢失时不再构建和上传工作集：故障设备上的每个原生调用都可能再次触发驱动异常
@@ -474,6 +548,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (lod is not null)
         {
             _activeLod = lod;
+            // 视图同步会显式给出本次模型级 LOD 视图；lod 非空而 modelLod 为 null 表示本次不做模型分档
+            _activeModelLod = modelLod;
         }
 
         if (camera.HasValue)
@@ -481,35 +557,53 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _lodCamera = camera;
         }
 
-        var lodSignature = LodGroupSignature();
+        var lodSignature = _activeModelLod is { } view
+            ? Math.Max(view.Signature, 1L)
+            : LodGroupSignature();
         // 引用一致 + 版本一致才跳过：渲染世界按图层遮罩重组后是新实例，
         // 必须靠引用差异触发重建，仅比版本号会让两次不同遮罩的组成撞车
         if (ReferenceEquals(_lastSyncSource, world) && world.ContentVersion == _workset.SourceVersion &&
             maximumCells == _worksetMaximumCells && lodSignature == _worksetLodSignature &&
-            greedyMerge == _worksetGreedyMerge && includeInterior == _worksetIncludesInterior)
+            greedyMerge == _worksetGreedyMerge && includeInterior == _worksetIncludesInterior &&
+            visibilitySignature == _worksetVisibilitySignature && !PoolAdmissionPending)
         {
             return;
         }
 
-        // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭、体素在预算内
+        // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭。
+        // 区块级可见性过滤时改走可见区块常驻池，因此不再受整份世界格数上限约束
         using var syncPhase = StartupTimeline.Begin("同步工作集");
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
-            lodSignature == 0 && !_usingHardwareRayTracing && world.OccupiedVoxelCount <= MaxFullWorksetCells;
+            lodSignature == 0 && !_usingHardwareRayTracing &&
+            (chunkFilter is not null || world.OccupiedVoxelCount <= MaxFullWorksetCells);
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
         SyncCompletedCount++;
         if (brickEligible)
         {
             RefreshEmissiveCatalog(world, true);
-            SyncBrick(world, lodSignature, maximumCells);
+            if (chunkFilter is not null)
+            {
+                _brickResidency = null;
+                SyncBrickWindow(world, lodSignature, maximumCells, chunkFilter, camera, visibilitySignature);
+            }
+            else
+            {
+                _brickPool = null;
+                _poolSourceWorld = null;
+                SyncBrick(world, lodSignature, maximumCells);
+            }
+
             UploadEmissiveFaces();
             return;
         }
 
         _brickResidency = null;
+        _brickPool = null;
+        _poolSourceWorld = null;
         _usingBrickPath = false;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
         var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior,
-            out var buildTiming);
+            chunkFilter, _activeModelLod, out var buildTiming);
         WorksetBuildTiming = buildTiming;
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         // 索引刷新放在构建之后：工作集已经给出本轮发光体素数，
@@ -529,8 +623,76 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _worksetLodSignature = lodSignature;
         _worksetGreedyMerge = greedyMerge;
         _worksetIncludesInterior = includeInterior;
+        _worksetVisibilitySignature = visibilitySignature;
         SyncTotalCells = next.Cells.Count;
         ResetAccumulation();
+    }
+
+    /// <summary>当前设备是否支持拖动实例路径（需要 Ray Query）</summary>
+    internal bool SupportsDragPreviewInstance => _context?.SupportsHardwareRayQuery == true;
+
+    /// <summary>
+    /// 拖动对象是否能单独放进加速结构：静态世界之外还要容纳对象体素。
+    /// 放不下时调用方应退回整份世界合成，避免拖动期间对象从画面里消失
+    /// </summary>
+    internal bool CanUseDragPreview(int voxelCount)
+    {
+        if (!SupportsDragPreviewInstance || voxelCount <= 0) return false;
+        var capacity = _shadowAcceleration?.MaxAccelerationVoxels ??
+            VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels;
+        return voxelCount + _sceneOrderedCells.Count <= capacity;
+    }
+
+    /// <summary>
+    /// 同步拖动预览：静态世界按正常流程同步（内容不变时跳过），被拖对象单独
+    /// 准备体素快照，交给加速结构实例 1；每步只有平移变化
+    /// </summary>
+    /// <param name="staticWorld">排除被拖对象后的场景世界</param>
+    /// <param name="dragWorld">被拖对象的体素世界</param>
+    /// <param name="offset">相对拖动起始位置的整格平移</param>
+    internal void SyncWorldDragPreview(VoxelWorld staticWorld, VoxelWorld dragWorld, VoxelCoord64 offset,
+        int maximumCells = 0, VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null,
+        bool greedyMerge = false, bool includeInterior = false)
+    {
+        ArgumentNullException.ThrowIfNull(staticWorld);
+        ArgumentNullException.ThrowIfNull(dragWorld);
+        var dragChanged = !ReferenceEquals(_dragPreviewSource, dragWorld) ||
+            _dragPreviewSourceVersion != dragWorld.ContentVersion;
+        if (dragChanged)
+        {
+            // 对象在拖动期间不会改动体素，这里只在拖动开始时付一次构建成本；
+            // 后续每步复用同一份快照，只换实例平移
+            var workset = VoxelGpuWorkset.Build(dragWorld, 0, null, null, greedyMerge: false, includeInterior: false);
+            _dragPreviewCells = workset.Cells;
+            _dragPreviewOrigin = workset.Origin;
+            _dragPreviewSource = dragWorld;
+            _dragPreviewSourceVersion = dragWorld.ContentVersion;
+            unchecked
+            {
+                _dragPreviewGeometryVersion = (int)((uint)System.Runtime.CompilerServices.RuntimeHelpers
+                    .GetHashCode(dragWorld) * 397U) ^ dragWorld.ContentVersion;
+            }
+        }
+
+        SyncWorld(staticWorld, maximumCells, lod, camera, greedyMerge, includeInterior);
+        _dragPreviewActive = true;
+        if (offset.X != _dragPreviewOffset.X || offset.Y != _dragPreviewOffset.Y || offset.Z != _dragPreviewOffset.Z)
+        {
+            _dragPreviewOffset = offset;
+            ResetAccumulation();
+        }
+    }
+
+    /// <summary>结束拖动实例预览，下一帧由普通同步恢复整份世界</summary>
+    internal void ClearDragPreview()
+    {
+        if (!_dragPreviewActive) return;
+        _dragPreviewActive = false;
+        _dragPreviewSource = null;
+        _dragPreviewSourceVersion = -1;
+        _dragPreviewGeometryVersion = -1;
+        _dragPreviewAccelerationVersion = -1;
+        _dragPreviewAccelerationCurrent = false;
     }
 
     /// <summary>
@@ -639,8 +801,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     {
         ArgumentNullException.ThrowIfNull(packed);
         if (packed.Length % SurfaceDepositFloats != 0) throw new ArgumentException("表面投射数据长度无效", nameof(packed));
-        if (receiverTable is not null && receiverTable.Origin != _workset.Origin)
-            throw new ArgumentException("接收图层表原点与当前 GPU 工作集不一致", nameof(receiverTable));
+        // 编辑中工作集原点可能随包围盒变化，旧接收图层表按别的原点编码，继续使用会把图层标记
+        // 套到错的格子上。这里丢弃该表让本帧退化为“无接收图层”，下一帧按新原点重建，
+        // 而不是抛异常把整帧显卡预览停掉
+        if (receiverTable is not null && receiverTable.Origin != _workset.Origin) receiverTable = null;
         var receiverWords = receiverTable?.Words ?? [];
         if (MemoryMarshal.AsBytes(_surfaceDepositPacked.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(packed.AsSpan())) &&
             _surfaceReceiverWords.AsSpan().SequenceEqual(receiverWords)) return;
@@ -1182,8 +1346,42 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.VoxelCount] = _workset.Cells.Count;
         parameters[VoxelRenderParameters.BvhNodeCount] = _bvhNodeCount;
         parameters[VoxelRenderParameters.BrickMode] = _usingBrickPath ? 1F : 0F;
-        parameters[VoxelRenderParameters.HardwareShadowCurrent] = _hardwareShadowGeometryCurrent ? 1F : 0F;
+        // 笔划编辑期间加速结构落后于工作集，但仍可用：差异全部落在编辑区域内，
+        // 着色器在区域内退回当前工作集的软件 BVH，区域外继续用加速结构
+        var editRegion = _editRegionActive && _hardwareShadowsActive;
+        parameters[VoxelRenderParameters.HardwareShadowCurrent] =
+            _hardwareShadowGeometryCurrent || editRegion || _dragPreviewAccelerationCurrent ? 1F : 0F;
+        parameters[VoxelRenderParameters.EditRegionActive] = editRegion ? 1F : 0F;
+        if (editRegion)
+        {
+            parameters[VoxelRenderParameters.EditRegionMinX] = _editRegionMinimum.X;
+            parameters[VoxelRenderParameters.EditRegionMinY] = _editRegionMinimum.Y;
+            parameters[VoxelRenderParameters.EditRegionMinZ] = _editRegionMinimum.Z;
+            parameters[VoxelRenderParameters.EditRegionMaxX] = _editRegionMaximum.X + 1;
+            parameters[VoxelRenderParameters.EditRegionMaxY] = _editRegionMaximum.Y + 1;
+            parameters[VoxelRenderParameters.EditRegionMaxZ] = _editRegionMaximum.Z + 1;
+        }
+
+        if (_shadowAccelerationOriginValid)
+        {
+            parameters[VoxelRenderParameters.ShadowOriginX] = _shadowAccelerationOrigin.X;
+            parameters[VoxelRenderParameters.ShadowOriginY] = _shadowAccelerationOrigin.Y;
+            parameters[VoxelRenderParameters.ShadowOriginZ] = _shadowAccelerationOrigin.Z;
+        }
+
         parameters[VoxelRenderParameters.HardwareShadowCellCount] = _hardwareShadowCellCount;
+        // 拖动实例：着色器按实例自定义索引 1 读拖动对象的体素快照，
+        // 再叠加实例平移把盒体放回世界坐标
+        var dragInstance = _dragPreviewActive && _dragPreviewAccelerationCurrent;
+        parameters[VoxelRenderParameters.DragInstanceActive] = dragInstance ? 1F : 0F;
+        parameters[VoxelRenderParameters.DragOriginX] = _dragPreviewOrigin.X;
+        parameters[VoxelRenderParameters.DragOriginY] = _dragPreviewOrigin.Y;
+        parameters[VoxelRenderParameters.DragOriginZ] = _dragPreviewOrigin.Z;
+        parameters[VoxelRenderParameters.DragOffsetX] = _dragPreviewOffset.X;
+        parameters[VoxelRenderParameters.DragOffsetY] = _dragPreviewOffset.Y;
+        parameters[VoxelRenderParameters.DragOffsetZ] = _dragPreviewOffset.Z;
+        parameters[VoxelRenderParameters.DragCellCount] = _dragPreviewCells.Count;
+        parameters[VoxelRenderParameters.OutlineMaskActive] = _outlineMaskActive ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvWidth] = _environmentWidth;
         parameters[VoxelRenderParameters.EnvHeight] = _environmentHeight;
@@ -1761,6 +1959,50 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 设置或结束笔划编辑区域
+    /// </summary>
+    /// <param name="active">笔划是否仍在进行</param>
+    /// <param name="minimum">区域内最小格坐标（含）</param>
+    /// <param name="maximum">区域内最大格坐标（含）</param>
+    /// <remarks>
+    /// 笔划进行中保留笔划开始时的加速结构，区域内改由当前工作集的软件 BVH 求交，
+    /// 因此每次提交都不必重建 40ms 以上的 BLAS；笔划结束时立即请求一次重建，
+    /// 让主射线尽快回到整帧硬件求交
+    /// </remarks>
+    internal void SetEditRegion(bool active, VoxelCoord64 minimum, VoxelCoord64 maximum)
+    {
+        if (!active)
+        {
+            if (_editRegionActive) _shadowRebuildRequested = true;
+            _editRegionActive = false;
+            _editRegionAnchored = false;
+            return;
+        }
+
+        if (!_editRegionActive || !_editRegionAnchored)
+        {
+            // 区域建立（或笔划中途加速结构追上来）时，加速结构必须已追平当时的工作集；
+            // 否则区域外还留着尚未反映到加速结构的旧改动，只能沿用原来的软件回退。
+            // 中途追平时重建用的是含当前笔划的工作集，此后只剩区域内新增的格子
+            _editRegionAnchored = _shadowAccelerationBuiltVersion == SyncCompletedCount &&
+                CanUseEditRegionAcceleration();
+        }
+
+        _editRegionActive = true;
+        _editRegionMinimum = minimum;
+        _editRegionMaximum = maximum;
+    }
+
+    /// <summary>
+    /// 加速结构是否足以配合编辑区域使用：必须来自同一个工作集原点，
+    /// 且当前不是砖驻留路径（砖池索引与加速结构不一致）
+    /// </summary>
+    private bool CanUseEditRegionAcceleration() =>
+        !_usingBrickPath && _worksetMaximumCells == 0 &&
+        _shadowAcceleration is { HasAccelerationStructure: true, AccelerationCellCount: > 0 } &&
+        _shadowAccelerationOriginValid;
+
+    /// <summary>
     /// 决定本帧是否绑定 ray query 求交管线，并在工作集稳定后建立加速结构
     /// </summary>
     /// <remarks>
@@ -1781,9 +2023,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _hardwareAccelerationDisabledByUser = settings.ForceComputePath ||
             (!settings.HardwareRayTracingAuto && !settings.UseHardwareRayTracing);
         if (_hardwareAccelerationDisabledByUser || _context is null || !_context.SupportsHardwareRayQuery) return;
-        // 砖驻留包含预留槽，其索引必须与 GPU 池一致。
-        var hardwareCellCount = _brickResidency?.Cells.Length ?? _sceneOrderedCells.Count;
-        if (_usingBrickPath || hardwareCellCount == 0 ||
+        // 砖驻留与可见区块池包含预留槽或空洞，其索引必须与 GPU 池一致。
+        var hardwareCellCount = _brickPool?.Cells.Length ?? _brickResidency?.Cells.Length ?? _sceneOrderedCells.Count;
+        // 拖动实例路径允许静态世界为空（场景只有一个被拖对象时静态工作集没有体素）
+        var dragCells = _dragPreviewActive && _dragPreviewCells.Count > 0 ? _dragPreviewCells : null;
+        if (_usingBrickPath || (hardwareCellCount == 0 && dragCells is null) ||
             hardwareCellCount > VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels)
         {
             return;
@@ -1805,13 +2049,34 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _shadowAccelerationBuiltVersion = -1;
             _shadowAccelerationRetryAtMs = 0;
         }
-        if (_shadowAccelerationBuiltVersion != version)
+        // 拖动实例的几何在拖动开始时就建好，之后每个跨格位移都不需要重建 BLAS；
+        // 只有静态版本或拖动对象内容变化时才重新构建一次
+        var dragNeedsRebuild = dragCells is not null &&
+            (_shadowAccelerationBuiltVersion != version ||
+             _dragPreviewAccelerationVersion != _dragPreviewGeometryVersion ||
+             _shadowAcceleration?.HasDragAcceleration != true);
+        if (_shadowAccelerationBuiltVersion != version || dragNeedsRebuild)
         {
+            // 笔划进行中：加速结构有意停留在笔划开始时的版本，差异全部落在编辑区域内，
+            // 由区域软件求交补齐。这里不能重建 BLAS，否则每 120ms 一次的提交都要付 40ms 以上
+            if (_editRegionActive && _editRegionAnchored && CanUseEditRegionAcceleration())
+            {
+                EnsureHardwareShadowPipeline();
+                if (_hardwareShadowPipeline.Handle != 0)
+                {
+                    _hardwareShadowsActive = true;
+                    _hardwareShadowCellCount = _shadowAcceleration!.AccelerationCellCount;
+                    return;
+                }
+            }
+
             // 工作集还在连续变化：沿用上一份加速结构与同序体素快照。
             // 阴影只延迟到下一次重建，但不再整帧退回软件 BVH，AMD 上编辑期间也不会掉到秒级。
             // 若上一次重建足够便宜，即使一直在拖拽也按固定间隔强制刷新一次，
-            // 避免长笔触把阴影拖成整笔之前的几何
-            var forcedRefresh = _shadowAccelerationLastBuildAtMs > 0 &&
+            // 避免长笔触把阴影拖成整笔之前的几何；笔划结束时无条件立即重建一次
+            // 拖动实例在拖动开始时立即重建一次，不等工作集稳定窗口
+            var forcedRefresh = dragCells is not null || _shadowRebuildRequested ||
+                _shadowAccelerationLastBuildAtMs > 0 &&
                 now - _shadowAccelerationLastBuildAtMs >= ContinuousEditRebuildIntervalMs &&
                 _shadowAccelerationLastCostMs <= ContinuousEditRebuildBudgetMs;
             if (now - _shadowAccelerationSeenAtMs < ShadowAccelerationStableMs && !forcedRefresh)
@@ -1845,8 +2110,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             IReadOnlyList<VoxelGpuCell> hardwareCells;
             try
             {
-                hardwareCells = _brickResidency is { } residency
-                    ? residency.CreateHardwareCellSnapshot() : _sceneOrderedCells;
+                hardwareCells = _brickPool is { } pool
+                    ? pool.CreateHardwareCellSnapshot()
+                    : _brickResidency is { } residency
+                        ? residency.CreateHardwareCellSnapshot()
+                        : _sceneOrderedCells;
             }
             catch (OutOfMemoryException exception)
             {
@@ -1856,7 +2124,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 MVoxelLog.Warn($"{_hardwareShadowFailure}：{exception.Message}");
                 return;
             }
-            var built = _shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version);
+            // 拖动实例把对象快照、局部原点、累计平移一起交给加速结构；
+            // 之后同一拖动的后续帧不会走到这里，只更新 TLAS 实例变换
+            var built = _shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version, dragCells,
+                _dragPreviewOrigin, _dragPreviewOffset,
+                dragCells is not null ? _dragPreviewGeometryVersion : -1, _sceneOrderedOrigin);
             _lastShadowAccelerationBuildMs = buildWatch.Elapsed.TotalMilliseconds;
             if (!built)
             {
@@ -1875,14 +2147,42 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _shadowAccelerationBuildValid = true;
             _shadowAccelerationLastBuildAtMs = now;
             _shadowAccelerationLastCostMs = _lastShadowAccelerationBuildMs;
+            // 加速结构用的是本次工作集的相对坐标，区域回退必须保持同一个原点
+            _shadowAccelerationOrigin = _sceneOrderedOrigin;
+            _shadowAccelerationOriginValid = true;
+            // 快照与加速结构同序，逐格标记需要按这份列表补写
+            _shadowAccelerationCells = hardwareCells;
+            _sceneSelectionDirty = true;
+            // 本次重建已经追平工作集，笔划结束时挂起的重建请求到此完成
+            _shadowRebuildRequested = false;
             if (!_hardwareShadowPipelineFailed) _hardwareShadowFailure = null;
             // 加速结构句柄变了，binding 13 必须重写
             UpdateComputeDescriptors();
+            _dragPreviewAccelerationVersion = dragCells is not null ? _dragPreviewGeometryVersion : -1;
         }
 
         if (!_shadowAccelerationBuildValid || _context.IsDeviceLost) return;
         EnsureHardwareShadowPipeline();
         if (_hardwareShadowPipeline.Handle == 0 || _shadowAcceleration?.HasAccelerationStructure != true) return;
+        if (dragCells is not null)
+        {
+            // 同一拖动内只有平移变化：这一步约 2ms，替换掉每次跨格重建整份 BLAS
+            if (!_shadowAcceleration.UpdateDragInstance(_dragPreviewOffset))
+            {
+                _dragPreviewAccelerationCurrent = false;
+                return;
+            }
+
+            _dragPreviewAccelerationCurrent = true;
+        }
+        else if (_dragPreviewAccelerationCurrent)
+        {
+            // 拖动结束但静态版本恰好未变：只隐藏实例 1，不重建静态 BLAS
+            _shadowAcceleration.EnsureShadowAcceleration(_shadowAccelerationCells ?? _sceneOrderedCells,
+                version, null, default, default, -1, _sceneOrderedOrigin);
+            _dragPreviewAccelerationCurrent = false;
+        }
+
         _hardwareShadowsActive = true;
         _hardwareShadowGeometryCurrent = true;
         _hardwareShadowCellCount = _shadowAcceleration.AccelerationCellCount;
@@ -2884,8 +3184,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        var bindingCount = 16;
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[16];
+        var bindingCount = 17;
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[17];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -2904,8 +3204,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             bindings[14] = new(13, DescriptorType.AccelerationStructureKhr, 1, ShaderStageFlags.ComputeBit);
             // binding 15 是与加速结构同序的体素快照，硬件阴影按它取半透明标记；
-            // 软件管线不声明该绑定，因此仅光追设备把它加入布局
+            // binding 16 是拖动对象实例的体素快照，二者都只在光追设备上加入布局
             bindings[15] = new(15, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+            bindings[16] = new(16, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         }
         else bindingCount = 15;
         DescriptorSetLayoutCreateInfo createInfo = new()
@@ -2929,7 +3230,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[4]
         {
             // 0、1、5、6、7、9、10、14，光追设备再多一个 15（加速结构同序体素快照）
-            new(DescriptorType.StorageBuffer, 9 * TileRingDepth),
+            // 与 16（拖动对象实例体素快照）
+            new(DescriptorType.StorageBuffer, 10 * TileRingDepth),
             new(DescriptorType.StorageImage, 5 * TileRingDepth),
             new(DescriptorType.UniformBuffer, TileRingDepth),
             new(DescriptorType.AccelerationStructureKhr, hardwareRayQuery ? (uint)TileRingDepth : 0U)
@@ -3069,7 +3371,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[16];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[17];
         // binding 13 只有设备支持 Ray Query 时才出现在布局里；加速结构尚未建好时
         // 不写该绑定，软件管线本来也不读取它
         AccelerationStructureKHR accelerationStructure = _shadowAcceleration?.AccelerationStructure ?? default;
@@ -3085,8 +3387,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         VkBuffer shadowCellBuffer = _shadowAcceleration?.AccelerationCellBuffer ?? default;
         var shadowCellCount = _shadowAcceleration?.AccelerationCellCount ?? 0;
         var withShadowCells = writeAcceleration && shadowCellBuffer.Handle != 0 && shadowCellCount > 0;
+        DescriptorBufferInfo placeholderCellInfo = _voxelBuffer.Handle != 0
+            ? new DescriptorBufferInfo(_voxelBuffer, 0, _voxelBufferCapacity) : default;
         DescriptorBufferInfo shadowCellInfo = withShadowCells
-            ? new(shadowCellBuffer, 0, (ulong)shadowCellCount * PackedCellSize) : default;
+            ? new(shadowCellBuffer, 0, (ulong)shadowCellCount * PackedCellSize) : placeholderCellInfo;
+        // binding 16 是拖动对象实例的体素快照；没有拖动时绑定一个有效缓冲占位，
+        // 着色器按 P_DRAG_CELL_COUNT 为 0 直接跳过
+        VkBuffer dragCellBuffer = _shadowAcceleration?.DragAccelerationCellBuffer ?? default;
+        var dragCellCount = _shadowAcceleration?.DragAccelerationCellCount ?? 0;
+        var withDragCells = writeAcceleration && dragCellBuffer.Handle != 0 && dragCellCount > 0;
+        DescriptorBufferInfo dragCellInfo = withDragCells
+            ? new(dragCellBuffer, 0, (ulong)dragCellCount * PackedCellSize) : shadowCellInfo;
         if (writeAcceleration)
         {
             writes[14] = new()
@@ -3098,18 +3409,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorType = DescriptorType.AccelerationStructureKhr,
                 PNext = &accelerationWrite
             };
-            if (withShadowCells)
+            // binding 15/16 在光追布局里始终存在，没有对应快照时绑定占位缓冲
+            writes[15] = new()
             {
-                writes[15] = new()
-                {
-                    SType = StructureType.WriteDescriptorSet,
-                    DstSet = default,
-                    DstBinding = 15,
-                    DescriptorCount = 1,
-                    DescriptorType = DescriptorType.StorageBuffer,
-                    PBufferInfo = &shadowCellInfo
-                };
-            }
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = default,
+                DstBinding = 15,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &shadowCellInfo
+            };
+
+            // binding 16 必须始终写入（布局里存在），无拖动时用占位缓冲
+            writes[16] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = default,
+                DstBinding = 16,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &dragCellInfo
+            };
         }
         for (var slot = 0; slot < TileRingDepth; slot++)
         {
@@ -3226,9 +3546,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 PBufferInfo = &sunDepthInfo };
             var withAcceleration = writeAcceleration && accelerationStructure.Handle != 0;
             if (withAcceleration) writes[14].DstSet = _ringSets[slot];
-            if (withAcceleration && withShadowCells) writes[15].DstSet = _ringSets[slot];
-            // 加速结构可用时 binding 15 必须一起写入：硬件着色器会无条件引用它
-            var writeCount = withAcceleration ? (withShadowCells ? 16U : 15U) : 14U;
+            if (withAcceleration) writes[15].DstSet = _ringSets[slot];
+            // binding 16 与布局同生：有加速结构时始终写入，没有拖动对象时绑定占位缓冲
+            if (withAcceleration) writes[16].DstSet = _ringSets[slot];
+            // 加速结构可用时 binding 15/16 必须一起写入：硬件着色器会引用它们
+            var writeCount = withAcceleration ? 17U : 14U;
             _api!.UpdateDescriptorSets(_device, writeCount, writes, 0, null);
         }
     }
@@ -3395,6 +3717,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         {
             VoxelCell hardwareCells[];
         };
+        // 拖动对象实例的体素快照，与 TLAS 实例自定义索引 1 的图元同序
+        layout(set = 0, binding = 16, std430) readonly buffer HardwareDragCellBuffer
+        {
+            VoxelCell hardwareDragCells[];
+        };
         #endif
 
         struct MaterialSlotData
@@ -3560,6 +3887,102 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return true;
         }
 
+        // 编辑笔划期间加速结构停留在笔划开始时的版本，笔划改动全部落在编辑区域内，
+        // 因此区域内改由当前工作集的软件 BVH 求交，区域外的几何和加速结构完全一致。
+        // 这样拖动绘制时既能看到刚放下的方块，也不必每次提交都重建整份加速结构
+        bool TraceRegionClosest(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
+            out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
+            out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit)
+        {
+            #ifndef P_SOFT_BVH_STACK
+            #define P_SOFT_BVH_STACK 32
+            #endif
+            ivec2 stack[P_SOFT_BVH_STACK];
+            int stackSize = 1;
+            stack[0] = ivec2(0, floatBitsToInt(0.0));
+            closestDistance = maxDistance;
+            hitNormal = vec3(0.0, 1.0, 0.0);
+            hitColor = vec4(0.0);
+            hitFlags = 0u;
+            hitSlot = 0u;
+            hitCell = ivec3(0);
+            hitExtent = ivec3(1);
+            int voxelCount = int(values[94]);
+            int nodeCount = int(values[95]);
+            vec3 regionOrigin = vec3(values[16], values[17], values[18]);
+            vec3 editMin = vec3(values[P_EDIT_REGION_MIN_X], values[P_EDIT_REGION_MIN_Y], values[P_EDIT_REGION_MIN_Z]);
+            vec3 editMax = vec3(values[P_EDIT_REGION_MAX_X], values[P_EDIT_REGION_MAX_Y], values[P_EDIT_REGION_MAX_Z]);
+            while (stackSize > 0)
+            {
+                ivec2 pendingNode = stack[--stackSize];
+                int nodeIndex = pendingNode.x;
+                if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+                if (intBitsToFloat(pendingNode.y) > closestDistance) continue;
+                BvhNode node = nodes[nodeIndex];
+                if (node.links.x < 0)
+                {
+                    int endIndex = min(node.links.z + node.links.w, voxelCount);
+                    for (int index = node.links.z; index < endIndex; index++)
+                    {
+                        VoxelCell cell = cells[index];
+                        if (cell.color.a <= 0.0) continue;
+                        ivec3 packedExtent = ivec3(
+                            max(cell.position.w & 0xFF, 1),
+                            max((cell.position.w >> 8) & 0xFF, 1),
+                            max((cell.position.w >> 16) & 0xFF, 1));
+                        vec3 voxelMin = regionOrigin + vec3(cell.position.xyz);
+                        vec3 voxelMax = voxelMin + vec3(packedExtent);
+                        // 只处理编辑区域内的格子，区域外交给加速结构
+                        if (!all(greaterThan(voxelMax, editMin)) || !all(lessThan(voxelMin, editMax))) continue;
+                        float distance;
+                        vec3 normal;
+                        bool intersects = IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax,
+                            distance, normal, !anyHit);
+                        if (intersects &&
+                            distance < closestDistance &&
+                            !(ignoreTranslucent && (cell.metadata.x >> 16 & 1u) != 0u))
+                        {
+                            closestDistance = distance;
+                            hitNormal = normal;
+                            hitColor = cell.color;
+                            hitFlags = (cell.metadata.x >> 16) | (cell.metadata.y != 0u ? 256u : 0u) |
+                                (cell.metadata.z != 0u ? 512u : 0u);
+                            hitSlot = cell.metadata.x & 0xFFFFu;
+                            hitCell = cell.position.xyz;
+                            hitExtent = packedExtent;
+                            if (anyHit && hitColor.a > 0.0) return true;
+                        }
+                    }
+                }
+                else
+                {
+                    // 节点包围盒与编辑区域不重叠就整枝跳过，保证每条射线只多花很少遍历
+                    vec3 nodeMin = regionOrigin + vec3(node.minimum.xyz);
+                    vec3 nodeMax = regionOrigin + vec3(node.maximum.xyz);
+                    if (!all(greaterThan(nodeMax, editMin)) || !all(lessThan(nodeMin, editMax))) continue;
+                    if (stackSize + 2 <= P_SOFT_BVH_STACK)
+                    {
+                        float leftDistance;
+                        float rightDistance;
+                        bool leftHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.x], leftDistance) && leftDistance <= closestDistance;
+                        bool rightHit = IntersectBounds(rayOrigin, rayDirection, regionOrigin, nodes[node.links.y], rightDistance) && rightDistance <= closestDistance;
+                        if (leftHit && rightHit)
+                        {
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.y, floatBitsToInt(rightDistance))
+                                : ivec2(node.links.x, floatBitsToInt(leftDistance));
+                            stack[stackSize++] = leftDistance < rightDistance
+                                ? ivec2(node.links.x, floatBitsToInt(leftDistance))
+                                : ivec2(node.links.y, floatBitsToInt(rightDistance));
+                        }
+                        else if (leftHit) stack[stackSize++] = ivec2(node.links.x, floatBitsToInt(leftDistance));
+                        else if (rightHit) stack[stackSize++] = ivec2(node.links.y, floatBitsToInt(rightDistance));
+                    }
+                }
+            }
+            return hitColor.a > 0.0;
+        }
+
         bool TraceClosestWithin(vec3 rayOrigin, vec3 rayDirection, out float closestDistance,
             out vec3 hitNormal, out vec4 hitColor, out uint hitFlags, out uint hitSlot,
             out ivec3 hitCell, out ivec3 hitExtent, bool ignoreTranslucent, float maxDistance, bool anyHit, bool preferContaining)
@@ -3585,42 +4008,107 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             #ifdef P_HW_RT
             // 从根包围盒外进入时，候选三角形可以安全筛出受射线影响的体素；
             // 起点在内部/贴边、介质连续性查询仍走软件 BVH 的精确边界逻辑。
-            // 加速结构落后于当前工作集时（编辑期间）主射线也走软件 BVH，
-            // 这样新画上去的方块立即用当前 cells[] 参与求交
-            if (!preferContaining && values[P_HW_RT_CURRENT] > 0.5 && nodeCount > 0 && voxelCount > 0)
+            // 加速结构落后于当前工作集时（编辑笔划进行中）主射线并不整帧退回软件 BVH，
+            // 而是先把笔划改动的编辑区域交给当前工作集的软件 BVH，区域外继续用加速结构
+            // 区域回退与整帧硬件路径的边界精度略有差异，两种结果不混进同一次累积
+            // 新画上去的方块先由区域软件求交负责，等加速结构重建后再交给硬件路径
+            // 软件 BVH 因此只承担编辑区域，不再随加速结构滞后而覆盖整帧
+            bool dragInstance = values[P_DRAG_INSTANCE_ACTIVE] > 0.5;
+            if (!preferContaining && values[P_HW_RT_CURRENT] > 0.5 &&
+                (dragInstance || (nodeCount > 0 && voxelCount > 0)))
             {
-                vec3 rootMin = regionOrigin + vec3(nodes[0].minimum.xyz);
-                vec3 rootMax = regionOrigin + vec3(nodes[0].maximum.xyz);
-                bool outside = any(lessThan(rayOrigin, rootMin - vec3(0.001))) ||
-                               any(greaterThan(rayOrigin, rootMax + vec3(0.001)));
+                // 拖动实例路径下静态世界可以是空的，此时没有根包围盒可判断，
+                // 全部交给加速结构（只含拖动对象）求交
+                bool outside = true;
+                if (nodeCount > 0 && voxelCount > 0)
+                {
+                    vec3 rootMin = regionOrigin + vec3(nodes[0].minimum.xyz);
+                    vec3 rootMax = regionOrigin + vec3(nodes[0].maximum.xyz);
+                    outside = any(lessThan(rayOrigin, rootMin - vec3(0.001))) ||
+                              any(greaterThan(rayOrigin, rootMax + vec3(0.001)));
+                }
                 if (outside && maxDistance > 0.0)
                 {
+                    bool editRegion = values[P_EDIT_REGION_ACTIVE] > 0.5;
+                    vec3 editMin = vec3(values[P_EDIT_REGION_MIN_X], values[P_EDIT_REGION_MIN_Y], values[P_EDIT_REGION_MIN_Z]);
+                    vec3 editMax = vec3(values[P_EDIT_REGION_MAX_X], values[P_EDIT_REGION_MAX_Y], values[P_EDIT_REGION_MAX_Z]);
+                    if (editRegion && TraceRegionClosest(rayOrigin, rayDirection, closestDistance,
+                            hitNormal, hitColor, hitFlags, hitSlot, hitCell, hitExtent,
+                            ignoreTranslucent, maxDistance, anyHit) && anyHit)
+                    {
+                        return true;
+                    }
+
+                    float rayLimit = editRegion ? closestDistance : maxDistance;
+                    int hardwareCount = int(values[P_HW_RT_CELL_COUNT]);
+                    // 加速结构按其构建时的体素原点存放相对坐标，工作集原点此后可能改动
+                    vec3 shadowOrigin = vec3(values[P_SHADOW_ORIGIN_X], values[P_SHADOW_ORIGIN_Y], values[P_SHADOW_ORIGIN_Z]);
                     rayQueryEXT query;
                     rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsNoOpaqueEXT, 0xFF,
-                        rayOrigin - regionOrigin, 0.0, rayDirection, maxDistance);
+                        rayOrigin - shadowOrigin, 0.0, rayDirection, rayLimit);
                     while (rayQueryProceedEXT(query))
                     {
                         if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
                         int index = rayQueryGetIntersectionPrimitiveIndexEXT(query, false) / 12;
-                        if (index < 0 || index >= voxelCount) continue;
-                        VoxelCell candidate = cells[index];
+                        // 实例 1 是正在拖动的对象：它的快照独立、局部原点独立，
+                        // 世界位置 = 局部原点 + 局部格坐标 + 实例平移
+                        uint instanceIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                        bool dragHit = instanceIndex == 1u && values[P_DRAG_INSTANCE_ACTIVE] > 0.5;
+                        VoxelCell candidate;
+                        vec3 cellOrigin;
+                        vec3 minimum;
+                        if (dragHit)
+                        {
+                            int dragCount = int(values[P_DRAG_CELL_COUNT]);
+                            if (index < 0 || index >= dragCount) continue;
+                            candidate = hardwareDragCells[index];
+                            cellOrigin = vec3(values[P_DRAG_ORIGIN_X], values[P_DRAG_ORIGIN_Y], values[P_DRAG_ORIGIN_Z]) +
+                                vec3(values[P_DRAG_OFFSET_X], values[P_DRAG_OFFSET_Y], values[P_DRAG_OFFSET_Z]);
+                            minimum = cellOrigin + vec3(candidate.position.xyz);
+                        }
+                        else
+                        {
+                            if (index < 0 || index >= hardwareCount) continue;
+                            // 图元索引来自加速结构，必须读与它同序的体素快照；
+                            // 编辑期间当前 cells[] 的顺序已经变化，不能按它取颜色
+                            // 加速结构与工作集同版本时两者顺序一致，优先读当前 cells[]，
+                            // 这样逐格选中标记与描边蒙版标记都能立即生效
+                            candidate = editRegion ? hardwareCells[index] : cells[index];
+                            cellOrigin = shadowOrigin;
+                            minimum = shadowOrigin + vec3(candidate.position.xyz);
+                        }
                         // 完全透明的格子不能占据最近命中，否则会挡住后方实体。
                         if (candidate.color.a <= 0.0) continue;
                         if (ignoreTranslucent && (candidate.metadata.x >> 16 & 1u) != 0u) continue;
                         ivec3 extent = ivec3(max(candidate.position.w & 0xFF,1),
                             max((candidate.position.w >> 8) & 0xFF,1), max((candidate.position.w >> 16) & 0xFF,1));
-                        vec3 minimum = regionOrigin + vec3(candidate.position.xyz);
+                        // 编辑区域内的几何由上面的软件求交负责，加速结构里的旧结果必须跳过
+                        if (!dragHit && editRegion && all(greaterThan(minimum + vec3(extent), editMin)) &&
+                            all(lessThan(minimum, editMax))) continue;
                         float distance; vec3 normal;
                         if (!IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent), distance, normal, !anyHit) ||
                             distance >= closestDistance) continue;
                         closestDistance = distance;
                         hitNormal = normal;
                         hitColor = candidate.color;
-                        hitFlags = (candidate.metadata.x >> 16) | (candidate.metadata.y != 0u ? 256u : 0u);
+                        hitFlags = (candidate.metadata.x >> 16) | (candidate.metadata.y != 0u ? 256u : 0u) |
+                            (candidate.metadata.z != 0u ? 512u : 0u);
                         hitSlot = candidate.metadata.x & 0xFFFFu;
-                        hitCell = candidate.position.xyz;
+                        // 加速结构的格坐标相对它自己的原点；描边与其它按 regionOrigin 计算的
+                        // 逻辑需要统一到当前工作集原点，原点变化时加上差值
+                        hitCell = candidate.position.xyz + ivec3(cellOrigin - regionOrigin);
                         hitExtent = extent;
-                        if (anyHit && hitColor.a > 0.0) return true;
+                        // 必须提交交点：用 NoOpaque 只拿候选时，如果从不确认，
+                        // 查询里就没有"已确定的最近命中"，遍历无法用最近距离收窄 tMax，
+                        // 会把整棵树沿射线的全部候选三角形逐条吐出来——这正是硬件路径
+                        // 反而比软件 BVH 慢的原因。确认后遍历才能提前剔除更远的节点。
+                        rayQueryConfirmIntersectionEXT(query);
+                        if (anyHit && hitColor.a > 0.0)
+                        {
+                            // 任意命中查询拿到第一个可接受交点就可以停止遍历
+                            rayQueryTerminateEXT(query);
+                            return true;
+                        }
                     }
                     return hitColor.a > 0.0;
                 }
@@ -3663,7 +4151,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                             closestDistance = distance;
                             hitNormal = normal;
                             hitColor = cell.color;
-                            hitFlags = (cell.metadata.x >> 16) | (cell.metadata.y != 0u ? 256u : 0u);
+                            hitFlags = (cell.metadata.x >> 16) | (cell.metadata.y != 0u ? 256u : 0u) |
+                                (cell.metadata.z != 0u ? 512u : 0u);
                             hitSlot = cell.metadata.x & 0xFFFFu;
                             hitCell = cell.position.xyz;
                             hitExtent = packedExtent;
@@ -3801,7 +4290,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 因此射线起点先减去区域原点；命中图元号除以 12 得到体素索引，
             // 再按与 Compute 路径相同的规则跳过半透明格。
             // 索引与半透明标记都取加速结构同序快照：编辑期加速结构滞后时也不会错位
-            vec3 relativeOrigin = rayOrigin - vec3(values[16], values[17], values[18]);
+            // 加速结构按其构建时的体素原点存放相对坐标；工作集原点变化后仍要按原原点换算
+            vec3 relativeOrigin = rayOrigin - vec3(values[P_SHADOW_ORIGIN_X],
+                values[P_SHADOW_ORIGIN_Y], values[P_SHADOW_ORIGIN_Z]);
             int hardwareCount = int(values[P_HW_RT_CELL_COUNT]);
             rayQueryEXT query;
             rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsNoOpaqueEXT, 0xFF,
@@ -3811,12 +4302,28 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT)
                     continue;
                 int cellIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, false) / 12;
-                if (cellIndex < 0 || cellIndex >= hardwareCount) continue;
-                VoxelCell candidate = hardwareCells[cellIndex];
+                uint instanceIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                bool dragHit = instanceIndex == 1u && values[P_DRAG_INSTANCE_ACTIVE] > 0.5;
+                VoxelCell candidate;
+                vec3 minimum;
+                if (dragHit)
+                {
+                    int dragCount = int(values[P_DRAG_CELL_COUNT]);
+                    if (cellIndex < 0 || cellIndex >= dragCount) continue;
+                    candidate = hardwareDragCells[cellIndex];
+                    minimum = vec3(values[P_DRAG_ORIGIN_X], values[P_DRAG_ORIGIN_Y], values[P_DRAG_ORIGIN_Z]) +
+                        vec3(values[P_DRAG_OFFSET_X], values[P_DRAG_OFFSET_Y], values[P_DRAG_OFFSET_Z]) +
+                        vec3(candidate.position.xyz);
+                }
+                else
+                {
+                    if (cellIndex < 0 || cellIndex >= hardwareCount) continue;
+                    candidate = hardwareCells[cellIndex];
+                    minimum = vec3(values[16], values[17], values[18]) + vec3(candidate.position.xyz);
+                }
                 if ((candidate.metadata.x >> 16 & 1u) != 0u || candidate.color.a <= 0.0) continue;
                 ivec3 extent = ivec3(max(candidate.position.w & 255, 1),
                     max((candidate.position.w >> 8) & 255, 1), max((candidate.position.w >> 16) & 255, 1));
-                vec3 minimum = vec3(values[16], values[17], values[18]) + vec3(candidate.position.xyz);
                 float distance; vec3 normal;
                 if (IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent),
                     distance, normal, false) && distance < maxDistance) return true;
@@ -5047,19 +5554,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     }
                 }
                 hasPendingInterface = false;
-                // 单面渲染：两个实心体素之间的交界面对相机不可见，跳过继续前进
-                float facingOpacity = materialSlots[int(hitSlot)].optics.z >= 0.0
-                    ? materialSlots[int(hitSlot)].optics.z : hitColor.a;
-                if (!backfaceHit && facingOpacity >= 0.999)
-                {
-                    ivec3 frontCell = hitCell + ivec3(int(round(hitNormal.x)), int(round(hitNormal.y)),
-                        int(round(hitNormal.z)));
-                    if (VoxelAt(frontCell).a > 0.0)
-                    {
-                        rayOrigin = hitPoint + rayDirection * max(0.0005, abs(hitDistance) * 1e-4);
-                        continue;
-                    }
-                }
+                // 「两个实心体素之间的交界面不可见」的跳过条件已移除：
+                // 用局部格坐标查世界坐标时它几乎从不成立，等于长期空转；
+                // 换成正确的世界坐标后，它会在正常外表面上大面积误命中，
+                // 把射线推进实心内部并逐格穿透，表现为模型半透明、能看到内部，帧率也塌了。
+                // 射线从实心内部出发时命中的是背面，已由上面的背面分支处理，因此这里直接着色。
 
                 if (bounce == 0)
                 {
@@ -5081,7 +5580,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     : SrgbToLinear(clamp(hitColor.rgb, vec3(0.0), vec3(1.0)));
                 if (!waterHit && values[P_SURFACE_DEPOSIT_COUNT] > 0.0)
                     ApplySurfaceDeposits(hitPoint, hitNormal, hitLinearColor, material, groundHit);
-                if (!pathMode && values[115] > 0.5 && values[57] <= 0.5)
+                // 描边开启时若还带描边蒙版，只有被蒙版标记的体素（当前编辑模型）画棱线；
+                // 其余体素退回普通场景预览着色，避免整场景铺满网格线
+                bool outlineSelected = values[57] > 0.5 &&
+                    (values[P_OUTLINE_MASK_ACTIVE] <= 0.5 || (hitFlags & 512u) != 0u);
+                if (!pathMode && values[115] > 0.5 && !outlineSelected)
                 {
                     // 场景窗口的 GPU 基础显示：只做确定性的面向明暗，不进入实时特效路径。
                     vec3 faceColor = hitLinearColor;
@@ -5094,7 +5597,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     radiance += faceColor;
                     break;
                 }
-                if (!pathMode && values[57] > 0.5)
+                if (!pathMode && outlineSelected)
                 {
                     // 只有编辑器场景预览显式要求描边时才绘制纯色体素轮廓；
                     // 渲染视图关闭描边时必须继续执行下方完整的实时光照路径。
@@ -6362,6 +6865,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _sceneOrderedCells = bvh.OrderedCells;
         _sceneOrderedOrigin = workset.Origin;
         _sceneSelectionDirty = true;
+        // 新上传的体素缓冲里标记位全为零，已有标记需要重新写入
+        _cellFlagsAllZero = true;
         // 空场景也要绘制无限网格；描述符保持有效，计数为零时着色器不访问这些占位数据。
         if (bytes.Length == 0) bytes = new byte[PackedCellSize];
         var nodeBytes = bvh.NodeBytes.Length == 0 ? new byte[VoxelGpuBvh.PackedNodeSize] : bvh.NodeBytes;
@@ -6404,27 +6909,120 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal void SetSceneSelection(VoxelWorld? selection)
     {
         var version = selection?.ContentVersion ?? -1;
-        if (!_sceneSelectionDirty && ReferenceEquals(selection, _sceneSelection) && version == _sceneSelectionVersion) return;
-        _sceneSelection = selection;
-        _sceneSelectionVersion = version;
+        if (!ReferenceEquals(selection, _sceneSelection) || version != _sceneSelectionVersion)
+        {
+            _sceneSelection = selection;
+            _sceneSelectionVersion = version;
+            _sceneSelectionActive = selection is { OccupiedVoxelCount: > 0 } && _sceneOrderedCells.Count > 0;
+            _sceneSelectionDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// 设置描边蒙版：只有蒙版里的体素参与棱线描边，场景预览按当前编辑模型传入
+    /// </summary>
+    /// <param name="mask">描边目标世界；null 表示不限制（配合关闭描边时不会生效）</param>
+    internal void SetOutlineMask(VoxelWorld? mask)
+    {
+        var version = mask?.ContentVersion ?? -1;
+        if (!ReferenceEquals(mask, _outlineMask) || version != _outlineMaskVersion)
+        {
+            _outlineMask = mask;
+            _outlineMaskVersion = version;
+            _outlineMaskActive = mask is { OccupiedVoxelCount: > 0 } && _sceneOrderedCells.Count > 0;
+            _outlineMaskLogPending = true;
+            // 复用选中标记的脏标记：两者共用同一次标记打包与上传
+            _sceneSelectionDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// 打包并上传逐格标记：偏移 36 为选中标记，偏移 40 为描边蒙版标记。
+    /// 两张表都为空且上次上传的标记已经全零时直接跳过，避免每次工作集同步都重传整份体素缓冲
+    /// </summary>
+    internal void FlushCellMarks()
+    {
+        if (!_sceneSelectionDirty) return;
         _sceneSelectionDirty = false;
-        _sceneSelectionActive = selection is { OccupiedVoxelCount: > 0 } && _sceneOrderedCells.Count > 0;
+        var needsWrite = !(_sceneSelection is null && _outlineMask is null && _cellFlagsAllZero);
+        _cellFlagsAllZero = _sceneSelection is null && _outlineMask is null;
+        if (!needsWrite) return;
         if (_context is null || _api is null || _voxelBuffer.Handle == 0) return;
         var bytes = PackCells(_sceneOrderedCells);
+        var matched = 0;
         for (var index = 0; index < _sceneOrderedCells.Count; index++)
         {
             var cell = _sceneOrderedCells[index];
             var coordinate = new VoxelCoord64(_sceneOrderedOrigin.X + cell.X,
                 _sceneOrderedOrigin.Y + cell.Y, _sceneOrderedOrigin.Z + cell.Z);
-            uint selected = selection is not null && selection.TryGet(coordinate, out var value) && value == cell.Value ? 1u : 0u;
+            uint selected = _sceneSelection is not null && _sceneSelection.TryGet(coordinate, out var value) && value == cell.Value ? 1u : 0u;
+            // 描边蒙版只按坐标归属判断：工作集里的体素经过运行时材质重映射，值比较会漏判
+            var outlinedCell = _outlineMask is not null && _outlineMask.TryGet(coordinate, out _);
+            uint outlined = outlinedCell ? 1u : 0u;
+            if (outlinedCell) matched++;
             MemoryMarshal.Write(bytes.AsSpan(index * PackedCellSize + 36, 4), in selected);
+            MemoryMarshal.Write(bytes.AsSpan(index * PackedCellSize + 40, 4), in outlined);
+        }
+        _outlineMaskMatchCount = matched;
+        // 蒙版有体素却一格都没命中，说明蒙版坐标与当前工作集对不上；这时若仍按蒙版描边，
+        // 画面会完全没有棱线。回落到“整份体素描边”，至少保证绘制模式始终能看到方块边界
+        if (_outlineMaskActive && _outlineMask is { OccupiedVoxelCount: > 0 } && matched == 0 && _sceneOrderedCells.Count > 0)
+        {
+            _outlineMaskActive = false;
+            _outlineMaskLogPending = true;
+        }
+        if (_outlineMaskLogPending)
+        {
+            _outlineMaskLogPending = false;
+            var now = Environment.TickCount64;
+            if (now - _outlineMaskLogAtMs > 2000)
+            {
+                _outlineMaskLogAtMs = now;
+                var message = $"描边蒙版：目标 {_outlineMask?.OccupiedVoxelCount ?? 0:N0} 格，" +
+                    $"工作集 {_sceneOrderedCells.Count:N0} 格，命中 {matched:N0} 格，按蒙版描边={_outlineMaskActive}";
+                if (!_outlineMaskActive) MVoxelLog.Warn(message + "（已回落到整份体素描边）");
+                else MVoxelLog.Info(message);
+            }
         }
         if (bytes.Length > 0)
         {
             WaitForComputeIdle();
             UploadBytes(bytes, _voxelBuffer, 0);
         }
+        // 编辑期间主射线读的是加速结构同序快照，标记必须一起写进去
+        PatchAccelerationCellMarks();
         _lastParameters = null;
+    }
+
+    /// <summary>
+    /// 把逐格选中与描边蒙版标记补写进与加速结构同序的体素快照。
+    /// 正常情况下主射线读当前 cells[]，标记已随体素缓冲一起更新；
+    /// 只有笔划进行中加速结构落后时才读快照，那时必须单独补写
+    /// </summary>
+    private void PatchAccelerationCellMarks()
+    {
+        var cells = _shadowAccelerationCells;
+        var acceleration = _shadowAcceleration;
+        if (cells is null || acceleration is null || !_shadowAccelerationOriginValid) return;
+        var count = cells.Count;
+        if (count <= 0 || acceleration.AccelerationCellCount != count) return;
+        if (_shadowMarkSelection.Length < count)
+        {
+            _shadowMarkSelection = new uint[count];
+            _shadowMarkOutline = new uint[count];
+        }
+
+        var origin = _shadowAccelerationOrigin;
+        for (var index = 0; index < count; index++)
+        {
+            var cell = cells[index];
+            var coordinate = new VoxelCoord64(origin.X + cell.X, origin.Y + cell.Y, origin.Z + cell.Z);
+            _shadowMarkSelection[index] = _sceneSelection is not null &&
+                _sceneSelection.TryGet(coordinate, out var value) && value == cell.Value ? 1u : 0u;
+            _shadowMarkOutline[index] = _outlineMask is not null && _outlineMask.TryGet(coordinate, out _) ? 1u : 0u;
+        }
+
+        acceleration.WriteCellFlags(_shadowMarkSelection, _shadowMarkOutline, count);
     }
 
     /// <summary>
@@ -6499,8 +7097,145 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _worksetLodSignature = lodSignature;
         _worksetGreedyMerge = true;
         _worksetIncludesInterior = false;
+        _worksetVisibilitySignature = 0;
         SyncTotalCells = residency.OccupiedCount;
         ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 可见区块常驻池同步：只驻留可见与保守贡献范围内的区块，
+    /// 可见性变化时释放不可见区块、补入新可见区块，并只上传变化的池区间
+    /// </summary>
+    /// <param name="world">体素世界</param>
+    /// <param name="lodSignature">LOD 分组签名（池路径恒为 0）</param>
+    /// <param name="maximumCells">显存预算格数（池路径恒为 0）</param>
+    /// <param name="chunkFilter">区块可见性谓词</param>
+    /// <param name="camera">判距相机位置</param>
+    /// <param name="visibilitySignature">可见性签名</param>
+    private void SyncBrickWindow(VoxelWorld world, long lodSignature, int maximumCells,
+        Func<ChunkCoord64, bool> chunkFilter, System.Numerics.Vector3? camera, long visibilitySignature)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        if (_brickPool is null || !ReferenceEquals(_poolSourceWorld, world))
+        {
+            _brickPool = BrickResidencyPool.Create(world, MaxFullWorksetCells);
+            _poolSourceWorld = world;
+        }
+
+        var pool = _brickPool;
+        var plan = pool.Update(world, chunkFilter, camera);
+        SyncWorksetBuildMs = watch.Elapsed.TotalMilliseconds;
+        SyncPackMs = 0;
+        SyncUploadMs = 0;
+        var uploadWatch = System.Diagnostics.Stopwatch.StartNew();
+        if (_context is not null && _api is { } api)
+        {
+            if (pool.IsEmpty)
+            {
+                if (_voxelBuffer.Handle != 0)
+                {
+                    api.DeviceWaitIdle(_device);
+                    DestroyBvhBuffer(api);
+                    DestroyVoxelBuffer(api);
+                    DestroyBrickTableBuffer(api);
+                    _bvhNodeCount = 0;
+                }
+            }
+            else if (plan.FullRebuild)
+            {
+                UploadPoolFull(pool);
+            }
+            else if (plan.Changed)
+            {
+                UploadPoolRanges(pool, plan);
+            }
+        }
+
+        SyncUploadMs = uploadWatch.Elapsed.TotalMilliseconds;
+
+        _usingBrickPath = false;
+        _sceneOrderedCells = Array.Empty<VoxelGpuCell>();
+        _sceneSelectionActive = false;
+        _workset = VoxelGpuWorkset.CreateForBricks(world.ContentVersion, pool.Anchor,
+            pool.Size, pool.Cells, pool.EmissiveCount);
+        _lastSyncSource = world;
+        _worksetMaximumCells = maximumCells;
+        _worksetLodSignature = lodSignature;
+        _worksetGreedyMerge = true;
+        _worksetIncludesInterior = false;
+        _worksetVisibilitySignature = visibilitySignature;
+        SyncTotalCells = pool.OccupiedCount;
+        if (plan.Changed || plan.FullRebuild) ResetAccumulation();
+    }
+
+    /// <summary>
+    /// 整份上传常驻池（首次、池容量变化或回退时）
+    /// </summary>
+    private void UploadPoolFull(BrickResidencyPool pool)
+    {
+        var api = _api!;
+        WaitForComputeIdle();
+        var cellBytes = PackCells(pool.Cells);
+        if (cellBytes.Length == 0) cellBytes = new byte[PackedCellSize];
+        var nodeBytes = pool.Nodes.Length == 0 ? new byte[48] : PackResidencyNodes(pool.Nodes, 0, pool.Nodes.Length);
+        var cellRequired = checked((ulong)Math.Max(cellBytes.Length, PackedCellSize));
+        if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < cellRequired)
+        {
+            api.DeviceWaitIdle(_device);
+            DestroyVoxelBuffer(api);
+            (_voxelBuffer, _voxelMemory) = CreateBuffer(NextCapacity(cellRequired),
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            _voxelBufferCapacity = NextCapacity(cellRequired);
+        }
+
+        var nodeRequired = checked((ulong)Math.Max(nodeBytes.Length, 48));
+        if (_bvhBuffer.Handle == 0 || _bvhBufferCapacity < nodeRequired)
+        {
+            api.DeviceWaitIdle(_device);
+            DestroyBvhBuffer(api);
+            (_bvhBuffer, _bvhMemory) = CreateBuffer(NextCapacity(nodeRequired),
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            _bvhBufferCapacity = NextCapacity(nodeRequired);
+        }
+
+        EnsureBrickTableBuffer(1);
+        UploadBytes(cellBytes, _voxelBuffer, 0);
+        UploadBytes(nodeBytes, _bvhBuffer, 0);
+        _bvhNodeCount = pool.Nodes.Length;
+        UpdateComputeDescriptors();
+    }
+
+    /// <summary>
+    /// 增量上传常驻池中发生变化的格片与节点区间
+    /// </summary>
+    private void UploadPoolRanges(BrickResidencyPool pool, BrickResidencyPool.WindowUploadPlan plan)
+    {
+        var cellBytesNeeded = checked((ulong)Math.Max(pool.Cells.Length, 1) * PackedCellSize);
+        var nodeBytesNeeded = checked((ulong)Math.Max(pool.Nodes.Length, 1) * 48);
+        // 池数组扩容会让 GPU 缓冲长度不足，此时退回整份上传
+        if (_voxelBuffer.Handle == 0 || _voxelBufferCapacity < cellBytesNeeded ||
+            _bvhBuffer.Handle == 0 || _bvhBufferCapacity < nodeBytesNeeded)
+        {
+            UploadPoolFull(pool);
+            return;
+        }
+
+        WaitForComputeIdle();
+        foreach (var (start, count) in plan.CellRanges)
+        {
+            if (count <= 0) continue;
+            UploadBytes(PackCellsRange(pool.Cells, start, count), _voxelBuffer, (long)start * PackedCellSize);
+        }
+
+        foreach (var (start, count) in plan.NodeRanges)
+        {
+            if (count <= 0) continue;
+            UploadBytes(PackResidencyNodes(pool.Nodes, start, count), _bvhBuffer, (long)start * 48);
+        }
+
+        _bvhNodeCount = pool.Nodes.Length;
     }
 
     /// <summary>

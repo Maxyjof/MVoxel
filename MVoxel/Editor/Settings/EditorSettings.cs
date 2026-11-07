@@ -389,6 +389,11 @@ public static class ShortcutCommands
         new("viewport.focus", "聚焦选中体素", "F", "视口"),
         new("viewport.toggleGrid", "显示/隐藏网格", "G", "视口"),
         new("viewport.togglePanels", "显示/隐藏面板", "Shift+Space", "视口"),
+        new("gizmo.select", "选择工具", "Q", "视口"),
+        new("gizmo.move", "移动工具", "W", "视口"),
+        new("gizmo.rotate", "旋转工具", "E", "视口"),
+        new("gizmo.scale", "缩放工具", "R", "视口"),
+        new("gizmo.universal", "全部工具", "T", "视口"),
     };
 }
 

@@ -1082,6 +1082,8 @@ internal sealed partial class ImGuiEditorWindow
                 DrawSettingsSectionHeader("场景辅助显示", "网格与体素轮廓");
                 ImGui.Checkbox("显示场景网格", ref _showGrid);
                 ImGui.Checkbox("显示体素轮廓", ref _showVoxelOutlines);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("只在绘制模式下显示，并且只描边当前正在编辑的模型；远处棱线按屏幕尺寸淡出");
                 DrawSettingsSectionHeader("场景相机", "视口导航和裁剪范围");
                 SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");

@@ -1,19 +1,26 @@
 namespace MVoxel.Rendering;
 
 /// <summary>
-/// 体素距离 LOD 配置：按相机到区块的距离把体素分档粗化，远处区块以 2^k 大块近似。
-/// 场景窗口与渲染窗口各持一份，默认关闭。距离阈值按层级递增，第一档内保持全细节
+/// 体素模型 LOD 配置：按每个模型对象（模型组件的体素数据）到相机的距离分档粗化，
+/// 同一模型的所有区块使用同一级，级 k 把模型按 2^k 网格折叠成代表体素。
+/// 场景窗口与渲染窗口各持一份，默认关闭。
 /// </summary>
 public sealed class VoxelLodSettings
 {
-    /// <summary>最大 LOD 级数，第六级对应 64 格大块</summary>
+    /// <summary>最大 LOD 级数，第六级对应 32 格大块（受区块边长限制）</summary>
     public const int MaximumLevels = 6;
 
     /// <summary>最小距离阈值（格）</summary>
     public const float MinimumDistance = 8F;
 
-    /// <summary>是否启用距离 LOD</summary>
+    /// <summary>是否启用模型级 LOD</summary>
     public bool Enabled;
+
+    /// <summary>
+    /// 是否把各级代表体素预烘焙并写入体素数据来源文件。
+    /// 关闭时在渲染同步时按同一规则即时粗化，不增加文件体积。
+    /// </summary>
+    public bool Baked;
 
     /// <summary>LOD 级数（含全细节第 0 级），1 到 6</summary>
     public int LevelCount = 3;
@@ -79,6 +86,7 @@ public sealed class VoxelLodSettings
     public VoxelLodSettings Clone() => new()
     {
         Enabled = Enabled,
+        Baked = Baked,
         LevelCount = LevelCount,
         Distances = (float[])(Distances ?? []).Clone(),
     };

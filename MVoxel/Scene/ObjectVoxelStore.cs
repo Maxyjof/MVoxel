@@ -191,11 +191,15 @@ internal sealed class ObjectVoxelStore
     }
 
     /// <summary>
-    /// 按对象可见性和排序配置合成世界
+    /// 按对象可见性和排序配置合成世界，并可选地记录每个区块最终由哪个对象写入。
+    /// 归属按合成次序取最后一个写入者，与合成时的覆盖优先级一致，供模型级 LOD 分档使用。
     /// </summary>
     internal VoxelWorld Compose(SceneDocument scene, uint cameraMask, bool useSceneVisibility,
-        CancellationToken cancellation = default, Func<StableId, VoxelValue, VoxelValue>? remap = null) =>
-        Compose(GetVisibleEntries(scene, cameraMask, useSceneVisibility), cancellation, remap);
+        CancellationToken cancellation = default, Func<StableId, VoxelValue, VoxelValue>? remap = null,
+        IDictionary<ChunkCoord64, StableId>? chunkOwners = null,
+        StableId shiftObjectId = default, VoxelCoord64 shift = default, StableId excludeObjectId = default) =>
+        Compose(GetVisibleEntries(scene, cameraMask, useSceneVisibility), cancellation, remap, chunkOwners,
+            shiftObjectId, shift, excludeObjectId);
 
     /// <summary>
     /// 构建渲染表面接收图层快照。排序与 Compose 一致，重叠位置以后绘制对象为准；
@@ -265,18 +269,42 @@ internal sealed class ObjectVoxelStore
     /// 结果与逐体素串行写入逐格相同
     /// </remarks>
     internal VoxelWorld Compose(IEnumerable<ObjectVoxelRenderEntry> entries, CancellationToken cancellation = default,
-        Func<StableId, VoxelValue, VoxelValue>? remap = null)
+        Func<StableId, VoxelValue, VoxelValue>? remap = null,
+        IDictionary<ChunkCoord64, StableId>? chunkOwners = null,
+        StableId shiftObjectId = default, VoxelCoord64 shift = default, StableId excludeObjectId = default)
     {
         var chunks = new System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, SparseVoxelChunk>();
+        var owners = chunkOwners is null ? null : new System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, StableId>();
         foreach (var entry in entries.Select((value, index) => (value, index))
                      .OrderBy(item => item.value.SortingLayer)
                      .ThenBy(item => item.value.SortingOrder)
                      .ThenBy(item => item.index))
         {
             cancellation.ThrowIfCancellationRequested();
+            // 拖动实例预览把目标对象单独交给加速结构实例，静态世界必须排除它，
+            // 否则旧位置的几何会和实例位置的新几何同时出现
+            if (excludeObjectId != StableId.Empty && entry.value.ObjectId == excludeObjectId) continue;
             if (!_objects.TryGetValue(entry.value.ObjectId, out var world)) continue;
             var objectId = entry.value.ObjectId;
             var sourceChunks = world.SnapshotChunks();
+            if (sourceChunks.Count == 0) continue;
+            // 拖动预览只给目标对象叠加平移，其余对象照旧
+            var objectShift = objectId == shiftObjectId ? shift : VoxelCoord64.Zero;
+            if (objectShift != VoxelCoord64.Zero)
+            {
+                // 平移后体素会跨区块边界，必须按世界坐标重新分桶；写进合成结果后
+                // 区块归属按目标区块记，供图层与编辑归属查询使用
+                foreach (var source in sourceChunks)
+                    ComposeShiftedChunk(chunks, source, objectId, objectShift, remap, owners, cancellation);
+                continue;
+            }
+            // 合成次序决定覆盖优先级，归属记录跟随同一次序：最后一个写该区块的对象生效
+            if (owners is not null)
+            {
+                for (var index = 0; index < sourceChunks.Count; index++)
+                    owners[sourceChunks[index].Coordinate] = objectId;
+            }
+
             if (world.OccupiedVoxelCount < ParallelComposeThreshold)
             {
                 foreach (var source in sourceChunks) ComposeChunk(chunks, source, objectId, remap, cancellation);
@@ -290,6 +318,11 @@ internal sealed class ObjectVoxelStore
         cancellation.ThrowIfCancellationRequested();
         var result = new VoxelWorld();
         foreach (var (coordinate, chunk) in chunks) result.AdoptChunk(coordinate, chunk);
+        if (chunkOwners is not null && owners is not null)
+        {
+            foreach (var (coordinate, owner) in owners) chunkOwners[coordinate] = owner;
+        }
+
         return result;
     }
 
@@ -312,6 +345,48 @@ internal sealed class ObjectVoxelStore
         foreach (var (index, value) in source.Chunk.Snapshot)
             target.SetIndex(index, remap is null ? value : remap(objectId, value));
     }
+
+    /// <summary>
+    /// 把一个源区块按平移量重新分桶写入合成结果。拖动预览用它代替“克隆整份世界再平移”，
+    /// 省掉一次完整的世界复制与再合成，拖动时每步只付一次合成开销
+    /// </summary>
+    private static void ComposeShiftedChunk(
+        System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, SparseVoxelChunk> chunks,
+        (ChunkCoord64 Coordinate, SparseVoxelChunk Chunk) source, StableId objectId, VoxelCoord64 shift,
+        Func<StableId, VoxelValue, VoxelValue>? remap,
+        System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord64, StableId>? owners,
+        CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if (source.Chunk.OccupiedCount == 0) return;
+        var baseX = checked(source.Coordinate.X * VoxelWorld.ChunkSize + shift.X);
+        var baseY = checked(source.Coordinate.Y * VoxelWorld.ChunkSize + shift.Y);
+        var baseZ = checked(source.Coordinate.Z * VoxelWorld.ChunkSize + shift.Z);
+        foreach (var (index, value) in source.Chunk.Snapshot)
+        {
+            var local = SparseVoxelChunk.FromIndex(index);
+            var worldX = baseX + local.X;
+            var worldY = baseY + local.Y;
+            var worldZ = baseZ + local.Z;
+            var coordinate = new ChunkCoord64(FloorDiv(worldX, VoxelWorld.ChunkSize),
+                FloorDiv(worldY, VoxelWorld.ChunkSize), FloorDiv(worldZ, VoxelWorld.ChunkSize));
+            chunks.GetOrAdd(coordinate, _ => new SparseVoxelChunk()).Set(
+                new LocalCoord((int)FloorMod(worldX, VoxelWorld.ChunkSize),
+                    (int)FloorMod(worldY, VoxelWorld.ChunkSize),
+                    (int)FloorMod(worldZ, VoxelWorld.ChunkSize)),
+                remap is null ? value : remap(objectId, value));
+            owners?[coordinate] = objectId;
+        }
+    }
+
+    private static long FloorDiv(long value, long divisor)
+    {
+        var quotient = value / divisor;
+        if ((value % divisor != 0) && ((value < 0) != (divisor < 0))) quotient--;
+        return quotient;
+    }
+
+    private static long FloorMod(long value, long divisor) => value - FloorDiv(value, divisor) * divisor;
 }
 
 internal readonly record struct ObjectVoxelRenderEntry(StableId ObjectId, int SortingLayer, int SortingOrder);

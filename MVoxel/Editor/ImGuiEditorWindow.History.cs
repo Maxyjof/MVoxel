@@ -82,8 +82,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         nameof(_activeTool), nameof(_voxelEditTargetId), nameof(_inspectorLockedObjectId), nameof(_selectedSceneObjectId), nameof(_pinnedVoxelModelId),
         nameof(_sceneGizmoMode), nameof(_brushShape), nameof(_brushRadius), nameof(_paletteIndex), nameof(_brushEmissive), nameof(_brushMaterialSlot),
-        nameof(_sceneZoom), nameof(_sceneOrbitYaw), nameof(_sceneOrbitPitch), nameof(_sceneCameraDistance), nameof(_scenePan), nameof(_sceneFreeMoveHeight),
-        nameof(_renderCameraId), nameof(_renderOrbitAnchor), nameof(_showGrid), nameof(_showVoxelOutlines),
+        nameof(_renderCameraId), nameof(_showGrid), nameof(_showVoxelOutlines),
         nameof(_showHierarchy), nameof(_showInspector), nameof(_showProjectAssets), nameof(_showModelingTools), nameof(_showRenderConfig),
         nameof(_showGeneratorPanel), nameof(_showVoxelMeasurements), nameof(_showPerformanceAnalyzer), nameof(_showRenderStatistics),
         nameof(_activeLayoutFile), nameof(_activeLayoutName), nameof(_layoutPreset), nameof(_activeSceneRelativePath),

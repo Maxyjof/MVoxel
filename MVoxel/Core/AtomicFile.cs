@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace MVoxel.Core;
@@ -67,6 +68,55 @@ public static class AtomicFile
         {
             WriteAndFlush(temporaryPath, contents);
             VerifyBytes(temporaryPath, contents);
+            ReplaceTarget(temporaryPath, absolutePath, backupExtension);
+        }
+        finally
+        {
+            DiscardTemporary(temporaryPath);
+        }
+    }
+
+    /// <summary>
+    /// 原子写入大体量内容：调用方把内容直接写入临时流，落盘后按哈希回读校验，
+    /// 再替换目标并保留备份，全程不需要把完整内容放进单个字符串或字节数组
+    /// </summary>
+    /// <param name="path">目标文件路径</param>
+    /// <param name="write">写入临时流的回调</param>
+    /// <param name="backupExtension">备份后缀，传 null 表示不保留备份</param>
+    public static void WriteStream(string path, Action<Stream> write, string? backupExtension = ".bak")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(write);
+
+        var absolutePath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(absolutePath)
+            ?? throw new ArgumentException("The path must include a directory.", nameof(path));
+        Directory.CreateDirectory(directory);
+
+        var temporaryPath = NewTemporaryPath(absolutePath);
+
+        try
+        {
+            byte[] writtenHash;
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 64 * 1024,
+                       options: FileOptions.WriteThrough))
+            {
+                using var hash = SHA256.Create();
+                using (var hashing = new CryptoStream(stream, hash, CryptoStreamMode.Write, leaveOpen: true))
+                {
+                    write(hashing);
+                    hashing.FlushFinalBlock();
+                }
+                writtenHash = hash.Hash ?? throw new IOException($"Atomic write hashing failed for '{temporaryPath}'.");
+                stream.Flush(flushToDisk: true);
+            }
+
+            VerifyHash(temporaryPath, writtenHash);
             ReplaceTarget(temporaryPath, absolutePath, backupExtension);
         }
         finally
@@ -196,6 +246,23 @@ public static class AtomicFile
     private static void VerifyBytes(string path, byte[] expected)
     {
         var actual = File.ReadAllBytes(path);
+        if (!actual.AsSpan().SequenceEqual(expected))
+        {
+            throw new IOException($"Atomic write verification failed for '{path}'.");
+        }
+    }
+
+    /// <summary>
+    /// 流式回读并比对写入时计算的哈希，避免把超大文件整体读入内存
+    /// </summary>
+    /// <param name="path">临时文件路径</param>
+    /// <param name="expected">写入时计算的哈希</param>
+    private static void VerifyHash(string path, byte[] expected)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 64 * 1024, options: FileOptions.SequentialScan);
+        using var hash = SHA256.Create();
+        var actual = hash.ComputeHash(stream);
         if (!actual.AsSpan().SequenceEqual(expected))
         {
             throw new IOException($"Atomic write verification failed for '{path}'.");

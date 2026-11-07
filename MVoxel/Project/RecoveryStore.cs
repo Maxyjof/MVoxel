@@ -9,8 +9,8 @@ namespace MVoxel.Project;
 /// 一条可恢复的自动保存快照
 /// </summary>
 /// <param name="SavedAt">快照写入时间</param>
-/// <param name="SceneJson">场景文档 JSON 文本</param>
-public sealed record RecoverySnapshot(DateTimeOffset SavedAt, string SceneJson);
+/// <param name="ScenePath">快照场景文件绝对路径</param>
+public sealed record RecoverySnapshot(DateTimeOffset SavedAt, string ScenePath);
 
 /// <summary>
 /// 自动保存恢复区：按项目根路径派生独立目录，存放包含对象体素的场景快照，
@@ -22,6 +22,7 @@ public static class RecoveryStore
 {
     private const string SceneFileName = "scene.mvox.json";
     private const string MetaFileName = "meta.json";
+    private const string DirtyChunkFileName = "dirty-chunks.json";
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
@@ -46,18 +47,50 @@ public static class RecoveryStore
     }
 
     /// <summary>
-    /// 写入包含对象体素的场景恢复快照
+    /// 流式写入包含对象体素的场景恢复快照，避免整份场景先拼成字符串；
+    /// 同时记录本次自动保存重新压缩过的区块差异，便于诊断与确认增量编码生效
     /// </summary>
     /// <param name="projectRootPath">项目根目录</param>
-    /// <param name="sceneJson">场景文档 JSON 文本</param>
-    public static void Write(string projectRootPath, string sceneJson)
+    /// <param name="scene">要写入快照的场景文档</param>
+    /// <param name="reencodedChunks">本次重新编码了区块的对象与区块坐标；为空表示不写差异日志</param>
+    public static void WriteSnapshot(string projectRootPath, MVoxel.Scene.SceneDocument scene,
+        IReadOnlyDictionary<StableId, IReadOnlyList<MVoxel.Voxels.ChunkCoord64>>? reencodedChunks = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sceneJson);
+        ArgumentNullException.ThrowIfNull(scene);
         var directory = DirectoryFor(projectRootPath);
         Directory.CreateDirectory(directory);
-        AtomicFile.WriteText(Path.Combine(directory, SceneFileName), sceneJson, backupExtension: null);
+        AtomicFile.WriteStream(Path.Combine(directory, SceneFileName),
+            stream => MVoxel.Scene.SceneSerializer.Serialize(stream, scene), backupExtension: null);
         AtomicFile.WriteText(Path.Combine(directory, MetaFileName),
             JsonSerializer.Serialize(new Meta(DateTimeOffset.Now), Options), backupExtension: null);
+        if (reencodedChunks is not null)
+        {
+            AtomicFile.WriteText(Path.Combine(directory, DirtyChunkFileName),
+                JsonSerializer.Serialize(BuildDirtyLog(scene, reencodedChunks), Options),
+                backupExtension: null);
+        }
+    }
+
+    private sealed record DirtyChunkLog(DateTimeOffset SavedAt, DirtyObjectEntry[] Objects);
+
+    private sealed record DirtyObjectEntry(string Id, string Name, DirtyChunk[] Chunks);
+
+    private sealed record DirtyChunk(long X, long Y, long Z);
+
+    private static DirtyChunkLog BuildDirtyLog(MVoxel.Scene.SceneDocument scene,
+        IReadOnlyDictionary<StableId, IReadOnlyList<MVoxel.Voxels.ChunkCoord64>> reencodedChunks)
+    {
+        var entries = new List<DirtyObjectEntry>(reencodedChunks.Count);
+        foreach (var objectEntry in scene.Objects)
+        {
+            if (!reencodedChunks.TryGetValue(objectEntry.Id, out var chunks) || chunks.Count == 0) continue;
+            var mapped = new DirtyChunk[chunks.Count];
+            for (var index = 0; index < chunks.Count; index++)
+                mapped[index] = new DirtyChunk(chunks[index].X, chunks[index].Y, chunks[index].Z);
+            entries.Add(new DirtyObjectEntry(objectEntry.Id.Value.ToString(), objectEntry.Name, mapped));
+        }
+
+        return new DirtyChunkLog(DateTimeOffset.Now, entries.ToArray());
     }
 
     /// <summary>
@@ -76,8 +109,7 @@ public static class RecoveryStore
         try
         {
             var meta = JsonSerializer.Deserialize<Meta>(File.ReadAllText(metaPath), Options);
-            snapshot = new RecoverySnapshot(meta?.SavedAt ?? DateTimeOffset.MinValue,
-                File.ReadAllText(scenePath));
+            snapshot = new RecoverySnapshot(meta?.SavedAt ?? DateTimeOffset.MinValue, scenePath);
             return true;
         }
         catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
@@ -94,13 +126,13 @@ public static class RecoveryStore
     /// </summary>
     /// <param name="assetsPath">项目 Assets 绝对路径</param>
     /// <param name="sceneRelativePath">源场景相对 Assets 的路径，如 Scenes/主场景.mvox</param>
-    /// <param name="sceneJson">快照中的场景文档 JSON</param>
+    /// <param name="snapshotScenePath">恢复区快照场景文件绝对路径</param>
     /// <returns>新建场景文件相对 Assets 的路径；写入失败时抛出异常由调用方回退</returns>
-    public static string MaterializeAsScene(string assetsPath, string sceneRelativePath, string sceneJson)
+    public static string MaterializeAsScene(string assetsPath, string sceneRelativePath, string snapshotScenePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(assetsPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(sceneRelativePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sceneJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotScenePath);
 
         var sourcePath = Path.GetFullPath(Path.Combine(assetsPath,
             sceneRelativePath.Replace('/', Path.DirectorySeparatorChar)));
@@ -118,7 +150,7 @@ public static class RecoveryStore
         for (var index = 2; File.Exists(target); index++)
             target = Path.Combine(directory, $"{stem}{suffix} {index}.mvox");
 
-        var scene = MVoxel.Scene.SceneSerializer.LoadFromJson(sceneJson);
+        var scene = MVoxel.Scene.SceneSerializer.Load(snapshotScenePath);
         scene.Name = "恢复快照";
         MVoxel.Scene.SceneSerializer.Save(target, scene);
         MVoxelLog.Info($"已把未保存工作另存为独立场景文件：{relative(target)}（原场景保持不变）");

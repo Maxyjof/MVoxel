@@ -1040,12 +1040,12 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             selectedFormat = formats[0];
         }
 
-        uint imageCount = Math.Max(capabilities.MinImageCount + 1, 2);
+        // 非 Fifo 模式会连续提交，给交换链留三张图像，避免频繁等待上一帧呈现
+        uint imageCount = Math.Max(capabilities.MinImageCount + 1, 3);
         if (capabilities.MaxImageCount != 0)
         {
             imageCount = Math.Min(imageCount, capabilities.MaxImageCount);
         }
-
         _extent = capabilities.CurrentExtent.Width != uint.MaxValue
             ? capabilities.CurrentExtent
             : new Extent2D(
@@ -1070,8 +1070,22 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             // 后台窗口也要完整绘制，供 MCP 从交换链读取未被遮挡的编辑器画面。
             Clipped = false
         };
+        // 优先 Mailbox（不阻塞也不撕裂），其次 Immediate，最后退回 Fifo（垂直同步）。
+        // Mailbox/Immediate 是可选模式，创建失败就换下一种，不需要额外查询呈现模式支持。
+        // 帧率上限由编辑器主循环限制到 300 帧，交换链本身不再锁在显示器刷新率上。
         SwapchainKHR swapchain = default;
-        Check(_swapchainApi.CreateSwapchain(_device, &createInfo, null, &swapchain), "创建 Vulkan Swapchain");
+        Result createResult = Result.Success;
+        foreach (var mode in new[] { PresentModeKHR.MailboxKhr, PresentModeKHR.ImmediateKhr, PresentModeKHR.FifoKhr })
+        {
+            createInfo.PresentMode = mode;
+            createResult = _swapchainApi.CreateSwapchain(_device, &createInfo, null, &swapchain);
+            if (createResult == Result.Success) break;
+            swapchain = default;
+        }
+
+        Check(createResult, "创建 Vulkan Swapchain");
+        // 记录实际生效的呈现模式：Mailbox/Immediate 才不会被显示器刷新率锁住
+        MVoxelLog.Info($"Vulkan 交换链就绪：{_extent.Width}x{_extent.Height}，{imageCount} 张图像，呈现模式 {createInfo.PresentMode}");
         return swapchain;
     }
 

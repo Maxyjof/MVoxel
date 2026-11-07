@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
 using MVoxel.Rendering;
+using MVoxel.Voxels;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Shaderc;
@@ -104,6 +105,26 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private double _lastTlasMs;
     private int _lastBuildCellCount;
     private readonly int _maxAccelerationVoxels;
+
+    // 拖动对象实例：静态世界与拖动对象各建一份 BLAS，TLAS 固定两个实例。
+    // 拖动时只改写实例 1 的平移并重建 TLAS，避免每步重建整份静态 BLAS
+    private VkBuffer _dragVertexBuffer;
+    private DeviceMemory _dragVertexMemory;
+    private VkBuffer _dragIndexBuffer;
+    private DeviceMemory _dragIndexMemory;
+    private VkBuffer _dragCellBuffer;
+    private DeviceMemory _dragCellMemory;
+    private VkBuffer _dragBlasBuffer;
+    private DeviceMemory _dragBlasMemory;
+    private AccelerationStructureKHR _dragBlas;
+    private int _dragCellCount;
+    private long _dragOriginX, _dragOriginY, _dragOriginZ;
+    private long _dragOffsetX, _dragOffsetY, _dragOffsetZ;
+    private int _dragGeometryVersion = -1;
+    private uint _instanceCount;
+    private bool _dragInstanceVisible;
+    private long _staticOriginX, _staticOriginY, _staticOriginZ;
+    private ulong _tlasScratchSize;
 
     /// <summary>
     /// 创建硬件光追资源管理器
@@ -211,6 +232,47 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
 
     /// <summary>与当前加速结构同序的体素数量</summary>
     internal int AccelerationCellCount => _lastBuildCellCount;
+
+    /// <summary>拖动对象实例的体素快照缓冲，与实例 1 的 BLAS 同序</summary>
+    internal VkBuffer DragAccelerationCellBuffer => _dragCellBuffer;
+
+    /// <summary>拖动对象实例覆盖的体素数</summary>
+    internal int DragAccelerationCellCount => _dragCellCount;
+
+    /// <summary>拖动对象体素快照的局部原点</summary>
+    internal VoxelCoord64 DragAccelerationOrigin => new(_dragOriginX, _dragOriginY, _dragOriginZ);
+
+    /// <summary>当前实例变换里写入的平移量</summary>
+    internal VoxelCoord64 DragInstanceOffset => new(_dragOffsetX, _dragOffsetY, _dragOffsetZ);
+
+    /// <summary>加速结构是否包含可用的拖动对象实例</summary>
+    internal bool HasDragAcceleration => _dragBlas.Handle != 0 && _dragCellCount > 0;
+
+    /// <summary>
+    /// 只改写拖动实例的平移并重建 TLAS；静态 BLAS 与对象 BLAS 保持不动
+    /// </summary>
+    /// <param name="offset">拖动对象相对起始位置的整格平移</param>
+    /// <returns>实例变换更新成功时为 true</returns>
+    internal bool UpdateDragInstance(VoxelCoord64 offset)
+    {
+        if (_tlas.Handle == 0 || _dragBlas.Handle == 0 || _instanceBuffer.Handle == 0) return false;
+        if (offset.X == _dragOffsetX && offset.Y == _dragOffsetY && offset.Z == _dragOffsetZ) return true;
+        try
+        {
+            _dragOffsetX = offset.X;
+            _dragOffsetY = offset.Y;
+            _dragOffsetZ = offset.Z;
+            WriteInstanceBuffer();
+            RebuildTlas();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _lastError = exception.ToString();
+            MVoxelLog.Error("更新拖动对象实例变换失败，回退软件 BVH", exception);
+            return false;
+        }
+    }
 
     /// <summary>
     /// 获取当前显示纹理
@@ -378,20 +440,51 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// <param name="cells">与 Compute 着色器 binding 0 顺序一致的体素列表</param>
     /// <param name="sourceVersion">工作集内容版本，版本不变时直接复用</param>
     /// <returns>加速结构可用时返回 true</returns>
-    internal bool EnsureShadowAcceleration(IReadOnlyList<VoxelGpuCell> cells, int sourceVersion)
+    internal bool EnsureShadowAcceleration(IReadOnlyList<VoxelGpuCell> cells, int sourceVersion,
+        IReadOnlyList<VoxelGpuCell>? dragCells = null, VoxelCoord64 dragOrigin = default,
+        VoxelCoord64 dragOffset = default, int dragVersion = -1, VoxelCoord64 staticOrigin = default)
     {
-        if (_disposed || cells.Count == 0 || cells.Count > MaxAccelerationVoxels)
+        if (_disposed || (dragCells?.Count is not > 0 && cells.Count == 0) ||
+            cells.Count > MaxAccelerationVoxels || (dragCells?.Count > MaxAccelerationVoxels) == true)
         {
             return false;
         }
 
-        if (!FitsAccelerationLimits(cells.Count))
+        if (!FitsAccelerationLimits(cells.Count + (dragCells?.Count ?? 0)))
         {
             _lastError = $"场景 {cells.Count:N0} 格超过此设备的加速结构容量上限 {MaxAccelerationVoxels:N0}，已回退软件遍历";
             return false;
         }
 
-        if (_sourceVersion == sourceVersion && _tlas.Handle != 0) return true;
+        // 只有拖动对象的实例平移发生变化：TLAS 是唯一会变的结构，
+        // 静态与对象几何都可以原样复用，这一步就是拖动时的 2ms 级更新
+        if (dragVersion >= 0 && _dragGeometryVersion == dragVersion &&
+            _sourceVersion == sourceVersion && _tlas.Handle != 0 && _dragBlas.Handle != 0)
+        {
+            return UpdateDragInstance(dragOffset);
+        }
+
+        // 从拖动状态退出且静态几何没变：只隐藏实例 1，不重建 BLAS
+        if (dragVersion < 0 && _dragInstanceVisible && _sourceVersion == sourceVersion &&
+            _tlas.Handle != 0)
+        {
+            _dragInstanceVisible = false;
+            _dragGeometryVersion = -1;
+            try
+            {
+                WriteInstanceBuffer();
+                RebuildTlas();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _lastError = exception.ToString();
+                return false;
+            }
+        }
+
+        if (_sourceVersion == sourceVersion && _tlas.Handle != 0 && dragVersion < 0 && !_dragInstanceVisible)
+            return true;
         _lastBuildMs = 0;
         _lastBuildIdleMs = 0;
         _lastGeometryMs = 0;
@@ -410,12 +503,30 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             _lastBuildIdleMs = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
             DestroyAccelerationResources();
-            CreateGeometryBuffers(cells, includeCellBuffer: true);
+            // 拖动对象单独建一份几何、体素快照与 BLAS；它的实例变换由 TLAS 承担，
+            // 拖动过程中只改实例平移，不会让静态几何的 BLAS 失效
+            var hasDrag = dragCells is { Count: > 0 };
+            if (cells.Count > 0) CreateGeometryBuffers(cells, includeCellBuffer: true);
+            if (hasDrag) CreateDragGeometryBuffers(dragCells!);
             _lastGeometryMs = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
-            CreateBlas(cells.Count);
+            if (cells.Count > 0) CreateBlas(cells.Count);
+            if (hasDrag) CreateDragBlas(dragCells!.Count);
+
             _lastBlasMs = phaseWatch.Elapsed.TotalMilliseconds;
             phaseWatch.Restart();
+            _dragCellCount = hasDrag ? dragCells!.Count : 0;
+            _dragOriginX = hasDrag ? dragOrigin.X : 0;
+            _dragOriginY = hasDrag ? dragOrigin.Y : 0;
+            _dragOriginZ = hasDrag ? dragOrigin.Z : 0;
+            _dragOffsetX = hasDrag ? dragOffset.X : 0;
+            _dragOffsetY = hasDrag ? dragOffset.Y : 0;
+            _dragOffsetZ = hasDrag ? dragOffset.Z : 0;
+            _dragGeometryVersion = hasDrag ? dragVersion : -1;
+            _dragInstanceVisible = hasDrag;
+            _staticOriginX = staticOrigin.X;
+            _staticOriginY = staticOrigin.Y;
+            _staticOriginZ = staticOrigin.Z;
             CreateTlas();
             _lastTlasMs = phaseWatch.Elapsed.TotalMilliseconds;
             _sourceVersion = sourceVersion;
@@ -540,20 +651,80 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     }
 
     /// <summary>
+    /// 创建拖动对象的几何缓冲与体素快照；坐标相对拖动对象自己的工作集原点
+    /// </summary>
+    private void CreateDragGeometryBuffers(IReadOnlyList<VoxelGpuCell> cells)
+    {
+        var vertices = new float[checked(cells.Count * VerticesPerVoxel * 3)];
+        var indices = new uint[checked(cells.Count * IndicesPerVoxel)];
+        var packed = new byte[checked(cells.Count * CellStride)];
+        var vertexOffset = 0;
+        var indexOffset = 0;
+        for (var cellIndex = 0; cellIndex < cells.Count; cellIndex++)
+        {
+            var cell = cells[cellIndex];
+            var x = (float)cell.X;
+            var y = (float)cell.Y;
+            var z = (float)cell.Z;
+            var ex = (float)cell.ExtentX;
+            var ey = (float)cell.ExtentY;
+            var ez = (float)cell.ExtentZ;
+            for (var vertex = 0; vertex < VerticesPerVoxel; vertex++)
+            {
+                vertices[vertexOffset++] = x + (vertex is 1 or 2 or 5 or 6 ? ex : 0F);
+                vertices[vertexOffset++] = y + (vertex is 2 or 3 or 6 or 7 ? ey : 0F);
+                vertices[vertexOffset++] = z + (vertex >= 4 ? ez : 0F);
+            }
+            var baseVertex = (uint)(cellIndex * VerticesPerVoxel);
+            for (var index = 0; index < BoxTriangleIndices.Length; index++)
+                indices[indexOffset++] = baseVertex + BoxTriangleIndices[index];
+            WritePackedCell(packed.AsSpan(cellIndex * CellStride, CellStride), cell);
+            // 拖动中的对象必然是当前选中对象：给实例快照打上选中标记，
+            // 外轮廓因此跟实例一起移动，不需要再单独维护一份蒙版
+            MemoryMarshal.Write(packed.AsSpan(cellIndex * CellStride + 36, 4), 1);
+        }
+
+        _dragVertexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(vertices.AsSpan()),
+            (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
+            out _dragVertexMemory);
+        _dragIndexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(indices.AsSpan()),
+            (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
+            out _dragIndexMemory);
+        _dragCellBuffer = CreateHostBuffer(packed,
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+            out _dragCellMemory);
+    }
+
+    /// <summary>
+    /// 创建拖动对象的三角形 BLAS
+    /// </summary>
+    /// <param name="voxelCount">体素数量</param>
+    private void CreateDragBlas(int voxelCount) =>
+        CreateBlas(voxelCount, _dragVertexBuffer, _dragIndexBuffer, out _dragBlas,
+            out _dragBlasBuffer, out _dragBlasMemory);
+
+    /// <summary>
     /// 创建体素三角形 BLAS
     /// </summary>
     /// <param name="voxelCount">体素数量</param>
-    private void CreateBlas(int voxelCount)
+    private void CreateBlas(int voxelCount) =>
+        CreateBlas(voxelCount, _vertexBuffer, _indexBuffer, out _blas, out _blasBuffer, out _blasMemory);
+
+    private void CreateBlas(int voxelCount, VkBuffer vertexBuffer, VkBuffer indexBuffer,
+        out AccelerationStructureKHR blas, out VkBuffer blasBuffer, out DeviceMemory blasMemory)
     {
+        blas = default;
+        blasBuffer = default;
+        blasMemory = default;
         var triangles = new AccelerationStructureGeometryTrianglesDataKHR
         {
             SType = StructureType.AccelerationStructureGeometryTrianglesDataKhr,
             VertexFormat = Format.R32G32B32Sfloat,
-            VertexData = new DeviceOrHostAddressConstKHR { DeviceAddress = GetAddress(_vertexBuffer) },
+            VertexData = new DeviceOrHostAddressConstKHR { DeviceAddress = GetAddress(vertexBuffer) },
             VertexStride = 3 * sizeof(float),
             MaxVertex = (uint)(voxelCount * VerticesPerVoxel - 1),
             IndexType = IndexType.Uint32,
-            IndexData = new DeviceOrHostAddressConstKHR { DeviceAddress = GetAddress(_indexBuffer) },
+            IndexData = new DeviceOrHostAddressConstKHR { DeviceAddress = GetAddress(indexBuffer) },
         };
         var geometry = new AccelerationStructureGeometryKHR
         {
@@ -578,19 +749,19 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         };
         _accelerationApi.GetAccelerationStructureBuildSizes(_device, AccelerationStructureBuildTypeKHR.DeviceKhr,
             in info, in primitives, out sizes);
-        _blasBuffer = CreateDeviceBuffer(sizes.AccelerationStructureSize,
+        blasBuffer = CreateDeviceBuffer(sizes.AccelerationStructureSize,
             BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
-            out _blasMemory);
+            out blasMemory);
         var createInfo = new AccelerationStructureCreateInfoKHR
         {
             SType = StructureType.AccelerationStructureCreateInfoKhr,
-            Buffer = _blasBuffer,
+            Buffer = blasBuffer,
             Size = sizes.AccelerationStructureSize,
             Type = AccelerationStructureTypeKHR.BottomLevelKhr,
         };
-        Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out _blas), "创建体素 BLAS");
+        Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out blas), "创建体素 BLAS");
         CreateScratch(sizes.BuildScratchSize);
-        info.DstAccelerationStructure = _blas;
+        info.DstAccelerationStructure = blas;
         info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
         AccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
@@ -612,23 +783,18 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     }
 
     /// <summary>
-    /// 创建包含一个 BLAS 实例的 TLAS
+    /// 创建含静态实例与拖动实例的 TLAS。两个实例始终存在：
+    /// 没有拖动对象时实例 1 的 mask 为 0，射线看不到它
     /// </summary>
     private void CreateTlas()
     {
-        _instanceBuffer = CreateHostBuffer(new byte[64],
+        // 固定两个实例，TLAS 容量在创建时按 2 个实例申请，后续拖动只重建 TLAS，
+        // 不需要重新查询尺寸或重新创建加速结构
+        _instanceCount = 2;
+        _instanceBuffer = CreateHostBuffer(new byte[64 * _instanceCount],
             (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
             out _instanceMemory);
-        Span<byte> instance = stackalloc byte[64];
-        var transform = new float[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
-        MemoryMarshal.AsBytes(transform.AsSpan()).CopyTo(instance);
-        // VkAccelerationStructureInstanceKHR：第一个 DWORD 的高 8 位是 mask，
-        // 第二个 DWORD 是 SBT 偏移（低 24 位）与实例标志（高 8 位）。
-        // mask=0 会让所有使用 0xFF 的射线完全看不到该实例。
-        MemoryMarshal.Write(instance[48..52], 0xFF000000U);
-        MemoryMarshal.Write(instance[52..56], 0U);
-        MemoryMarshal.Write(instance[56..64], GetAddress(_blas));
-        UploadMapped(_instanceMemory, instance);
+        WriteInstanceBuffer();
 
         var instances = new AccelerationStructureGeometryInstancesDataKHR
         {
@@ -642,7 +808,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             GeometryType = GeometryTypeKHR.InstancesKhr,
             Geometry = new AccelerationStructureGeometryDataKHR { Instances = instances },
         };
-        var primitives = 1U;
+        var primitives = _instanceCount;
         var info = new AccelerationStructureBuildGeometryInfoKHR
         {
             SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
@@ -669,7 +835,39 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             Type = AccelerationStructureTypeKHR.TopLevelKhr,
         };
         Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out _tlas), "创建体素 TLAS");
-        CreateScratch(sizes.BuildScratchSize);
+        _tlasScratchSize = sizes.BuildScratchSize;
+        RebuildTlas();
+    }
+
+    /// <summary>
+    /// 按当前实例数据重建 TLAS（拖动时只走这一步）
+    /// </summary>
+    private void RebuildTlas()
+    {
+        if (_tlas.Handle == 0 || _tlasScratchSize == 0) return;
+        var instances = new AccelerationStructureGeometryInstancesDataKHR
+        {
+            SType = StructureType.AccelerationStructureGeometryInstancesDataKhr,
+            ArrayOfPointers = false,
+            Data = new DeviceOrHostAddressConstKHR { DeviceAddress = GetAddress(_instanceBuffer) },
+        };
+        var geometry = new AccelerationStructureGeometryKHR
+        {
+            SType = StructureType.AccelerationStructureGeometryKhr,
+            GeometryType = GeometryTypeKHR.InstancesKhr,
+            Geometry = new AccelerationStructureGeometryDataKHR { Instances = instances },
+        };
+        var primitives = _instanceCount;
+        var info = new AccelerationStructureBuildGeometryInfoKHR
+        {
+            SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
+            Type = AccelerationStructureTypeKHR.TopLevelKhr,
+            Flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr,
+            Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+            GeometryCount = 1,
+            PGeometries = &geometry,
+        };
+        CreateScratch(_tlasScratchSize);
         info.DstAccelerationStructure = _tlas;
         info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
@@ -689,6 +887,46 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 0, 1, in barrier, 0, null, 0, null);
         });
         DestroyScratch();
+    }
+
+    /// <summary>
+    /// 写入两个实例：0 是静态世界，1 是拖动对象；拖动对象缺失时 mask 设为 0
+    /// </summary>
+    private void WriteInstanceBuffer()
+    {
+        if (_instanceBuffer.Handle == 0) return;
+        var instanceCount = _instanceCount == 0 ? 2U : _instanceCount;
+        Span<byte> buffer = stackalloc byte[64 * 2];
+        // 实例 0：静态 BLAS，单位变换
+        WriteInstance(buffer[..64], _blas.Handle != 0 ? _blas : _dragBlas,
+            0U, _blas.Handle != 0 ? 0xFF000000U : 0x00000000U, 0F, 0F, 0F);
+        // 实例 1：拖动对象，平移 = (拖动原点 - 静态原点) + 累计格位移。
+        // BLAS 顶点使用自己的局部原点，因此实例矩阵承担全部平移
+        var dragVisible = _dragInstanceVisible && _dragBlas.Handle != 0;
+        WriteInstance(buffer[64..], dragVisible ? _dragBlas : _blas,
+            1U, dragVisible ? 0xFF000000U : 0x00000000U,
+            _dragOffsetX + (_dragOriginX - _staticOriginX),
+            _dragOffsetY + (_dragOriginY - _staticOriginY),
+            _dragOffsetZ + (_dragOriginZ - _staticOriginZ));
+        UploadMapped(_instanceMemory, buffer[..(int)(64 * instanceCount)]);
+    }
+
+    private void WriteInstance(Span<byte> destination, AccelerationStructureKHR structure,
+        uint customIndex, uint maskAndIndex, float offsetX, float offsetY, float offsetZ)
+    {
+        // VkAccelerationStructureInstanceKHR 的行主序 3×4 变换：平移在每行第 4 列
+        var transform = new float[]
+        {
+            1F, 0F, 0F, offsetX,
+            0F, 1F, 0F, offsetY,
+            0F, 0F, 1F, offsetZ,
+        };
+        MemoryMarshal.AsBytes(transform.AsSpan()).CopyTo(destination);
+        // 第一个 DWORD 的低 24 位是实例自定义索引，高 8 位是 mask；
+        // mask=0 会让所有使用 0xFF 的射线完全看不到该实例
+        MemoryMarshal.Write(destination[48..52], maskAndIndex | customIndex);
+        MemoryMarshal.Write(destination[52..56], 0U);
+        MemoryMarshal.Write(destination[56..64], GetAddress(structure));
     }
 
     /// <summary>
@@ -1098,6 +1336,35 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     }
 
     /// <summary>
+    /// 把逐格选中与描边蒙版标记写入与加速结构同序的体素快照。
+    /// 编辑期间主射线按快照取格数据，标记不同步到这里，选中外轮廓与体素描边会整体消失
+    /// </summary>
+    /// <param name="selectionFlags">逐格选中标记，顺序与加速结构一致</param>
+    /// <param name="outlineFlags">逐格描边蒙版标记，顺序与加速结构一致</param>
+    /// <param name="count">标记数量，不得超过快照体素数</param>
+    internal void WriteCellFlags(ReadOnlySpan<uint> selectionFlags, ReadOnlySpan<uint> outlineFlags, int count)
+    {
+        if (_cellBuffer.Handle == 0 || _cellMemory.Handle == 0 || count <= 0) return;
+        if (selectionFlags.Length < count || outlineFlags.Length < count) return;
+        var size = (ulong)count * CellStride;
+        void* mapped = null;
+        Check(_api.MapMemory(_device, _cellMemory, 0, size, 0, &mapped), "映射加速结构体素快照标记");
+        try
+        {
+            var bytes = new Span<byte>(mapped, (int)size);
+            for (var index = 0; index < count; index++)
+            {
+                MemoryMarshal.Write(bytes.Slice(index * CellStride + 36, 4), selectionFlags[index]);
+                MemoryMarshal.Write(bytes.Slice(index * CellStride + 40, 4), outlineFlags[index]);
+            }
+        }
+        finally
+        {
+            _api.UnmapMemory(_device, _cellMemory);
+        }
+    }
+
+    /// <summary>
     /// 获取缓冲设备地址
     /// </summary>
     /// <param name="buffer">目标缓冲</param>
@@ -1196,14 +1463,25 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         // TLAS 持有 BLAS 的设备地址，按依赖关系先释放上层。
         if (_tlas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _tlas, null);
         if (_blas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _blas, null);
+        if (_dragBlas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _dragBlas, null);
         DestroyBuffer(ref _tlasBuffer, ref _tlasMemory);
         DestroyBuffer(ref _blasBuffer, ref _blasMemory);
+        DestroyBuffer(ref _dragBlasBuffer, ref _dragBlasMemory);
         DestroyBuffer(ref _vertexBuffer, ref _vertexMemory);
         DestroyBuffer(ref _indexBuffer, ref _indexMemory);
+        DestroyBuffer(ref _dragVertexBuffer, ref _dragVertexMemory);
+        DestroyBuffer(ref _dragIndexBuffer, ref _dragIndexMemory);
         DestroyBuffer(ref _cellBuffer, ref _cellMemory);
+        DestroyBuffer(ref _dragCellBuffer, ref _dragCellMemory);
         DestroyBuffer(ref _instanceBuffer, ref _instanceMemory);
         _blas = default;
         _tlas = default;
+        _dragBlas = default;
+        _dragCellCount = 0;
+        _dragGeometryVersion = -1;
+        _dragInstanceVisible = false;
+        _instanceCount = 0;
+        _tlasScratchSize = 0;
         _sourceVersion = -1;
     }
 

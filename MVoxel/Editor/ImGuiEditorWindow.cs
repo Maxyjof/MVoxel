@@ -187,6 +187,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     /// <summary>当前已连续处于回退状态的时长，用于判断是否还值得显示旧画面</summary>
     private float _sceneFallbackSeconds;
+    /// <summary>CPU 预览回退原因的上报时间，避免每帧刷屏</summary>
+    private long _sceneFallbackLogAtMs;
+    /// <summary>最近一次场景视口真正用显卡渲染完成的时间戳；截图等自动化据此避开 CPU 回退画面</summary>
+    private long _sceneGpuRenderedAtMs;
     private EditorControlServer? _controlServer;
     private PluginScriptRuntime? _pluginRuntime;
     private readonly Dictionary<string, string> _pluginCommandResults = new(StringComparer.Ordinal);
@@ -433,14 +437,20 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             {
                 if (UiDiagnostics.ShouldCloseWelcome) _welcomeWindow?.RequestClose();
                 var uiStart = PerformanceMark();
+                var uiWatchStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 DrawEditorFrame();
                 MeasureSince(uiStart, ref _analysisLive.UiMs);
+                // 供视口性能汇总使用：视口采样在绘制过程中，只能读到上一帧的这两项。
+                // 直接按时间戳算，不依赖性能分析开关（PerformanceMark 在未开分析时返回 0）
+                _lastFrameUiMs = System.Diagnostics.Stopwatch.GetElapsedTime(uiWatchStart).TotalMilliseconds;
                 ProcessCaptureView();
                 if (_activeExport is not null || _exportQueue.Count > 0 || _exportSnapshot is not null)
                     ProcessExportQueue(GetRenderViewCamera(), _lastRenderViewportSize);
                 var imguiStart = PerformanceMark();
+                var imguiWatchStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 _controller.Render();
                 MeasureSince(imguiStart, ref _analysisLive.ImGuiRenderMs);
+                _lastFrameImGuiMs = System.Diagnostics.Stopwatch.GetElapsedTime(imguiWatchStart).TotalMilliseconds;
                 UiDiagnostics.Capture(this, "editor");
             }
 
@@ -459,6 +469,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             UiDiagnostics.Advance(this, ref _sceneOrbitYaw, ref _sceneOrbitPitch, ref _sceneCameraDistance, ref _scenePan);
             UpdatePerformanceMemory(args.Time);
             if (analysisStart != 0L) RecordPerformanceFrame(args.Time, analysisStart);
+            // 最高帧率限制 300 帧/秒：交换链不再受垂直同步约束后，主循环需要一个上限，
+            // 否则会一直空转把 CPU/GPU 占满；统计都在限速之前完成
+            LimitFrameRate();
         }
         catch (Exception exception)
         {
@@ -468,6 +481,33 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             _allowWindowClose = true;
             Close();
         }
+    }
+
+    /// <summary>主循环最高帧率：关闭垂直同步后由这里限速</summary>
+    private const double MaxFrameRate = 300.0;
+    /// <summary>下一帧的目标时间戳，用累计方式避免节流漂移</summary>
+    private long _frameLimitNextTicks;
+
+    /// <summary>
+    /// 把主循环节流到最高帧率。垂直同步关闭后 OpenTK 的循环不再受限，
+    /// 累计下一帧时间点；长时间卡顿后不追帧，避免瞬时补帧
+    /// </summary>
+    private void LimitFrameRate()
+    {
+        var frequency = System.Diagnostics.Stopwatch.Frequency;
+        var budgetTicks = (long)(frequency / MaxFrameRate);
+        if (budgetTicks <= 0) return;
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_frameLimitNextTicks == 0 || now - _frameLimitNextTicks > budgetTicks * 20)
+            _frameLimitNextTicks = now + budgetTicks;
+        else
+            _frameLimitNextTicks += budgetTicks;
+        var waitTicks = _frameLimitNextTicks - now;
+        if (waitTicks <= 0) return;
+        var waitMs = waitTicks * 1000.0 / frequency;
+        if (waitMs >= 1.5) System.Threading.Thread.Sleep((int)(waitMs - 1.0));
+        while (System.Diagnostics.Stopwatch.GetTimestamp() < _frameLimitNextTicks)
+            System.Threading.Thread.SpinWait(64);
     }
 
     protected override void OnUnload()
@@ -1060,7 +1100,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             StartVisible = false,
             StartFocused = true,
             API = ContextAPI.NoAPI,
-            Vsync = VSyncMode.On,
+            // 呈现由 Vulkan 交换链负责；垂直同步关闭后主循环由 LimitFrameRate 限到 300 帧
+            Vsync = VSyncMode.Off,
             Icon = AppBranding.LoadWindowIcon(),
         };
     }
@@ -1225,6 +1266,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawModelingTools();
         DrawFloodConfirmModal();
         DrawVoxExportConfirmation();
+        DrawSceneSizeWarning();
         DrawProjectAssets();
         DrawPluginPanels();
         DrawGeneratorWindow();
@@ -1283,9 +1325,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (ImGui.BeginMenu("兼容导出"))
                 {
                     if (ImGui.MenuItem("选中模型 → MagicaVoxel (.vox)")) ExportWorkingVoxels(true, false);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅交换几何和颜色：单模型每轴最多 256 格、255 个非空颜色。不导出 MVoxel 材质参数与层级；超限明确拒绝，不裁剪、不量化。");
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅交换几何和颜色：单模型每轴最多 256 格、255 个非空颜色。超过 256 格自动拆成子对象并写入场景图；不导出 MVoxel 材质参数与层级。");
                     if (ImGui.MenuItem("整个场景体素 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("含隐藏模型的合并几何与颜色；仅用于满足 VOX 单模型限制的小场景。大场景优先原生格式。");
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("只导出当前打开的场景文件，含隐藏对象。MagicaVoxel 世界为 -1024 到 +1024（每轴 2048 格），场景按此窗口分区写成多个 .vox；每个对象在场景图里是一个组，超过 256 格的模型作为命名子对象分层存放。");
                     if (ImGui.MenuItem("选中模型 → Blender 网格 (.obj)")) ExportWorkingVoxels(true, false, obj: true);
                     if (ImGui.MenuItem("整个场景体素 → Blender 网格 (.obj)")) ExportWorkingVoxels(false, false, obj: true);
                     if (ImGui.IsItemHovered()) ImGui.SetTooltip("导出外表面与顶点颜色；不包含材质参数、相机和层级。大型场景可能产生很大的文件。");
@@ -1946,8 +1988,14 @@ DockId=0x6A3C3007,0
             allowMouseCapture: true, ViewportCaptureTarget.Scene);
         var camera = GetSceneCamera();
         var floatingToolSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
-        var floatingToolsHovered = ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
-            origin + new Vector2(8F + MathF.Max(floatingToolSize * 3F, 120F), 10F + 4F * (floatingToolSize + 3F)));
+        // 模式按钮行在视口上沿之上（与右侧工具栏同行），命中区要同时覆盖那一行和竖排工具列
+        var floatingRowTop = SceneGizmoRowTop(origin, floatingToolSize);
+        var floatingRowMax = new Vector2(floatingRowTop.X + GizmoModeRowWidth(floatingToolSize),
+            floatingRowTop.Y + floatingToolSize);
+        var floatingToolsHovered =
+            ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
+                origin + new Vector2(8F + floatingToolSize, 10F + 5F * (floatingToolSize + 3F))) ||
+            ImGui.IsMouseHoveringRect(floatingRowTop, floatingRowMax);
         // 下拉面板展开时，面板区域也算在工具区内，避免点击穿透到场景
         if (_gizmoPanel != GizmoPanelKind.None &&
             ImGui.IsMouseHoveringRect(_gizmoPanelMinimum, _gizmoPanelMaximum)) floatingToolsHovered = true;
@@ -1966,11 +2014,27 @@ DockId=0x6A3C3007,0
         var showVoxelWorld = IsVoxelWorldVisible();
         var gpuRendered = TryRenderGpuSceneView(drawList, origin, size, camera,
             showGeometry: showVoxelWorld && _project is not null);
-        if (gpuRendered) _sceneFallbackSeconds = 0F;
+        if (gpuRendered)
+        {
+            _sceneFallbackSeconds = 0F;
+            _sceneGpuRenderedAtMs = Environment.TickCount64;
+        }
 
         if (!gpuRendered)
         {
             _sceneFallbackSeconds += MathF.Max(0F, ImGui.GetIO().DeltaTime);
+            // 显卡路径持续失败时记录一次原因：不记录的话只会看到“半透明 CPU 预览”，
+            // 日志里却没有任何线索，无法定位是哪一步没能走显卡
+            if (_sceneFallbackSeconds >= 3F && Environment.TickCount64 - _sceneFallbackLogAtMs > 5000)
+            {
+                _sceneFallbackLogAtMs = Environment.TickCount64;
+                var pipeline = _scenePipeline;
+                var pipelineState = pipeline is null ? "无管线"
+                    : pipeline.IsInitializing ? "初始化中"
+                    : pipeline.IsAvailable ? "可用" : "不可用";
+                MVoxelLog.Warn($"场景窗口持续使用 CPU 预览：显卡禁用={_gpuRenderingDisabled}，" +
+                    $"场景管线={pipelineState}，状态={_pipelineStatus}");
+            }
             // 显卡管线初始化或单帧失败时先保留上一帧的画面，避免在显卡画面与 CPU 预览之间闪烁；
             // 但旧画面不会跟随相机，超过短暂宽限就切到实时 CPU 预览，否则网格和视角会一直冻住。
             var keepStaleFrame = _sceneFallbackSeconds < StaleFrameGraceSeconds;
@@ -1988,16 +2052,20 @@ DockId=0x6A3C3007,0
                 var gridBehindModel = camera.Position.Y >= 0F;
                 if (gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
                 if (showVoxelWorld && _project is not null)
-                    DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines,
+                    DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines && IsVoxelEditingMode,
                         GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
                 if (!gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-                if (showVoxelWorld && _project is not null) DrawCpuSelectionOutline(drawList, origin, size, camera);
+                if (showVoxelWorld && _project is not null && !IsVoxelDrawingMode)
+                    DrawCpuSelectionOutline(drawList, origin, size, camera);
             }
 
             drawList.PopClipRect();
         }
 
-        drawList.PushClipRect(origin, origin + size, true);
+        // 三个模式按钮行位于视口上沿之上（与右侧工具栏同行），裁剪区要向上扩到那一行
+        var floatingClipTop = Math.Min(origin.Y,
+            SceneGizmoRowTop(origin, Math.Max(28F, ImGui.GetFrameHeight() * 1.25F)).Y);
+        drawList.PushClipRect(new Vector2(origin.X, floatingClipTop), origin + size, true);
         DrawSceneFloatingTools(drawList, origin, size);
         // 工具模式不再挡住场景输入：否则切到移动/旋转/缩放后点别的对象选不中
         if (!_screenColorSampling && _project is not null && !gizmoHovered && !floatingToolsHovered && !gizmoInput &&
@@ -2035,6 +2103,9 @@ DockId=0x6A3C3007,0
         {
             DrawSceneCrosshair(drawList, origin + size * 0.5F);
         }
+        // 下拉面板必须最后绘制：性能信息面板是用原始绘制命令提交的，若先提交面板，
+        // 它会盖住面板文字。放到这里保证面板背景与文字都在最上层
+        DrawGizmoPanelOverlay();
 
         drawList.PopClipRect();
         ImGui.EndChild();
@@ -2089,6 +2160,9 @@ DockId=0x6A3C3007,0
     {
         const float buttonWidth = 82F;
         const float buttonHeight = 24F;
+        // 记下这一行的屏幕位置，左上角三个模式按钮要对齐到同一行
+        _sceneToolbarRowTop = ImGui.GetCursorScreenPos();
+        _sceneToolbarRowHeight = buttonHeight;
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var left = ImGui.GetCursorPosX();
         var available = ImGui.GetContentRegionAvail().X;
@@ -2133,11 +2207,12 @@ DockId=0x6A3C3007,0
     {
         var saved = ImGui.GetCursorScreenPos();
         var buttonSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
-        var top = origin + new Vector2(8F, 10F);
+        // 三个模式按钮与右侧工具栏同一行、纵向居中；竖排工具列仍贴在视口左上角
+        var top = SceneGizmoRowTop(origin, buttonSize);
         var hovered = false;
         hovered |= DrawGizmoModeRow(top, buttonSize);
         // 面板按浮层绘制，不推动竖排工具列
-        var columnTop = top + new Vector2(0F, buttonSize + 4F);
+        var columnTop = origin + new Vector2(8F, 10F);
         for (var i = 0; i < 5; i++)
         {
             var position = columnTop + new Vector2(0F, i * (buttonSize + 3F));
@@ -2155,8 +2230,7 @@ DockId=0x6A3C3007,0
                     _voxelEditTargetId = null;
                 }
 
-                _sceneGizmoMode = mode;
-                if (mode != SceneGizmoMode.Select) _lastTransformMode = mode;
+                ApplySceneGizmoMode(mode);
             }
             var over = ImGui.IsItemHovered(); hovered |= over;
             var color = scaleLocked ? ToPackedColor(Color.FromArgb(120, EditorPalette.Window)) :
@@ -2172,15 +2246,14 @@ DockId=0x6A3C3007,0
             else if (over)
                 ImGui.SetTooltip(i switch
                 {
-                    0 => "选择：点击对象选中；再次点击退出选中",
-                    1 => "移动",
-                    2 => "旋转",
-                    3 => "缩放",
-                    _ => "全部：同时显示移动、旋转与缩放手柄",
+                    0 => "选择（Q）：点击对象选中；再次点击退出选中",
+                    1 => "移动（W）",
+                    2 => "旋转（E）",
+                    3 => "缩放（R）",
+                    _ => "全部（T）：同时显示移动、旋转与缩放手柄",
                 });
             ImGui.PopID();
         }
-        DrawGizmoPanelOverlay();
         ImGui.SetCursorScreenPos(saved);
         return hovered;
     }
@@ -2200,6 +2273,37 @@ DockId=0x6A3C3007,0
     private Vector2 _gizmoRowMinimum;
     private Vector2 _gizmoRowMaximum;
     private Vector2 _gizmoPanelAnchor;
+    // 场景窗口右侧工具栏所在行的屏幕位置，用于把左侧三个模式按钮对齐到同一行
+    private Vector2 _sceneToolbarRowTop;
+    private float _sceneToolbarRowHeight;
+
+    /// <summary>
+    /// 三个模式按钮所在行的左上角：纵向中心与场景窗口右侧工具栏那一行对齐
+    /// </summary>
+    /// <param name="origin">视口左上角屏幕坐标</param>
+    /// <param name="buttonSize">按钮基准尺寸</param>
+    /// <returns>行的左上角屏幕坐标</returns>
+    private Vector2 SceneGizmoRowTop(Vector2 origin, float buttonSize)
+    {
+        if (_sceneToolbarRowHeight <= 0F) return origin + new Vector2(8F, 10F);
+        var centerY = _sceneToolbarRowTop.Y + _sceneToolbarRowHeight * 0.5F;
+        return new Vector2(origin.X + 8F, centerY - buttonSize * 0.5F);
+    }
+
+    /// <summary>
+    /// 三个模式按钮行的总宽度，与 <see cref="DrawGizmoModeRow"/> 的逐按钮宽度保持一致
+    /// </summary>
+    /// <param name="size">按钮基准尺寸</param>
+    /// <returns>整行宽度</returns>
+    private float GizmoModeRowWidth(float size)
+    {
+        var spaceWidth = Math.Max(size * 1.7F,
+            ImGui.CalcTextSize(_editorSettings.GizmoLocalSpace ? "局部" : "全局").X + 26F);
+        var pivotWidth = Math.Max(size * 1.7F,
+            ImGui.CalcTextSize(_editorSettings.GizmoPivotCenter ? "中心" : "枢轴").X + 26F);
+        var snapWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize("吸附").X + 26F);
+        return spaceWidth + pivotWidth + snapWidth + 8F;
+    }
 
     private bool DrawGizmoModeRow(Vector2 top, float size)
     {
@@ -2210,7 +2314,7 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Space,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Space ? GizmoPanelKind.None : GizmoPanelKind.Space,
-            string.Empty);
+            "变换手柄坐标系：全局沿世界轴，局部沿对象自身轴。");
 
         var pivotText = _editorSettings.GizmoPivotCenter ? "中心" : "枢轴";
         var pivotWidth = Math.Max(size * 1.7F, ImGui.CalcTextSize(pivotText).X + 26F);
@@ -2218,7 +2322,7 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Pivot,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Pivot ? GizmoPanelKind.None : GizmoPanelKind.Pivot,
-            string.Empty);
+            "变换枢轴：枢轴绕对象原点，中心绕选中范围中心。");
 
         var snapText = "吸附";
         var snapWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize(snapText).X + 26F);
@@ -2226,7 +2330,7 @@ DockId=0x6A3C3007,0
         DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Snap,
             () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Snap ? GizmoPanelKind.None : GizmoPanelKind.Snap,
-            string.Empty);
+            "移动、旋转、缩放的吸附步长设置。");
 
         _gizmoRowMinimum = top;
         _gizmoRowMaximum = new Vector2(snapTop.X + snapWidth, top.Y + size);
@@ -3114,7 +3218,10 @@ DockId=0x6A3C3007,0
         foreach (var face in faces)
         {
             var polygon = face.Points;
-            drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(face.Color));
+            // CPU 回退没有深度缓冲，半透明面片会让整栋房子看起来“透视”。
+            // 预览一律按不透明绘制，宁可丢掉体素透明度也不出现看穿墙体的错觉
+            var opaqueColor = Color.FromArgb(255, face.Color.R, face.Color.G, face.Color.B);
+            drawList.AddConvexPolyFilled(ref polygon[0], polygon.Length, ToPackedColor(opaqueColor));
             if (showOutlines)
             {
                 var shortestEdge = float.PositiveInfinity;
@@ -3607,8 +3714,11 @@ DockId=0x6A3C3007,0
             viewCamera = viewCamera with { FieldOfViewDegrees = settings.CameraFovDegrees };
             var mask = _activeExport.CullingMask ?? uint.MaxValue;
             pipeline.SetSceneLights(_activeExport.SceneLights ?? CollectSceneLights(mask));
-            pipeline.SyncWorld(_activeExport.World ?? GetRenderWorld(mask), 0, settings.RenderLod,
-                new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z));
+            var exportWorld = _activeExport.World ?? GetRenderWorld(mask);
+            var exportModelLod = BuildModelLodView(settings.RenderLod, viewCamera, exportWorld);
+            pipeline.SyncWorld(exportWorld, 0, settings.RenderLod,
+                new System.Numerics.Vector3(viewCamera.Position.X, viewCamera.Position.Y, viewCamera.Position.Z),
+                modelLod: exportModelLod);
             if (!pipeline.IsAvailable)
             {
                 if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
@@ -4799,10 +4909,9 @@ DockId=0x6A3C3007,0
     /// <summary>
     /// 绘制 Unity 风格的体素资产引用字段。字段本身不是文本框，资产路径只能通过项目中的可用资产选择。
     /// </summary>
-    private unsafe bool DrawVoxelModelReference(string current, bool hasEmbeddedData, out string selected, out bool extractRequested)
+    private unsafe bool DrawVoxelModelReference(string current, bool hasEmbeddedData, out string selected)
     {
         selected = current;
-        extractRequested = false;
         var references = GetVoxelModelReferences();
         var known = references.Any(path => string.Equals(path, current, StringComparison.OrdinalIgnoreCase));
         var display = string.IsNullOrWhiteSpace(current)
@@ -4863,12 +4972,6 @@ DockId=0x6A3C3007,0
             }
             ImGui.EndDragDropTarget();
         }
-        if (hasEmbeddedData && string.IsNullOrWhiteSpace(current) &&
-            ImGui.BeginPopupContextItem("##EmbeddedVoxelMenu"))
-        {
-            extractRequested = ImGui.MenuItem("提取体素数据…");
-            ImGui.EndPopup();
-        }
         if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(current))
             ImGui.SetTooltip(known ? current : "引用的体素资产不存在，请重新选择。");
         return changed;
@@ -4919,7 +5022,10 @@ DockId=0x6A3C3007,0
                 _voxelEditTargetId = editing ? null : selectedObject.Id;
                 _activeTool = editing ? EditorTool.Pick : EditorTool.Draw;
                 if (!editing) MarkComponentEditingOwner(selectedObject.Id);
-                _sceneGizmoMode = SceneGizmoMode.Select;
+                // 进入绘制模式时收起变换手柄；退出时恢复上一次的变换工具。
+                // 主选中对象在这一进一出之间没有变化，SyncToolModeWithSelection 不会重新推导，
+                // 所以退出分支必须自己把模式还原，否则手柄要等重新选中才会出现
+                _sceneGizmoMode = editing ? _lastTransformMode : SceneGizmoMode.Select;
                 if (!editing) _selectedSceneObjectId = selectedObject.Id;
             }
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅编辑此模型的体素；再次点击退出绘制模式。");
@@ -4929,10 +5035,17 @@ DockId=0x6A3C3007,0
             if (ImGui.Checkbox("##VoxelMirrorX", ref mirrored))
                 MirrorModelLocalX(selectedObject, component, mirrored);
             data = SceneComponentTypes.ReadVoxelModel(component);
-            BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。右键内嵌数据可提取。");
+            BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。点击“剥离为独立资产…”可把内嵌数据写成外部文件。");
             var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
                 (EmbeddedVoxelData.HasData(component) || _objectVoxels.GetOrCreate(selectedObject.Id).OccupiedVoxelCount > 0);
-            var changed = DrawVoxelModelReference(data.Model, hasEmbeddedData, out var model, out var extractRequested);
+            var changed = DrawVoxelModelReference(data.Model, hasEmbeddedData, out var model);
+            if (hasEmbeddedData && string.IsNullOrWhiteSpace(data.Model))
+            {
+                if (ImGui.Button("剥离为独立资产…", new Vector2(-1F, 0F)))
+                    StripEmbeddedVoxelData(selectedObject, component);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("把当前内嵌体素写成外部 .mvmodel 资产并改为引用；重名时自动追加序号。");
+            }
             if (hasEmbeddedData && string.IsNullOrWhiteSpace(data.Model) && ImGui.BeginPopupContextItem("##VoxelAnimationKeyMenu"))
             {
                 if (ImGui.MenuItem("插入动画关键帧"))
@@ -5500,7 +5613,7 @@ DockId=0x6A3C3007,0
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("近处显示体素棱线，远处随屏幕上的体素尺寸逐渐淡出");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只在绘制模式下显示，并且只描边当前正在编辑的模型；近处显示棱线，远处随屏幕上的体素尺寸逐渐淡出");
         DrawSettingsSectionHeader("渲染参数");
         DrawRenderSettingsPanel();
     }
@@ -6385,10 +6498,9 @@ DockId=0x6A3C3007,0
                 using (StartupTimeline.Begin("打开·预读恢复数据"))
                 {
                     // 先确认快照本身可用，再物化；任一步失败都保留恢复区，改用正式场景。
-                    _ = Scene.SceneSerializer.LoadFromJson(loaded.SceneJson);
                     var sourceRelative = FindStartupSceneRelativePath(project);
                     var recoveredRelative = RecoveryStore.MaterializeAsScene(
-                        project.AssetsPath, sourceRelative, loaded.SceneJson);
+                        project.AssetsPath, sourceRelative, loaded.ScenePath);
                     var recoveredPath = Path.Combine(project.AssetsPath,
                         recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
                     // 从物化后的文件读回来，保证内存场景与磁盘上的「恢复快照」完全一致。
@@ -6710,6 +6822,8 @@ DockId=0x6A3C3007,0
                 SetStatus("模型加载失败，已阻止覆盖保存；请修复资产引用后重新打开项目");
                 return;
             }
+            if (!automatic && PauseForLargeSceneWarning()) return;
+            _sceneSizeWarningConfirmed = false;
             ProjectLayout.EnsureDirectories(_project.RootPath);
             SaveProjectSettings();
             if (!SaveWorldToProject(_project))
@@ -6753,9 +6867,13 @@ DockId=0x6A3C3007,0
         try
         {
             // 恢复快照包含各对象的独立体素，不再生成冗余的合成世界副本。
-            RecoveryStore.Write(_project.RootPath, CreateObjectRecoveryJson());
+            if (_sceneDocument is not null)
+            {
+                var reencoded = SaveObjectVoxelWorlds(_project);
+                RecoveryStore.WriteSnapshot(_project.RootPath, _sceneDocument, reencoded);
+            }
             _autoSaveCountdown = _editorSettings.AutoSaveSeconds;
-            SetStatus("已保存快照到恢复区（正式保存后自动清理）");
+            SetStatus("已保存快照到恢复区（只重编码改动区块，正式保存后自动清理）");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -6773,9 +6891,8 @@ DockId=0x6A3C3007,0
         try
         {
             // 与预读路径保持一致：原场景不动，快照物化成旁边的「恢复快照」场景文件后打开它。
-            _ = Scene.SceneSerializer.LoadFromJson(snapshot.SceneJson);
             var recoveredRelative = RecoveryStore.MaterializeAsScene(
-                project.AssetsPath, _activeSceneRelativePath, snapshot.SceneJson);
+                project.AssetsPath, _activeSceneRelativePath, snapshot.ScenePath);
             var recoveredPath = Path.Combine(project.AssetsPath,
                 recoveredRelative.Replace('/', Path.DirectorySeparatorChar));
             _sceneDocument = Scene.SceneSerializer.Load(recoveredPath);
@@ -6860,6 +6977,7 @@ DockId=0x6A3C3007,0
 
     private void ShowProjectError(string title, Exception exception)
     {
+        MVoxelLog.Error($"{title}：{exception.Message}", exception);
         _projectPathError = $"{title}：{exception.Message}";
         ProjectOperationFailed?.Invoke(this, new ProjectOperationFailedEventArgs(_projectPathError));
     }

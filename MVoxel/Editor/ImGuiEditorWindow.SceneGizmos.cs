@@ -18,6 +18,17 @@ internal sealed partial class ImGuiEditorWindow
 {
     private enum SceneGizmoMode { Select, Move, Rotate, Scale, All }
 
+    /// <summary>
+    /// 切换左侧变换工具。与鼠标点按钮不同，快捷键切换保留当前选中对象，
+    /// 否则按 Q 会先把选中清掉，后续的移动/旋转就无从谈起
+    /// </summary>
+    /// <param name="mode">目标工具</param>
+    private void ApplySceneGizmoMode(SceneGizmoMode mode)
+    {
+        _sceneGizmoMode = mode;
+        if (mode != SceneGizmoMode.Select) _lastTransformMode = mode;
+    }
+
     private SceneGizmoMode _sceneGizmoMode = SceneGizmoMode.Select;
     private bool _sceneGizmoDragging;
     private int _sceneGizmoDragAxis;
@@ -55,6 +66,12 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelWorld? _sceneGizmoGridDragStartWorld;
     private GridTransform _sceneGizmoGridDragStartTransform;
     private VoxelCoord64 _sceneGizmoGridDragCells;
+    // 拖动中的对象：合成渲染世界时按 _sceneGizmoGridDragCells 给它叠加位移
+    private StableId? _sceneGizmoGridDragObjectId;
+    // 拖动实例渲染：静态世界排除被拖对象，对象单独建 BLAS，拖动只改实例平移
+    private VoxelWorld? _dragInstanceStaticWorld;
+    private VoxelWorld? _dragInstanceObjectWorld;
+    private StableId _dragInstanceObjectId = StableId.Empty;
     private float _sceneGizmoDragStartValue;
     private float _sceneGizmoDragPixelsPerUnit = 1F;
     private Vector2 _sceneGizmoDragScreenDirection;
@@ -1230,7 +1247,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 开始网格拖动预览：记住起始体素世界与格变换，之后每帧只是复制并平移
+    /// 开始网格拖动预览：记住起始体素世界与格变换
     /// </summary>
     /// <param name="sceneObject">目标对象</param>
     private void BeginGridDragPreview(SceneObject sceneObject)
@@ -1240,6 +1257,34 @@ internal sealed partial class ImGuiEditorWindow
         _sceneGizmoGridDragStartWorld = sceneObject.Transform.Mode == TransformMode.Grid
             ? _objectVoxels.GetOrCreate(sceneObject.Id).Clone()
             : null;
+        _sceneGizmoGridDragObjectId = sceneObject.Transform.Mode == TransformMode.Grid ? sceneObject.Id : null;
+        PrepareGridDragInstanceWorlds(sceneObject);
+    }
+
+    /// <summary>
+    /// 准备拖动实例的静态世界与对象世界：静态世界排除被拖对象，拖动时只更新实例平移，
+    /// 不再每步重新合成整份世界
+    /// </summary>
+    private void PrepareGridDragInstanceWorlds(SceneObject sceneObject)
+    {
+        _dragInstanceObjectId = StableId.Empty;
+        _dragInstanceStaticWorld = null;
+        _dragInstanceObjectWorld = null;
+        if (_sceneDocument is null || _scenePipeline?.SupportsDragPreviewInstance != true) return;
+        if (!_objectVoxels.TryGetWorld(sceneObject.Id, out var source)) return;
+        // 对象放不进加速结构时退回整份世界合成，避免拖动预览反而让对象消失
+        if (!_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount)) return;
+        RefreshRuntimeMaterialTable();
+        // 对象世界保留世界坐标并套用与场景工作集相同的运行时材质重映射，
+        // 这样硬件实例命中的颜色和材质槽与主场景一致
+        var objectWorld = new VoxelWorld();
+        var writer = objectWorld.CreateBulkWriter();
+        foreach (var (coordinate, value) in source.EnumerateOccupied())
+            writer.Set(coordinate, RemapRuntimeMaterial(sceneObject.Id, value));
+        _dragInstanceObjectWorld = objectWorld;
+        _dragInstanceStaticWorld = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
+            remap: RemapRuntimeMaterial, excludeObjectId: sceneObject.Id);
+        _dragInstanceObjectId = sceneObject.Id;
     }
 
     private void UpdateGridDragPreview(SceneObject sceneObject, Vector2 mouse, Vector2 origin, Vector2 size,
@@ -1249,13 +1294,15 @@ internal sealed partial class ImGuiEditorWindow
         var cells = ComputeGridDragCells(mouse, origin, size, camera);
         if (cells == _sceneGizmoGridDragCells) return;
         _sceneGizmoGridDragCells = cells;
-        var preview = _sceneGizmoGridDragStartWorld.CloneShifted(cells.X, cells.Y, cells.Z);
-        _objectVoxels.SetWorld(sceneObject.Id, preview);
+        // 拖动中不复制体素世界：合成渲染世界时按当前平移量给目标对象叠加位移，
+        // 每步只付一次合成开销，松手时再真正写入体素并记录一步撤销
         sceneObject.Transform.SetGrid(new GridTransform(
             _sceneGizmoGridDragStartTransform.Position + cells, _sceneGizmoGridDragStartTransform.Rotation));
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
-        RebuildObjectVoxelWorld();
+        InvalidateComposedWorldCache();
+        _pickVersion++;
+        _pipeline?.ResetAccumulation();
         SetStatus($"移动中：{cells.X}, {cells.Y}, {cells.Z}");
     }
 
@@ -1298,18 +1345,22 @@ internal sealed partial class ImGuiEditorWindow
         var startTransform = _sceneGizmoGridDragStartTransform;
         _sceneGizmoGridDragStartWorld = null;
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+        // 先结束合成位移与拖动实例，之后的渲染回到真实体素位置
+        _sceneGizmoGridDragObjectId = null;
+        _dragInstanceStaticWorld = null;
+        _dragInstanceObjectWorld = null;
+        _dragInstanceObjectId = StableId.Empty;
         if (startWorld is null) return;
         if (cells == VoxelCoord64.Zero)
         {
-            // 没有移动：恢复原状即可
-            _objectVoxels.SetWorld(sceneObject.Id, startWorld);
+            // 没有移动：只把预览用的变换还原，体素从未改动
             sceneObject.Transform.SetGrid(startTransform);
             UpdateTransformMarker(sceneObject);
-            RebuildObjectVoxelWorld();
+            InvalidateComposedWorldCache();
+            _pickVersion++;
             return;
         }
 
-        _objectVoxels.SetWorld(sceneObject.Id, startWorld);
         sceneObject.Transform.SetGrid(startTransform);
         UpdateTransformMarker(sceneObject);
         MoveModelObjectByGrid(sceneObject, cells);

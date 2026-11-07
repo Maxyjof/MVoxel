@@ -45,6 +45,13 @@ internal sealed partial class ImGuiEditorWindow
     private int _vulkanRecoveryAttempts;
     private bool _worldLoadFailed;
     private readonly ObjectVoxelStore _objectVoxels = new();
+    // 场景预览异常后的重启冷却：一次异常不应把整场会话锁在 CPU 预览
+    private long _gpuRetryAtMs;
+    private long _gpuFailureWindowStartMs;
+    private int _gpuFailureCount;
+    private string _lastGpuFailureText = string.Empty;
+    /// <summary>从来源文件读出的预烘焙 LOD 链，键为对象标识；没有烘焙数据的对象不在表中</summary>
+    private readonly Dictionary<StableId, ModelLodChain> _objectLodChains = new();
     private Rgba32? _sampledBrushColor;
     private bool _settingsToggleSun;
     private bool _settingsToggleAo;
@@ -65,14 +72,52 @@ internal sealed partial class ImGuiEditorWindow
     private EditorTool _previewShapeTool;
     private bool _previewShapeHollow;
     private IReadOnlyList<VoxelCoord64> _previewShapeCells = [];
+    private bool _previewShapeForceLine;
     private VoxelCoord64? _toolDragAnchor;
     private VoxelCoord64? _toolDragCurrent;
     private StableId? _toolDragTargetId;
     private bool _toolDragErase;
+    //Ctrl 直线模式：绘制/擦除工具按住 Ctrl 时从锚点拉一条直线，松开一次提交
+    private bool _toolDragForceLine;
     private IReadOnlyList<VoxelCoord64>? _pendingFloodCells;
     private VoxelValue _pendingFloodValue;
     private StableId? _pendingFloodTargetId;
     private bool _pendingFloodOpen;
+
+    /// <summary>
+    /// 当前是否处于体素绘制模式：已绑定编辑目标且工具属于绘制类。
+    /// 绘制期间收起对象的选中外轮廓，避免描边盖住正在编辑的体素边界
+    /// </summary>
+    private bool IsVoxelDrawingMode => _voxelEditTargetId is not null &&
+        _activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box or EditorTool.Fill;
+
+    /// <summary>
+    /// 是否处于体素编辑模式：已绑定编辑目标即可，具体工具（选择/相机等）不影响体素描边显示。
+    /// 用户看到的“绘制模式”就是这个状态，描边不能因为切了工具就整片消失
+    /// </summary>
+    private bool IsVoxelEditingMode => _voxelEditTargetId is not null;
+
+    /// <summary>
+    /// 本次按住左键的笔划里已经记入的格子，保证同一落点只处理一次，
+    /// 避免按住不动时射线不断命中新放出的方块、一格格堆到相机前
+    /// </summary>
+    private readonly HashSet<VoxelCoord64> _strokeAppliedCells = new();
+    /// <summary>本次笔划待提交的格子；攒到一定间隔才写一次，避免每帧重建体素世界</summary>
+    private readonly List<VoxelCoord64> _strokePendingCells = new();
+    /// <summary>上一次命中的格子，用来和当前命中之间补一条直线，快速拖动才不会散成点</summary>
+    private VoxelCoord64? _strokeLastCell;
+    private StableId? _strokeTargetId;
+    private bool _strokeErase;
+    private long _strokeLastFlushTicks;
+    /// <summary>
+    /// 本次笔划改动覆盖的世界坐标范围（含端点）。拖动绘制期间加速结构保留笔划开始时的版本，
+    /// 视口只在这个范围内用当前工作集的软件 BVH 求交，因此不必每次提交都重建整份 BLAS
+    /// </summary>
+    private bool _strokeEditRegionActive;
+    private VoxelCoord64 _strokeEditRegionMinimum;
+    private VoxelCoord64 _strokeEditRegionMaximum;
+    /// <summary>笔划提交间隔：一次提交会重建对象体素世界与场景合成世界，太频繁会直接掉到二十帧</summary>
+    private const double StrokeFlushIntervalMs = 120.0;
 
     private void InitializeVoxelPipeline()
     {
@@ -114,6 +159,8 @@ internal sealed partial class ImGuiEditorWindow
         _settingsToggleDither = settings.Dither;
         _settingsToggleHueCycle = settings.HueCycle;
         _settingsToggleAutoPerformance = settings.AutoPerformanceScaling;
+        LargeWorldFormat.AutoBakeLodLevels =
+            Math.Max(BakedLodLevels(settings.SceneLod), BakedLodLevels(settings.RenderLod));
     }
 
     private void ShutdownVoxelPipeline()
@@ -207,7 +254,9 @@ internal sealed partial class ImGuiEditorWindow
         bool HasBounds, VoxelCoord64 Minimum, VoxelCoord64 Maximum,
         RuntimeMaterialMap? MaterialMap = null, VoxelWorld? ViewComposed = null,
         IReadOnlyList<MaterialAsset>? Materials = null, bool SourceOriginsUpdated = false,
-        bool ProceduralVoxelsUpdated = false);
+        bool ProceduralVoxelsUpdated = false,
+        IReadOnlyDictionary<ChunkCoord64, StableId>? ViewChunkOwners = null,
+        IReadOnlyDictionary<StableId, ModelLodChain>? ObjectLodChains = null);
 
     /// <summary>
     /// 一个场景对象对模型资产的读取请求
@@ -400,6 +449,7 @@ internal sealed partial class ImGuiEditorWindow
             catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException) { }
         }
         var worlds = new Dictionary<StableId, VoxelWorld>();
+        var objectLodChains = new Dictionary<StableId, ModelLodChain>();
         var cache = modelCache ?? new Dictionary<ModelLoadKey, VoxelWorld>();
         var failed = false;
         var originsUpdated = false;
@@ -421,10 +471,18 @@ internal sealed partial class ImGuiEditorWindow
                     var data = SceneComponentTypes.ReadVoxelModel(component);
                     if (string.IsNullOrWhiteSpace(data.Model))
                     {
-                        // 内置体素对象不读文件，直接取组件里的数据
-                        worlds[item.Id] = EmbeddedVoxelData.HasData(component)
-                            ? EmbeddedVoxelData.Read(component)
-                            : new VoxelWorld();
+                        // 内置体素对象不读文件，直接取组件里的数据；预烘焙 LOD 一并读回
+                        if (EmbeddedVoxelData.HasData(component))
+                        {
+                            var (embedded, chain) = EmbeddedVoxelData.ReadWithLod(component);
+                            worlds[item.Id] = embedded;
+                            if (chain.LevelCount > 1) objectLodChains[item.Id] = chain;
+                        }
+                        else
+                        {
+                            worlds[item.Id] = new VoxelWorld();
+                        }
+
                         continue;
                     }
 
@@ -473,6 +531,7 @@ internal sealed partial class ImGuiEditorWindow
         VoxelWorld? composed = null;
         RuntimeMaterialMap? materialMap = null;
         VoxelWorld? viewComposed = null;
+        Dictionary<ChunkCoord64, StableId>? viewChunkOwners = null;
         using (StartupTimeline.Begin("预读·合成世界"))
         {
             // 编辑用世界与场景视图世界都要，两者互不依赖：前者含图层隐藏的对象供编辑，
@@ -498,8 +557,10 @@ internal sealed partial class ImGuiEditorWindow
                 if (map is not null)
                 {
                     using var viewPhase = StartupTimeline.Begin("预读·合成视图世界");
+                    viewChunkOwners = new Dictionary<ChunkCoord64, StableId>();
                     viewComposed = store.Compose(scene, uint.MaxValue, true, cancellation,
-                        (objectId, value) => RemapRuntimeMaterial(map.SlotsByObject, map.Materials, objectId, value));
+                        (objectId, value) => RemapRuntimeMaterial(map.SlotsByObject, map.Materials, objectId, value),
+                        viewChunkOwners);
                 }
             }
         }
@@ -513,8 +574,11 @@ internal sealed partial class ImGuiEditorWindow
             hasBounds = composed is not null && composed.TryGetBounds(out minimum, out maximum);
         }
         cancellation.ThrowIfCancellationRequested();
+        // 独立模型资产的预烘焙数据随资产文件保存，预读时按对象读取并登记
+        if (scene is not null) LoadAssetLodChains(project, scene, objectLodChains);
         return new PreloadedModels(relative, scene, worlds, composed, failed, hasBounds, minimum, maximum,
-            materialMap, viewComposed, materials, originsUpdated, proceduralVoxelsUpdated);
+            materialMap, viewComposed, materials, originsUpdated, proceduralVoxelsUpdated,
+            viewChunkOwners, objectLodChains);
     }
 
     /// <summary>
@@ -597,6 +661,11 @@ internal sealed partial class ImGuiEditorWindow
         if (preload?.Scene is not null && preload.Composed is not null)
         {
             _objectVoxels.RestoreReferences(preload.ObjectWorlds);
+            _objectLodChains.Clear();
+            if (preload.ObjectLodChains is { } loadedChains)
+            {
+                foreach (var (objectId, chain) in loadedChains) _objectLodChains[objectId] = chain;
+            }
             _world = preload.Composed;
             ApplyPreloadedBounds(preload);
             _worldLoadFailed = preload.LoadFailed;
@@ -607,7 +676,8 @@ internal sealed partial class ImGuiEditorWindow
             if (preload.ViewComposed is { } viewComposed)
             {
                 _composedWorlds.Insert(0,
-                    new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed, _sceneDocument));
+                    new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed,
+                        _sceneDocument, preload.ViewChunkOwners));
             }
         }
         else LoadObjectVoxelWorlds(project);
@@ -734,6 +804,9 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>最小观察距离：允许相机一路推进到模型内部，只保留一个很小的正数下限</summary>
     private const float MinimumOrbitDistance = 0.05F;
 
+    /// <summary>超过这个占用体素数才在场景视口按视角区块剔除；更小的场景整份常驻更稳</summary>
+    private const int SceneFrustumCullingThreshold = 500_000;
+
     private static float ClampSceneDistance(float distance)
     {
         if (!float.IsFinite(distance)) return 18F;
@@ -843,19 +916,141 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         VoxelWorld composed;
+        Dictionary<ChunkCoord64, StableId>? owners;
         using (StartupTimeline.Begin("组合世界"))
         {
+            owners = new Dictionary<ChunkCoord64, StableId>();
+            // 网格拖动预览不复制体素，而是在合成时给拖动对象叠加位移；
+            // 拖动中每步只付一次合成开销，帧率不会再被世界复制与全量重建拖住
             composed = _objectVoxels.Compose(_sceneDocument, cullingMask, sceneVisibility,
-                remap: RemapRuntimeMaterial);
+                remap: RemapRuntimeMaterial, chunkOwners: owners,
+                shiftObjectId: _sceneGizmoGridDragObjectId ?? StableId.Empty,
+                shift: _sceneGizmoGridDragCells);
         }
         if (_composedWorlds.Count >= ComposedWorldCacheCapacity)
         {
             _composedWorlds.RemoveAt(_composedWorlds.Count - 1);
         }
 
-        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed, _sceneDocument));
+        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed, _sceneDocument, owners));
         return composed;
     }
+
+    /// <summary>
+    /// 查找组合世界对应的区块归属表；不是组合世界时返回 null
+    /// </summary>
+    /// <param name="world">组合世界</param>
+    private IReadOnlyDictionary<ChunkCoord64, StableId>? GetChunkOwners(VoxelWorld world)
+    {
+        foreach (var entry in _composedWorlds)
+            if (ReferenceEquals(entry.World, world)) return entry.ChunkOwners;
+        return null;
+    }
+
+    /// <summary>对象世界包围盒缓存；体素内容版本变化后重新计算</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<VoxelWorld, LodBoundsEntry> LodBoundsCache = new();
+
+    private sealed record LodBoundsEntry(int Version, VoxelCoord64 Minimum, VoxelCoord64 Maximum, bool HasBounds);
+
+    /// <summary>
+    /// 按模型对象构建本次相机的 LOD 视图：每个模型用其包围盒到相机的距离决定级数，
+    /// 该模型的所有区块沿用同一级；没有归属表时返回 null，由工作集按区块距离兜底
+    /// </summary>
+    /// <param name="lod">LOD 配置</param>
+    /// <param name="camera">当前相机</param>
+    /// <param name="composed">组合世界，用于取区块归属表</param>
+    private VoxelModelLodView? BuildModelLodView(VoxelLodSettings lod, SceneCamera camera, VoxelWorld composed)
+    {
+        if (!lod.Enabled || lod.LevelCount <= 1) return null;
+        var owners = GetChunkOwners(composed);
+        if (owners is null || owners.Count == 0) return null;
+        lod.ClampAll();
+        var cameraPosition = new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
+        var levelByObject = new Dictionary<StableId, int>();
+        var chainByObject = new Dictionary<StableId, ModelLodChain>();
+        // 只按场景对象计算级数，数量远小于区块数；区块在构建时经归属表查对象级
+        foreach (var item in _sceneDocument!.Objects)
+        {
+            var level = ComputeObjectLodLevel(item.Id, cameraPosition, lod);
+            if (level <= 0) continue;
+            levelByObject[item.Id] = level;
+            if (_objectLodChains.TryGetValue(item.Id, out var baked)) chainByObject[item.Id] = baked;
+        }
+
+        var signature = (long)lod.LevelCount * 0x9E3779B1L;
+        foreach (var distance in lod.Distances) signature = signature * 31 + (long)MathF.Round(distance * 10F);
+        signature = signature * 31 + (lod.Baked ? 17L : 3L);
+        signature ^= QuantizeCamera(cameraPosition);
+        foreach (var (objectId, level) in levelByObject)
+            signature ^= ((long)objectId.GetHashCode() << 4) ^ level;
+        if (signature == 0) signature = 1;
+        return new VoxelModelLodView(
+            coordinate => owners.TryGetValue(coordinate, out var owner) ? levelByObject.GetValueOrDefault(owner) : 0,
+            (coordinate, level) =>
+                owners.TryGetValue(coordinate, out var owner) && chainByObject.TryGetValue(owner, out var chain)
+                    ? chain.Cells(coordinate, level)
+                    : null,
+            signature);
+    }
+
+    /// <summary>
+    /// 按当前渲染配置为模型世界生成预烘焙 LOD 链：任一视口启用 LOD 且勾选预烘焙时，
+    /// 取两者中更高的级数；关闭或无有效级数时返回 null，表示不写入烘焙数据
+    /// </summary>
+    /// <param name="world">模型体素世界</param>
+    private ModelLodChain? BakeLodFor(VoxelWorld world)
+    {
+        var levels = Math.Max(BakedLodLevels(_renderSettings.SceneLod), BakedLodLevels(_renderSettings.RenderLod));
+        LargeWorldFormat.AutoBakeLodLevels = levels;
+        return levels > 1 ? ModelLodChainCache.Get(world, levels) : null;
+    }
+
+    private static int BakedLodLevels(VoxelLodSettings lod) =>
+        lod is { Enabled: true, Baked: true } && lod.LevelCount > 1 ? lod.LevelCount : 1;
+
+    /// <summary>
+    /// 把当前渲染配置的预烘焙级数同步给独立模型资产的写入路径，
+    /// 让资产文件、场景与预制体按同一设置生成 LOD
+    /// </summary>
+    private void SyncAutoBakeLod()
+    {
+        LargeWorldFormat.AutoBakeLodLevels =
+            Math.Max(BakedLodLevels(_renderSettings.SceneLod), BakedLodLevels(_renderSettings.RenderLod));
+    }
+
+    private int ComputeObjectLodLevel(StableId objectId, System.Numerics.Vector3 camera, VoxelLodSettings lod)
+    {
+        if (!_objectVoxels.TryGetWorld(objectId, out var world)) return 0;
+        if (!TryGetCachedLodBounds(world, out var minimum, out var maximum)) return 0;
+        var dx = camera.X < (float)minimum.X ? (float)minimum.X - camera.X
+            : camera.X > (float)maximum.X + 1F ? camera.X - ((float)maximum.X + 1F) : 0F;
+        var dy = camera.Y < (float)minimum.Y ? (float)minimum.Y - camera.Y
+            : camera.Y > (float)maximum.Y + 1F ? camera.Y - ((float)maximum.Y + 1F) : 0F;
+        var dz = camera.Z < (float)minimum.Z ? (float)minimum.Z - camera.Z
+            : camera.Z > (float)maximum.Z + 1F ? camera.Z - ((float)maximum.Z + 1F) : 0F;
+        return lod.LevelFor(MathF.Sqrt(dx * dx + dy * dy + dz * dz));
+    }
+
+    private static bool TryGetCachedLodBounds(VoxelWorld world, out VoxelCoord64 minimum, out VoxelCoord64 maximum)
+    {
+        var entry = LodBoundsCache.GetOrAdd(world, _ => new LodBoundsEntry(-1, default, default, false));
+        if (entry.Version == world.ContentVersion)
+        {
+            minimum = entry.Minimum;
+            maximum = entry.Maximum;
+            return entry.HasBounds;
+        }
+
+        var hasBounds = world.TryGetBounds(out minimum, out maximum);
+        LodBoundsCache.Remove(world);
+        LodBoundsCache.Add(world, new LodBoundsEntry(world.ContentVersion, minimum, maximum, hasBounds));
+        return hasBounds;
+    }
+
+    private static long QuantizeCamera(System.Numerics.Vector3 position) =>
+        (long)MathF.Round(position.X * 10F) * 73856093L ^
+        (long)MathF.Round(position.Y * 10F) * 19349663L ^
+        (long)MathF.Round(position.Z * 10F) * 83492791L;
 
     /// <summary>
     /// 清空组合世界缓存：对象可见性、图层、材质等存储状态变化后必须重新合成
@@ -1132,9 +1327,11 @@ internal sealed partial class ImGuiEditorWindow
     private const int ComposedWorldCacheCapacity = 3;
 
     /// <summary>
-    /// 组合世界缓存条目：同一份对象体素按不同可见性语义与图层遮罩合成出不同世界
+    /// 组合世界缓存条目：同一份对象体素按不同可见性语义与图层遮罩合成出不同世界；
+    /// ChunkOwners 记录每个区块最终由哪个对象写入，供模型级 LOD 按模型分档
     /// </summary>
-    private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World, SceneDocument? Scene);
+    private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World, SceneDocument? Scene,
+        IReadOnlyDictionary<ChunkCoord64, StableId>? ChunkOwners);
 
     /// <summary>按图层遮罩组成的渲染世界缓存，最近使用的排在最前面</summary>
     private readonly List<ComposedWorldEntry> _composedWorlds = new(ComposedWorldCacheCapacity);
@@ -1749,7 +1946,15 @@ internal sealed partial class ImGuiEditorWindow
     private bool TryRenderGpuSceneViewCore(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
         bool showGeometry)
     {
-        if (_project is null || _gpuRenderingDisabled) return false;
+        if (_project is null) return false;
+        if (_gpuRenderingDisabled)
+        {
+            // 一次异常不应该把整场会话锁死在 CPU 预览：设备未丢失时冷却后允许重建管线重试，
+            // 避免“画一下之后永远只有二十几帧、画面还是半透明的 CPU 预览”
+            if (_vulkan?.IsDeviceLost == true || Environment.TickCount64 < _gpuRetryAtMs) return false;
+            _gpuRenderingDisabled = false;
+            _pipelineStatus = string.Empty;
+        }
         try
         {
             if (_scenePipeline is null)
@@ -1763,12 +1968,58 @@ internal sealed partial class ImGuiEditorWindow
             var pipeline = _scenePipeline;
             // 建管线期间先不触碰工作集缓冲，避免驱动内部锁让 UI 等待后台创建。
             if (pipeline.IsInitializing) return false;
+            // 笔划期间把改动范围告诉管线：加速结构保留笔划开始时的版本，
+            // 视口只在这个范围内改走当前工作集的软件求交，拖动绘制因此不必每笔重建 BLAS。
+            // 鼠标一旦松开就结束区域，管线会立即重建一次加速结构恢复整帧硬件求交
+            var strokeEditing = _strokeEditRegionActive && ImGui.IsMouseDown(ImGuiMouseButton.Left);
+            if (_strokeEditRegionActive && !strokeEditing) _strokeEditRegionActive = false;
+            pipeline.SetEditRegion(strokeEditing, _strokeEditRegionMinimum, _strokeEditRegionMaximum);
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
-            pipeline.SyncWorld(showGeometry ? GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)) : _emptyScenePreviewWorld, 0, settings.SceneLod,
-                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                greedyMerge: false,
-                includeInterior: IsCameraInsideOccupiedVoxel(camera));
+            // 拖动对象实例：静态世界在拖动开始时已算好并排除被拖对象，
+            // 每步只改实例平移；不支持 Ray Query 的设备仍用原来的整份合成路径
+            var dragTargetId = _sceneGizmoGridDragObjectId;
+            var dragInstance = showGeometry && dragTargetId is not null &&
+                _dragInstanceObjectId == dragTargetId &&
+                _dragInstanceStaticWorld is not null && _dragInstanceObjectWorld is not null &&
+                pipeline.CanUseDragPreview(_dragInstanceObjectWorld.OccupiedVoxelCount);
+            var sceneWorld = dragInstance
+                ? _dragInstanceStaticWorld
+                : showGeometry ? GetRenderWorld(uint.MaxValue, sceneVisibility: true) : null;
+            // 小中型场景整份常驻即可：按视角区块剔除会让每次转动相机都重建工作集，
+            // 反而把稳定的帧率拖到三四十帧。只有超大世界才值得付出这个重建代价。
+            var frustumCulling = !dragInstance && showGeometry &&
+                sceneWorld is { OccupiedVoxelCount: > SceneFrustumCullingThreshold };
+            var sceneChunkFilter = frustumCulling ? SceneProjection.CreateChunkFilter(camera, size) : null;
+            var sceneVisibilitySignature = frustumCulling
+                ? SceneProjection.ChunkVisibilitySignature(camera, size)
+                : 0L;
+            var sceneModelLod = !dragInstance && sceneWorld is not null
+                ? BuildModelLodView(settings.SceneLod, camera, sceneWorld)
+                : null;
+            if (dragInstance)
+            {
+                var dragObjectWorld = _sceneSliceEnabled
+                    ? VoxelWorldSlice.CreateHalfSpace(_dragInstanceObjectWorld!, _sceneSliceAxis, _sceneSliceCoordinate,
+                        _sceneSliceKeepGreater)
+                    : _dragInstanceObjectWorld!;
+                pipeline.SyncWorldDragPreview(GetSceneInspectionWorld(_dragInstanceStaticWorld!), dragObjectWorld,
+                    _sceneGizmoGridDragCells, 0, settings.SceneLod,
+                    new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                    greedyMerge: false, includeInterior: IsCameraInsideOccupiedVoxel(camera));
+            }
+            else
+            {
+                pipeline.ClearDragPreview();
+                pipeline.SyncWorld(sceneWorld is not null ? GetSceneInspectionWorld(sceneWorld) : _emptyScenePreviewWorld,
+                    0, settings.SceneLod,
+                    new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                    greedyMerge: false,
+                    includeInterior: IsCameraInsideOccupiedVoxel(camera),
+                    chunkFilter: sceneChunkFilter,
+                    visibilitySignature: sceneVisibilitySignature,
+                    modelLod: sceneModelLod);
+            }
             if (!pipeline.IsAvailable)
             {
                 if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
@@ -1777,13 +2028,21 @@ internal sealed partial class ImGuiEditorWindow
             var sceneDeposits = CollectSurfaceDeposits(uint.MaxValue);
             pipeline.SetSurfaceDeposits(sceneDeposits, ResolveReceiverLayerTable(sceneDeposits, uint.MaxValue,
                 sceneVisibility: true, pipeline.Workset.Origin));
-            pipeline.SetSceneSelection(showGeometry ? GetSelectedSubtreeWorld() : null);
+            // 拖动实例的体素快照已经在建结构时带上选中标记，拖动期间不需要
+            // 再为 29 万体素重建一份选中世界；其它选中子对象的外轮廓在松手后恢复
+            pipeline.SetSceneSelection(showGeometry && !IsVoxelDrawingMode && !dragInstance
+                ? GetSelectedSubtreeWorld()
+                : null);
+            // 描边只在体素编辑模式下出现，并且只描边当前编辑模型；退出编辑一律不描边。
+            // 选中标记与描边蒙版只标记状态，最后由管线合并成一次逐格标记上传
+            pipeline.SetOutlineMask(showGeometry && IsVoxelEditingMode ? GetVoxelEditOutlineWorld() : null);
+            pipeline.FlushCellMarks();
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var width = Math.Max(16, (int)(size.X * scale));
             var height = Math.Max(16, (int)(size.Y * scale));
             var frame = BuildFrameState(camera, size, scale, width, height,
-                pathMode: false, outlines: _showVoxelOutlines, scenePreview: true,
+                pathMode: false, outlines: _showVoxelOutlines && IsVoxelEditingMode, scenePreview: true,
                 showGrid: _showGrid, gridStep: 1F, sourcePipeline: pipeline);
             var submitsBefore = pipeline.SubmitCount;
             var fenceBefore = pipeline.FenceWaitTotalMs;
@@ -1810,9 +2069,56 @@ internal sealed partial class ImGuiEditorWindow
         }
         catch (Exception exception)
         {
-            DisableGpuRendering(exception);
+            HandleScenePreviewFailure(exception);
             return false;
         }
+    }
+
+    /// <summary>
+    /// 场景预览异常：释放当前管线并在一段冷却后重建，而不是永久停用显卡预览
+    /// </summary>
+    /// <param name="exception">导致本帧失败的异常</param>
+    /// <remarks>
+    /// 设备丢失仍由设备恢复流程处理；其它异常（数据越界、状态不一致等）通常可以
+    /// 通过丢弃管线状态重建恢复。同类异常一分钟内连续出现三次则延长冷却，避免反复卡顿
+    /// </remarks>
+    private void HandleScenePreviewFailure(Exception exception)
+    {
+        var now = Environment.TickCount64;
+        if (now - _gpuFailureWindowStartMs > 60000)
+        {
+            _gpuFailureWindowStartMs = now;
+            _gpuFailureCount = 0;
+        }
+
+        _gpuFailureCount++;
+        // 同类异常只完整记录一次，避免每帧刷屏；换了异常再记录
+        var message = exception.Message;
+        if (_gpuFailureCount <= 1 || !string.Equals(message, _lastGpuFailureText, StringComparison.Ordinal))
+        {
+            _lastGpuFailureText = message;
+            MVoxelLog.Error("Vulkan 场景预览失败，已暂停显卡预览并准备重试", exception);
+        }
+
+        if (_vulkan?.IsDeviceLost == true)
+        {
+            DisableGpuRendering(exception);
+            return;
+        }
+
+        _gpuRenderingDisabled = true;
+        _pipelineStatus = $"显卡预览异常，稍后自动重试：{message}";
+        try
+        {
+            _scenePipeline?.Dispose();
+        }
+        catch (Exception disposeException)
+        {
+            MVoxelLog.Warn($"释放异常场景预览管线失败：{disposeException.Message}");
+        }
+
+        _scenePipeline = null;
+        _gpuRetryAtMs = _gpuFailureCount >= 3 ? now + 60000 : now + 2000;
     }
 
     /// <summary>
@@ -1851,7 +2157,34 @@ internal sealed partial class ImGuiEditorWindow
                 return false;
             }
             pipeline.SetSceneLights(CollectSceneLights(GetActiveRenderCullingMask()));
-            pipeline.SyncWorld(GetRenderWorld(GetActiveRenderCullingMask()), 0, effective.RenderLod, new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z));
+            // 路径追踪需要任意方向的间接光、反射与阴影，使用完整世界的保守集合；
+            // 实时渲染按可见视锥并外扩远裁剪面范围内的贡献区块。正交投影没有可用的
+            // 视锥斜率，同样退回完整世界，避免错误剔除
+            SceneCamera? renderCullCamera = null;
+            if (effective.CameraProjection != CameraProjectionMode.Orthographic)
+            {
+                renderCullCamera = camera with
+                {
+                    FieldOfViewDegrees = effective.CameraFovDegrees > 0F
+                        ? effective.CameraFovDegrees
+                        : camera.FieldOfViewDegrees,
+                };
+            }
+            // 导出/截图按完整世界渲染：输出分辨率与视口比例可能不同，
+            // 不能沿用交互视口基于窗口尺寸的保守裁剪
+            var renderChunkFilter = effective.PathTracingEnabled || renderCullCamera is null ||
+                _capturePath is not null
+                ? null
+                : SceneProjection.CreateRenderChunkFilter(renderCullCamera.Value, size);
+            var renderVisibilitySignature = renderCullCamera is { } culling && renderChunkFilter is not null
+                ? SceneProjection.ChunkVisibilitySignature(culling, size)
+                : 0L;
+            var renderWorld = GetRenderWorld(GetActiveRenderCullingMask());
+            var renderModelLod = BuildModelLodView(effective.RenderLod, camera, renderWorld);
+            pipeline.SyncWorld(renderWorld, 0, effective.RenderLod,
+                new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                chunkFilter: renderChunkFilter, visibilitySignature: renderVisibilitySignature,
+                modelLod: renderModelLod);
             // 首帧工作集是在渲染视图按需上传的，因此不能在 SyncWorld 之前用
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
             if (!pipeline.IsAvailable)
@@ -2203,6 +2536,7 @@ internal sealed partial class ImGuiEditorWindow
                 _toolDragAnchor = null;
                 _toolDragCurrent = null;
                 _toolDragTargetId = null;
+                _toolDragForceLine = false;
             }
             _ = ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
             return;
@@ -2211,16 +2545,31 @@ internal sealed partial class ImGuiEditorWindow
         // 普通绘制模式保持跟随鼠标的悬停落点框，行为与改动前完全一致。
         // 只有 Caps Lock 第一人称的准星固定在视口中心，才取消每帧刷新：
         // 那里描边只由放置/破坏后的结果，或左键拖拽范围框产生。
-        if (!capsLockMode)
+        // 环绕/平移/滚轮缩放时相机每帧变化，悬停拾取的射线无法命中缓存，会在拖动期间持续做整次 DDA；
+        // 这段时间先收起落点框，松手后下一帧再恢复，避免导航本身拖低帧率。
+        var navigatingCamera = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
+                               ImGui.IsMouseDragging(ImGuiMouseButton.Middle) || io.MouseWheel != 0F;
+        if (!capsLockMode && !navigatingCamera)
         {
             var hoverHit = PickVoxel(mouse, origin, size, camera);
             var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
             _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
             _brushPreviewErase = hoverErase;
         }
+        else if (!capsLockMode)
+        {
+            _brushPreview = null;
+        }
 
-        if (_activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box &&
-            HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction))
+        //Ctrl 在绘制/擦除工具上只用于临时直线模式；否则仍交给逐帧涂抹，
+        //拖动时不能把普通绘制误当成直线或长方体，那会让一次拖拽覆盖整块体积
+        var modifierLine = ImGui.GetIO().KeyCtrl &&
+            (_activeTool is EditorTool.Draw or EditorTool.Erase);
+        //拖动途中松开 Ctrl 仍要留在直线状态机里，否则松手会被普通涂抹吞掉并留下未清除的锚点
+        var draggingLine = _toolDragForceLine && _toolDragAnchor is not null;
+        if ((_activeTool is EditorTool.Line or EditorTool.Box || modifierLine || draggingLine) &&
+            HandleDragShapeToolInput(mouse, origin, size, camera, leftAction, rightAction,
+                modifierLine || draggingLine))
         {
             return;
         }
@@ -2239,6 +2588,33 @@ internal sealed partial class ImGuiEditorWindow
     private bool ApplyMouseVoxelAction(ViewportMouseAction action, ImGuiMouseButton button,
         Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
+        // 左键按下开始一笔、抬起结束一笔：笔划内的落点去重、直线补齐与分批提交
+        // 都依赖这组状态，结束时把剩余格子一次性写完
+        if (button == ImGuiMouseButton.Left)
+        {
+            if (ImGui.IsMouseClicked(button))
+            {
+                _strokeAppliedCells.Clear();
+                _strokePendingCells.Clear();
+                _strokeLastCell = null;
+                _strokeTargetId = null;
+                _strokeErase = false;
+                _strokeLastFlushTicks = 0;
+                ResetStrokeEditRegion();
+            }
+            else if (!ImGui.IsMouseDown(button))
+            {
+                FlushVoxelStroke();
+                _strokeAppliedCells.Clear();
+                _strokePendingCells.Clear();
+                _strokeLastCell = null;
+                _strokeTargetId = null;
+                _strokeErase = false;
+                _strokeLastFlushTicks = 0;
+                ResetStrokeEditRegion();
+            }
+        }
+
         if (action is ViewportMouseAction.None or ViewportMouseAction.Orbit ||
             !(ImGui.IsMouseClicked(button) || button == ImGuiMouseButton.Left &&
                 ImGui.IsMouseDragging(button) && ImGui.GetIO().MouseDelta != Vector2.Zero))
@@ -2291,11 +2667,92 @@ internal sealed partial class ImGuiEditorWindow
 
     private void ApplyStroke(VoxelDda.Hit hit, bool erase, StableId? targetId)
     {
+        // 与 MagicaVoxel 的落笔规则一致：同一次按住拖动里，同一个落点只处理一次。
+        // 命中格已经在本笔划里处理过就直接跳过——否则按住不动时，射线会不断命中
+        // 刚放出的方块，一格格朝相机方向堆出来
+        if (!erase && _strokeAppliedCells.Contains(hit.Coordinate)) return;
         var radius = erase ? Math.Max(1, (_brushRadius + 1) / 2) : _brushRadius;
+        // 两帧之间鼠标可能已经跨过好几格：用三维直线补齐，否则快速拖动只剩零散的点
+        if (_strokeLastCell is { } previous && previous != hit.Coordinate)
+        {
+            foreach (var cell in VoxelEditingTools.LineCells(previous, hit.Coordinate))
+            {
+                if (cell == previous || cell == hit.Coordinate) continue;
+                AddStrokeCells(new VoxelDda.Hit(cell, hit.Normal, 0F, hit.Point), erase, radius);
+            }
+        }
+
+        _strokeLastCell = hit.Coordinate;
+        AddStrokeCells(hit, erase, radius);
+        _strokeErase |= erase;
+        _strokeTargetId = targetId;
+        FlushVoxelStrokeIfDue();
+    }
+
+    /// <summary>
+    /// 把落点对应的笔刷格子并入本笔划待提交列表，已记入的格子自动跳过
+    /// </summary>
+    private void AddStrokeCells(VoxelDda.Hit hit, bool erase, int radius)
+    {
         var cells = erase
             ? VoxelBrush.CellsAround(hit.Coordinate, _brushShape, radius)
             : VoxelBrush.CellsForStroke(hit, erase: false, _brushShape, radius);
-        CommitStroke(cells, erase, targetId);
+        foreach (var cell in cells)
+        {
+            if (!_strokeAppliedCells.Add(cell)) continue;
+            _strokePendingCells.Add(cell);
+            ExtendStrokeEditRegion(cell);
+        }
+    }
+
+    /// <summary>
+    /// 把格子并入本次笔划的编辑区域；视口只在这个范围内做区域软件求交
+    /// </summary>
+    private void ExtendStrokeEditRegion(VoxelCoord64 cell)
+    {
+        if (!_strokeEditRegionActive)
+        {
+            _strokeEditRegionActive = true;
+            _strokeEditRegionMinimum = cell;
+            _strokeEditRegionMaximum = cell;
+            return;
+        }
+
+        _strokeEditRegionMinimum = new VoxelCoord64(
+            Math.Min(_strokeEditRegionMinimum.X, cell.X),
+            Math.Min(_strokeEditRegionMinimum.Y, cell.Y),
+            Math.Min(_strokeEditRegionMinimum.Z, cell.Z));
+        _strokeEditRegionMaximum = new VoxelCoord64(
+            Math.Max(_strokeEditRegionMaximum.X, cell.X),
+            Math.Max(_strokeEditRegionMaximum.Y, cell.Y),
+            Math.Max(_strokeEditRegionMaximum.Z, cell.Z));
+    }
+
+    /// <summary>
+    /// 清空笔划编辑区域；管线会在下一帧收到区域结束并按需重建加速结构
+    /// </summary>
+    private void ResetStrokeEditRegion() => _strokeEditRegionActive = false;
+
+    /// <summary>
+    /// 按固定间隔把本笔划已积累的格子写一次。每次提交都会重建对象体素世界与场景合成
+    /// 世界，逐帧提交会把编辑时的帧率拖到二十帧左右
+    /// </summary>
+    private void FlushVoxelStrokeIfDue()
+    {
+        if (_strokePendingCells.Count == 0) return;
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var intervalTicks = (long)(System.Diagnostics.Stopwatch.Frequency * StrokeFlushIntervalMs / 1000.0);
+        if (_strokeLastFlushTicks != 0 && now - _strokeLastFlushTicks < intervalTicks) return;
+        FlushVoxelStroke();
+    }
+
+    private void FlushVoxelStroke()
+    {
+        _strokeLastFlushTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_strokePendingCells.Count == 0 || _strokeTargetId is null) return;
+        var cells = _strokePendingCells.ToArray();
+        _strokePendingCells.Clear();
+        CommitStroke(cells, _strokeErase, _strokeTargetId);
     }
 
     private void CommitStroke(IReadOnlyList<VoxelCoord64> cells, bool erase, StableId? targetId)
@@ -2386,16 +2843,18 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 直线与长方体工具的拖动状态机：按下取锚点，拖动更新终点预览，松开一次性提交
+    /// 直线与长方体工具的拖动状态机：按下取锚点，拖动更新终点预览，松开一次性提交；
+    /// forceLine 时绘制/擦除工具按住 Ctrl 也走同一套直线语义
     /// </summary>
     private bool HandleDragShapeToolInput(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera,
-        ViewportMouseAction leftAction, ViewportMouseAction rightAction)
+        ViewportMouseAction leftAction, ViewportMouseAction rightAction, bool forceLine)
     {
         if (_toolDragAnchor is not null && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
         {
             _toolDragAnchor = null;
             _toolDragCurrent = null;
             _toolDragTargetId = null;
+            _toolDragForceLine = false;
             _brushPreview = null;
             SetStatus("已取消绘制");
             return true;
@@ -2422,6 +2881,7 @@ internal sealed partial class ImGuiEditorWindow
             _toolDragAnchor = cell;
             _toolDragCurrent = cell;
             _toolDragErase = destroy;
+            _toolDragForceLine = forceLine;
             _brushPreview = null;
         }
         else if (ImGui.IsMouseDown(button) && _toolDragAnchor is not null)
@@ -2438,16 +2898,18 @@ internal sealed partial class ImGuiEditorWindow
             var to = releaseHit is { } finalHit
                 ? (_toolDragErase ? finalHit.Coordinate : finalHit.Coordinate + finalHit.Normal)
                 : _toolDragCurrent ?? anchor;
-            var cells = _activeTool == EditorTool.Line
+            var lineShape = _toolDragForceLine || _activeTool == EditorTool.Line;
+            var cells = lineShape
                 ? VoxelEditingTools.LineCells(anchor, to)
                 : VoxelEditingTools.BoxCells(anchor, to, hollow: _activeTool == EditorTool.Box && _hollowBox);
-            CommitCells(_activeTool == EditorTool.Line
+            CommitCells(lineShape
                 ? (_toolDragErase ? "擦除直线" : "绘制直线")
                 : (_toolDragErase ? "擦除长方体" : "绘制长方体"), cells, CurrentBrushValue(_toolDragErase),
                 _toolDragTargetId);
             _toolDragAnchor = null;
             _toolDragCurrent = null;
             _toolDragTargetId = null;
+            _toolDragForceLine = false;
             // 仅第一人称：松手提交后留下蓝色放置框或红色擦除框；
             // 普通模式继续由下一帧的悬停框接管，不改动原有外观
             if (IsCapsLockEnabled())
@@ -2787,6 +3249,16 @@ internal sealed partial class ImGuiEditorWindow
         if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
         if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.toggleGrid")) _showGrid = !_showGrid;
+        // 左侧变换工具（选择/移动/旋转/缩放/全部）用 Q/W/E/R/T 切换。
+        // 第一人称飞行时 Q/E/W 用于升降与前进，体素编辑模式下 E 是擦除，因此这两类状态不抢键
+        if (!_freeFlyActive && !IsVoxelEditingMode)
+        {
+            if (ShortcutBindingRouter.IsPressed(scheme, "gizmo.select")) ApplySceneGizmoMode(SceneGizmoMode.Select);
+            if (ShortcutBindingRouter.IsPressed(scheme, "gizmo.move")) ApplySceneGizmoMode(SceneGizmoMode.Move);
+            if (ShortcutBindingRouter.IsPressed(scheme, "gizmo.rotate")) ApplySceneGizmoMode(SceneGizmoMode.Rotate);
+            if (ShortcutBindingRouter.IsPressed(scheme, "gizmo.scale")) ApplySceneGizmoMode(SceneGizmoMode.Scale);
+            if (ShortcutBindingRouter.IsPressed(scheme, "gizmo.universal")) ApplySceneGizmoMode(SceneGizmoMode.All);
+        }
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.togglePanels"))
         {
             var visible = _showHierarchy && _showProjectAssets && _showInspector;
@@ -2862,13 +3334,15 @@ internal sealed partial class ImGuiEditorWindow
         {
             var end = _toolDragCurrent ?? anchor;
             if (_previewShapeAnchor != anchor || _previewShapeEnd != end ||
-                _previewShapeTool != _activeTool || _previewShapeHollow != _hollowBox)
+                _previewShapeTool != _activeTool || _previewShapeHollow != _hollowBox ||
+                _previewShapeForceLine != _toolDragForceLine)
             {
                 _previewShapeAnchor = anchor;
                 _previewShapeEnd = end;
                 _previewShapeTool = _activeTool;
                 _previewShapeHollow = _hollowBox;
-                _previewShapeCells = _activeTool == EditorTool.Line
+                _previewShapeForceLine = _toolDragForceLine;
+                _previewShapeCells = _toolDragForceLine || _activeTool == EditorTool.Line
                     ? VoxelEditingTools.LineCells(anchor, end)
                     : VoxelEditingTools.BoxCells(anchor, end, _activeTool == EditorTool.Box && _hollowBox);
             }
@@ -2890,6 +3364,13 @@ internal sealed partial class ImGuiEditorWindow
                 _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255)), 1.6F);
     }
 
+    /// <summary>
+    /// 当前编辑目标的体素世界，用于“只描边正在编辑的模型”。
+    /// 工作集里的体素经过运行时材质重映射，描边匹配只按坐标，不比较值
+    /// </summary>
+    private VoxelWorld? GetVoxelEditOutlineWorld() =>
+        _voxelEditTargetId is { } id && _objectVoxels.TryGetWorld(id, out var world) ? world : null;
+
     private VoxelWorld? _selectedSubtreeWorld;
     private int _selectedSubtreeSignature;
 
@@ -2909,6 +3390,11 @@ internal sealed partial class ImGuiEditorWindow
         var hash = new HashCode();
         hash.Add(selectedId);
         hash.Add(_sceneSliceEnabled);
+        hash.Add(_runtimeMaterialSignature);
+        // 拖动预览只改合成位移，不改体素内容，签名必须带上位移否则选中外轮廓会停在旧位置
+        hash.Add(_sceneGizmoGridDragCells.X);
+        hash.Add(_sceneGizmoGridDragCells.Y);
+        hash.Add(_sceneGizmoGridDragCells.Z);
         if (_sceneSliceEnabled)
         {
             hash.Add(_sceneSliceAxis);
@@ -2943,7 +3429,12 @@ internal sealed partial class ImGuiEditorWindow
                         (SceneComponentTypes.IsVoxelModel(component) ||
                          SceneComponentTypes.IsGeneratedVoxelComponent(component))) ||
                     !_objectVoxels.TryGetWorld(item.Id, out var part)) continue;
-                foreach (var (coordinate, value) in part.EnumerateOccupied()) writer.Set(coordinate, value);
+                // 选中描边靠“坐标 + 值”与场景工作集比对，而工作集的体素已经过运行时材质重映射，
+                // 这里必须做同一套重映射，否则带材质的对象会被判为未命中，选中外轮廓整片消失。
+                // 拖动预览中的对象同样按合位移量偏移，保证外轮廓跟着模型
+                var shift = item.Id == _sceneGizmoGridDragObjectId ? _sceneGizmoGridDragCells : VoxelCoord64.Zero;
+                foreach (var (coordinate, value) in part.EnumerateOccupied())
+                    writer.Set(coordinate + shift, RemapRuntimeMaterial(item.Id, value));
             }
             _selectedSubtreeWorld = _sceneSliceEnabled
                 ? VoxelWorldSlice.CreateHalfSpace(combined, _sceneSliceAxis, _sceneSliceCoordinate, _sceneSliceKeepGreater)
@@ -3373,19 +3864,20 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 绘制距离 LOD 配置区：场景窗口与渲染窗口各一份，默认关闭，
-    /// 可调整级数与每级生效距离
+    /// 绘制模型级 LOD 配置区：场景窗口与渲染窗口各一份，默认关闭，
+    /// 可调整级数、每级生效距离与是否把代表体素预烘焙进来源文件
     /// </summary>
     /// <param name="settings">目标渲染设置</param>
     private void DrawLodSection(RenderSettings settings)
     {
-        ImGui.TextDisabled("场景窗口与渲染窗口各一份，默认关闭。");
+        ImGui.TextDisabled("按模型对象独立分档，同一模型的所有区块使用同一级。");
         DrawLodGroup("场景窗口", settings.SceneLod);
         DrawLodGroup("渲染窗口", settings.RenderLod);
+        SyncAutoBakeLod();
     }
 
     /// <summary>
-    /// 绘制单窗口 LOD 分组：开关、级数与逐级起始距离
+    /// 绘制单窗口 LOD 分组：开关、级数、逐级起始距离与预烘焙
     /// </summary>
     private static void DrawLodGroup(string label, VoxelLodSettings lod)
     {
@@ -3394,6 +3886,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             lod.Enabled = enabled;
         }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("按每个模型对象到相机的距离分档简化体素；同一模型的所有区块整体切换级数。");
 
         if (!enabled)
         {
@@ -3406,6 +3901,9 @@ internal sealed partial class ImGuiEditorWindow
             lod.LevelCount = levels;
             lod.ClampAll();
         }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("第 0 级为完整细节，第 k 级把模型按 2^k 网格折叠成一个代表体素。");
 
         for (var index = 0; index < Math.Max(lod.LevelCount - 1, 0); index++)
         {
@@ -3422,6 +3920,17 @@ internal sealed partial class ImGuiEditorWindow
                 lod.ClampAll();
             }
         }
+
+        var baked = lod.Baked;
+        if (ImGui.Checkbox($"{label}预烘焙##lodBaked{label}", ref baked))
+        {
+            lod.Baked = baked;
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("勾选后把各级代表体素烘焙进体素数据来源文件：场景内嵌数据写入场景文件，" +
+                             "独立模型资产写入资产文件，预制体内嵌数据写入预制体文件。保存时生成，" +
+                             "体积随级数与模型数量增加；关闭时只在渲染时即时粗化，不改动文件。");
     }
 
     private static void SliderFloat(string label, ref float value, float minimum, float maximum, string format)

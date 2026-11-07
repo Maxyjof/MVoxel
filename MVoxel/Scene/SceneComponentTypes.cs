@@ -322,8 +322,6 @@ public static partial class SceneComponentTypes
             RotationY = NormalizeModelRotation(data.RotationY),
             RotationZ = NormalizeModelRotation(data.RotationZ),
         }, JsonOptions)!.AsObject();
-        // 旧版本只认单个 scale，这里补一份，用旧版打开时至少能看到大致倍数
-        updated["scale"] = JsonValue.Create(ClampModelScale(data.ScaleX));
         var merged = component.Data.ValueKind == JsonValueKind.Object
             ? JsonNode.Parse(component.Data.GetRawText())!.AsObject() : new JsonObject();
         foreach (var property in updated)
@@ -333,12 +331,11 @@ public static partial class SceneComponentTypes
     }
 
     /// <summary>
-    /// 读取单轴缩放倍数；没有分轴字段的旧文件回退到单个 scale
+    /// 读取单轴缩放倍数
     /// </summary>
     private static float ReadModelScale(JsonElement data, string key)
     {
         if (data.TryGetProperty(key, out var value) && value.TryGetSingle(out var scale)) return ClampModelScale(scale);
-        if (data.TryGetProperty("scale", out var legacy) && legacy.TryGetSingle(out var legacyScale)) return ClampModelScale(legacyScale);
         return 1F;
     }
 

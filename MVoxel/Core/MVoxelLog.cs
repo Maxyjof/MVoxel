@@ -118,6 +118,8 @@ public static class MVoxelLog
             {
                 _writer?.Flush();
                 WriteCore("崩溃", report.ToString());
+                // 运行日志会在下次启动时归档并覆盖，崩溃报告另存一份，避免现场丢失
+                File.AppendAllText(AppPaths.CrashLogFilePath, report.ToString() + Environment.NewLine);
                 _writer?.Flush();
                 PreviousCrash = new PreviousCrashNotice(message, AppPaths.OldLogFilePath, now);
             }

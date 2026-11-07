@@ -17,9 +17,9 @@ public sealed record VoxExportLossSummary(int SourceCombinations, int PaletteEnt
 /// </summary>
 public sealed class VoxExportPlan
 {
-    private readonly Action<string> _write;
+    private readonly Func<string, IReadOnlyList<string>> _write;
 
-    internal VoxExportPlan(VoxExportLossSummary summary, Action<string> write)
+    internal VoxExportPlan(VoxExportLossSummary summary, Func<string, IReadOnlyList<string>> write)
     {
         LossSummary = summary;
         _write = write;
@@ -30,12 +30,13 @@ public sealed class VoxExportPlan
     /// <summary>
     /// 只在确认损失后落盘，材质种类超限时始终拒绝
     /// </summary>
-    public void Write(string path, bool confirmLoss = false)
+    /// <returns>实际写出的文件路径；场景按世界分区拆分时可能有多个</returns>
+    public IReadOnlyList<string> Write(string path, bool confirmLoss = false)
     {
         if (LossSummary.RequiresMaterialDecision)
             throw new InvalidOperationException("材质种类超过VOX的255项容量，需要进一步确认材质简化策略");
         if (LossSummary.HasLoss && !confirmLoss)
             throw new InvalidOperationException("VOX导出存在损失，请先查看LossSummary并明确确认");
-        _write(path);
+        return _write(path);
     }
 }

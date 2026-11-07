@@ -12,9 +12,9 @@ namespace MVoxel.Scene;
 public sealed class SceneDocument
 {
     /// <summary>
-    /// 文件格式版本，用于校验文档结构
+    /// 文件格式版本，用于校验文档结构；2 起内嵌体素支持编码字段与压缩区块
     /// </summary>
-    public int FormatVersion { get; set; } = 1;
+    public int FormatVersion { get; set; } = SceneSerializer.CurrentFormatVersion;
 
     /// <summary>
     /// 场景的稳定身份，重命名与移动不影响引用
@@ -38,6 +38,25 @@ public sealed class SceneDocument
         set { _environment = value; HasSerializedEnvironment = true; }
     }
     internal void MarkEnvironmentMissing() => HasSerializedEnvironment = false;
+
+    private Dictionary<string, string> _blockStore = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 场景级内嵌体素区块载荷，按内容哈希跨对象共享；为空时不出现在文件中。
+    /// 读取后由 EmbeddedVoxelData.ExpandBlocks 展开回各组件，内存中不保留副本。
+    /// </summary>
+    [JsonPropertyName("blockStore")]
+    public Dictionary<string, string>? BlockStore
+    {
+        get => _blockStore.Count == 0 ? null : _blockStore;
+        set => _blockStore = value ?? new(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// 始终可写入的区块载荷容器，保存前由 EmbeddedVoxelData.HoistBlocks 填充
+    /// </summary>
+    [JsonIgnore]
+    internal Dictionary<string, string> EmbeddedBlockStore => _blockStore;
 
     /// <summary>
     /// 场景内全部对象，父子关系由每个对象的 ParentId 表达
@@ -559,6 +578,7 @@ public static class SceneSerializer
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     static SceneSerializer()
@@ -574,11 +594,35 @@ public static class SceneSerializer
     public static void Save(string path, SceneDocument scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        AtomicFile.WriteText(path, ToJson(scene));
+        AtomicFile.WriteStream(path, stream => Serialize(stream, scene));
     }
 
     /// <summary>
-    /// 序列化为 JSON 文本，供恢复区快照与诊断使用
+    /// 把场景直接写入流，供原子流式保存与恢复区快照使用
+    /// </summary>
+    /// <param name="stream">目标流</param>
+    /// <param name="scene">要序列化的文档</param>
+    public static void Serialize(Stream stream, SceneDocument scene)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(scene);
+        // 保存时把各组件自带的区块载荷提升到场景级 blockStore，跨对象按哈希去重；
+        // 写入结束后恢复组件数据，内存形态不因保存而改变。
+        scene.FormatVersion = CurrentFormatVersion;
+        var hoisted = EmbeddedVoxelData.HoistBlocks(scene);
+        try
+        {
+            JsonSerializer.Serialize(stream, scene, Options);
+        }
+        finally
+        {
+            EmbeddedVoxelData.RestoreBlocks(hoisted);
+            scene.EmbeddedBlockStore.Clear();
+        }
+    }
+
+    /// <summary>
+    /// 序列化为 JSON 文本，供命令历史与诊断使用
     /// </summary>
     /// <param name="scene">要序列化的文档</param>
     /// <returns>JSON 文本</returns>
@@ -606,9 +650,9 @@ public static class SceneSerializer
     }
 
     /// <summary>
-    /// 当前写入的场景格式版本
+    /// 当前写入的场景格式版本；读取端只接受该版本，不保留旧版本迁移路径
     /// </summary>
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     /// <summary>
     /// 读取场景文档：先校验当前格式版本，再反序列化并恢复对象不变量
@@ -617,7 +661,88 @@ public static class SceneSerializer
     /// <returns>解析后的文档</returns>
     public static SceneDocument Load(string path)
     {
-        return LoadFromJson(File.ReadAllText(path), path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 1024 * 1024, options: FileOptions.SequentialScan);
+        var environmentMissing = InspectStreamHeader(stream, path);
+        stream.Position = 0;
+        var scene = JsonSerializer.Deserialize<SceneDocument>(stream, Options);
+        if (scene is null) throw new InvalidDataException("场景 JSON 不是合法文档");
+        if (environmentMissing) scene.MarkEnvironmentMissing();
+        Normalize(scene);
+        return scene;
+    }
+
+    /// <summary>
+    /// 流式读取文件头，确认格式版本并判断环境配置是否为空；
+    /// 只需读到环境字段开头，不把整份场景读成字符串
+    /// </summary>
+    /// <param name="stream">已定位到文件开头的流</param>
+    /// <param name="path">文件路径，用于诊断</param>
+    /// <returns>环境配置是否缺失</returns>
+    private static bool InspectStreamHeader(Stream stream, string path)
+    {
+        var buffer = new byte[1024 * 1024];
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var read = stream.Read(buffer, total, buffer.Length - total);
+            if (read <= 0) break;
+            total += read;
+        }
+
+        var foundVersion = false;
+        var environmentMissing = true;
+        try
+        {
+            var reader = new Utf8JsonReader(buffer.AsSpan(0, total), isFinalBlock: total < buffer.Length, state: default);
+            var depth = 0;
+            string? pending = null;
+            while (reader.Read())
+            {
+                switch (reader.TokenType)
+                {
+                    case JsonTokenType.StartObject when depth == 1 && pending == "environment":
+                        if (!reader.Read())
+                        {
+                            environmentMissing = false;
+                            goto HeaderComplete;
+                        }
+                        environmentMissing = reader.TokenType == JsonTokenType.EndObject;
+                        goto HeaderComplete;
+                    case JsonTokenType.StartObject:
+                        depth++;
+                        break;
+                    case JsonTokenType.EndObject:
+                        depth--;
+                        if (depth <= 0) goto HeaderComplete;
+                        break;
+                    case JsonTokenType.PropertyName when depth == 1:
+                        pending = reader.GetString();
+                        break;
+                    case JsonTokenType.Number when depth == 1 && pending == "formatVersion":
+                        if (!reader.TryGetInt32(out var version) || version != CurrentFormatVersion)
+                            throw new InvalidDataException(
+                                $"场景 {path} 的格式版本不受支持，当前只接受版本 {CurrentFormatVersion}，请在当前版本重新创建");
+                        foundVersion = true;
+                        pending = null;
+                        break;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // 缓冲区在中途截断时，以已经读到的字段为准
+        }
+
+    HeaderComplete:
+        if (!foundVersion)
+        {
+            throw new InvalidDataException(
+                $"场景 {path} 的格式版本不受支持，当前只接受版本 {CurrentFormatVersion}，请在当前版本重新创建");
+        }
+
+        return environmentMissing;
     }
 
     /// <summary>
@@ -642,12 +767,23 @@ public static class SceneSerializer
                 scene.MarkEnvironmentMissing();
         }
 
-        // 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
-        // 保证内存中的场景图始终可被渲染与层级面板安全访问。
+        Normalize(scene);
+        return scene;
+    }
+
+    /// <summary>
+    /// 恢复对象不变量：补齐空集合、移除空引用、重建变换组件，
+    /// 保证内存中的场景图始终可被渲染与层级面板安全访问
+    /// </summary>
+    /// <param name="scene">解析后的文档</param>
+    private static void Normalize(SceneDocument scene)
+    {
         scene.Objects ??= new List<SceneObject>();
         scene.Environment ??= new SceneEnvironmentSettings();
         scene.Environment.Normalize();
         scene.Objects.RemoveAll(sceneObject => sceneObject is null);
+        // 场景级区块载荷展开回各组件，后续读取只依赖组件自身数据
+        EmbeddedVoxelData.ExpandBlocks(scene);
         // 图层不变量：缺失补默认、超上限截断、名称去空白；对象图层索引夹取
         scene.LayerNames ??= new List<string>();
         while (scene.LayerNames.Count == 0)
@@ -690,8 +826,6 @@ public static class SceneSerializer
                     component.OwnerPluginId = null;
             }
         }
-
-        return scene;
     }
 
     /// <summary>

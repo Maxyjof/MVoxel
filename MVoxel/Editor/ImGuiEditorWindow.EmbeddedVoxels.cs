@@ -117,61 +117,136 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
-    private void ExtractEmbeddedVoxelData(SceneObject sceneObject, ComponentRecord component)
+    private void StripEmbeddedVoxelData(SceneObject sceneObject, ComponentRecord component)
     {
         if (_project is null || _sceneDocument is null) return;
         if (_worldLoadFailed)
         {
-            SetStatus("当前场景数据尚无法安全提取");
+            SetStatus("当前场景数据尚无法安全剥离");
             return;
         }
         var objectWorld = CaptureObjectVoxels(sceneObject);
         if (objectWorld.OccupiedVoxelCount == 0)
         {
-            SetStatus("没有可提取的体素");
+            SetStatus("没有可剥离的体素");
             return;
         }
         var invalid = Path.GetInvalidFileNameChars();
         var name = new string(sceneObject.Name.Select(character => invalid.Contains(character) ? '_' : character).ToArray());
-        var path = NativeDialogs.SaveFile("提取内嵌体素数据", "MVoxel模型\0*.mvmodel\0", "mvmodel",
+        var path = NativeDialogs.SaveFile("剥离为独立资产", "MVoxel模型\0*.mvmodel\0", "mvmodel",
             string.IsNullOrWhiteSpace(name) ? "体素模型.mvmodel" : name + ".mvmodel");
         if (path is null) return;
         try
         {
             var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_project.AssetsPath));
-            var target = Path.GetFullPath(path);
-            if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-                !target.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase))
+            var requested = Path.GetFullPath(path);
+            if (!requested.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                !requested.EndsWith(".mvmodel", StringComparison.OrdinalIgnoreCase))
             {
                 SetStatus("请选择项目Assets内的.mvmodel文件");
                 return;
             }
+            var target = FindUniqueModelTarget(_project, sceneObject, requested);
             var targetReference = ToAssetRelativePath(_project, target);
-            if (_sceneDocument.Objects.Where(item => item.Id != sceneObject.Id)
-                .SelectMany(item => item.Components).Where(SceneComponentTypes.IsVoxelModel)
-                .Any(item => string.Equals(SceneComponentTypes.ReadVoxelModel(item).Model,
-                    targetReference, StringComparison.OrdinalIgnoreCase)))
-            {
-                SetStatus("目标文件已被其他模型引用，请选择其他文件名");
-                return;
-            }
             LargeWorldFormat.Write(target, objectWorld);
             AssetMetaStore.EnsureMeta(target);
-            var data = SceneComponentTypes.ReadVoxelModel(component);
-            SceneComponentTypes.WriteVoxelModel(component, data with
+            var beforeData = component.Data.Clone();
+            var beforeTransform = sceneObject.Transform;
+            var strippedData = SceneComponentTypes.ReadVoxelModel(component) with
             {
                 Model = targetReference, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = objectWorld.OccupiedVoxelCount,
-            });
-            EmbeddedVoxelData.Remove(component);
-            AlignModelOriginToBounds(sceneObject, objectWorld);
-            _voxelModelReferenceCacheRoot = null;
-            MarkSceneDocumentDirty();
-            SetStatus("已提取体素数据，请保存项目以保存引用");
+            };
+            // 撤销只回退组件引用与原点，已写出的资产文件保留在磁盘上，重做时若文件被删除会重新写出
+            void Apply(bool forward)
+            {
+                component.Data = beforeData.Clone();
+                if (forward)
+                {
+                    if (!File.Exists(target)) LargeWorldFormat.Write(target, objectWorld);
+                    SceneComponentTypes.WriteVoxelModel(component, strippedData);
+                    AlignModelOriginToBounds(sceneObject, objectWorld);
+                    SetStatus(Path.GetFileName(target) == Path.GetFileName(requested)
+                        ? "已剥离体素数据，请保存项目以保存引用"
+                        : $"目标名称已存在，已自动改用 {Path.GetFileName(target)}；请保存项目以保存引用");
+                }
+                else
+                {
+                    sceneObject.Transform = beforeTransform;
+                    SetStatus($"已撤销剥离：模型恢复为内嵌体素，资产文件 {Path.GetFileName(target)} 保留");
+                }
+
+                _voxelModelReferenceCacheRoot = null;
+                RebuildObjectVoxelWorld();
+                MarkSceneDocumentDirty();
+            }
+
+            _voxelHistory.Execute(new VoxelAssetStripCommand(Path.GetFileName(target),
+                () => Apply(true), () => Apply(false)));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
             InvalidOperationException or ArgumentException or OverflowException)
         {
-            SetStatus($"提取失败：{exception.Message}");
+            SetStatus($"剥离失败：{exception.Message}");
         }
+    }
+
+    /// <summary>
+    /// 同目录已有同名文件或已被其他模型引用时，自动追加递增序号。
+    /// </summary>
+    /// <param name="project">当前项目</param>
+    /// <param name="sceneObject">正在剥离的对象</param>
+    /// <param name="requested">用户选择的完整路径</param>
+    /// <returns>可安全写入的完整路径</returns>
+    private string FindUniqueModelTarget(ProjectHandle project, SceneObject sceneObject, string requested)
+    {
+        var directory = Path.GetDirectoryName(requested)
+            ?? throw new InvalidDataException("目标路径缺少目录");
+        var stem = Path.GetFileNameWithoutExtension(requested);
+        for (var index = 1; index <= 10_000; index++)
+        {
+            var candidate = index == 1
+                ? requested
+                : Path.Combine(directory, $"{stem}_{index}.mvmodel");
+            if (!File.Exists(candidate) && !IsModelReferenceUsed(project, sceneObject, candidate)) return candidate;
+        }
+        throw new InvalidDataException("同名资产过多，无法生成可用文件名");
+    }
+
+    private bool IsModelReferenceUsed(ProjectHandle project, SceneObject sceneObject, string candidatePath)
+    {
+        if (_sceneDocument is null) return false;
+        var reference = ToAssetRelativePath(project, candidatePath);
+        return _sceneDocument.Objects.Where(item => item.Id != sceneObject.Id)
+            .SelectMany(item => item.Components).Where(SceneComponentTypes.IsVoxelModel)
+            .Any(item => string.Equals(SceneComponentTypes.ReadVoxelModel(item).Model, reference,
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 剥离体素资产的撤销记录：正向切换为外部资产引用，撤销恢复内嵌体素与原原点；
+    /// 已写出的资产文件不随撤销删除，避免误删用户文件
+    /// </summary>
+    private sealed class VoxelAssetStripCommand : IEditorCommand, IHistoryWarning
+    {
+        private readonly string _assetName;
+        private readonly Action _execute;
+        private readonly Action _undo;
+
+        public VoxelAssetStripCommand(string assetName, Action execute, Action undo)
+        {
+            _assetName = assetName;
+            _execute = execute;
+            _undo = undo;
+        }
+
+        public string Name => "剥离为独立资产";
+
+        public void Execute() => _execute();
+
+        public void Undo() => _undo();
+
+        public string? GetWarning(bool forward) => forward
+            ? null
+            : $"撤销只把模型改回内嵌体素，已写出的资产文件 {_assetName} 会保留在项目 Assets 中。";
     }
 }

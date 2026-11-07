@@ -64,7 +64,7 @@ public static class VoxMaterialExchange
         var approximated = Math.Max(0L, sourceCombinations - Math.Min(sourceCombinations, 255));
         var summary = new VoxExportLossSummary(sourceCombinations, paletteEntries, sourceCombinations,
             approximated, flagsLost, missing, Array.AsReadOnly(warnings.ToArray()));
-        return new VoxExportPlan(summary, path => VoxFormat.WriteScene(path, convertedParts, converted));
+        return new VoxExportPlan(summary, path => VoxFormat.WriteSceneFiles(path, convertedParts, converted));
     }
 
     private static VoxelWorld RemapWorld(VoxelWorld source, int part,

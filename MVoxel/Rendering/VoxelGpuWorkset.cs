@@ -107,9 +107,11 @@ public sealed class VoxelGpuWorkset
     /// <exception cref="InvalidDataException">包围盒尺寸超出 GPU 局部坐标范围时抛出</exception>
     public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells = 0,
         VoxelLodSettings? lod = null, System.Numerics.Vector3? cameraPosition = null, bool greedyMerge = true,
-        bool includeInterior = false)
+        bool includeInterior = false, Func<ChunkCoord64, bool>? chunkFilter = null,
+        VoxelModelLodView? modelLod = null)
     {
-        return Build(world, maximumCells, lod, cameraPosition, greedyMerge, includeInterior, out _);
+        return Build(world, maximumCells, lod, cameraPosition, greedyMerge, includeInterior, chunkFilter,
+            modelLod, out _);
     }
 
     /// <summary>
@@ -121,11 +123,49 @@ public sealed class VoxelGpuWorkset
     /// <param name="cameraPosition">LOD 判距相机</param>
     /// <param name="greedyMerge">是否做贪心盒体合并；场景视图传 false 只显示原始体素，渲染与导出传 true</param>
     /// <param name="includeInterior">保留完全被包围的内部体素</param>
+    /// <param name="chunkFilter">区块级可见性过滤，被过滤的区块不进入工作集</param>
     /// <param name="timing">各阶段耗时</param>
     /// <returns>可直接上传到 GPU 的确定性快照</returns>
     public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells,
         VoxelLodSettings? lod, System.Numerics.Vector3? cameraPosition, bool greedyMerge,
         bool includeInterior, out VoxelWorksetBuildTiming timing)
+        => Build(world, maximumCells, lod, cameraPosition, greedyMerge, includeInterior, null, null, out timing);
+
+    /// <summary>
+    /// 从稀疏世界创建 GPU 工作集，并回传各阶段耗时供性能分析器定位热点
+    /// </summary>
+    /// <param name="world">源稀疏世界</param>
+    /// <param name="maximumCells">工作集最大体素数，零表示不采样</param>
+    /// <param name="lod">距离 LOD 配置，null 或关闭时全细节</param>
+    /// <param name="cameraPosition">LOD 判距相机</param>
+    /// <param name="greedyMerge">是否做贪心盒体合并；场景视图传 false 只显示原始体素，渲染与导出传 true</param>
+    /// <param name="includeInterior">保留完全被包围的内部体素</param>
+    /// <param name="chunkFilter">区块级可见性过滤，被过滤的区块不进入工作集</param>
+    /// <param name="timing">各阶段耗时</param>
+    /// <returns>可直接上传到 GPU 的确定性快照</returns>
+    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells,
+        VoxelLodSettings? lod, System.Numerics.Vector3? cameraPosition, bool greedyMerge,
+        bool includeInterior, Func<ChunkCoord64, bool>? chunkFilter, out VoxelWorksetBuildTiming timing)
+        => Build(world, maximumCells, lod, cameraPosition, greedyMerge, includeInterior, chunkFilter, null,
+            out timing);
+
+    /// <summary>
+    /// 从稀疏世界创建 GPU 工作集，并回传各阶段耗时供性能分析器定位热点
+    /// </summary>
+    /// <param name="world">源稀疏世界</param>
+    /// <param name="maximumCells">工作集最大体素数，零表示不采样</param>
+    /// <param name="lod">距离 LOD 配置</param>
+    /// <param name="cameraPosition">LOD 判距相机</param>
+    /// <param name="greedyMerge">是否贪心盒体合并；场景视图传 false 只显示原始体素，渲染与导出传 true</param>
+    /// <param name="includeInterior">保留完全被包围的内部体素</param>
+    /// <param name="chunkFilter">区块级可见性过滤，被过滤的区块不进入工作集</param>
+    /// <param name="modelLod">模型级 LOD 视图；非空时按区块所属模型的级数代替按区块距离分档</param>
+    /// <param name="timing">各阶段耗时</param>
+    /// <returns>可直接上传到 GPU 的确定性快照</returns>
+    public static VoxelGpuWorkset Build(VoxelWorld world, int maximumCells,
+        VoxelLodSettings? lod, System.Numerics.Vector3? cameraPosition, bool greedyMerge,
+        bool includeInterior, Func<ChunkCoord64, bool>? chunkFilter, VoxelModelLodView? modelLod,
+        out VoxelWorksetBuildTiming timing)
     {
         ArgumentNullException.ThrowIfNull(world);
         timing = default;
@@ -157,7 +197,36 @@ public sealed class VoxelGpuWorkset
         });
 
         var chunkCount = chunks.Count;
-        var lodActive = lod is { Enabled: true } && cameraPosition.HasValue;
+        // 模型级 LOD 视图优先：每个区块的级数来自它所属模型到相机的距离，
+        // 同一模型的所有区块保持同一级；传入视图即表示按模型分档，不再按区块距离兜底
+        var modelLodMode = modelLod is not null;
+        var lodActive = !modelLodMode && lod is { Enabled: true } && cameraPosition.HasValue;
+        // 区块级可见性先整体落成数组：视锥剔除只决定哪些区块参与后续收集，
+        // 空区块仍保留过滤结果；启用过滤时下方再按实际驻留区块重算包络
+        var chunkVisible = new bool[chunkCount];
+        if (chunkFilter is null)
+        {
+            Array.Fill(chunkVisible, true);
+        }
+        else
+        {
+            System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
+                chunkVisible[chunkIndex] = chunkFilter(chunks[chunkIndex].Coordinate));
+        }
+
+        // 区块过滤启用时按实际保留的区块重算工作集包络：GPU 区域参数、太阳阴影
+        // 贴图半径和局部坐标都跟随驻留区块，避免只保留部分区块却仍声明完整世界范围。
+        // 全部区块被剔除时退回完整包络，此时工作集为空，只是保留一个稳定的坐标原点。
+        if (chunkFilter is not null && TryVisibleBounds(chunks, chunkVisible, out var visibleMinimum,
+                out var visibleMaximum))
+        {
+            minimum = visibleMinimum;
+            size = new VoxelCoord64(
+                CheckedExtent(minimum.X, visibleMaximum.X, nameof(minimum)),
+                CheckedExtent(minimum.Y, visibleMaximum.Y, nameof(minimum)),
+                CheckedExtent(minimum.Z, visibleMaximum.Z, nameof(minimum)));
+        }
+
         var snapshotMs = phaseWatch.Elapsed.TotalMilliseconds;
         phaseWatch.Restart();
 
@@ -166,6 +235,12 @@ public sealed class VoxelGpuWorkset
         var visiblePairs = new (int Key, VoxelValue Value)[chunkCount][];
         System.Threading.Tasks.Parallel.For(0, chunkCount, ChunkParallelOptions, chunkIndex =>
         {
+            if (!chunkVisible[chunkIndex])
+            {
+                visiblePairs[chunkIndex] = [];
+                return;
+            }
+
             var chunk = chunks[chunkIndex].Chunk;
             var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
             var pairIndex = 0;
@@ -232,7 +307,11 @@ public sealed class VoxelGpuWorkset
             }
 
             var level = 0;
-            if (lodActive)
+            if (modelLodMode)
+            {
+                level = modelLod!.LevelFor(coordinate);
+            }
+            else if (lodActive)
             {
                 level = lod!.LevelFor(ChunkDistance(cameraPosition!.Value, coordinate, minimum));
             }
@@ -260,7 +339,23 @@ public sealed class VoxelGpuWorkset
             }
             else
             {
-                CoarsenChunk(pairs, coordinate, minimum, level, list);
+                // 有预烘焙数据时直接采用写盘的代表体素；否则按同一规则在运行时粗化
+                var baked = modelLodMode ? modelLod!.BakedCells(coordinate, level) : null;
+                if (baked is { Count: > 0 })
+                {
+                    foreach (var cell in baked)
+                    {
+                        list.Add(new VoxelGpuCell(
+                            (int)(cell.X - minimum.X),
+                            (int)(cell.Y - minimum.Y),
+                            (int)(cell.Z - minimum.Z),
+                            cell.Value, cell.Extent, cell.Extent, cell.Extent));
+                    }
+                }
+                else
+                {
+                    CoarsenChunk(pairs, coordinate, minimum, level, list);
+                }
             }
 
             // 发光面计数顺带在做完的列表上统计，省掉之后再全量扫一遍
@@ -335,6 +430,51 @@ public sealed class VoxelGpuWorkset
         return Spread(Quantize(coordinate.X, minimum.X, size.X)) |
                (Spread(Quantize(coordinate.Y, minimum.Y, size.Y)) << 1) |
                (Spread(Quantize(coordinate.Z, minimum.Z, size.Z)) << 2);
+    }
+
+    /// <summary>
+    /// 按可见区块计算工作集包络；所有区块都被过滤时返回 false，调用方保留完整包络
+    /// </summary>
+    private static bool TryVisibleBounds(IReadOnlyList<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)> chunks,
+        bool[] chunkVisible, out VoxelCoord64 minimum, out VoxelCoord64 maximum)
+    {
+        minimum = default;
+        maximum = default;
+        var any = false;
+        long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
+        for (var index = 0; index < chunks.Count; index++)
+        {
+            if (!chunkVisible[index]) continue;
+            var coordinate = chunks[index].Coordinate;
+            var lowX = coordinate.X * VoxelWorld.ChunkSize;
+            var lowY = coordinate.Y * VoxelWorld.ChunkSize;
+            var lowZ = coordinate.Z * VoxelWorld.ChunkSize;
+            if (!any)
+            {
+                minX = maxX = lowX;
+                minY = maxY = lowY;
+                minZ = maxZ = lowZ;
+                any = true;
+            }
+            else
+            {
+                minX = Math.Min(minX, lowX);
+                minY = Math.Min(minY, lowY);
+                minZ = Math.Min(minZ, lowZ);
+                maxX = Math.Max(maxX, lowX);
+                maxY = Math.Max(maxY, lowY);
+                maxZ = Math.Max(maxZ, lowZ);
+            }
+        }
+
+        if (!any) return false;
+        // 区块覆盖 [coordinate*32, coordinate*32+31]，包头要补到区块最后一格
+        minimum = new VoxelCoord64(minX, minY, minZ);
+        maximum = new VoxelCoord64(
+            maxX + VoxelWorld.ChunkSize - 1L,
+            maxY + VoxelWorld.ChunkSize - 1L,
+            maxZ + VoxelWorld.ChunkSize - 1L);
+        return true;
     }
 
     /// <summary>

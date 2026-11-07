@@ -428,6 +428,21 @@ internal sealed partial class ImGuiEditorWindow
         return segments;
     }
 
+    /// <summary>当前场景按对象拆成 VOX 导出段：保留各自的世界原点，导出时按分区合并</summary>
+    private IReadOnlyList<VoxFormat.VoxScenePart> BuildSceneVoxParts()
+    {
+        var parts = new List<VoxFormat.VoxScenePart>();
+        foreach (var sceneObject in _sceneDocument?.Objects ?? [])
+        {
+            if (!sceneObject.Components.Any(SceneComponentTypes.IsVoxelModel)) continue;
+            var world = CaptureObjectVoxels(sceneObject);
+            if (world.OccupiedVoxelCount == 0) continue;
+            parts.Add(new VoxFormat.VoxScenePart(sceneObject.Name, world, GetSceneModelOrigin(sceneObject)));
+        }
+
+        return parts;
+    }
+
     private void DrawVoxExportConfirmation()
     {
         if (!_openVoxExportConfirmation || _pendingVoxExportPlan is null) return;
@@ -448,8 +463,10 @@ internal sealed partial class ImGuiEditorWindow
             var path = _pendingVoxExportPath;
             _pendingVoxExportPlan = null;
             _openVoxExportConfirmation = false;
-            plan.Write(path, true);
-            SetStatus($"已确认VOX有损导出：{path}");
+            var written = plan.Write(path, true);
+            SetStatus(written.Count > 1
+                ? $"已确认VOX有损导出 · {written.Count} 个文件：{Path.GetDirectoryName(written[0])}"
+                : $"已确认VOX有损导出：{path}");
             ImGui.CloseCurrentPopup();
         }
         else if (cancel)
@@ -466,7 +483,6 @@ internal sealed partial class ImGuiEditorWindow
         if (_project is null) return;
         try
         {
-            var source = _world;
             var target = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId &&
                 item.Components.Any(SceneComponentTypes.IsVoxelModel));
             if (selectedOnly && target is null) { SetStatus("请先选择一个体素模型"); return; }
@@ -492,18 +508,30 @@ internal sealed partial class ImGuiEditorWindow
                 return;
             }
             var name = selectedOnly ? target!.Name : _project.Manifest.Name;
-            source = selectedOnly ? CaptureObjectVoxels(target!) : GetRenderWorld(uint.MaxValue).Clone();
+            var voxOnly = !native && !obj && !qubicle;
+            var source = selectedOnly ? CaptureObjectVoxels(target!)
+                : voxOnly ? null : GetRenderWorld(uint.MaxValue).Clone();
             var directory = Path.Combine(_project.AssetsPath, "Exports");
             Directory.CreateDirectory(directory);
             var safeName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
             var extension = obj ? ".obj" : native ? selectedOnly ? ".mvmodel" : ".mvworld" : qubicle ? ".qb" : ".vox";
             var path = Path.Combine(directory, UniqueAssetFileName(directory, safeName, extension));
-            var scope = selectedOnly ? $"选中模型：{name}" : "场景可见体素（重叠按排序合成）";
+            var scope = selectedOnly ? $"选中模型：{name}"
+                : voxOnly ? "当前场景体素（按世界分区拆分）" : "场景可见体素（重叠按排序合成）";
             nativeMetadata ??= BuildNativeMaterialMetadata(target, selectedOnly);
-            var voxParts = new[] { new VoxFormat.VoxScenePart(name, source, VoxelCoord64.Zero) };
+            IReadOnlyList<VoxFormat.VoxScenePart> voxParts =
+                selectedOnly
+                    ? [new VoxFormat.VoxScenePart(name, source!, VoxelCoord64.Zero)]
+                    : voxOnly ? BuildSceneVoxParts() : [];
             VoxExportPlan? voxPlan = null;
-            if (!native && !obj && !qubicle)
+            if (voxOnly)
             {
+                if (voxParts.Count == 0)
+                {
+                    SetStatus("当前场景没有可导出的体素模型");
+                    return;
+                }
+
                 var contextual = BuildVoxMaterialMap(target, selectedOnly);
                 voxPlan = VoxMaterialExchange.PrepareExport(voxParts, contextual);
                 if (voxPlan.LossSummary.HasLoss || voxPlan.LossSummary.RequiresMaterialDecision)
@@ -519,18 +547,28 @@ internal sealed partial class ImGuiEditorWindow
             }
             var objects = _sceneDocument?.Objects ?? [];
             var primary = GetVoxelWorldObject()?.Id;
+            IReadOnlyList<string>? writtenVoxFiles = null;
             _projectOperation.TryStart($"导出 {extension} · {scope}", path,
                 (cancellation, report) =>
                 {
+                    if (voxPlan is not null)
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        report(new BlockingOperationProgress($"写入 VOX 场景分区\n{path}", .85F, CanCancel: false));
+                        writtenVoxFiles = voxPlan.Write(path, confirmLoss: true);
+                        return voxParts.Sum(part => part.World.OccupiedVoxelCount);
+                    }
+
+                    var merged = source!;
                     var world = new VoxelWorld();
                     long processed = 0;
-                    foreach (var cell in source.EnumerateOccupied())
+                    foreach (var cell in merged.EnumerateOccupied())
                     {
                         if (++processed % 16384 == 0)
                         {
                             cancellation.ThrowIfCancellationRequested();
-                            report(new BlockingOperationProgress($"收集体素 {processed:N0} / {source.OccupiedVoxelCount:N0}\n{path}",
-                                .7F * processed / Math.Max(1, source.OccupiedVoxelCount), CanCancel: true));
+                            report(new BlockingOperationProgress($"收集体素 {processed:N0} / {merged.OccupiedVoxelCount:N0}\n{path}",
+                                .7F * processed / Math.Max(1, merged.OccupiedVoxelCount), CanCancel: true));
                         }
                         world.Set(cell.Coordinate, cell.Value);
                     }
@@ -544,9 +582,11 @@ internal sealed partial class ImGuiEditorWindow
                     }
                     else if (obj) ObjVoxelExporter.Write(path, world, cancellation);
                     else if (qubicle) QubicleFormat.Write(path, world);
-                    else voxPlan!.Write(path, confirmLoss: true);
                     return world.OccupiedVoxelCount;
-                }, count => SetStatus($"已导出 {extension} · {scope} · {count:N0} 体素：{path}"),
+                },
+                count => SetStatus(writtenVoxFiles is { Count: > 1 }
+                    ? $"已导出 {extension} · {scope} · {count:N0} 体素 · {writtenVoxFiles.Count} 个文件：{Path.GetDirectoryName(writtenVoxFiles[0])}"
+                    : $"已导出 {extension} · {scope} · {count:N0} 体素：{writtenVoxFiles?[0] ?? path}"),
                 exception => { MVoxelLog.Error("导出工作模型失败", exception); SetStatus($"导出失败：{exception.Message}"); },
                 () => SetStatus("已取消模型导出，未写入目标文件"));
         }

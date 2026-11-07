@@ -94,50 +94,78 @@ public static class VoxelBrush
 public static class VoxelEditingTools
 {
     /// <summary>
-    /// 三维整数 Bresenham 直线覆盖的格子集合，两端点都包含，负方向正确
+    /// 两端点都包含的体素直线格子集合，算法与 MagicaVoxel 的 MV_LineBrush 一致：
+    /// 先按 |Δ| 选主轴（y 必须严格更大才夺主，其余情况 z 优先于 x），把主轴换到第 3 槽，
+    /// 从主轴坐标较小的一端逐格推进；另外两轴按线性插值后取最近格 floor(v + 0.5)。
+    /// 主轴每步必进一格，因此相邻格子始终共享一个面，负方向同样正确
     /// </summary>
     /// <param name="from">起点格</param>
     /// <param name="to">终点格</param>
     /// <returns>沿线的格子列表</returns>
     public static IReadOnlyList<VoxelCoord64> LineCells(VoxelCoord64 from, VoxelCoord64 to)
     {
-        var cells = new List<VoxelCoord64>();
-        var x = from.X;
-        var y = from.Y;
-        var z = from.Z;
-        var dx = Math.Abs(to.X - from.X);
-        var dy = Math.Abs(to.Y - from.Y);
-        var dz = Math.Abs(to.Z - from.Z);
-        var stepX = (long)Math.Sign(to.X - from.X);
-        var stepY = (long)Math.Sign(to.Y - from.Y);
-        var stepZ = (long)Math.Sign(to.Z - from.Z);
-        var errorX = (dx << 1) - dy - dz;
-        var errorY = (dy << 1) - dx - dz;
-        var errorZ = (dz << 1) - dx - dy;
-        var steps = Math.Max(dx, Math.Max(dy, dz)) + 1;
-        for (var step = 0; step < steps; step++)
+        var start = new long[] { from.X, from.Y, from.Z };
+        var end = new long[] { to.X, to.Y, to.Z };
+        var delta = new long[]
         {
-            cells.Add(new VoxelCoord64(x, y, z));
-            if (step == steps - 1) break;
-            var allNegative = errorX < 0 && errorY < 0 && errorZ < 0;
-            var advanceX = allNegative || (errorX >= 0 && errorY < 0 && errorZ < 0) ||
-                       (errorX >= 0 && errorY >= 0 && errorZ < 0) ||
-                       (errorX >= 0 && errorY < 0 && errorZ >= 0) ||
-                       (errorX >= 0 && errorY >= 0 && errorZ >= 0);
-            var advanceY = allNegative || (errorX < 0 && errorY >= 0 && errorZ < 0) ||
-                           (errorX >= 0 && errorY >= 0 && errorZ < 0) ||
-                           (errorX < 0 && errorY >= 0 && errorZ >= 0) ||
-                           (errorX >= 0 && errorY >= 0 && errorZ >= 0);
-            var advanceZ = allNegative || (errorX < 0 && errorY < 0 && errorZ >= 0) ||
-                           (errorX >= 0 && errorY < 0 && errorZ >= 0) ||
-                           (errorX < 0 && errorY >= 0 && errorZ >= 0) ||
-                           (errorX >= 0 && errorY >= 0 && errorZ >= 0);
-            if (advanceX) { x += stepX; errorX -= dy + dz; }
-            if (advanceY) { y += stepY; errorY -= dx + dz; }
-            if (advanceZ) { z += stepZ; errorZ -= dx + dy; }
+            end[0] - start[0],
+            end[1] - start[1],
+            end[2] - start[2],
+        };
+
+        var dominant = 0;
+        if (Math.Abs(delta[0]) <= Math.Abs(delta[2])) dominant = 2;
+        if (Math.Abs(delta[dominant]) < Math.Abs(delta[1])) dominant = 1;
+        if (dominant != 2)
+        {
+            SwapAxis(start, dominant, 2);
+            SwapAxis(end, dominant, 2);
+        }
+
+        delta[0] = end[0] - start[0];
+        delta[1] = end[1] - start[1];
+        delta[2] = end[2] - start[2];
+        if (delta[2] < 0)
+        {
+            delta[0] = -delta[0];
+            delta[1] = -delta[1];
+            delta[2] = -delta[2];
+            (start, end) = (end, start);
+        }
+
+        var length = (float)delta[2];
+        var minor0 = (float)start[0];
+        var minor1 = (float)start[1];
+        var step0 = length > 0F ? (float)delta[0] / length : 0F;
+        var step1 = length > 0F ? (float)delta[1] / length : 0F;
+        var first = start[2];
+        var last = end[2];
+        var estimated = last - first + 1;
+        var cells = new List<VoxelCoord64>();
+        if (estimated is > 0 and <= 65536) cells.Capacity = (int)estimated;
+        for (var axis = first; axis <= last; axis++)
+        {
+            var cell = new long[]
+            {
+                (long)MathF.Floor(minor0 + 0.5F),
+                (long)MathF.Floor(minor1 + 0.5F),
+                axis,
+            };
+            if (dominant != 2) SwapAxis(cell, dominant, 2);
+            cells.Add(new VoxelCoord64(cell[0], cell[1], cell[2]));
+            minor0 += step0;
+            minor1 += step1;
         }
 
         return cells;
+    }
+
+    /// <summary>
+    /// 交换三个分量里的两个，用于把主轴换到第 3 槽以及还原输出坐标
+    /// </summary>
+    private static void SwapAxis(long[] values, int left, int right)
+    {
+        (values[left], values[right]) = (values[right], values[left]);
     }
 
     /// <summary>
