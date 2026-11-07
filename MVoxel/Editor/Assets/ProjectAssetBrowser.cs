@@ -152,7 +152,9 @@ internal sealed class ProjectAssetBrowser
     private void DrawToolbar(ProjectHandle? project)
     {
         ImGui.TextColored(ToColor(EditorPalette.Text), BuildBreadcrumb(project));
-        if (project is not null)
+        // 资产编辑空间里底部工具条只负责导航：新建入口只在右键菜单里，
+        // 避免编辑资产时误在资产目录里再建一份
+        if (project is not null && string.IsNullOrEmpty(EditingAssetPath))
         {
             ImGui.SameLine();
             if (ImGui.SmallButton("新建")) _openCreateMenu = true;
@@ -161,7 +163,7 @@ internal sealed class ProjectAssetBrowser
         if (!string.IsNullOrEmpty(_selectedFolder))
         {
             ImGui.SameLine();
-            if (ImGui.SmallButton("上级")) ActivateFolder(ParentFolder(_selectedFolder));
+            if (ImGui.SmallButton("返回上级")) ActivateFolder(ParentFolder(_selectedFolder));
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级资产文件夹");
         }
 
@@ -433,28 +435,25 @@ internal sealed class ProjectAssetBrowser
             var max = ImGui.GetItemRectMax();
             var hovered = ImGui.IsItemHovered();
             if (hovered) ImGui.SetTooltip(DescribeAssetAction(entry));
-            if (selected || hovered)
-            {
-                var background = selected ? EditorPalette.AccentSoft : EditorPalette.PanelHeader;
-                draw.AddRectFilled(min, max, ToPackedColor(background), 4F);
-                if (selected) draw.AddRect(min, max, ToPackedColor(EditorPalette.Accent), 4F, ImDrawFlags.None, 1F);
-            }
+            // 每个资产都铺一层卡片底，鼠标悬停与选中再叠加高亮，列表看起来更有层次
+            var cardBackground = selected ? EditorPalette.AccentSoft : EditorPalette.PanelHeader;
+            draw.AddRectFilled(min, max, ToPackedColor(Color.FromArgb(selected || hovered ? 235 : 165,
+                cardBackground.R, cardBackground.G, cardBackground.B)), 5F);
+            if (selected) draw.AddRect(min, max, ToPackedColor(EditorPalette.Accent), 5F, ImDrawFlags.None, 1.2F);
+            else if (hovered) draw.AddRect(min, max, ToPackedColor(EditorPalette.AccentSoft), 5F, ImDrawFlags.None, 1F);
 
-            var iconSize = Math.Min(_tileSize, tileWidth - 24F);
-            var iconMin = new Vector2(min.X + (tileWidth - iconSize) / 2F, min.Y + 7F);
-            var thumbnail = entry.Kind == ProjectAssetKind.VoxelModel
-                ? Thumbnails?.GetOrRender(project, entry.RelativePath)
-                : null;
-            if (thumbnail is nint textureId)
-            {
-                draw.AddImage(textureId, iconMin, iconMin + new Vector2(iconSize, iconSize));
-                draw.AddRect(iconMin, iconMin + new Vector2(iconSize, iconSize),
-                    ToPackedColor(Color.FromArgb(220, 12, 18, 25)), 3F, ImDrawFlags.None, 1F);
-            }
-            else
-            {
-                AssetIconPainter.Draw(draw, entry.Kind, iconMin, iconSize, selected);
-            }
+            var iconSize = Math.Min(_tileSize, tileWidth - 18F);
+            var iconMin = new Vector2(min.X + (tileWidth - iconSize) / 2F, min.Y + 8F);
+            // 图标底板用类型主色淡淡的铺一层，不同类型的资产一眼可分
+            var accent = AssetIconPainter.KindColor(entry.Kind, selected);
+            draw.AddRectFilled(iconMin - new Vector2(3F, 3F), iconMin + new Vector2(iconSize + 3F, iconSize + 3F),
+                ToPackedColor(Color.FromArgb(46, accent.R, accent.G, accent.B)), 5F);
+            // 类型色条：卡片顶部一条细横线，快速区分文件夹与各类资产
+            draw.AddRectFilled(new Vector2(min.X + 6F, min.Y + 3F), new Vector2(max.X - 6F, min.Y + 5F),
+                ToPackedColor(Color.FromArgb(210, accent.R, accent.G, accent.B)), 1F);
+            // 目前统一用按类型的程序化图标：CPU 缩略图上传的纹理是空白块，
+            // 画出来反而看不出资产类型；等缩略图链路修好再切回贴图预览
+            AssetIconPainter.Draw(draw, entry.Kind, iconMin, iconSize, selected);
 
             DrawCenteredText(draw, entry.DisplayName, min.X, tileWidth, iconMin.Y + iconSize + 4F, EditorPalette.Text);
             var editing = IsEditingAsset(entry.RelativePath);
@@ -708,9 +707,26 @@ internal sealed class ProjectAssetBrowser
             : ProjectAssetCatalog.Search(project, _searchText, _searchAll ? null : _selectedFolder);
         return source
             .Where(entry => _filter is null || entry.Kind == _filter)
+            // 附属文件（资源元数据、备份、临时与日志）不是资产，不应出现在浏览列表里
+            .Where(entry => !IsSidecarFile(entry.RelativePath))
             .OrderByDescending(entry => entry.IsFolder)
             .ThenBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// 判断是否为资产附属文件：元数据、备份、临时文件与隐藏文件都不进浏览列表
+    /// </summary>
+    /// <param name="relativePath">相对 Assets 的路径</param>
+    /// <returns>属于附属文件时返回 true</returns>
+    private static bool IsSidecarFile(string relativePath)
+    {
+        var name = Path.GetFileName(relativePath.Replace('\\', '/'));
+        if (name.Length == 0 || name.StartsWith('.')) return true;
+        return name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) ||
+               name.EndsWith(".bak", StringComparison.OrdinalIgnoreCase) ||
+               name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
+               name.EndsWith(".journal", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

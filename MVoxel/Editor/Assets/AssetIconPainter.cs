@@ -126,6 +126,14 @@ internal static class AssetIconPainter
         _ => selected ? EditorPalette.Icon : Color.FromArgb(255, 143, 157, 177),
     };
 
+    /// <summary>
+    /// 取得某类资产的类型主色，供卡片底板与色条复用同一套配色
+    /// </summary>
+    /// <param name="kind">资产类型</param>
+    /// <param name="selected">是否处于选中态</param>
+    /// <returns>类型主色</returns>
+    internal static Color KindColor(ProjectAssetKind kind, bool selected) => IconColor(kind, selected);
+
     private static Vector4 ToColor(Color color) => new(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F);
     private static uint ToPackedColor(Color color) => ImGui.ColorConvertFloat4ToU32(ToColor(color));
 }
