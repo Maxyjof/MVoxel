@@ -5081,6 +5081,8 @@ DockId=0x6A3C3007,0
             {
                 _voxelEditTargetId = editing ? null : selectedObject.Id;
                 _activeTool = editing ? EditorTool.Pick : EditorTool.Draw;
+                // 松手后的工作集重算还没完成就先等它完成，保证进入绘制模式时几何是最终状态
+                if (!editing) EnsureSceneSettled();
                 if (!editing) MarkComponentEditingOwner(selectedObject.Id);
                 // 进入绘制模式时收起变换手柄；退出时恢复上一次的变换工具。
                 // 主选中对象在这一进一出之间没有变化，SyncToolModeWithSelection 不会重新推导，

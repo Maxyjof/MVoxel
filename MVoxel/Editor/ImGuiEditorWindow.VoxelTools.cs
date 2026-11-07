@@ -1996,11 +1996,21 @@ internal sealed partial class ImGuiEditorWindow
             pipeline.SetEditRegion(strokeEditing, _strokeEditRegionMinimum, _strokeEditRegionMaximum);
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
+            // 松手窗口内先确认实例显示是否可用：不可用就只能退回整份同步
+            if (_sceneSettleDisplay && !_sceneSettleDiagLogged)
+            {
+                _sceneSettleDiagLogged = true;
+                MVoxelLog.Info($"松手窗口实例显示：显示几何={showGeometry}，实例对象={_dragInstanceObjectId}，" +
+                    $"静态世界={_dragInstanceStaticWorld is not null}，对象世界={_dragInstanceObjectWorld is not null}");
+            }
+
+            var settleApplied = TryApplySceneSettle(pipeline, settings.SceneLod);
             // 拖动对象实例：静态世界在拖动开始时已算好并排除被拖对象，
-            // 每步只改实例平移；不支持 Ray Query 的设备仍用原来的整份合成路径
+            // 每步只改实例平移；松手后到新工作集建好之前继续沿用这套显示
             var dragTargetId = _sceneGizmoGridDragObjectId;
-            var dragInstance = showGeometry && dragTargetId is not null &&
-                _dragInstanceObjectId == dragTargetId &&
+            var instanceId = dragTargetId ?? (_sceneSettleDisplay ? _dragInstanceObjectId : StableId.Empty);
+            var dragInstance = !settleApplied && showGeometry && instanceId != StableId.Empty &&
+                _dragInstanceObjectId == instanceId &&
                 _dragInstanceStaticWorld is not null && _dragInstanceObjectWorld is not null &&
                 pipeline.CanUseDragPreview(_dragInstanceObjectWorld.OccupiedVoxelCount);
             var sceneWorld = dragInstance
@@ -2030,15 +2040,18 @@ internal sealed partial class ImGuiEditorWindow
             }
             else
             {
-                pipeline.ClearDragPreview();
-                pipeline.SyncWorld(sceneWorld is not null ? GetSceneInspectionWorld(sceneWorld) : _emptyScenePreviewWorld,
-                    0, settings.SceneLod,
-                    new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                    greedyMerge: false,
-                    includeInterior: IsCameraInsideOccupiedVoxel(camera),
-                    chunkFilter: sceneChunkFilter,
-                    visibilitySignature: sceneVisibilitySignature,
-                    modelLod: sceneModelLod);
+                if (!settleApplied)
+                {
+                    pipeline.ClearDragPreview();
+                    pipeline.SyncWorld(sceneWorld is not null ? GetSceneInspectionWorld(sceneWorld) : _emptyScenePreviewWorld,
+                        0, settings.SceneLod,
+                        new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
+                        greedyMerge: false,
+                        includeInterior: IsCameraInsideOccupiedVoxel(camera),
+                        chunkFilter: sceneChunkFilter,
+                        visibilitySignature: sceneVisibilitySignature,
+                        modelLod: sceneModelLod);
+                }
             }
             if (!pipeline.IsAvailable)
             {

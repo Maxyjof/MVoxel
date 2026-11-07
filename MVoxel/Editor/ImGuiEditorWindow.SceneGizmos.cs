@@ -1,8 +1,11 @@
 using ImGuiNET;
 using MVoxel.Core;
+using MVoxel.Editor.Rendering.Vulkan;
+using MVoxel.Rendering;
 using MVoxel.Scene;
 using MVoxel.Voxels;
 using OpenTK.Mathematics;
+using System.Threading.Tasks;
 using Color = System.Drawing.Color;
 using Quaternion = System.Numerics.Quaternion;
 using Vector2 = System.Numerics.Vector2;
@@ -1414,10 +1417,24 @@ internal sealed partial class ImGuiEditorWindow
         _dragInstanceObjectId = StableId.Empty;
         _dragInstanceStaticWorld = null;
         _dragInstanceObjectWorld = null;
-        if (_sceneDocument is null || _scenePipeline?.SupportsDragPreviewInstance != true) return;
-        if (!_objectVoxels.TryGetWorld(sceneObject.Id, out var source)) return;
+        if (_sceneDocument is null || _scenePipeline?.SupportsDragPreviewInstance != true)
+        {
+            MVoxelLog.Info($"拖动实例跳过：场景为空或管线不支持实例（管线为空={_scenePipeline is null}）");
+            return;
+        }
+
+        if (!_objectVoxels.TryGetWorld(sceneObject.Id, out var source))
+        {
+            MVoxelLog.Info("拖动实例跳过：对象没有体素世界");
+            return;
+        }
+
         // 对象放不进加速结构时退回整份世界合成，避免拖动预览反而让对象消失
-        if (!_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount)) return;
+        if (!_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount))
+        {
+            MVoxelLog.Info($"拖动实例跳过：加速结构容量不足（对象 {source.OccupiedVoxelCount:N0} 格）");
+            return;
+        }
         RefreshRuntimeMaterialTable();
         // 只缓存最贵的“对象世界副本”：静态世界取决于组合世界版本，每次拖动后都会变，
         // 但它通常很小（单对象场景下为空），每次重新合成即可
@@ -1533,16 +1550,24 @@ internal sealed partial class ImGuiEditorWindow
         var startTransform = _sceneGizmoGridDragStartTransform;
         var active = _sceneGizmoGridDragActive;
         _sceneGizmoGridDragActive = false;
-        _sceneGizmoGridDragCells = VoxelCoord64.Zero;
-        // 先结束合成位移与拖动实例，之后的渲染回到真实体素位置
+        // 结束合成位移；拖动实例先留着，等后台工作集建好再换成正式世界
         _sceneGizmoGridDragObjectId = null;
-        _dragInstanceStaticWorld = null;
-        _dragInstanceObjectWorld = null;
-        _dragInstanceObjectId = StableId.Empty;
-        if (!active) return;
+        if (!active)
+        {
+            _dragInstanceStaticWorld = null;
+            _dragInstanceObjectWorld = null;
+            _dragInstanceObjectId = StableId.Empty;
+            _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+            return;
+        }
+
         if (cells == VoxelCoord64.Zero)
         {
             // 没有移动：只把预览用的变换还原，体素从未改动
+            _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+            _dragInstanceStaticWorld = null;
+            _dragInstanceObjectWorld = null;
+            _dragInstanceObjectId = StableId.Empty;
             sceneObject.Transform.SetGrid(startTransform);
             UpdateTransformMarker(sceneObject);
             InvalidateComposedWorldCache();
@@ -1554,8 +1579,91 @@ internal sealed partial class ImGuiEditorWindow
         UpdateTransformMarker(sceneObject);
         var moveStart = watch.Elapsed.TotalMilliseconds;
         MoveModelObjectByGrid(sceneObject, cells);
+        StartSceneSettle();
         MVoxelLog.Info($"拖动结束提交：总计 {watch.Elapsed.TotalMilliseconds:0.0}ms，" +
             $"平移体素 {watch.Elapsed.TotalMilliseconds - moveStart:0.0}ms，位移 {cells.X},{cells.Y},{cells.Z}");
+    }
+
+    // 松手后的工作集切换：后台建好新工作集，期间继续用拖动实例显示，建好后只上传一次
+    private Task<(VoxelGpuWorkset Workset, string Error)>? _sceneSettleBuild;
+    private VoxelWorld? _sceneSettleWorld;
+    private bool _sceneSettlePending;
+    private bool _sceneSettleDisplay;
+    private bool _sceneSettleDiagLogged;
+
+    /// <summary>
+    /// 松手后启动后台工作集构建：固定世界与参数，避免前后帧请求不一致导致再次重建
+    /// </summary>
+    private void StartSceneSettle()
+    {
+        _sceneSettleBuild = null;
+        _sceneSettleWorld = null;
+        _sceneSettleDiagLogged = false;
+        if (_scenePipeline is null) { _sceneSettleDisplay = false; return; }
+        var world = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true));
+        var lod = CurrentSceneRenderSettings.CreateScenePreview().SceneLod;
+        _sceneSettleWorld = world;
+        _sceneSettlePending = true;
+        _sceneSettleDisplay = true;
+        _sceneSettleBuild = Task.Run(() =>
+        {
+            try
+            {
+                return (VoxelGpuWorkset.Build(world, 0, lod, null, false, false, null, null, out _), string.Empty);
+            }
+            catch (Exception exception)
+            {
+                return (VoxelGpuWorkset.Empty, exception.ToString());
+            }
+        });
+        MVoxelLog.Info("松手后已在后台准备新工作集，期间继续显示拖动实例");
+    }
+
+    /// <summary>
+    /// 后台工作集就绪时只上传一次，并结束拖动实例显示
+    /// </summary>
+    /// <param name="pipeline">场景视口管线</param>
+    /// <param name="lod">场景 LOD 配置</param>
+    /// <returns>完成切换返回 true</returns>
+    private bool TryApplySceneSettle(VulkanVoxelRenderPipeline pipeline, VoxelLodSettings? lod)
+    {
+        if (!_sceneSettlePending || _sceneSettleBuild is not { IsCompleted: true }) return false;
+        var result = _sceneSettleBuild.Result;
+        var world = _sceneSettleWorld;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        pipeline.ClearDragPreview();
+        if (result.Error.Length == 0 && world is not null)
+        {
+            pipeline.SyncWorld(world, 0, lod, null, greedyMerge: false, includeInterior: false,
+                prebuilt: result.Workset);
+            MVoxelLog.Info($"松手后切换工作集：总计 {watch.Elapsed.TotalMilliseconds:0.0}ms，{result.Workset.Cells.Count:N0} 格");
+        }
+        else if (result.Error.Length > 0)
+        {
+            MVoxelLog.Warn($"松手后后台工作集构建失败，回退整份同步：{result.Error}");
+        }
+
+        _sceneSettleBuild = null;
+        _sceneSettlePending = false;
+        _sceneSettleDisplay = false;
+        _dragInstanceStaticWorld = null;
+        _dragInstanceObjectWorld = null;
+        _dragInstanceObjectId = StableId.Empty;
+        _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+        return true;
+    }
+
+    /// <summary>
+    /// 进入绘制模式前强制等待松手后的重算完成
+    /// </summary>
+    private void EnsureSceneSettled()
+    {
+        if (!_sceneSettlePending || _sceneSettleBuild is null) return;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        _sceneSettleBuild.Wait();
+        if (_scenePipeline is not null)
+            TryApplySceneSettle(_scenePipeline, CurrentSceneRenderSettings.CreateScenePreview().SceneLod);
+        MVoxelLog.Info($"进入绘制模式前等待松手重算：{watch.Elapsed.TotalMilliseconds:0.0}ms");
     }
 
     private void EndSceneGizmoDrag()

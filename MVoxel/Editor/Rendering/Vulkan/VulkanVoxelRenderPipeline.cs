@@ -677,7 +677,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (!SupportsDragPreviewInstance || voxelCount <= 0) return false;
         var capacity = _shadowAcceleration?.MaxAccelerationVoxels ??
             VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels;
-        return voxelCount + _sceneOrderedCells.Count <= capacity;
+        // 拖动时静态世界会排除被拖对象，所以占用是“对象格数 + 其余对象格数”，
+        // 约等于 max(整份工作集, 对象格数)；直接按整份 + 对象相加会把单对象大模型误判为放不下
+        var staticCount = Math.Max(0, _sceneOrderedCells.Count - voxelCount);
+        return voxelCount + staticCount <= capacity;
     }
 
     /// <summary>
