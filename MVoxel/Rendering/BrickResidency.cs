@@ -17,6 +17,8 @@ public sealed class BrickResidency
     private ChunkSlot[] _slots = [];
     private int[] _outerParent = [];
     private int _emissive;
+    private bool _greedyMerge = true;
+    private bool _includeInterior;
 
     private sealed class ChunkSlot
     {
@@ -114,10 +116,14 @@ public sealed class BrickResidency
     /// <summary>
     /// 全量重建驻留
     /// </summary>
-    public static BrickResidency BuildFull(VoxelWorld world)
+    public static BrickResidency BuildFull(VoxelWorld world, bool greedyMerge = true, bool includeInterior = false)
     {
         ArgumentNullException.ThrowIfNull(world);
-        var residency = new BrickResidency();
+        var residency = new BrickResidency
+        {
+            _greedyMerge = greedyMerge,
+            _includeInterior = includeInterior,
+        };
         if (!world.TryGetBounds(out var minimum, out var maximum))
         {
             residency._cells = [];
@@ -145,7 +151,8 @@ public sealed class BrickResidency
             index =>
             {
                 var (coordinate, chunk) = chunks[index];
-                var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, minimum);
+                var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, minimum,
+                    greedyMerge, includeInterior);
                 var inner = VoxelBrickWorkset.BuildInnerBvh(cells);
                 perChunk[index] = new ChunkData(coordinate, cells, inner.Nodes, inner.Order);
             });
@@ -234,13 +241,19 @@ public sealed class BrickResidency
     /// 尝试按脏区块增量更新；结构变化、脏区块未知或容量溢出时返回 false，调用方回退全量。
     /// 可见性会查询六个相邻体素，所以还必须同步重建相邻区块的边界格片。
     /// </summary>
-    public bool TryUpdate(VoxelWorld world, IReadOnlySet<ChunkCoord64> dirty, out UploadPlan plan)
+    public bool TryUpdate(VoxelWorld world, IReadOnlySet<ChunkCoord64> dirty, out UploadPlan plan,
+        bool greedyMerge = true, bool includeInterior = false)
     {
         plan = new UploadPlan();
         LastRejectReason = string.Empty;
         if (world.StructureStamp != BuiltStructureStamp)
         {
             LastRejectReason = $"structure {world.StructureStamp}!={BuiltStructureStamp}";
+            return false;
+        }
+        if (greedyMerge != _greedyMerge || includeInterior != _includeInterior)
+        {
+            LastRejectReason = "workset mode changed";
             return false;
         }
 
@@ -285,7 +298,8 @@ public sealed class BrickResidency
             }
 
             var slot = _slots[slotIndex];
-            var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, Anchor);
+            var cells = VoxelBrickWorkset.BuildChunkCells(world, chunk, coordinate, Anchor,
+                _greedyMerge, _includeInterior);
             var inner = VoxelBrickWorkset.BuildInnerBvh(cells);
             if (cells.Length > slot.CellCapacity || inner.Nodes.Count > slot.NodeCapacity)
             {

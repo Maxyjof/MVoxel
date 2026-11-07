@@ -573,7 +573,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭。
         // 区块级可见性过滤时改走可见区块常驻池，因此不再受整份世界格数上限约束
         using var syncPhase = StartupTimeline.Begin("同步工作集");
-        var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 && greedyMerge &&
+        var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
             lodSignature == 0 && !_usingHardwareRayTracing &&
             (chunkFilter is not null || world.OccupiedVoxelCount <= MaxFullWorksetCells);
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
@@ -590,7 +590,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             {
                 _brickPool = null;
                 _poolSourceWorld = null;
-                SyncBrick(world, lodSignature, maximumCells);
+                SyncBrick(world, lodSignature, maximumCells, greedyMerge, includeInterior);
             }
 
             UploadEmissiveFaces();
@@ -7029,7 +7029,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 砖路径同步：优先按脏区块增量更新驻留并只上传脏区间；
     /// 首次、结构变化、容量溢出或脏区块超阈值时全量重建驻留并整体上传
     /// </summary>
-    private void SyncBrick(VoxelWorld world, long lodSignature, int maximumCells)
+    private void SyncBrick(VoxelWorld world, long lodSignature, int maximumCells,
+        bool greedyMerge, bool includeInterior)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var hasDirty = world.TryTakeDirty(out var dirty);
@@ -7038,14 +7039,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (ReferenceEquals(_lastSyncSource, world) &&
             _brickResidency is { IsEmpty: false } && hasDirty && dirty.Count <= MaxIncrementalChunks)
         {
-            incremental = _brickResidency.TryUpdate(world, dirty, out plan);
+            incremental = _brickResidency.TryUpdate(world, dirty, out plan, greedyMerge, includeInterior);
         }
 
         BrickResidency residency;
         if (!incremental)
         {
             LastBrickRejectReason = _brickResidency?.LastRejectReason ?? "first/no-residency";
-            residency = _brickResidency = BrickResidency.BuildFull(world);
+            residency = _brickResidency = BrickResidency.BuildFull(world, greedyMerge, includeInterior);
             plan = null;
         }
         else
@@ -7095,8 +7096,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _lastSyncSource = world;
         _worksetMaximumCells = maximumCells;
         _worksetLodSignature = lodSignature;
-        _worksetGreedyMerge = true;
-        _worksetIncludesInterior = false;
+        _worksetGreedyMerge = greedyMerge;
+        _worksetIncludesInterior = includeInterior;
         _worksetVisibilitySignature = 0;
         SyncTotalCells = residency.OccupiedCount;
         ResetAccumulation();

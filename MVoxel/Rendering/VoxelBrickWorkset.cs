@@ -259,7 +259,7 @@ public sealed class VoxelBrickWorkset
     /// 构建单个区块的合并格片（坐标相对锚点，贪心合并，稳定序）
     /// </summary>
     internal static VoxelGpuCell[] BuildChunkCells(VoxelWorld world, SparseVoxelChunk chunk, ChunkCoord64 coordinate,
-        VoxelCoord64 anchor)
+        VoxelCoord64 anchor, bool greedyMerge = true, bool includeInterior = false)
     {
         var pairs = new (int Key, VoxelValue Value)[chunk.OccupiedCount];
         var pairIndex = 0;
@@ -269,7 +269,22 @@ public sealed class VoxelBrickWorkset
         }
 
         Array.Sort(pairs, static (a, b) => a.Key.CompareTo(b.Key));
-        pairs = VoxelGpuWorkset.CullFullyOccludedPairs(world, pairs, coordinate, preserveUniformSolids: true);
+        if (!includeInterior)
+            pairs = VoxelGpuWorkset.CullFullyOccludedPairs(world, pairs, coordinate, preserveUniformSolids: greedyMerge);
+        if (!greedyMerge)
+        {
+            var raw = new VoxelGpuCell[pairs.Length];
+            var baseX = checked(coordinate.X * VoxelWorld.ChunkSize - anchor.X);
+            var baseY = checked(coordinate.Y * VoxelWorld.ChunkSize - anchor.Y);
+            var baseZ = checked(coordinate.Z * VoxelWorld.ChunkSize - anchor.Z);
+            for (var index = 0; index < pairs.Length; index++)
+            {
+                var local = SparseVoxelChunk.FromIndex(pairs[index].Key);
+                raw[index] = new VoxelGpuCell(checked((int)(baseX + local.X)),
+                    checked((int)(baseY + local.Y)), checked((int)(baseZ + local.Z)), pairs[index].Value);
+            }
+            return raw;
+        }
         var merged = new List<VoxelGpuCell>(pairs.Length);
         VoxelGpuWorkset.GreedyMergeChunk(pairs, coordinate, anchor, merged);
         return merged.ToArray();

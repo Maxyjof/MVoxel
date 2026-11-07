@@ -271,14 +271,22 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         AddContext(_world, uint.MaxValue, false, null);
-        foreach (var entry in _composedWorlds)
+        var signatureBeforeEdit = RenderStateSignature();
+        for (var index = _composedWorlds.Count - 1; index >= 0; index--)
         {
+            var entry = _composedWorlds[index];
             if (!ReferenceEquals(entry.Scene, _sceneDocument)) return false;
+            var expectedSignature = signatureBeforeEdit ^ (entry.SceneVisibility ? long.MinValue : 0);
+            if (entry.Signature != expectedSignature)
+            {
+                _composedWorlds.RemoveAt(index);
+                continue;
+            }
             AddContext(entry.World, entry.Mask, entry.SceneVisibility, entry.ChunkOwners);
         }
 
         var updates = new List<(uint Mask, bool SceneVisibility, VoxelCoord64 Coordinate,
-            bool HasValue, VoxelValue Value, StableId Owner)>();
+            VoxelValue Value, StableId Owner)>();
         foreach (var context in contexts)
         foreach (var coordinate in changedCells)
         {
@@ -286,7 +294,7 @@ internal sealed partial class ImGuiEditorWindow
                 context.SceneVisibility, coordinate, out var owner, out var value);
             // 空结果会改变区块结构，先让全量合成处理，避免缓存世界部分更新后再回退
             if (!hasValue) return false;
-            updates.Add((context.Mask, context.SceneVisibility, coordinate, true,
+            updates.Add((context.Mask, context.SceneVisibility, coordinate,
                 RemapRuntimeMaterial(owner, value), owner));
         }
 
