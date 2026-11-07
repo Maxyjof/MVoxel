@@ -831,7 +831,17 @@ internal partial class ImGuiEditorWindow
             Directory.CreateDirectory(exportDirectory);
             var target = Path.Combine(exportDirectory, UniqueAssetFileName(exportDirectory,
                 Path.GetFileNameWithoutExtension(absolute), ".vox"));
-            VoxFormat.Write(target, world);
+            // 带材质导出：读回资产内的材质元数据反向映射成 MATL，
+            // 否则金属/镜面材质在导出后会被当成普通漫反射
+            var materials = VoxMaterialExchange.BuildExportMaterials(LargeWorldFormat.ReadMaterials(absolute));
+            if (materials.Count > 0)
+            {
+                VoxFormat.WriteScene(target, [new VoxFormat.VoxScenePart("模型", world, VoxelCoord64.Zero)], materials);
+            }
+            else
+            {
+                VoxFormat.Write(target, world);
+            }
             SetStatus($"已导出 .vox：Exports/{Path.GetFileName(target)}（{world.OccupiedVoxelCount:N0} 体素）");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)

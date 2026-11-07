@@ -297,6 +297,30 @@ internal sealed partial class ImGuiEditorWindow
         return new { path, definitions, bindings };
     }
 
+    /// <summary>把项目内体素资产导出为 .vox，包含 MATL 材质，返回导出结果与输出路径</summary>
+    /// <param name="payload">参数：path 为相对 Assets 的路径</param>
+    /// <returns>导出状态与 Exports 下的相对路径</returns>
+    private object ExportAssetVox(JsonElement payload) => RunOnUi(() =>
+    {
+        var project = _project ?? throw new InvalidOperationException("请先打开项目");
+        var path = (ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))
+            .Replace('\\', '/').Trim('/');
+        var exportDirectory = Path.Combine(project.AssetsPath, "Exports");
+        ExportVoxAsset(path);
+        var exported = Directory.Exists(exportDirectory)
+            ? Directory.EnumerateFiles(exportDirectory, "*.vox")
+                .Select(file => new FileInfo(file))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .FirstOrDefault()
+            : null;
+        return new
+        {
+            exported = exported is not null,
+            path = exported is null ? string.Empty : "Exports/" + exported.Name,
+            status = _statusText,
+        };
+    });
+
     /// <summary>把当前编辑的资产另存为副本并切换编辑副本</summary>
     /// <returns>原路径、新路径与状态</returns>
     private object SaveAssetStageCopyFromAutomation() => RunOnUi(() =>

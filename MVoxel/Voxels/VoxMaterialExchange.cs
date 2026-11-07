@@ -67,6 +67,37 @@ public static class VoxMaterialExchange
         return new VoxExportPlan(summary, path => VoxFormat.WriteSceneFiles(path, convertedParts, converted));
     }
 
+    /// <summary>
+    /// 把项目材质元数据反向映射成 .vox 的 MATL 列表：导出时保留金属、玻璃与发光参数，
+    /// 否则镜面材质在导出后会被 MagicaVoxel 当成普通漫反射
+    /// </summary>
+    /// <param name="metadata">体素资产内的材质元数据</param>
+    /// <returns>按槽号排序的 MATL 列表；没有可用材质时为空</returns>
+    public static IReadOnlyList<VoxMaterial> BuildExportMaterials(MaterialExchangeMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        var result = new List<VoxMaterial>(metadata.Bindings.Count);
+        foreach (var (slot, id) in metadata.Bindings.OrderBy(pair => pair.Key))
+        {
+            if (slot == 0 || !metadata.Definitions.TryGetValue(id, out var asset)) continue;
+            var metallic = asset.Metallic.GetValueOrDefault();
+            var emissive = asset.EmissiveScale.GetValueOrDefault();
+            var isGlass = asset.Ior.HasValue || asset.Opacity.HasValue;
+            var type = emissive > 0F ? "_emit" : isGlass ? "_glass" : metallic > 0F ? "_metal" : "_diffuse";
+            var weight = type == "_metal" ? Math.Clamp(metallic, 0F, 1F) : 1F;
+            var roughness = asset.Roughness ?? -1F;
+            var specular = asset.Specular ?? -1F;
+            var ior = isGlass ? (asset.Ior ?? -1F) : -1F;
+            var transmission = asset.Opacity.HasValue ? Math.Clamp(1F - asset.Opacity.Value, 0F, 1F) : -1F;
+            var emissiveValue = emissive > 0F ? emissive : -1F;
+            result.Add(new VoxMaterial(slot, type, weight, roughness, specular, ior, -1F, -1F,
+                metallic > 0F ? metallic : -1F, transmission, emissiveValue,
+                isGlass ? (asset.Ior ?? -1F) : -1F));
+        }
+
+        return result;
+    }
+
     private static VoxelWorld RemapWorld(VoxelWorld source, int part,
         IReadOnlyDictionary<(int Part, ushort Slot), ushort> remap)
     {
