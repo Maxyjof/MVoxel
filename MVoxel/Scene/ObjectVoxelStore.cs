@@ -117,6 +117,44 @@ internal sealed class ObjectVoxelStore
         new(name, GetOrCreate(id), cells, value, onApplied);
 
     /// <summary>
+    /// 对单个对象生成可撤销的整份平移：直接复制并位移区块，
+    /// 不再构造逐格差异表（29 万格时会额外付出上百毫秒）
+    /// </summary>
+    /// <param name="id">对象标识</param>
+    /// <param name="name">命令名</param>
+    /// <param name="delta">整格平移量</param>
+    /// <param name="onApplied">应用与撤回后的回调</param>
+    /// <returns>可撤销命令</returns>
+    internal IEditorCommand CreateTranslation(StableId id, string name, VoxelCoord64 delta,
+        Action<bool>? onApplied = null)
+    {
+        if (delta == VoxelCoord64.Zero)
+            throw new ArgumentOutOfRangeException(nameof(delta), "平移量不能为零");
+        return new VoxelTranslationCommand(this, id, name, GetOrCreate(id), delta, onApplied);
+    }
+
+    /// <summary>
+    /// 整份平移命令：以拖动前的世界为基准，执行与撤回都各自生成一份平移副本
+    /// </summary>
+    private sealed class VoxelTranslationCommand(ObjectVoxelStore store, StableId id, string name,
+        VoxelWorld original, VoxelCoord64 delta, Action<bool>? onApplied) : IEditorCommand
+    {
+        public string Name => name;
+
+        public void Execute()
+        {
+            store.AssignWorld(id, original.CloneShifted(delta.X, delta.Y, delta.Z));
+            onApplied?.Invoke(true);
+        }
+
+        public void Undo()
+        {
+            store.AssignWorld(id, original.CloneShifted(-delta.X, -delta.Y, -delta.Z));
+            onApplied?.Invoke(false);
+        }
+    }
+
+    /// <summary>
     /// 对单个对象生成可撤销的体素坐标变换，其他对象的数据不会被修改
     /// </summary>
     internal VoxelStrokeCommand CreateTransform(StableId id, string name,

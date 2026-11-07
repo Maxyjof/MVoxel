@@ -63,7 +63,13 @@ internal sealed partial class ImGuiEditorWindow
     private bool _gizmoHoverScale;
 
     /// <summary>网格对象拖动预览：起始世界副本、起始格变换与累计格位移</summary>
-    private VoxelWorld? _sceneGizmoGridDragStartWorld;
+    private bool _sceneGizmoGridDragActive;
+    // 拖动实例世界缓存：键为对象、体素世界版本、组合世界版本与运行时材质表指纹
+    private StableId _dragInstanceCacheObjectId;
+    private VoxelWorld? _dragInstanceCacheSource;
+    private int _dragInstanceCacheSourceVersion = -1;
+    private string _dragInstanceCacheMaterialSignature = string.Empty;
+    private VoxelWorld? _dragInstanceCacheObjectWorld;
     private GridTransform _sceneGizmoGridDragStartTransform;
     private VoxelCoord64 _sceneGizmoGridDragCells;
     // 拖动中的对象：合成渲染世界时按 _sceneGizmoGridDragCells 给它叠加位移
@@ -1167,7 +1173,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             return;
         }
-        if (selected.Transform.Mode == TransformMode.Grid && _sceneGizmoGridDragStartWorld is not null)
+        if (selected.Transform.Mode == TransformMode.Grid && _sceneGizmoGridDragActive)
         {
             // 网格对象拖动时实时预览：直接把对象体素副本按整格位移摆到位，松手时才记一次撤销
             UpdateGridDragPreview(selected, mouse, origin, size, camera);
@@ -1252,13 +1258,18 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="sceneObject">目标对象</param>
     private void BeginGridDragPreview(SceneObject sceneObject)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
         _sceneGizmoGridDragStartTransform = sceneObject.Transform.Grid;
-        _sceneGizmoGridDragStartWorld = sceneObject.Transform.Mode == TransformMode.Grid
-            ? _objectVoxels.GetOrCreate(sceneObject.Id).Clone()
-            : null;
+        // 只记状态不复制体素：拖动期间对象世界不会被修改，松手时才真正平移；
+        // 这里克隆 29 万体素会在按下的瞬间产生明显卡顿
+        _sceneGizmoGridDragActive = sceneObject.Transform.Mode == TransformMode.Grid;
         _sceneGizmoGridDragObjectId = sceneObject.Transform.Mode == TransformMode.Grid ? sceneObject.Id : null;
+        var prepareStart = watch.Elapsed.TotalMilliseconds;
         PrepareGridDragInstanceWorlds(sceneObject);
+        MVoxelLog.Info($"拖动开始准备：总计 {watch.Elapsed.TotalMilliseconds:0.0}ms，" +
+            $"实例世界 {watch.Elapsed.TotalMilliseconds - prepareStart:0.0}ms，" +
+            $"体素 {_dragInstanceObjectWorld?.OccupiedVoxelCount ?? 0:N0}");
     }
 
     /// <summary>
@@ -1275,22 +1286,64 @@ internal sealed partial class ImGuiEditorWindow
         // 对象放不进加速结构时退回整份世界合成，避免拖动预览反而让对象消失
         if (!_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount)) return;
         RefreshRuntimeMaterialTable();
-        // 对象世界保留世界坐标并套用与场景工作集相同的运行时材质重映射，
-        // 这样硬件实例命中的颜色和材质槽与主场景一致
-        var objectWorld = new VoxelWorld();
-        var writer = objectWorld.CreateBulkWriter();
-        foreach (var (coordinate, value) in source.EnumerateOccupied())
-            writer.Set(coordinate, RemapRuntimeMaterial(sceneObject.Id, value));
-        _dragInstanceObjectWorld = objectWorld;
+        // 只缓存最贵的“对象世界副本”：静态世界取决于组合世界版本，每次拖动后都会变，
+        // 但它通常很小（单对象场景下为空），每次重新合成即可
+        var objectCacheHit = _dragInstanceCacheObjectWorld is not null &&
+            _dragInstanceCacheObjectId == sceneObject.Id &&
+            ReferenceEquals(_dragInstanceCacheSource, source) &&
+            _dragInstanceCacheSourceVersion == source.ContentVersion &&
+            string.Equals(_dragInstanceCacheMaterialSignature, _runtimeMaterialSignature, StringComparison.Ordinal);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        if (objectCacheHit)
+        {
+            _dragInstanceObjectWorld = _dragInstanceCacheObjectWorld;
+        }
+        else
+        {
+            // 对象世界保留世界坐标并套用与场景工作集相同的运行时材质重映射，
+            // 这样硬件实例命中的颜色和材质槽与主场景一致；
+            // 没有实际重映射时直接复用存储里的世界，省掉 29 万格的整份复制
+            var needsRemap = false;
+            foreach (var (_, value) in source.EnumerateOccupied())
+            {
+                if (!RemapRuntimeMaterial(sceneObject.Id, value).Equals(value))
+                {
+                    needsRemap = true;
+                    break;
+                }
+            }
+
+            if (!needsRemap)
+            {
+                _dragInstanceObjectWorld = source;
+            }
+            else
+            {
+                // 按区块整体重映射，避免逐格拆分区块坐标带来的额外开销
+                _dragInstanceObjectWorld = source.Remap(value => RemapRuntimeMaterial(sceneObject.Id, value));
+            }
+
+            _dragInstanceCacheObjectId = sceneObject.Id;
+            _dragInstanceCacheSource = source;
+            _dragInstanceCacheSourceVersion = source.ContentVersion;
+            _dragInstanceCacheMaterialSignature = _runtimeMaterialSignature;
+            _dragInstanceCacheObjectWorld = _dragInstanceObjectWorld;
+        }
+
+        var objectMs = watch.Elapsed.TotalMilliseconds;
+        watch.Restart();
         _dragInstanceStaticWorld = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
             remap: RemapRuntimeMaterial, excludeObjectId: sceneObject.Id);
+        var staticMs = watch.Elapsed.TotalMilliseconds;
+        MVoxelLog.Info($"拖动实例准备：对象世界 {objectMs:0.0}ms（{_dragInstanceObjectWorld.OccupiedVoxelCount:N0} 格，缓存命中={objectCacheHit}），" +
+            $"静态世界 {staticMs:0.0}ms（{_dragInstanceStaticWorld.OccupiedVoxelCount:N0} 格）");
         _dragInstanceObjectId = sceneObject.Id;
     }
 
     private void UpdateGridDragPreview(SceneObject sceneObject, Vector2 mouse, Vector2 origin, Vector2 size,
         SceneCamera camera)
     {
-        if (_sceneGizmoGridDragStartWorld is null) return;
+        if (!_sceneGizmoGridDragActive) return;
         var cells = ComputeGridDragCells(mouse, origin, size, camera);
         if (cells == _sceneGizmoGridDragCells) return;
         _sceneGizmoGridDragCells = cells;
@@ -1342,17 +1395,18 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="sceneObject">目标对象</param>
     private void FinishGridDragPreview(SceneObject sceneObject)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var cells = _sceneGizmoGridDragCells;
-        var startWorld = _sceneGizmoGridDragStartWorld;
         var startTransform = _sceneGizmoGridDragStartTransform;
-        _sceneGizmoGridDragStartWorld = null;
+        var active = _sceneGizmoGridDragActive;
+        _sceneGizmoGridDragActive = false;
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
         // 先结束合成位移与拖动实例，之后的渲染回到真实体素位置
         _sceneGizmoGridDragObjectId = null;
         _dragInstanceStaticWorld = null;
         _dragInstanceObjectWorld = null;
         _dragInstanceObjectId = StableId.Empty;
-        if (startWorld is null) return;
+        if (!active) return;
         if (cells == VoxelCoord64.Zero)
         {
             // 没有移动：只把预览用的变换还原，体素从未改动
@@ -1365,7 +1419,10 @@ internal sealed partial class ImGuiEditorWindow
 
         sceneObject.Transform.SetGrid(startTransform);
         UpdateTransformMarker(sceneObject);
+        var moveStart = watch.Elapsed.TotalMilliseconds;
         MoveModelObjectByGrid(sceneObject, cells);
+        MVoxelLog.Info($"拖动结束提交：总计 {watch.Elapsed.TotalMilliseconds:0.0}ms，" +
+            $"平移体素 {watch.Elapsed.TotalMilliseconds - moveStart:0.0}ms，位移 {cells.X},{cells.Y},{cells.Z}");
     }
 
     private void EndSceneGizmoDrag()
@@ -1525,19 +1582,25 @@ internal sealed partial class ImGuiEditorWindow
     private void MoveModelObjectByGrid(SceneObject sceneObject, VoxelCoord64 delta)
     {
         if (delta == VoxelCoord64.Zero) return;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var before = sceneObject.Transform.Grid;
         var after = new GridTransform(before.Position + delta, before.Rotation);
-        var command = _objectVoxels.CreateTransform(sceneObject.Id, "移动模型", coordinate => coordinate + delta,
+        var command = _objectVoxels.CreateTranslation(sceneObject.Id, "移动模型", delta,
             forward =>
             {
                 sceneObject.Transform.SetGrid(forward ? after : before);
                 UpdateTransformMarker(sceneObject);
                 RebuildObjectVoxelWorld();
             });
+        var buildMs = watch.Elapsed.TotalMilliseconds;
+        watch.Restart();
         _voxelHistory.Execute(command);
+        var executeMs = watch.Elapsed.TotalMilliseconds;
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
+        if (buildMs + executeMs >= 8.0)
+            MVoxelLog.Info($"平移模型耗时：命令构建 {buildMs:0.0}ms，执行与重建 {executeMs:0.0}ms，位移 {delta.X},{delta.Y},{delta.Z}");
         SetStatus($"已移动模型：{delta.X}, {delta.Y}, {delta.Z}");
     }
 

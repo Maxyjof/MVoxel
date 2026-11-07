@@ -522,6 +522,29 @@ public sealed class VoxelWorld
     }
 
     /// <summary>
+    /// 复制全部区块并按值映射改写体素，坐标保持不变
+    /// </summary>
+    /// <remarks>
+    /// 按区块整体复制，避免逐格拆分区块坐标；拖动预览需要一份材质重映射后的副本时走这里
+    /// </remarks>
+    /// <param name="remap">体素值映射</param>
+    /// <returns>映射后的新世界</returns>
+    internal VoxelWorld Remap(Func<VoxelValue, VoxelValue> remap)
+    {
+        ArgumentNullException.ThrowIfNull(remap);
+        var copy = new VoxelWorld();
+        foreach (var (coordinate, chunk) in _chunks)
+        {
+            var mapped = new SparseVoxelChunk();
+            foreach (var (index, value) in chunk.Snapshot)
+                mapped.Set(SparseVoxelChunk.FromIndex(index), remap(value));
+            copy.AdoptChunk(coordinate, mapped);
+        }
+
+        return copy;
+    }
+
+    /// <summary>
     /// 复制全部区块，副本和原世界可独立修改
     /// </summary>
     internal VoxelWorld Clone(CancellationToken cancellation = default)
