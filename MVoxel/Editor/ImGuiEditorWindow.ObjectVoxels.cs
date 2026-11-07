@@ -233,7 +233,8 @@ internal sealed partial class ImGuiEditorWindow
         return dirty;
     }
 
-    private Action<bool> ObjectEditCallback(StableId id, Action<bool>? transform = null)
+    private Action<bool> ObjectEditCallback(StableId id, Action<bool>? transform = null,
+        IReadOnlyCollection<VoxelCoord64>? changedCells = null)
     {
         var component = _sceneDocument!.Objects.First(item => item.Id == id)
             .Components.First(SceneComponentTypes.IsVoxelModel);
@@ -249,8 +250,68 @@ internal sealed partial class ImGuiEditorWindow
                 Model = string.Empty, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = _objectVoxels.GetOrCreate(id).OccupiedVoxelCount,
             });
             transform?.Invoke(forward);
+            if (changedCells is not null && TryApplyIncrementalObjectEdit(id, changedCells)) return;
             RebuildObjectVoxelWorld();
         };
+    }
+
+    /// <summary>
+    /// 把对象编辑反映到已有组合世界；每个缓存世界只更新受影响坐标，失败时交给全量合成兜底
+    /// </summary>
+    private bool TryApplyIncrementalObjectEdit(StableId objectId, IReadOnlyCollection<VoxelCoord64> changedCells)
+    {
+        if (_sceneDocument is null || changedCells.Count == 0 || _sceneGizmoGridDragObjectId is not null) return false;
+        var contexts = new List<(VoxelWorld World, uint Mask, bool SceneVisibility,
+            IReadOnlyDictionary<ChunkCoord64, StableId>? Owners)>();
+        void AddContext(VoxelWorld world, uint mask, bool sceneVisibility,
+            IReadOnlyDictionary<ChunkCoord64, StableId>? owners)
+        {
+            if (contexts.Any(item => ReferenceEquals(item.World, world))) return;
+            contexts.Add((world, mask, sceneVisibility, owners));
+        }
+
+        AddContext(_world, uint.MaxValue, false, null);
+        foreach (var entry in _composedWorlds)
+        {
+            if (!ReferenceEquals(entry.Scene, _sceneDocument)) return false;
+            AddContext(entry.World, entry.Mask, entry.SceneVisibility, entry.ChunkOwners);
+        }
+
+        var updates = new List<(uint Mask, bool SceneVisibility, VoxelCoord64 Coordinate,
+            bool HasValue, VoxelValue Value, StableId Owner)>();
+        foreach (var context in contexts)
+        foreach (var coordinate in changedCells)
+        {
+            var hasValue = _objectVoxels.TryGetVisibleVoxel(_sceneDocument, context.Mask,
+                context.SceneVisibility, coordinate, out var owner, out var value);
+            // 空结果会改变区块结构，先让全量合成处理，避免缓存世界部分更新后再回退
+            if (!hasValue) return false;
+            updates.Add((context.Mask, context.SceneVisibility, coordinate, true,
+                RemapRuntimeMaterial(owner, value), owner));
+        }
+
+        foreach (var context in contexts)
+        foreach (var update in updates.Where(item => item.Mask == context.Mask &&
+                     item.SceneVisibility == context.SceneVisibility))
+        {
+            context.World.Set(update.Coordinate, update.Value);
+            if (context.Owners is Dictionary<ChunkCoord64, StableId> owners)
+                owners[VoxelWorld.Split(update.Coordinate).Chunk] = update.Owner;
+        }
+
+        var signature = RenderStateSignature();
+        for (var index = 0; index < _composedWorlds.Count; index++)
+        {
+            var entry = _composedWorlds[index];
+            _composedWorlds[index] = entry with
+            {
+                Signature = signature ^ (entry.SceneVisibility ? long.MinValue : 0),
+            };
+        }
+
+        _pickVersion++;
+        _pipeline?.ResetAccumulation();
+        return true;
     }
 
     private const long SceneSizeWarningThresholdBytes = 512L * 1024 * 1024;

@@ -677,7 +677,7 @@ internal sealed partial class ImGuiEditorWindow
             {
                 _composedWorlds.Insert(0,
                     new ComposedWorldEntry(RenderStateSignature() ^ long.MinValue, uint.MaxValue, viewComposed,
-                        _sceneDocument, preload.ViewChunkOwners));
+                        _sceneDocument, preload.ViewChunkOwners, SceneVisibility: true));
             }
         }
         else LoadObjectVoxelWorlds(project);
@@ -932,7 +932,8 @@ internal sealed partial class ImGuiEditorWindow
             _composedWorlds.RemoveAt(_composedWorlds.Count - 1);
         }
 
-        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed, _sceneDocument, owners));
+        _composedWorlds.Insert(0, new ComposedWorldEntry(signature, cullingMask, composed, _sceneDocument, owners,
+            sceneVisibility));
         return composed;
     }
 
@@ -1331,7 +1332,7 @@ internal sealed partial class ImGuiEditorWindow
     /// ChunkOwners 记录每个区块最终由哪个对象写入，供模型级 LOD 按模型分档
     /// </summary>
     private readonly record struct ComposedWorldEntry(long Signature, uint Mask, VoxelWorld World, SceneDocument? Scene,
-        IReadOnlyDictionary<ChunkCoord64, StableId>? ChunkOwners);
+        IReadOnlyDictionary<ChunkCoord64, StableId>? ChunkOwners, bool SceneVisibility);
 
     /// <summary>按图层遮罩组成的渲染世界缓存，最近使用的排在最前面</summary>
     private readonly List<ComposedWorldEntry> _composedWorlds = new(ComposedWorldCacheCapacity);
@@ -2804,7 +2805,7 @@ internal sealed partial class ImGuiEditorWindow
         // 否则下次改缩放会从旧基准重采样，把这次新增的方块丢掉
         BakeScaleForEditing(target);
         var command = new VoxelStrokeCommand(name, _objectVoxels.GetOrCreate(target.Id), cells, value,
-            ObjectEditCallback(target.Id));
+            ObjectEditCallback(target.Id, changedCells: cells));
         if (command.ChangedCellCount == 0)
         {
             SetStatus("此操作没有改变方块，撤销历史保持不变");
