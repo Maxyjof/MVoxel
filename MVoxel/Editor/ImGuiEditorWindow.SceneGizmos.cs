@@ -1300,7 +1300,9 @@ internal sealed partial class ImGuiEditorWindow
             _sceneGizmoGridDragStartTransform.Position + cells, _sceneGizmoGridDragStartTransform.Rotation));
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
-        InvalidateComposedWorldCache();
+        // 拖动实例路径下场景视口用静态世界 + 实例平移，组合世界缓存不参与绘制；
+        // 每步清空缓存会让坐标轴遮挡等位置重新合成整份世界，直接拖低帧率
+        if (_dragInstanceStaticWorld is null) InvalidateComposedWorldCache();
         _pickVersion++;
         _pipeline?.ResetAccumulation();
         SetStatus($"移动中：{cells.X}, {cells.Y}, {cells.Z}");

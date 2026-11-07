@@ -2647,16 +2647,21 @@ internal sealed partial class ImGuiEditorWindow
         var targetId = ResolveVoxelEditTarget(hit?.Coordinate);
         if (hit is null)
         {
-            var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
-            var origin3 = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
-            var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
-            if (!erase &&
-                VoxelDda.TryGroundHit(origin3, direction3, _sceneCameraDistance * 8F + 256F, out var groundPoint))
+            // 地面平面放置只允许发生在本笔的第一次按下：拖动过程中射线打空说明画笔已经离开模型，
+            // 此时再往地面格子落方块会在笔划沿途留下零散的新方块
+            if (!erase && ImGui.IsMouseClicked(button))
             {
-                var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
-                CommitStroke(cells, erase: false, targetId);
+                var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
+                var origin3 = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
+                var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
+                if (VoxelDda.TryGroundHit(origin3, direction3, _sceneCameraDistance * 8F + 256F, out var groundPoint))
+                {
+                    var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
+                    CommitStroke(cells, erase: false, targetId);
+                }
+                else SetStatus("射线未命中模型或网格平面，请调整视角后绘制");
             }
-            else SetStatus(erase ? "未命中可擦除的体素" : "射线未命中模型或网格平面，请调整视角后绘制");
+            else if (erase) SetStatus("未命中可擦除的体素");
 
             _brushPreview = null;
             return true;

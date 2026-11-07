@@ -2937,8 +2937,12 @@ DockId=0x6A3C3007,0
     private void DrawSceneWorldAxes(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         // 场景视口绘制的是按可见性/图层组成的视图世界，拖动预览还会带上位移；
-        // 遮挡查询必须使用同一份世界，否则轴线会按旧位置被错误遮挡
-        _axisOcclusionWorld = GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true));
+        // 遮挡查询必须使用同一份世界，否则轴线会按旧位置被错误遮挡。
+        // 拖动实例期间直接用已准备好的静态世界：此时组合缓存每步都被清空，
+        // 再调 GetRenderWorld 会每帧重新合成整份世界，把拖动帧率拖到 40 帧附近
+        _axisOcclusionWorld = _sceneGizmoGridDragObjectId is not null && _dragInstanceStaticWorld is not null
+            ? GetSceneInspectionWorld(_dragInstanceStaticWorld)
+            : GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true));
         if (_axisOcclusionWorld.OccupiedVoxelCount > 0 && IsVoxelWorldVisible())
             UpdateAxisOcclusionBounds();
         var axisLength = GetInfiniteAxisLength(camera);
