@@ -1996,6 +1996,8 @@ internal sealed partial class ImGuiEditorWindow
             pipeline.SetEditRegion(strokeEditing, _strokeEditRegionMinimum, _strokeEditRegionMaximum);
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
+            var coreWatch = System.Diagnostics.Stopwatch.StartNew();
+            double worldMs = 0, syncMs = 0;
             // 松手窗口内先确认实例显示是否可用：不可用就只能退回整份同步
             if (_sceneSettleDisplay && !_sceneSettleDiagLogged)
             {
@@ -2027,6 +2029,7 @@ internal sealed partial class ImGuiEditorWindow
             var sceneModelLod = !dragInstance && sceneWorld is not null
                 ? BuildModelLodView(settings.SceneLod, camera, sceneWorld)
                 : null;
+            worldMs = coreWatch.Elapsed.TotalMilliseconds;
             if (dragInstance)
             {
                 var dragObjectWorld = _sceneSliceEnabled
@@ -2053,22 +2056,26 @@ internal sealed partial class ImGuiEditorWindow
                         modelLod: sceneModelLod);
                 }
             }
+
+            syncMs = coreWatch.Elapsed.TotalMilliseconds - worldMs;
             if (!pipeline.IsAvailable)
             {
                 if (pipeline.InitializationError is { } error) throw new InvalidOperationException(error);
                 return false;
             }
             var sceneDeposits = CollectSurfaceDeposits(uint.MaxValue);
+            var depositsMs = coreWatch.Elapsed.TotalMilliseconds;
             pipeline.SetSurfaceDeposits(sceneDeposits, ResolveReceiverLayerTable(sceneDeposits, uint.MaxValue,
                 sceneVisibility: true, pipeline.Workset.Origin));
             // 拖动实例的体素快照已经在建结构时带上选中标记，拖动期间不需要
-            // 再为 29 万体素重建一份选中世界；其它选中子对象的外轮廓在松手后恢复
-            pipeline.SetSceneSelection(showGeometry && !IsVoxelDrawingMode && !dragInstance
+            // 再为 29 万体素重建一份选中世界；其它选中子对象的外轮廓在松手后恢复。
+            // 切换帧先跳过选中世界与描边（约 60ms），下一帧再补，避免和加速结构重建挤在同一帧
+            pipeline.SetSceneSelection(showGeometry && !IsVoxelDrawingMode && !dragInstance && !settleApplied
                 ? GetSelectedSubtreeWorld()
                 : null);
             // 描边只在体素编辑模式下出现，并且只描边当前编辑模型；退出编辑一律不描边。
             // 选中标记与描边蒙版只标记状态，最后由管线合并成一次逐格标记上传
-            pipeline.SetOutlineMask(showGeometry && IsVoxelEditingMode ? GetVoxelEditOutlineWorld() : null);
+            pipeline.SetOutlineMask(showGeometry && IsVoxelEditingMode && !settleApplied ? GetVoxelEditOutlineWorld() : null);
             pipeline.FlushCellMarks();
 
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
@@ -2090,6 +2097,14 @@ internal sealed partial class ImGuiEditorWindow
             var renderWatch = System.Diagnostics.Stopwatch.StartNew();
             if (!pipeline.RenderSceneView(settings, frame, width, height)) return false;
             renderWatch.Stop();
+            if (coreWatch.Elapsed.TotalMilliseconds >= 80.0)
+            {
+                MVoxelLog.Warn($"场景帧分解：总计 {coreWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                    $"取世界 {worldMs:0.0}ms，同步 {syncMs:0.0}ms，" +
+                    $"发光面 {depositsMs - syncMs - worldMs:0.0}ms，" +
+                    $"渲染提交 {renderWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                    $"切换完成 {settleApplied}，实例显示 {dragInstance}");
+            }
             StartupTimeline.Mark(StartupTimeline.MilestonePreviewFrame);
             RecordViewportFrame(_sceneViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
                 submitsBefore, fenceBefore, allocatedBefore, width, height);
