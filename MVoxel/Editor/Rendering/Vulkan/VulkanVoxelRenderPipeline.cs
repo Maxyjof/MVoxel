@@ -608,12 +608,24 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
         // 索引刷新放在构建之后：工作集已经给出本轮发光体素数，
         // 为零时可以直接清空索引，省掉一次整份世界的扫描
+        var emissiveWatch = System.Diagnostics.Stopwatch.StartNew();
         RefreshEmissiveCatalog(world, maximumCells == 0 && lodSignature == 0, next.EmissiveCount);
+        SyncEmissiveCatalogMs = emissiveWatch.Elapsed.TotalMilliseconds;
         SyncPackMs = 0;
         SyncUploadMs = 0;
         if (_context is not null)
         {
+            var uploadWatch = System.Diagnostics.Stopwatch.StartNew();
             UploadWorkset(next);
+            SyncUploadMs = uploadWatch.Elapsed.TotalMilliseconds;
+        }
+
+        // 构建、发光索引、上传三项分开记：松手后掉帧时能直接看出是哪一段在花时间
+        if (SyncWorksetBuildMs + SyncEmissiveCatalogMs + SyncUploadMs >= 20.0)
+        {
+            MVoxelLog.Info($"工作集同步耗时：构建 {SyncWorksetBuildMs:0.0}ms，" +
+                $"发光索引 {SyncEmissiveCatalogMs:0.0}ms，上传 {SyncUploadMs:0.0}ms，" +
+                $"格数 {next.Cells.Count:N0}");
         }
 
         _workset = next;
@@ -1150,6 +1162,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 获取最近一次同步中工作集构建耗时毫秒
     /// </summary>
     internal double SyncWorksetBuildMs { get; private set; }
+
+    /// <summary>
+    /// 最近一次同步里发光体索引刷新的耗时毫秒
+    /// </summary>
+    internal double SyncEmissiveCatalogMs { get; private set; }
 
     /// <summary>
     /// 最近一次工作集构建的分阶段耗时，用于定位构建热点
