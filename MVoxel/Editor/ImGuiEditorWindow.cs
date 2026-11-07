@@ -3046,6 +3046,9 @@ DockId=0x6A3C3007,0
             return true;
         }
 
+        if (_sceneGizmoGridDragObjectId is not null)
+            return true;
+
         // 只查询目标点之前的射线段，命中模型内部或模型后的部分不会被误判为可见
         return !VoxelDda.HasHitInBounds(_world, cameraPosition, direction,
             MathF.Max(pointDistance - 0.01F, near), _axisOcclusionMinimum, _axisOcclusionMaximum,

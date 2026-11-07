@@ -624,6 +624,8 @@ internal sealed partial class ImGuiEditorWindow
         _selectedSceneObjectId = null;
         _pinnedVoxelModelId = null;
         _sceneDocument = preload?.Scene ?? LoadSceneDocument(project);
+        _sceneFallbackSeconds = StaleFrameGraceSeconds;
+        _sceneGpuRenderedAtMs = 0;
         if (!_sceneDocument.HasSerializedEnvironment)
         {
             // 旧版打开场景时可能已将默认环境写回渲染配置；导出配置仍保留模板环境。
@@ -1060,6 +1062,9 @@ internal sealed partial class ImGuiEditorWindow
         _composedWorlds.Clear();
         _receiverLayerTables.Clear();
         _receiverLayerCacheScene = null;
+        _axisOcclusionBoundsWorld = null;
+        _axisOcclusionBoundsVersion = -1;
+        _axisOcclusionHasBounds = false;
     }
 
     /// <summary>

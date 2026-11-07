@@ -179,9 +179,22 @@ internal sealed partial class ImGuiEditorWindow
         {
             if (free)
             {
+                if (!double.IsFinite(value) || value < long.MinValue || value >= (double)long.MaxValue)
+                { SetStatus("位置超出整数范围"); return; }
                 positionValues[axis] = value;
-                transform.SetFree(new FreeTransform(new Double3(positionValues[0], positionValues[1], positionValues[2]), transform.Free.Rotation));
+                var previousPosition = transform.Free.Position;
+                var previousGridOrigin = new VoxelCoord64((long)Math.Floor(previousPosition.X),
+                    (long)Math.Floor(previousPosition.Y), (long)Math.Floor(previousPosition.Z));
+                var nextFreePosition = new Double3(positionValues[0], positionValues[1], positionValues[2]);
+                var nextGridOrigin = new VoxelCoord64((long)Math.Floor(nextFreePosition.X),
+                    (long)Math.Floor(nextFreePosition.Y), (long)Math.Floor(nextFreePosition.Z));
+                var delta = nextGridOrigin - previousGridOrigin;
+                transform.SetFree(new FreeTransform(nextFreePosition, transform.Free.Rotation));
+                if (delta != VoxelCoord64.Zero && _objectVoxels.TryGetWorld(item.Id, out var freeWorld))
+                    _objectVoxels.AssignWorld(item.Id, freeWorld.CloneShifted(delta.X, delta.Y, delta.Z));
                 UpdateTransformMarker(item); MarkSceneDocumentDirty();
+                if (delta != VoxelCoord64.Zero) RebuildObjectVoxelWorld();
+                else InvalidateComposedWorldCache();
             }
             else
             {
