@@ -2262,8 +2262,6 @@ internal sealed partial class ImGuiEditorWindow
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;
             if (cameraNavigating || settingsInteracting) previewSettings.PathSamplesPerFrame = 1;
-            // 导航帧整幅图一次提交：一轮采样在一帧内完成，画面每帧都能完整刷新
-            pipeline.PathFullFramePerRound = cameraNavigating;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
@@ -2279,7 +2277,7 @@ internal sealed partial class ImGuiEditorWindow
                 height = _captureHeight;
             }
             // 导航期间每帧都会重置累积，整幅图一次提交才能在一帧内完成一轮采样
-            pipeline.PathFullFramePerRound = cameraNavigating;
+            pipeline.PathFullFramePerRound = cameraNavigating || settingsInteracting;
             var nowMs = Environment.TickCount64;
             // 截图固定当前环境时间，避免水面和天气在逐帧累积时不断变化。
             // 采样签名只用相机、几何、光照与采样参数；后处理参数进入显示签名，
@@ -2339,11 +2337,9 @@ internal sealed partial class ImGuiEditorWindow
 
             // 渲染窗口的采样不随焦点暂停：编辑器切到后台时继续累积样本，
             // 回到前台或 MCP 截图时看到的是持续推进的结果
-            // 调整渲染配置时可以短暂复用上一张纹理，避免拖动滑块同步等待完整路径追踪；
-            // 相机导航绝不能走这条分支，否则新姿态刚写入就会被旧视角覆盖显示，
-            // 表现为右键环绕后视角瞬间弹回。
-            if (settingsInteracting && pipeline.DisplayTextureId != IntPtr.Zero &&
-                nowMs - _lastRenderGpuSubmitMs < 33)
+            // 调整渲染参数时必须立刻看到变化：之前这里会短暂复用上一张纹理，
+            // 拖动滑动条时画面要等松手才更新。交互预览本身已经很轻，直接重画
+            if (settingsInteracting && pipeline.DisplayTextureId == IntPtr.Zero)
             {
                 DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
