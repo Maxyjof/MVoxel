@@ -88,10 +88,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal bool HardwareRayTracingPreferred { get; set; } = true;
 
     /// <summary>
-    /// 采样轮未完成时也刷新显示图：相机导航期间每帧都会重置累积，
-    /// 不刷新会让拖动中的画面停在上一轮结果上
+    /// 导航帧把整幅图作为一条横条提交：一轮采样在一帧内完成，画面每帧都能完整刷新
     /// </summary>
-    internal bool DisplayWhileTracing { get; set; }
+    internal bool PathFullFramePerRound { get; set; }
 
     private bool _pathViewHardwareActive;
     private string? _hardwareShadowFailure;
@@ -2622,7 +2621,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 这一轮新增的样本必须经过色调映射才能看到，否则画面会停在上一条完整轮的结果上。
         // 相机导航时每帧都会重置累积，采样轮永远完不成，必须允许用当前部分样本刷新显示，
         // 否则拖动过程中画面会完全冻结
-        if (pathMode && (roundComplete || DisplayWhileTracing) && !finishPassDispatched)
+        if (pathMode && roundComplete && !finishPassDispatched)
         {
             DispatchDisplayPass(api, parameters, widthPixels, heightPixels);
         }
@@ -2712,7 +2711,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 1, PathDispatchPixelBudget);
             // 本地工作组高度为 8；除最后一条外必须对齐，避免相邻横条覆盖同一像素。
             var rows = Math.Max(8, pixelsPerStrip / Math.Max(1, widthPixels));
-            _pathRoundStripHeight = Math.Min(heightPixels, Math.Max(8, rows / 8 * 8));
+            // 导航时整幅图作为一条横条：一轮在一帧内完成，避免只显示未采样的黑色区域
+            _pathRoundStripHeight = PathFullFramePerRound
+                ? heightPixels
+                : Math.Min(heightPixels, Math.Max(8, rows / 8 * 8));
             _pathRoundTotalStrips = (heightPixels + _pathRoundStripHeight - 1) / _pathRoundStripHeight;
             _pathRoundNextStrip = 0;
             _pathRoundOpen = true;

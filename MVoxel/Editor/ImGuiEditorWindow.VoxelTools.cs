@@ -2260,11 +2260,10 @@ internal sealed partial class ImGuiEditorWindow
             // 只在交互时压到每帧 1 个样本；空闲时按项目设置批量推进，避免被帧率卡住
             var cameraNavigating = ImGui.IsMouseDragging(ImGuiMouseButton.Right) ||
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
-            // 导航期间每帧都会重置累积、采样轮完不成，允许用当前部分样本刷新显示，
-            // 拖动过程中至少能看到实时更新的画面；松手后恢复正常累积到目标质量
-            pipeline.DisplayWhileTracing = cameraNavigating;
             var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;
             if (cameraNavigating || settingsInteracting) previewSettings.PathSamplesPerFrame = 1;
+            // 导航帧整幅图一次提交：一轮采样在一帧内完成，画面每帧都能完整刷新
+            pipeline.PathFullFramePerRound = cameraNavigating;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
@@ -2279,6 +2278,8 @@ internal sealed partial class ImGuiEditorWindow
                 width = _captureWidth;
                 height = _captureHeight;
             }
+            // 导航期间每帧都会重置累积，整幅图一次提交才能在一帧内完成一轮采样
+            pipeline.PathFullFramePerRound = cameraNavigating;
             var nowMs = Environment.TickCount64;
             // 截图固定当前环境时间，避免水面和天气在逐帧累积时不断变化。
             // 采样签名只用相机、几何、光照与采样参数；后处理参数进入显示签名，
