@@ -1234,6 +1234,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 
     private void DrawEditorFrame()
     {
+        var frameWatch = System.Diagnostics.Stopwatch.StartNew();
+        var editorMark = PerformanceMark();
         // 第一人称飞行：先取后端原始鼠标位置算增量，再把 ImGui 光标锚到视口中心
         if (_freeFlyActive && _freeFlyViewportCenter is { } freeFlyCenter)
         {
@@ -1264,22 +1266,31 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         using var fileHistoryScope = _historyFiles.Activate();
         if (inputBlocked) ImGui.BeginDisabled();
         var mark = PerformanceMark();
+        var sectionWatch = System.Diagnostics.Stopwatch.StartNew();
         DrawMenuBar();
         DrawDockspace();
+        var menuDockMs = sectionWatch.Elapsed.TotalMilliseconds;
+        sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.MenuDockMs);
 
         mark = PerformanceMark();
         DrawHierarchy();
+        var hierarchyMs = sectionWatch.Elapsed.TotalMilliseconds;
+        sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.HierarchyMs);
 
         mark = PerformanceMark();
         DrawCenter();
+        var centerMs = sectionWatch.Elapsed.TotalMilliseconds;
+        sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.CenterMs);
 
         mark = PerformanceMark();
         DrawInspector();
         DrawExtraInspectors();
         DrawRenderConfig();
+        var inspectorMs = sectionWatch.Elapsed.TotalMilliseconds;
+        sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.InspectorMs);
 
         mark = PerformanceMark();
@@ -1298,6 +1309,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawStatusBar();
         DrawMinecraftImportWindow();
         DrawMeshImportWindow();
+        var otherPanelsMs = sectionWatch.Elapsed.TotalMilliseconds;
+        sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.OtherPanelsMs);
 
         mark = PerformanceMark();
@@ -1320,7 +1333,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         SyncComponentEditingState();
         SyncToolModeWithSelection();
         TickDragPreviewPrewarm();
+        var panelMs = frameWatch.Elapsed.TotalMilliseconds;
+        var historyWatch = System.Diagnostics.Stopwatch.StartNew();
         EndEditorHistory();
+        if (frameWatch.Elapsed.TotalMilliseconds >= 120.0)
+        {
+            MVoxelLog.Warn($"超长帧分解：总计 {frameWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                $"面板 {panelMs:0.0}ms，历史提交 {historyWatch.Elapsed.TotalMilliseconds:0.0}ms；" +
+                $"菜单 {menuDockMs:0.0} 层级 {hierarchyMs:0.0} 中心 {centerMs:0.0} " +
+                $"检查器 {inspectorMs:0.0} 其他 {otherPanelsMs:0.0}");
+        }
     }
 
     private void DrawMenuBar()

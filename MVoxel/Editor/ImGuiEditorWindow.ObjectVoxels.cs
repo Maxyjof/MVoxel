@@ -193,9 +193,12 @@ internal sealed partial class ImGuiEditorWindow
     private void RebuildObjectVoxelWorld()
     {
         if (_sceneDocument is null) return;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         // 曲线对象的体素藏在组件里，场景加载、复制对象与撤销后都可能缺少世界，这里统一补齐
         EnsureGeneratedVoxelWorlds();
         _world = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, false);
+        if (watch.Elapsed.TotalMilliseconds >= 20.0)
+            MVoxelLog.Info($"重建组合世界耗时 {watch.Elapsed.TotalMilliseconds:0.0}ms（{_world.OccupiedVoxelCount:N0} 格）");
         _layerOwnership.Clear();
         InvalidateComposedWorldCache();
         _pickVersion++;

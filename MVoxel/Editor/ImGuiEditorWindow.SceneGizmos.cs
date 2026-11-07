@@ -1727,13 +1727,18 @@ internal sealed partial class ImGuiEditorWindow
             });
         var buildMs = watch.Elapsed.TotalMilliseconds;
         watch.Restart();
+        var pauseBefore = GC.GetTotalPauseDuration();
+        var gen2Before = GC.CollectionCount(2);
         _voxelHistory.Execute(command);
         var executeMs = watch.Elapsed.TotalMilliseconds;
+        var gcPause = (GC.GetTotalPauseDuration() - pauseBefore).TotalMilliseconds;
+        var gen2 = GC.CollectionCount(2) - gen2Before;
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
         if (buildMs + executeMs >= 8.0)
-            MVoxelLog.Info($"平移模型耗时：命令构建 {buildMs:0.0}ms，执行与重建 {executeMs:0.0}ms，位移 {delta.X},{delta.Y},{delta.Z}");
+            MVoxelLog.Info($"平移模型耗时：命令构建 {buildMs:0.0}ms，执行与重建 {executeMs:0.0}ms，" +
+                $"GC 停顿 {gcPause:0.0}ms（第2代回收 {gen2} 次），位移 {delta.X},{delta.Y},{delta.Z}");
         SetStatus($"已移动模型：{delta.X}, {delta.Y}, {delta.Z}");
     }
 

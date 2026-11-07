@@ -154,7 +154,10 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.IsMouseDown(ImGuiMouseButton.Right) || ImGui.IsMouseDown(ImGuiMouseButton.Middle) || _sceneGizmoDragging || _sceneMouseCaptured || _resetDockLayoutRequested ||
             _sceneFocusAnimation is not null || _renderFocusAnimation is not null)) return;
         var before = _historyBefore!;
+        var captureWatch = System.Diagnostics.Stopwatch.StartNew();
         var after = CaptureEditorHistory(before);
+        var captureMs = captureWatch.Elapsed.TotalMilliseconds;
+        if (captureMs >= 20.0) MVoxelLog.Info($"历史快照捕获耗时 {captureMs:0.0}ms");
         var files = _historyFiles.Complete();
         var changed = before.SceneJson != after.SceneJson || before.EditorSettings != after.EditorSettings ||
             before.Generator != after.Generator || before.Inspectors != after.Inspectors ||
