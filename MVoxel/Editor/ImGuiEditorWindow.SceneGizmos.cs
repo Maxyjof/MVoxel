@@ -62,8 +62,139 @@ internal sealed partial class ImGuiEditorWindow
     private int _gizmoHoverRotateAxis = -1;
     private bool _gizmoHoverScale;
 
-    /// <summary>网格对象拖动预览：起始世界副本、起始格变换与累计格位移</summary>
+    /// <summary>网格对象拖动预览：是否处于拖动状态、起始格变换与累计格位移</summary>
     private bool _sceneGizmoGridDragActive;
+
+    /// <summary>
+    /// 拖动实例预热：选中网格对象后利用空闲帧分批准备材质重映射副本，
+    /// 避免按下拖动时一次性复制 29 万体素造成卡顿
+    /// </summary>
+    private StableId _dragPrewarmObjectId;
+    private VoxelWorld? _dragPrewarmSource;
+    private int _dragPrewarmSourceVersion = -1;
+    private string _dragPrewarmMaterialSignature = string.Empty;
+    private VoxelWorld? _dragPrewarmWorld;
+    private List<(ChunkCoord64 Coordinate, SparseVoxelChunk Chunk)>? _dragPrewarmChunks;
+    private int _dragPrewarmCursor;
+    private bool _dragPrewarmRunning;
+    // 每帧最多处理多少区块：单个 32³ 区块最多 3.2 万格，24 块约 2-4ms，几乎无感
+    private const int DragPrewarmChunksPerFrame = 24;
+
+    /// <summary>
+    /// 判断当前拖动实例缓存是否可以直接复用
+    /// </summary>
+    private bool DragInstanceCacheMatches(StableId objectId, VoxelWorld source) =>
+        _dragInstanceCacheObjectWorld is not null &&
+        _dragInstanceCacheObjectId == objectId &&
+        ReferenceEquals(_dragInstanceCacheSource, source) &&
+        _dragInstanceCacheSourceVersion == source.ContentVersion &&
+        string.Equals(_dragInstanceCacheMaterialSignature, _runtimeMaterialSignature, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 每帧推进拖动实例预热；世界或材质表变化时自动重新开始
+    /// </summary>
+    private void TickDragPreviewPrewarm()
+    {
+        if (_sceneDocument is null || _sceneGizmoGridDragObjectId is not null ||
+            _sceneGizmoDragging || ImGui.IsMouseDown(ImGuiMouseButton.Left) ||
+            _scenePipeline?.SupportsDragPreviewInstance != true)
+        {
+            ResetDragPrewarm();
+            return;
+        }
+
+        var selected = GetSelectedSceneObject();
+        if (selected is null || selected.Transform.Mode != TransformMode.Grid ||
+            !_objectVoxels.TryGetWorld(selected.Id, out var source) ||
+            !_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount))
+        {
+            ResetDragPrewarm();
+            return;
+        }
+
+        if (DragInstanceCacheMatches(selected.Id, source)) return;
+
+        if (!_dragPrewarmRunning || _dragPrewarmObjectId != selected.Id ||
+            !ReferenceEquals(_dragPrewarmSource, source) ||
+            _dragPrewarmSourceVersion != source.ContentVersion ||
+            !string.Equals(_dragPrewarmMaterialSignature, _runtimeMaterialSignature, StringComparison.Ordinal))
+        {
+            ResetDragPrewarm();
+            // 不需要重映射时直接缓存源世界，连复制都省掉
+            var needsRemap = false;
+            foreach (var (_, value) in source.EnumerateOccupied())
+            {
+                if (!RemapRuntimeMaterial(selected.Id, value).Equals(value)) { needsRemap = true; break; }
+            }
+
+            _dragPrewarmObjectId = selected.Id;
+            _dragPrewarmSource = source;
+            _dragPrewarmSourceVersion = source.ContentVersion;
+            _dragPrewarmMaterialSignature = _runtimeMaterialSignature;
+            if (!needsRemap)
+            {
+                _dragInstanceCacheObjectId = selected.Id;
+                _dragInstanceCacheSource = source;
+                _dragInstanceCacheSourceVersion = source.ContentVersion;
+                _dragInstanceCacheMaterialSignature = _runtimeMaterialSignature;
+                _dragInstanceCacheObjectWorld = source;
+                return;
+            }
+
+            _dragPrewarmWorld = new VoxelWorld();
+            _dragPrewarmChunks = source.SnapshotChunks();
+            _dragPrewarmCursor = 0;
+            _dragPrewarmRunning = true;
+        }
+
+        if (!_dragPrewarmRunning || _dragPrewarmChunks is null || _dragPrewarmWorld is null) return;
+        var end = Math.Min(_dragPrewarmChunks.Count, _dragPrewarmCursor + DragPrewarmChunksPerFrame);
+        for (var index = _dragPrewarmCursor; index < end; index++)
+        {
+            var (coordinate, chunk) = _dragPrewarmChunks[index];
+            var mapped = new SparseVoxelChunk();
+            foreach (var (cellIndex, value) in chunk.Snapshot)
+                mapped.Set(SparseVoxelChunk.FromIndex(cellIndex), RemapRuntimeMaterial(selected.Id, value));
+            _dragPrewarmWorld.AdoptChunk(coordinate, mapped);
+        }
+
+        _dragPrewarmCursor = end;
+        if (_dragPrewarmCursor < _dragPrewarmChunks.Count) return;
+        _dragInstanceCacheObjectId = selected.Id;
+        _dragInstanceCacheSource = source;
+        _dragInstanceCacheSourceVersion = source.ContentVersion;
+        _dragInstanceCacheMaterialSignature = _runtimeMaterialSignature;
+        _dragInstanceCacheObjectWorld = _dragPrewarmWorld;
+        MVoxelLog.Info($"拖动实例预热完成：{_dragPrewarmWorld.OccupiedVoxelCount:N0} 格");
+        _dragPrewarmRunning = false;
+        _dragPrewarmWorld = null;
+        _dragPrewarmChunks = null;
+    }
+
+    /// <summary>
+    /// 强制做完拖动预热：进入绘制模式或开始拖动前调用，未完成时在本次调用里同步跑完
+    /// </summary>
+    private void EnsureDragPreviewPrewarmed()
+    {
+        // 每轮推进一个分片，最多 4096 轮；正常情况几十轮内完成
+        for (var guard = 0; guard < 4096; guard++)
+        {
+            TickDragPreviewPrewarm();
+            if (!_dragPrewarmRunning) return;
+        }
+    }
+
+    private void ResetDragPrewarm()
+    {
+        _dragPrewarmRunning = false;
+        _dragPrewarmWorld = null;
+        _dragPrewarmChunks = null;
+        _dragPrewarmCursor = 0;
+        _dragPrewarmObjectId = StableId.Empty;
+        _dragPrewarmSource = null;
+        _dragPrewarmSourceVersion = -1;
+    }
+
     // 拖动实例世界缓存：键为对象、体素世界版本、组合世界版本与运行时材质表指纹
     private StableId _dragInstanceCacheObjectId;
     private VoxelWorld? _dragInstanceCacheSource;
@@ -1259,6 +1390,8 @@ internal sealed partial class ImGuiEditorWindow
     private void BeginGridDragPreview(SceneObject sceneObject)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
+        // 预热未完成时在这里补完：宁可按下时多花一次，也不要让拖动开始帧半途重建
+        EnsureDragPreviewPrewarmed();
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
         _sceneGizmoGridDragStartTransform = sceneObject.Transform.Grid;
         // 只记状态不复制体素：拖动期间对象世界不会被修改，松手时才真正平移；
