@@ -535,7 +535,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
         VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true,
         bool includeInterior = false, Func<ChunkCoord64, bool>? chunkFilter = null,
-        long visibilitySignature = 0, VoxelModelLodView? modelLod = null)
+        long visibilitySignature = 0, VoxelModelLodView? modelLod = null,
+        VoxelGpuWorkset? prebuilt = null)
     {
         ArgumentNullException.ThrowIfNull(world);
         // 设备已经丢失时不再构建和上传工作集：故障设备上的每个原生调用都可能再次触发驱动异常
@@ -574,13 +575,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 区块级可见性过滤时改走可见区块常驻池，因此不再受整份世界格数上限约束
         using var syncPhase = StartupTimeline.Begin("同步工作集");
         var brickEligible = EnableBrickPath && !DisableBrickPath && maximumCells == 0 &&
-            lodSignature == 0 && !_usingHardwareRayTracing &&
+            lodSignature == 0 && !_usingHardwareRayTracing && greedyMerge &&
             (chunkFilter is not null || world.OccupiedVoxelCount <= MaxFullWorksetCells);
         // 真正发生重建才计数，视口性能采样据此区分本帧是否同步过工作集
         SyncCompletedCount++;
+        var branchWatch = System.Diagnostics.Stopwatch.StartNew();
         if (brickEligible)
         {
+            var brickEmissiveWatch = System.Diagnostics.Stopwatch.StartNew();
             RefreshEmissiveCatalog(world, true);
+            var emissiveMs = brickEmissiveWatch.Elapsed.TotalMilliseconds;
             if (chunkFilter is not null)
             {
                 _brickResidency = null;
@@ -593,7 +597,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 SyncBrick(world, lodSignature, maximumCells, greedyMerge, includeInterior);
             }
 
+            var brickMs = branchWatch.Elapsed.TotalMilliseconds;
             UploadEmissiveFaces();
+            if (brickMs + emissiveMs >= 20.0)
+            {
+                MVoxelLog.Info($"工作集同步分支=砖驻留：总计 {branchWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                    $"发光索引 {emissiveMs:0.0}ms，砖同步 {brickMs - emissiveMs:0.0}ms，" +
+                    $"硬件求交 {_usingHardwareRayTracing}，格数 {world.OccupiedVoxelCount:N0}");
+            }
+
             return;
         }
 
@@ -602,10 +614,22 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         _poolSourceWorld = null;
         _usingBrickPath = false;
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior,
-            chunkFilter, _activeModelLod, out var buildTiming);
-        WorksetBuildTiming = buildTiming;
-        SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        // 后台线程已经建好的工作集直接复用：松手后切换时只需要上传，
+        // 不再在主线程里付一次整份构建
+        VoxelGpuWorkset next;
+        if (prebuilt is not null && prebuilt.SourceVersion == world.ContentVersion)
+        {
+            next = prebuilt;
+            WorksetBuildTiming = default;
+            SyncWorksetBuildMs = 0;
+        }
+        else
+        {
+            next = VoxelGpuWorkset.Build(world, maximumCells, _activeLod, _lodCamera, greedyMerge, includeInterior,
+                chunkFilter, _activeModelLod, out var buildTiming);
+            WorksetBuildTiming = buildTiming;
+            SyncWorksetBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        }
         // 索引刷新放在构建之后：工作集已经给出本轮发光体素数，
         // 为零时可以直接清空索引，省掉一次整份世界的扫描
         var emissiveWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -621,9 +645,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         }
 
         // 构建、发光索引、上传三项分开记：松手后掉帧时能直接看出是哪一段在花时间
-        if (SyncWorksetBuildMs + SyncEmissiveCatalogMs + SyncUploadMs >= 20.0)
+        if (branchWatch.Elapsed.TotalMilliseconds >= 20.0)
         {
-            MVoxelLog.Info($"工作集同步耗时：构建 {SyncWorksetBuildMs:0.0}ms，" +
+            MVoxelLog.Info($"工作集同步分支=逐格：总计 {branchWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                $"构建 {SyncWorksetBuildMs:0.0}ms（{(SyncWorksetBuildMs <= 0.001 ? "后台预建" : "本帧现建")}），" +
                 $"发光索引 {SyncEmissiveCatalogMs:0.0}ms，上传 {SyncUploadMs:0.0}ms，" +
                 $"格数 {next.Cells.Count:N0}");
         }
