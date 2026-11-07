@@ -1158,9 +1158,14 @@ internal sealed partial class ImGuiEditorWindow
                 .Select(point => new[] { (double)point.X, point.Y, point.Z }).ToArray(),
             pipelineUsesBrickPath = _scenePipeline?.DiagnosticUsingBrickPath ?? false,
             pipelineHardwareRayQuery = _scenePipeline?.DiagnosticHardwareShadowsActive ?? false,
-            pipelineSourceVersion = _scenePipeline?.DiagnosticWorksetSourceVersion ?? -1,
-            pipelineDispatchFrames = _scenePipeline?.DiagnosticDispatchFrames ?? 0,
+            pipelineSourceVersion = _scenePipeline?.DiagnosticWorksetSourceVersion ?? -1,            pipelineDispatchFrames = _scenePipeline?.DiagnosticDispatchFrames ?? 0,
             pipelineConvergedFrames = _scenePipeline?.DiagnosticConvergedFrames ?? 0,
+            lastComposeMs = _lastComposeMs,
+            sceneWorksetBuildMs = _scenePipeline?.SyncWorksetBuildMs ?? 0,
+            sceneBvhBuildMs = _scenePipeline?.SyncBvhBuildMs ?? 0,
+            scenePackMs = _scenePipeline?.SyncPackMs ?? 0,
+            sceneUploadMs = _scenePipeline?.SyncUploadMs ?? 0,
+            sceneEmissiveSyncCpuMs = _scenePipeline?.EmissiveSyncMilliseconds ?? 0,
             objects,
         };
     }

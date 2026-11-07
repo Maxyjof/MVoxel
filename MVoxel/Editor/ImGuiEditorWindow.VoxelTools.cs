@@ -926,6 +926,7 @@ internal sealed partial class ImGuiEditorWindow
         Dictionary<ChunkCoord64, StableId>? owners;
         using (StartupTimeline.Begin("组合世界"))
         {
+            var composeWatch = System.Diagnostics.Stopwatch.StartNew();
             owners = new Dictionary<ChunkCoord64, StableId>();
             // 网格拖动预览不复制体素，而是在合成时给拖动对象叠加位移；
             // 拖动中每步只付一次合成开销，帧率不会再被世界复制与全量重建拖住
@@ -933,6 +934,7 @@ internal sealed partial class ImGuiEditorWindow
                 remap: RemapRuntimeMaterial, chunkOwners: owners,
                 shiftObjectId: _sceneGizmoGridDragObjectId ?? StableId.Empty,
                 shift: _sceneGizmoGridDragCells);
+            _lastComposeMs = composeWatch.Elapsed.TotalMilliseconds;
         }
         if (_composedWorlds.Count >= ComposedWorldCacheCapacity)
         {
@@ -1063,6 +1065,9 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>
     /// 清空组合世界缓存：对象可见性、图层、材质等存储状态变化后必须重新合成
     /// </summary>
+    /// <summary>最近一次场景视图组合世界耗时（毫秒），供拖动性能诊断</summary>
+    private double _lastComposeMs;
+
     private void InvalidateComposedWorldCache()
     {
         _composedWorlds.Clear();
