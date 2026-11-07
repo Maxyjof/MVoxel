@@ -2205,6 +2205,8 @@ internal sealed partial class ImGuiEditorWindow
                 return false;
             }
             pipeline.SetSceneLights(CollectSceneLights(GetActiveRenderCullingMask()));
+            var pathFrameWatch = System.Diagnostics.Stopwatch.StartNew();
+            double pathSyncMs = 0, pathDepositMs = 0, pathFrameStateMs = 0, pathSubmitMs = 0;
             // 路径追踪需要任意方向的间接光、反射与阴影，使用完整世界的保守集合；
             // 实时渲染按可见视锥并外扩远裁剪面范围内的贡献区块。正交投影没有可用的
             // 视锥斜率，同样退回完整世界，避免错误剔除
@@ -2236,6 +2238,7 @@ internal sealed partial class ImGuiEditorWindow
                 new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                 chunkFilter: renderChunkFilter, visibilitySignature: renderVisibilitySignature,
                 modelLod: renderModelLod);
+            pathSyncMs = pathFrameWatch.Elapsed.TotalMilliseconds;
             // 首帧工作集是在渲染视图按需上传的，因此不能在 SyncWorld 之前用
             // IsAvailable 拦截；否则“尚未上传”会永远阻止上传，永久退回 CPU 预览。
             if (!pipeline.IsAvailable)
@@ -2248,6 +2251,7 @@ internal sealed partial class ImGuiEditorWindow
             var renderDeposits = CollectSurfaceDeposits(renderMask);
             pipeline.SetSurfaceDeposits(renderDeposits, ResolveReceiverLayerTable(renderDeposits, renderMask,
                 sceneVisibility: false, pipeline.Workset.Origin));
+            pathDepositMs = pathFrameWatch.Elapsed.TotalMilliseconds;
             _pipelineStatus = string.Empty;
             var scale = MathF.Max(0.5F, ImGui.GetIO().DisplayFramebufferScale.X);
             var previewSettings = effective.CreateLargeScenePreview(pipeline.SyncTotalCells);
@@ -2348,6 +2352,7 @@ internal sealed partial class ImGuiEditorWindow
                 ? previewSettings.CreateInteractionPreview()
                 : previewSettings;
             var state = BuildFrameState(camera, frameSize, scale, width, height, pathMode: true, outlines: false);
+            pathFrameStateMs = pathFrameWatch.Elapsed.TotalMilliseconds;
             // 样本上限变化不丢弃已经完成的样本：提高上限继续采样，降低上限只收敛计数
             pipeline.LimitAccumulatedSamples(renderSettings.PathMaxAccumulatedSamples);
             // 首次进入渲染页没有可呈现的纹理，必须先提交一次，而不能直接走 Present。
@@ -2365,10 +2370,12 @@ internal sealed partial class ImGuiEditorWindow
                 pipeline.GpuTimingToken = _analysisLive.Serial;
                 var submitsBefore = pipeline.SubmitCount;
                 var fenceBefore = pipeline.FenceWaitTotalMs;
+                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
                 var performanceMark = PerformanceMark();
                 var renderWatch = System.Diagnostics.Stopwatch.StartNew();
                 var submitted = pipeline.RenderPathView(renderSettings, state, width, height);
                 renderWatch.Stop();
+                pathSubmitMs = pathFrameWatch.Elapsed.TotalMilliseconds;
                 if (!submitted)
                 {
                     // 路径追踪提交失败：本会话渲染视图退回软件求交，并在日志里留下原因
@@ -2393,6 +2400,9 @@ internal sealed partial class ImGuiEditorWindow
 
                 RecordPerformanceViewport(pipeline, renderWatch.Elapsed.TotalMilliseconds, submitsBefore,
                     fenceBefore, width, height, pathTracing: true);
+                // 渲染窗口也需要同样的每 5 秒性能日志，用来判断是 CPU 还是 GPU 在限制采样速度
+                RecordViewportFrame(_renderViewportPerformance, pipeline, renderWatch.Elapsed.TotalMilliseconds,
+                    submitsBefore, fenceBefore, allocatedBefore, width, height);
                 MeasureSince(performanceMark, ref _analysisLive.ViewportCpuMs);
             }
             else if (!pipeline.Present(renderSettings, state, width, height))
@@ -2408,6 +2418,16 @@ internal sealed partial class ImGuiEditorWindow
 
             StartupTimeline.Mark(StartupTimeline.MilestoneRenderFrame);
             DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
+            if (pathFrameWatch.Elapsed.TotalMilliseconds >= 30.0)
+            {
+                MVoxelLog.Info($"渲染视图帧分解：总计 {pathFrameWatch.Elapsed.TotalMilliseconds:0.0}ms，" +
+                    $"同步 {pathSyncMs:0.0}ms，表面数据 {pathDepositMs - pathSyncMs:0.0}ms，" +
+                    $"取景 {pathFrameStateMs - pathDepositMs:0.0}ms，" +
+                    $"提交 {pathSubmitMs - pathFrameStateMs:0.0}ms，" +
+                    $"绘制 {pathFrameWatch.Elapsed.TotalMilliseconds - pathSubmitMs:0.0}ms，" +
+                    $"采样 {pipeline.AccumulatedSamples}");
+            }
+
             return true;
         }
         catch (Exception exception)

@@ -36,6 +36,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private const int PathStripPixelBudget = 32_768;
 
     /// <summary>
+    /// 每帧最多提交多少条路径横条：一条一帧会把样本推进速度压到帧率的十几分之一
+    /// </summary>
+    private const int PathStripsPerFrame = 4;
+
+    /// <summary>
     /// 分块起点 push constant 的字节数，对应着色器里的 ivec2
     /// </summary>
     private const int TilePushConstantBytes = 8;
@@ -2746,7 +2751,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (_pathRoundNextStrip >= _pathRoundTotalStrips) MarkGpuSamplingEnd(commandBuffer);
             CommitRingSlot(slot);
 
-            if (_pathRoundNextStrip < _pathRoundTotalStrips) break;
+            // 每帧提交多条横条：采样吞吐受帧率限制时，一条一帧会让一个样本等十几帧；
+            // 批量提交后同样的帧率下样本推进速度成倍提升
+            if (_pathRoundNextStrip < _pathRoundTotalStrips && submittedThisFrame >= PathStripsPerFrame) break;
         }
 
         if (_pathRoundNextStrip < _pathRoundTotalStrips) return false;
