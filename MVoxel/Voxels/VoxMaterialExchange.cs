@@ -109,8 +109,10 @@ public static class VoxMaterialExchange
     {
         var type = material.Type ?? string.Empty;
         var isMetal = type.Contains("metal", StringComparison.OrdinalIgnoreCase) || material.Metal > 0F;
+        // 只有明确声明玻璃、透射大于 0 或给了折射率的材质才按玻璃处理：
+        // MagicaVoxel 会给普通材质写 _trans=0，按“>=0”判断会把所有漫反射都变成透射
         var isGlass = !isMetal && (type.Contains("glass", StringComparison.OrdinalIgnoreCase) ||
-                                   material.Transmission >= 0F || material.RefractionIndex > 0F);
+                                   material.Transmission > 0F || material.RefractionIndex > 0F);
         var isEmissive = !isMetal && !isGlass && (type.Contains("emit", StringComparison.OrdinalIgnoreCase) ||
                                                   material.Emissive > 0F);
         var asset = new MaterialAsset { Name = $"{baseName} 材质 {material.Id}" };
