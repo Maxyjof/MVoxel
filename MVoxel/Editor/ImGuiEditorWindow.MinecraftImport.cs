@@ -820,13 +820,16 @@ internal partial class ImGuiEditorWindow
                 // 材质文件变了要立刻重建运行时材质表
                 ReloadMaterialTable();
             }
-            OpenWorldAsset("Worlds/" + fileName);
-            SetStatus(overwrite
-                ? $"已重新导入 {Path.GetFileName(path)} 并更新 {fileName}：{world.OccupiedVoxelCount:N0} 个体素"
+            // 兼容导入按“新建一个场景”的方式落地：不覆盖当前场景，
+            // 生成 Assets/Scenes/<模型名>.mvox 并切换过去
+            var sceneRelative = CreateSceneForImportedAsset(baseName, fileName, world);
+            SetStatus(sceneRelative is not null
+                ? $"已导入 {Path.GetFileName(path)} 并创建场景 {sceneRelative}：{world.OccupiedVoxelCount:N0} 个体素"
                 : $"已导入 {Path.GetFileName(path)}：{world.OccupiedVoxelCount:N0} 个体素");
             return new
             {
                 asset = "Worlds/" + fileName,
+                scene = sceneRelative,
                 voxels = world.OccupiedVoxelCount,
                 bounds = world.TryGetBounds(out var minimum, out var maximum)
                     ? new[] { maximum.X - minimum.X + 1, maximum.Y - minimum.Y + 1, maximum.Z - minimum.Z + 1 }
@@ -958,6 +961,73 @@ internal partial class ImGuiEditorWindow
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 为导入的体素资产新建一个场景文件并切换过去，当前场景保持原样
+    /// </summary>
+    /// <param name="baseName">导入文件主名，用于场景命名</param>
+    /// <param name="worldFile">Worlds 目录下的文件名</param>
+    /// <param name="world">导入后的体素世界，用于计算取景</param>
+    /// <returns>新场景的相对路径；无法创建时返回 null</returns>
+    private string? CreateSceneForImportedAsset(string baseName, string worldFile, VoxelWorld world)
+    {
+        if (_project is not { } project) return null;
+        var voxelCount = world.OccupiedVoxelCount;
+        var scenesDirectory = Path.Combine(project.AssetsPath, "Scenes");
+        Directory.CreateDirectory(scenesDirectory);
+        var fileName = UniqueAssetFileName(scenesDirectory, baseName, ".mvox");
+        var sceneName = Path.GetFileNameWithoutExtension(fileName);
+        SceneDocument scene;
+        if (_sceneDocument is not null)
+        {
+            // 复制当前场景但去掉其中的体素对象：相机、灯光与环境保留，新场景仍然是干净的一份
+            scene = SceneSerializer.LoadFromJson(SceneSerializer.ToJson(_sceneDocument));
+            scene.Objects.RemoveAll(item =>
+                item.Components.Any(component => SceneComponentTypes.IsVoxelModel(component)));
+            scene.Name = sceneName;
+        }
+        else
+        {
+            scene = new SceneDocument { Name = sceneName };
+        }
+
+        var graph = new SceneGraph(scene);
+        var imported = graph.Add(sceneName, transform: TransformComponent.FromGrid(GridTransform.Identity));
+        imported.Components.Add(SceneComponentTypes.CreateVoxelModel(
+            "Assets/Worlds/" + worldFile, voxelCount, "Empty", "MagicaVoxel 导入"));
+
+        // 相机按导入模型的包围盒重新取景，避免沿用旧场景机位而看不到新模型
+        if (world.TryGetBounds(out var minimum, out var maximum))
+        {
+            var center = new OpenTK.Mathematics.Vector3(
+                (float)((minimum.X + maximum.X) / 2.0),
+                (float)((minimum.Y + maximum.Y) / 2.0),
+                (float)((minimum.Z + maximum.Z) / 2.0));
+            var diagonal = MathF.Max(16F, new OpenTK.Mathematics.Vector3(
+                (float)(maximum.X - minimum.X + 1),
+                (float)(maximum.Y - minimum.Y + 1),
+                (float)(maximum.Z - minimum.Z + 1)).Length);
+            var cameraObject = scene.Objects.FirstOrDefault(item =>
+                item.Components.Any(component => SceneComponentTypes.IsCamera(component)));
+            if (cameraObject is null)
+            {
+                cameraObject = graph.Add("主相机");
+                cameraObject.Components.Add(SceneComponentTypes.CreateCamera());
+            }
+
+            // MVoxel 场景坐标里体素 X 轴是反向的，房间开口朝 +X；相机放在 -X 一侧才能看到室内
+            var position = center + new OpenTK.Mathematics.Vector3(-0.9F, 0.7F, 0.9F) * (diagonal * 0.62F);
+            WriteCameraTransform(cameraObject, position, center - position, OpenTK.Mathematics.Vector3.UnitY);
+        }
+
+        SceneSerializer.Save(Path.Combine(scenesDirectory, fileName), scene);
+
+        _activeSceneRelativePath = "Scenes/" + fileName;
+        LoadWorldForProject(project);
+        FrameCameraOnWorld();
+        _sceneDocumentDirty = false;
+        return _activeSceneRelativePath;
     }
 
     /// <summary>
