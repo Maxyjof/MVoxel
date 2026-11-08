@@ -804,7 +804,7 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
                 BasePipelineHandle = default
             };
             Pipeline pipeline = default;
-            Check(_api.CreateGraphicsPipelines(_device, default, 1, in createInfo, null, out pipeline), "创建 ImGui Vulkan 图形管线");
+            Check(_api.CreateGraphicsPipelines(_device, _context.PipelineCacheHandle, 1, in createInfo, null, out pipeline), "创建 ImGui Vulkan 图形管线");
             return pipeline;
         }
         finally

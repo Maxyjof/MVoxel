@@ -77,6 +77,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private int _dragPreviewAccelerationVersion = -1;
     private bool _dragPreviewAccelerationCurrent;
     private double _lastComputeIdleWaitMs;
+    /// <summary>AMD 调度诊断日志的节流时间戳，避免每帧刷屏</summary>
+    private long _amdSchedulingLogMs;
     private double _lastShadowAccelerationBuildMs;
     private bool? _lastHardwareBackend;
     private bool _hardwareAccelerationDisabledByUser;
@@ -2002,6 +2004,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
     private Pipeline CreateComputePipeline()
     {
+        var pipelineWatch = Stopwatch.StartNew();
         var words = VulkanShaderCompiler.Compile(SceneComputeShader, ShaderKind.ComputeShader, "MVoxel.Scene.comp");
         var shaderModule = CreateShaderModule(words);
         nint entryPoint = SilkMarshal.StringToPtr("main");
@@ -2021,8 +2024,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 Layout = _computePipelineLayout,
                 BasePipelineIndex = -1
             };
-            Check(_api!.CreateComputePipelines(_device, default, 1, in createInfo, null, out var pipeline),
+            Check(_api!.CreateComputePipelines(_device, _context?.PipelineCacheHandle ?? default, 1, in createInfo, null, out var pipeline),
                 "创建 Vulkan 体素 Compute 管线");
+            pipelineWatch.Stop();
+            MVoxelLog.Info($"体素 Compute 管线创建完成：{pipelineWatch.Elapsed.TotalMilliseconds:0.0} ms");
+            _context?.SavePipelineCache();
             return pipeline;
         }
         finally
@@ -2073,6 +2079,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
 
     private Pipeline CreateHardwareShadowPipeline()
     {
+        var pipelineWatch = Stopwatch.StartNew();
         var words = VulkanShaderCompiler.Compile(HardwareSceneComputeShader,
             ShaderKind.ComputeShader, "MVoxel.Scene.rt.comp", rayTracing: true,
             vulkan11: _context!.HardwareShadersTargetVulkan11);
@@ -2094,8 +2101,11 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 Layout = _computePipelineLayout,
                 BasePipelineIndex = -1
             };
-            Check(_api!.CreateComputePipelines(_device, default, 1, in createInfo, null, out var pipeline),
+            Check(_api!.CreateComputePipelines(_device, _context?.PipelineCacheHandle ?? default, 1, in createInfo, null, out var pipeline),
                 "创建 Ray Query 阴影加速管线");
+            pipelineWatch.Stop();
+            MVoxelLog.Info($"Ray Query 阴影加速管线创建完成：{pipelineWatch.Elapsed.TotalMilliseconds:0.0} ms");
+            _context?.SavePipelineCache();
             return pipeline;
         }
         finally
@@ -2640,6 +2650,19 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _clearAccumulationPending = false;
             // 本轮结束后的显示图已经带上当前后处理参数，挂起的显示刷新不再需要
             _displayRefreshPending = false;
+        }
+
+        // AMD 驱动对光线查询与管线创建的表现和 N 卡差异大，按固定间隔记录调度形状，
+        // 便于对照"空场景也慢""拖动掉帧"这类问题；仅 AMD 输出，避免影响 N 卡日志
+        if (_context?.IsAmdDevice == true && Environment.TickCount64 - _amdSchedulingLogMs >= 3000)
+        {
+            _amdSchedulingLogMs = Environment.TickCount64;
+            MVoxelLog.Info(
+                $"AMD 调度：{(pathMode ? "路径追踪" : "实时场景")}，输出 {widthPixels}x{heightPixels}，" +
+                $"条带高 {_pathRoundStripHeight}，条带进度 {_pathRoundNextStrip}/{_pathRoundTotalStrips}，" +
+                $"每像素样本 {_pathRoundSamplesPerPixel}，本帧派发 {LastDispatchCount} 次，" +
+                $"累计工作组 {LastWorkgroupCount}，求交 {(_usingHardwareRayTracing ? "硬件 ray query" : "软件 BVH")}，" +
+                $"环形槽 {TileRingDepth}，设备 {_context.DeviceName}");
         }
 
         _lastParameters = parameters;

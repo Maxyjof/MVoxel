@@ -54,6 +54,9 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     private Format _format;
     private bool _resizePending;
     private bool _deviceLost;
+    /// <summary>跨会话复用的 Vulkan 管线缓存，避免每次启动重新编译大着色器</summary>
+    private PipelineCache _pipelineCache;
+    private nuint _pipelineCacheInitialBytes;
     private bool _disposed;
     private readonly bool _supportsTimestamps;
     private readonly uint _timestampValidBits;
@@ -79,6 +82,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
         _device = CreateDevice(_physicalDevice, _queueFamilyIndex);
         _api.GetDeviceQueue(_device, _queueFamilyIndex, 0, out _queue);
         (_supportsTimestamps, _timestampValidBits, _timestampPeriodNanoseconds) = QueryTimestampCapabilities();
+        CreatePipelineCache();
+        LogDeviceDetails();
         _swapchain = CreateSwapchain(window.FramebufferSize.X, window.FramebufferSize.Y);
         _renderPass = CreateRenderPass();
         CreateSwapchainImages();
@@ -95,6 +100,102 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// 当前交换链的像素尺寸
     /// </summary>
     internal Extent2D Extent => _extent;
+
+    /// <summary>
+    /// 跨会话复用的管线缓存，管线创建时传入可避免重复编译
+    /// </summary>
+    internal PipelineCache PipelineCacheHandle => _pipelineCache;
+
+    /// <summary>
+    /// 从数据目录加载管线缓存；不存在的缓存按空缓存创建
+    /// </summary>
+    private void CreatePipelineCache()
+    {
+        var path = Path.Combine(AppPaths.DataDirectory, "Cache", "Pipeline", "pipeline.cache");
+        byte[]? initial = null;
+        try
+        {
+            if (File.Exists(path)) initial = File.ReadAllBytes(path);
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Warn($"读取 Vulkan 管线缓存失败，按空缓存启动：{exception.Message}");
+        }
+
+        PipelineCacheCreateInfo createInfo = new() { SType = StructureType.PipelineCacheCreateInfo };
+        var created = Result.ErrorInitializationFailed;
+        if (initial is { Length: > 0 })
+        {
+            _pipelineCacheInitialBytes = (nuint)initial.Length;
+            fixed (byte* pointer = initial)
+            {
+                createInfo.InitialDataSize = (nuint)initial.Length;
+                createInfo.PInitialData = pointer;
+                created = _api.CreatePipelineCache(_device, in createInfo, null, out _pipelineCache);
+            }
+        }
+        else
+        {
+            created = _api.CreatePipelineCache(_device, in createInfo, null, out _pipelineCache);
+        }
+
+        if (created != Result.Success)
+        {
+            _pipelineCache = default;
+            MVoxelLog.Warn($"创建 Vulkan 管线缓存失败：{created}，本次启动将重新编译管线");
+            return;
+        }
+
+        MVoxelLog.Info($"Vulkan 管线缓存已加载：{_pipelineCacheInitialBytes / 1024} KB，路径 {path}");
+    }
+
+    /// <summary>
+    /// 把当前管线缓存写回数据目录，供下次启动复用
+    /// </summary>
+    internal void SavePipelineCache()
+    {
+        if (_pipelineCache.Handle == 0 || _deviceLost || _disposed) return;
+        try
+        {
+            nuint size = 0;
+            if (_api.GetPipelineCacheData(_device, _pipelineCache, ref size, null) != Result.Success || size == 0)
+                return;
+            var buffer = new byte[(int)size];
+            nuint written = size;
+            fixed (byte* pointer = buffer)
+            {
+                if (_api.GetPipelineCacheData(_device, _pipelineCache, ref written, pointer) != Result.Success)
+                    return;
+            }
+
+            var path = Path.Combine(AppPaths.DataDirectory, "Cache", "Pipeline", "pipeline.cache");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, written == size ? buffer : buffer[..(int)written]);
+            MVoxelLog.Info($"Vulkan 管线缓存已保存：{written / 1024} KB（启动时 {_pipelineCacheInitialBytes / 1024} KB）");
+        }
+        catch (Exception exception)
+        {
+            MVoxelLog.Warn($"保存 Vulkan 管线缓存失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 记录显卡厂商、API/驱动版本、时间戳能力等诊断信息，便于区分驱动问题与场景问题
+    /// </summary>
+    private void LogDeviceDetails()
+    {
+        PhysicalDeviceProperties properties = default;
+        _api.GetPhysicalDeviceProperties(_physicalDevice, &properties);
+        DeviceVendorId = properties.VendorID;
+        var api = properties.ApiVersion;
+        var driver = properties.DriverVersion;
+        MVoxelLog.Info(
+            $"Vulkan 设备详情：厂商 0x{properties.VendorID:X4}，设备 0x{properties.DeviceID:X4}，类型 {properties.DeviceType}，" +
+            $"API {api >> 22}.{api >> 12 & 0x3FF}.{api & 0xFFF}，驱动 0x{driver:X8}，" +
+            $"时间戳支持={_supportsTimestamps}，时间戳有效位={_timestampValidBits}，时间戳周期={_timestampPeriodNanoseconds:0.###}ns，" +
+            $"管线缓存启动大小={_pipelineCacheInitialBytes / 1024} KB");
+    }
+
 
     /// <summary>
     /// 当前 Vulkan API 绑定
@@ -158,6 +259,12 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
     /// 当前物理设备名称
     /// </summary>
     internal string DeviceName => _rayTracingCapabilities.DeviceName;
+
+    /// <summary>物理设备厂商编号，便于按厂商选择诊断与回退策略</summary>
+    internal uint DeviceVendorId { get; private set; }
+
+    /// <summary>是否为 AMD 显卡：AMD 上硬件光线查询的驱动表现与 N 卡差异较大</summary>
+    internal bool IsAmdDevice => DeviceVendorId == 0x1002;
 
     /// <summary>
     /// 当前物理设备是否可以创建 Vulkan 硬件光追管线
@@ -572,6 +679,8 @@ internal sealed unsafe partial class VulkanWindowContext : IDisposable
             return;
         }
 
+        // 必须在销毁设备前写回管线缓存，否则下次启动又要重新编译
+        SavePipelineCache();
         _disposed = true;
         _api.DeviceWaitIdle(_device);
         _api.DestroyFence(_device, _immediateFence, null);

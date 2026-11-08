@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using MVoxel.Core;
@@ -969,7 +969,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                 MaxPipelineRayRecursionDepth = 1,
                 Layout = _pipelineLayout,
             };
-            Check(_rayTracingApi.CreateRayTracingPipelines(_device, default, default, 1, in createInfo, null, out _pipeline), "创建 Vulkan 硬件 RT Pipeline");
+            Check(_rayTracingApi.CreateRayTracingPipelines(_device, default, _context.PipelineCacheHandle, 1, in createInfo, null, out _pipeline), "创建 Vulkan 硬件 RT Pipeline");
         }
         finally
         {
