@@ -775,6 +775,14 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("太阳穿过半透明体素时按 Beer 吸收累积颜色，有色玻璃得到带色阴影。");
                 SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("0 等于玻璃不挡光，1 按实际透射率衰减。");
+                SliderInt("玻璃反射分段数", ref settings.GlassReflectionBounces, 1, 3, "%d 段");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("2 段以上允许反射到金属表面后继续反射。");
+                ImGui.Checkbox("反射包含发光体", ref settings.GlassReflectionEmissive);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃反射到灯面时带上灯光颜色；关闭按天空近似。");
+                SliderFloat("反射环境光权重", ref settings.GlassReflectionAmbient, 0F, 2F, "%.2f");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("反射点环境光强度，默认 0.5；调低让反射更暗、对比更强。");
+                SliderFloat("反射遮挡权重", ref settings.GlassReflectionOcclusion, 0F, 1F, "%.2f");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按反射点半球遮挡比例压暗环境光，室内玻璃边缘不会一片高亮。");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");

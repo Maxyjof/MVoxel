@@ -43,6 +43,8 @@ internal sealed partial class ImGuiEditorWindow
     // 设备丢失后的重建次数上限，连续失败时保持 CPU 预览不再反复申请设备
     private const int MaxVulkanRecoveryAttempts = 2;
     private int _vulkanRecoveryAttempts;
+    /// <summary>设备丢失时显示在视口顶部的提示，恢复成功后清空</summary>
+    private string _gpuDeviceLostNotice = string.Empty;
     private bool _worldLoadFailed;
     private readonly ObjectVoxelStore _objectVoxels = new();
     // 场景预览异常后的重启冷却：一次异常不应把整场会话锁在 CPU 预览
@@ -194,10 +196,13 @@ internal sealed partial class ImGuiEditorWindow
         // 连续失败时不再尝试，避免在不可用的驱动状态里反复申请设备
         if (_vulkanRecoveryAttempts >= MaxVulkanRecoveryAttempts)
         {
+            _gpuDeviceLostNotice =
+                "显卡设备丢失，自动恢复失败：当前已切到 CPU 预览，渲染视图与场景视图不再使用显卡。请保存项目后重启编辑器。";
             return false;
         }
 
         _vulkanRecoveryAttempts++;
+        _gpuDeviceLostNotice = $"显卡设备丢失，正在尝试重建渲染设备（第 {_vulkanRecoveryAttempts} 次）…";
         MVoxelLog.Warn($"检测到 Vulkan 设备丢失，重建渲染设备（第 {_vulkanRecoveryAttempts} 次）");
         try
         {
@@ -226,6 +231,7 @@ internal sealed partial class ImGuiEditorWindow
             _accumulationSignature = string.Empty;
             _renderViewNeedsInitialRender = true;
             _lastRenderGpuSubmitMs = 0;
+            _gpuDeviceLostNotice = string.Empty;
             MVoxelLog.Info("Vulkan 渲染设备已重建，视图继续使用显卡渲染");
             return true;
         }
@@ -233,13 +239,43 @@ internal sealed partial class ImGuiEditorWindow
         {
             _gpuRenderingDisabled = true;
             _pipelineStatus = "显卡设备不可用，当前使用 CPU 预览";
+            _gpuDeviceLostNotice =
+                "显卡设备丢失，自动恢复失败：已切到 CPU 预览，玻璃等半透明材质会显示为不透明色块。请保存项目后重启编辑器。";
             MVoxelLog.Error("重建 Vulkan 渲染设备失败", exception);
             return false;
         }
     }
 
-    internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin, string SourceSegment = "");
+    /// <summary>
+    /// 画设备丢失提示：集中在视口顶部，避免用户把 CPU 预览误认为功能回退
+    /// </summary>
+    private void DrawGpuDeviceLostBanner()
+    {
+        if (string.IsNullOrEmpty(_gpuDeviceLostNotice)) return;
+        var viewport = ImGui.GetMainViewport();
+        var width = MathF.Min(760F, MathF.Max(320F, viewport.WorkSize.X - 64F));
+        ImGui.SetNextWindowPos(new Vector2(
+            viewport.WorkPos.X + (viewport.WorkSize.X - width) * 0.5F,
+            viewport.WorkPos.Y + 56F));
+        ImGui.SetNextWindowSize(new Vector2(width, 0F));
+        ImGui.SetNextWindowBgAlpha(0.94F);
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new System.Numerics.Vector4(0.26F, 0.10F, 0.07F, 0.96F));
+        ImGui.PushStyleColor(ImGuiCol.Border, new System.Numerics.Vector4(1F, 0.58F, 0.28F, 1F));
+        var flags = ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoMove |
+                    ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoFocusOnAppearing |
+                    ImGuiWindowFlags.NoNav | ImGuiWindowFlags.AlwaysAutoResize;
+        if (ImGui.Begin("##gpuDeviceLostNotice", flags))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1F, 0.84F, 0.58F, 1F));
+            ImGui.TextWrapped(_gpuDeviceLostNotice);
+            ImGui.PopStyleColor();
+        }
 
+        ImGui.End();
+        ImGui.PopStyleColor(2);
+    }
+
+    internal readonly record struct ModelLoadKey(string Path, VoxelCoord64 Origin, string SourceSegment = "");
     private sealed record PreparedProjectLoad(ProjectHandle Project, PreloadedModels? Models);
 
     private sealed record PreparedOpenProject(ProjectHandle Project, PreloadedModels Models,
@@ -3950,6 +3986,18 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("0 等于玻璃完全透光不挡光，1 按实际透射率衰减；中间值用于软化玻璃产生的高对比阴影。");
+        SliderInt("玻璃反射分段数", ref settings.GlassReflectionBounces, 1, 3, "%d 段");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("1 只反射一次；2 以上允许反射到金属表面后继续反射，室内镜面与玻璃会互相映照，代价是更多求交。");
+        ImGui.Checkbox("反射包含发光体", ref settings.GlassReflectionEmissive);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启后玻璃反射到灯面会直接带上灯光颜色；关闭按天空近似，室内灯影更干净但少了灯的倒影。");
+        SliderFloat("反射环境光权重", ref settings.GlassReflectionAmbient, 0F, 2F, "%.2f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("反射点环境光强度，默认 0.5；调低让玻璃反射更暗、对比更强，室内观感更接近 MagicaVoxel。");
+        SliderFloat("反射遮挡权重", ref settings.GlassReflectionOcclusion, 0F, 1F, "%.2f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("按反射点半球方向的遮挡比例压暗环境光：室内被墙挡住的部分更暗，玻璃边缘不会一片高亮。");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);

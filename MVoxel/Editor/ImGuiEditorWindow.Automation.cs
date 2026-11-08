@@ -174,6 +174,10 @@ internal sealed partial class ImGuiEditorWindow
              Param("glassGlintIntensity", "number", false, "玻璃界面太阳高光强度倍率"),
              Param("glassTransmissionShadow", "boolean", false, "是否让半透明体素按透射率给太阳阴影染色"),
              Param("glassTransmissionShadowStrength", "number", false, "透射阴影强度：0 完全透光，1 按实际透射率"),
+             Param("glassReflectionBounces", "integer", false, "玻璃反射分段数 1-3"),
+             Param("glassReflectionEmissive", "boolean", false, "玻璃反射是否包含发光体"),
+             Param("glassReflectionAmbient", "number", false, "玻璃反射环境光权重 0-2"),
+             Param("glassReflectionOcclusion", "number", false, "玻璃反射遮挡权重 0-1"),
              Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
              Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
              Param("softFillEnabled", "boolean", false, "是否启用环境柔光（对应 MagicaVoxel 的 Area 灯）"),
@@ -278,6 +282,9 @@ internal sealed partial class ImGuiEditorWindow
         new("project.createFromVox", "项目", "从vox新建项目", "按欢迎界面“从 MagicaVoxel 文件创建项目”的同一路径生成项目文件，供脚本复现该流程",
             [Param("folder", "string", true, "新项目目录，必须不存在或为空"),
              Param("vox", "string", true, "MagicaVoxel .vox 文件路径")]),
+        new("project.createFromTemplate", "项目", "按模板新建项目", "用内置示例模板（如 GlassShowcase）生成项目文件，供脚本复现并验收模板场景",
+            [Param("folder", "string", true, "新项目目录，必须不存在或为空"),
+             Param("template", "string", true, "模板 Id 或模板名称")]),
         new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
         new("camera.setPostProcess", "相机", "设置相机后处理效果", "开关相机后处理栈里的效果并写入强度与采样数，用于非光追画质标定",
             [Param("name", "string", false, "相机对象名"), Param("effect", "string", true, "效果类型，如 AmbientOcclusion 或 VoxelIndirectLight"), Param("enabled", "boolean", false, "是否启用"), Param("intensity", "number", false, "强度"), Param("samples", "integer", false, "采样数")]),
@@ -468,6 +475,7 @@ internal sealed partial class ImGuiEditorWindow
             "project.importVox" => RunOnUi(() =>
                 ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
             "project.createFromVox" => CreateProjectFromVox(payload),
+            "project.createFromTemplate" => CreateProjectFromTemplate(payload),
             "perf.stats" => DescribePerformanceStats(),
             "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
             "asset.list" => ListProjectAssets(payload),
@@ -1521,6 +1529,10 @@ internal sealed partial class ImGuiEditorWindow
             glassGlintIntensity = settings.GlassGlintIntensity,
             glassTransmissionShadow = settings.GlassTransmissionShadow,
             glassTransmissionShadowStrength = settings.GlassTransmissionShadowStrength,
+            glassReflectionBounces = settings.GlassReflectionBounces,
+            glassReflectionEmissive = settings.GlassReflectionEmissive,
+            glassReflectionAmbient = settings.GlassReflectionAmbient,
+            glassReflectionOcclusion = settings.GlassReflectionOcclusion,
             emissiveIntensity = settings.EmissiveIntensity,
             emissiveVoxels = settings.EmissiveVoxels,
             softFillEnabled = settings.SoftFillEnabled,
@@ -1627,6 +1639,14 @@ internal sealed partial class ImGuiEditorWindow
             settings.GlassTransmissionShadow = glassShadow;
         if (ReadNumber(arguments, "glassTransmissionShadowStrength") is { } glassShadowStrength)
             settings.GlassTransmissionShadowStrength = (float)glassShadowStrength;
+        if (ReadNumber(arguments, "glassReflectionBounces") is { } glassBounces)
+            settings.GlassReflectionBounces = (int)glassBounces;
+        if (ReadBoolean(arguments, "glassReflectionEmissive") is { } glassReflectEmissive)
+            settings.GlassReflectionEmissive = glassReflectEmissive;
+        if (ReadNumber(arguments, "glassReflectionAmbient") is { } glassReflectAmbient)
+            settings.GlassReflectionAmbient = (float)glassReflectAmbient;
+        if (ReadNumber(arguments, "glassReflectionOcclusion") is { } glassReflectOcclusion)
+            settings.GlassReflectionOcclusion = (float)glassReflectOcclusion;
         if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
         if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
         if (ReadBoolean(arguments, "softFillEnabled") is { } softFill) settings.SoftFillEnabled = softFill;

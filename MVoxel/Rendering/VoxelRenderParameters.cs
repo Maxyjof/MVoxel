@@ -174,7 +174,10 @@ public sealed class VoxelRenderParameters
     /// <summary>玻璃场景反射开关、太阳高光倍率、透射阴影开关与强度</summary>
     public const int GlassSceneReflection = 237, GlassGlintIntensity = 238;
     public const int GlassTransmissionShadow = 239, GlassTransmissionShadowStrength = 240;
-    public const int SlotCount = 241;
+    /// <summary>玻璃反射分段数、发光体反射开关、环境光权重与遮挡权重</summary>
+    public const int GlassReflectionBounces = 241, GlassReflectionEmissive = 242;
+    public const int GlassReflectionAmbient = 243, GlassReflectionOcclusion = 244;
+    public const int SlotCount = 245;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -225,6 +228,10 @@ public sealed class VoxelRenderParameters
             ("P_GLASS_SCENE_REFLECTION", GlassSceneReflection), ("P_GLASS_GLINT_INTENSITY", GlassGlintIntensity),
             ("P_GLASS_TRANSMISSION_SHADOW", GlassTransmissionShadow),
             ("P_GLASS_TRANSMISSION_SHADOW_STRENGTH", GlassTransmissionShadowStrength),
+            ("P_GLASS_REFLECTION_BOUNCES", GlassReflectionBounces),
+            ("P_GLASS_REFLECTION_EMISSIVE", GlassReflectionEmissive),
+            ("P_GLASS_REFLECTION_AMBIENT", GlassReflectionAmbient),
+            ("P_GLASS_REFLECTION_OCCLUSION", GlassReflectionOcclusion),
             ("P_SATURATION", Saturation), ("P_HUE_SHIFT", HueShift), ("P_CONTRAST", Contrast), ("P_BRIGHTNESS", Brightness),
             ("P_PALETTE_SHADING", PaletteShading), ("P_OUTLINES", Outlines), ("P_HUE_PHASE", HuePhase), ("P_AO_ENABLED", AoEnabled),
             ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower), ("P_AO_SAMPLES", AoSamples),
@@ -608,6 +615,10 @@ public sealed class VoxelRenderParameters
         parameters[GlassTransmissionShadow] = settings.GlassTransmissionShadow ? 1F : 0F;
         parameters[GlassTransmissionShadowStrength] =
             Math.Clamp(settings.GlassTransmissionShadowStrength, 0F, 4F);
+        parameters[GlassReflectionBounces] = Math.Clamp(settings.GlassReflectionBounces, 1, 3);
+        parameters[GlassReflectionEmissive] = settings.GlassReflectionEmissive ? 1F : 0F;
+        parameters[GlassReflectionAmbient] = Math.Clamp(settings.GlassReflectionAmbient, 0F, 2F);
+        parameters[GlassReflectionOcclusion] = Math.Clamp(settings.GlassReflectionOcclusion, 0F, 1F);
 
         for (var index = 0; index < parameters.Length; index++)
         {

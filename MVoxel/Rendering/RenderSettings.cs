@@ -555,6 +555,26 @@ public sealed class RenderSettings
     public float GlassTransmissionShadowStrength = 1F;
 
     /// <summary>
+    /// 玻璃反射的最大分段数：1 只反射一次，2 以上允许金属表面继续反射
+    /// </summary>
+    public int GlassReflectionBounces = 1;
+
+    /// <summary>
+    /// 玻璃反射是否把发光体计入反射结果；关闭时反射到灯面按天空处理
+    /// </summary>
+    public bool GlassReflectionEmissive = true;
+
+    /// <summary>
+    /// 玻璃反射的环境光权重，越大室内反射越亮
+    /// </summary>
+    public float GlassReflectionAmbient = 0.5F;
+
+    /// <summary>
+    /// 玻璃反射的遮挡权重：按反射点半球方向的遮挡比例压暗环境光，室内更接近 MagicaVoxel
+    /// </summary>
+    public float GlassReflectionOcclusion = 0.5F;
+
+    /// <summary>
     /// 景深开关
     /// </summary>
     public bool DepthOfField;
@@ -825,6 +845,9 @@ public sealed class RenderSettings
         ThinGlassMaxThickness = Math.Clamp(ThinGlassMaxThickness, 0F, 16F);
         GlassGlintIntensity = Math.Clamp(GlassGlintIntensity, 0F, 64F);
         GlassTransmissionShadowStrength = Math.Clamp(GlassTransmissionShadowStrength, 0F, 4F);
+        GlassReflectionBounces = Math.Clamp(GlassReflectionBounces, 1, 3);
+        GlassReflectionAmbient = Math.Clamp(GlassReflectionAmbient, 0F, 2F);
+        GlassReflectionOcclusion = Math.Clamp(GlassReflectionOcclusion, 0F, 1F);
         PathDenoiseStrength = Math.Clamp(PathDenoiseStrength, 0F, 1F);
         BloomIntensity = Math.Clamp(BloomIntensity, 0F, 2F);
         BloomThreshold = Math.Clamp(BloomThreshold, 0F, 8F);
@@ -970,6 +993,9 @@ public sealed class RenderSettings
         ThinGlassMaxThickness = Safe(ThinGlassMaxThickness, 2F);
         GlassGlintIntensity = Safe(GlassGlintIntensity, 6F);
         GlassTransmissionShadowStrength = Safe(GlassTransmissionShadowStrength, 1F);
+        GlassReflectionBounces = Math.Clamp(GlassReflectionBounces == 0 ? 1 : GlassReflectionBounces, 1, 3);
+        GlassReflectionAmbient = Safe(GlassReflectionAmbient, 0.5F);
+        GlassReflectionOcclusion = Safe(GlassReflectionOcclusion, 0.5F);
         PathDenoiseStrength = Safe(PathDenoiseStrength, 0.65F);
         BloomIntensity = Safe(BloomIntensity, 0.35F);
         BloomThreshold = Safe(BloomThreshold, 1F);

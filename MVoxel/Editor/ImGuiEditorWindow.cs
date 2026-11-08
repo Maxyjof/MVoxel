@@ -1311,6 +1311,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawStatusBar();
         DrawMinecraftImportWindow();
         DrawMeshImportWindow();
+        DrawGpuDeviceLostBanner();
         var otherPanelsMs = sectionWatch.Elapsed.TotalMilliseconds;
         sectionWatch.Restart();
         MeasureSince(mark, ref _analysisLive.OtherPanelsMs);

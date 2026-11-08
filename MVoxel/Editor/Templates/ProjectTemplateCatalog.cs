@@ -24,6 +24,9 @@ public enum ProjectTemplateId
 
     /// <summary>透明与毛玻璃对照。</summary>
     GlassStudy,
+
+    /// <summary>玻璃与镜面综合展台：15 种光学案例同场对照。</summary>
+    GlassShowcase,
     /// <summary>康奈尔盒间接光实验。</summary>
     CornellBox,
     /// <summary>玻璃球、金属球与棋盘。</summary>
@@ -139,13 +142,13 @@ public static class ProjectTemplateCatalog
     /// <summary>
     /// 模板的原始登记顺序，只在规模分组相同时决定先后
     /// </summary>
-    private static readonly ProjectTemplateDefinition[] Definitions =
-    [
+    private static readonly ProjectTemplateDefinition[] Definitions =    [
         new(ProjectTemplateId.Empty, "空", "创建没有场景对象的空项目。", "从零开始", "起步", "自行创建场景对象"),
         new(ProjectTemplateId.DefaultRoom, "默认模板", "带桌椅、可乐纸杯、饼干、壁画和落地电风扇的室内场景。", "室内 · 材质 · 家具", "起步", "选择并编辑独立物件"),
         new(ProjectTemplateId.CornellBox, "康奈尔盒光照", "红绿墙、顶灯、漫反射方块与镜面球构成经典间接光实验。", "间接光 · 颜色溢出 · 软阴影", "小型", "观察彩色墙面对中性物体的间接照明"),
         new(ProjectTemplateId.SphereOptics, "玻璃球与棋盘", "玻璃球、金属球和棋盘背景展示透射、折射与反射。", "玻璃 · 金属 · 反射 · 折射", "小型", "比较玻璃球与金属球的光线响应"),
         new(ProjectTemplateId.GlassStudy, "玻璃透射对照", "在棋盘背景前比较透明玻璃、有色玻璃和毛玻璃。", "透射 · 折射 · 毛玻璃", "小型", "观察不同玻璃对背景的影响"),
+        new(ProjectTemplateId.GlassShowcase, "玻璃与镜面综合展台", "同一展厅并排展示 15 种玻璃与镜面案例：薄板、毛玻璃、厚玻璃砖、透镜球、玻璃柱、完美镜面、拉丝金属、半透明、发光玻璃、双层玻璃、棱镜阶梯与四色吸收玻璃。", "玻璃 · 镜面 · 折射 · 透射阴影", "中型", "同场景对比不同玻璃、镜面与反射的组合表现"),
         new(ProjectTemplateId.CloudAndFog, "云雾与散射", "在山景中观察漂浮云朵、薄雾和浓雾的体积效果。", "云朵 · 雾气 · 体积散射", "小型", "调整雾化密度、散射色和不透明度"),
         new(ProjectTemplateId.WaterStudy, "水面与池底", "用浅水池、池底棋盘和水中物件观察水体透射与折射。", "水面 · 吸收 · 折射", "小型", "比较水深及吸收对池底的影响"),
         new(ProjectTemplateId.WorldOcean, "晴海灯塔", "晴空海面环绕灯塔岛，展示细密水波与海天。", "世界环境 · 海面 · 灯塔", "小型", "调整水位、波长与水面粗糙度"),
@@ -570,6 +573,7 @@ public static class ProjectTemplateCatalog
             ProjectTemplateId.WeatherHeatHaze => TemplateScenes.BuildEnvironmentIsland(0),
             ProjectTemplateId.DefaultRoom => TemplateScenes.BuildDefaultRoom(),
             ProjectTemplateId.GlassStudy => TemplateScenes.BuildGlassStudy(),
+            ProjectTemplateId.GlassShowcase => TemplateScenes.BuildGlassShowcase(),
             ProjectTemplateId.CornellBox => TemplateScenes.BuildCornellBox(),
             ProjectTemplateId.SphereOptics => TemplateScenes.BuildSphereOptics(),
             ProjectTemplateId.CloudAndFog => TemplateScenes.BuildCloudAndFog(),
@@ -657,6 +661,38 @@ public static class ProjectTemplateCatalog
         if (id == ProjectTemplateId.SphereOptics)
             materials.Add(At(10, new MaterialAsset { Name = "实验玻璃", Ior = 1.5F, Roughness = .02F,
                 Opacity = .08F, AbsorptionStep = .3F, VolumeScattering = 0F }));
+        if (id == ProjectTemplateId.GlassShowcase)
+        {
+            // 15 个展品各用一个独立材质槽，方便在场景里逐个对象调参比对
+            var showcaseMaterials = new (int Slot, string Name, MaterialAsset Asset)[]
+            {
+                (20, "透明平板玻璃", new() { Ior = 1.5F, Roughness = .02F, Opacity = .05F, AbsorptionStep = .2F }),
+                (21, "毛玻璃", new() { Ior = 1.5F, Roughness = .85F, Opacity = .2F, AbsorptionStep = .3F,
+                    VolumeScattering = .15F, HazeDensity = .06F }),
+                (22, "厚玻璃砖", new() { Ior = 1.52F, Roughness = .04F, Opacity = .12F, AbsorptionStep = .5F }),
+                (23, "玻璃透镜球", new() { Ior = 1.6F, Roughness = .01F, Opacity = .06F, AbsorptionStep = .2F }),
+                (24, "玻璃圆柱", new() { Ior = 1.5F, Roughness = .05F, Opacity = .1F, AbsorptionStep = .25F }),
+                (25, "完美镜面", new() { Metallic = 1F, Roughness = .005F }),
+                (26, "拉丝金属", new() { Metallic = 1F, Roughness = .35F }),
+                (27, "半透明玻璃", new() { Ior = 1.5F, Roughness = .05F, Opacity = .5F }),
+                (28, "发光玻璃", new() { Ior = 1.5F, Roughness = .08F, Opacity = .2F, EmissiveScale = 3F }),
+                (29, "双层玻璃", new() { Ior = 1.5F, Roughness = .02F, Opacity = .05F, AbsorptionStep = .2F }),
+                (30, "棱镜阶梯", new() { Ior = 1.7F, Roughness = .02F, Opacity = .1F }),
+                (31, "红色吸收玻璃", new() { Ior = 1.5F, Roughness = .04F, Opacity = .85F,
+                    AbsorptionStep = 5F, AbsorptionColor = new Rgba32(250, 70, 60) }),
+                (32, "绿色吸收玻璃", new() { Ior = 1.5F, Roughness = .04F, Opacity = .85F,
+                    AbsorptionStep = 5F, AbsorptionColor = new Rgba32(70, 190, 120) }),
+                (33, "琥珀吸收玻璃", new() { Ior = 1.5F, Roughness = .04F, Opacity = .85F,
+                    AbsorptionStep = 5F, AbsorptionColor = new Rgba32(240, 170, 70) }),
+                (34, "蓝色吸收玻璃", new() { Ior = 1.5F, Roughness = .04F, Opacity = .85F,
+                    AbsorptionStep = 5F, AbsorptionColor = new Rgba32(80, 140, 235) }),
+            };
+            foreach (var (slot, name, asset) in showcaseMaterials)
+            {
+                asset.Name = name;
+                materials.Add(At(slot, asset));
+            }
+        }
         if (id == ProjectTemplateId.MaterialLab)
         {
             for (var step = 0; step < 5; step++)
@@ -1267,6 +1303,13 @@ public static class ProjectTemplateCatalog
             positions[0] = new Double3(center.X - 2D, 11D, 32D);
             target = new Vector3((float)center.X, 9F, (float)(center.Z + 24D));
         }
+        if (template.Id == ProjectTemplateId.GlassShowcase)
+        {
+            // 展台是横向长厅，默认斜俯视会把两侧展品挤出画面，改为正面略高机位一次看完
+            positions[0] = new Double3(center.X, center.Y + distance * .12D, center.Z + distance * .62D);
+            target = new Vector3((float)center.X, (float)(center.Y - 2D), (float)(center.Z - 6D));
+        }
+
         for (var index = 0; index < Math.Clamp(cameraCount, 1, positions.Length); index++)
         {
             var position = positions[index];

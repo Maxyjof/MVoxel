@@ -216,6 +216,104 @@ internal static class TemplateScenes
     }
 
     /// <summary>同一背景下的薄雾与云朵，保持完整体积供透射计算。</summary>
+    /// <summary>
+    /// 玻璃与镜面综合展台：同一展厅里并排展示薄板、毛玻璃、厚玻璃砖、透镜球、
+    /// 玻璃柱、镜面、拉丝金属、半透明、发光玻璃、双层玻璃、棱镜与多色吸收玻璃等 15 种光学案例
+    /// </summary>
+    public static VoxelWorld BuildGlassShowcase()
+    {
+        var w = new VoxelWorld();
+        var floor = Paint(new Rgba32(168, 162, 150));
+        var wallLight = Paint(new Rgba32(232, 228, 219));
+        var wallDark = Paint(new Rgba32(58, 70, 88));
+        var stone = Paint(new Rgba32(122, 124, 129));
+        var timber = Paint(new Rgba32(126, 86, 54));
+        TemplateKit.Box(w, -46, 0, -34, 46, 0, 30, floor);
+        for (var x = -45; x <= 45; x++)
+        for (var y = 1; y <= 26; y++)
+            w.Set(new VoxelCoord64(x, y, -33), ((x + 45) / 3 + (y - 1) / 3) % 2 == 0 ? wallLight : wallDark);
+        // 展厅只保留背景墙，左右不封墙，渲染相机可以从正面一次看完所有展品
+
+        static VoxelValue Solid(Rgba32 color, ushort slot) => new(color, slot);
+        var clear = new Rgba32(236, 244, 246);
+        var frosted = new Rgba32(226, 232, 234);
+        var deepGlass = new Rgba32(208, 232, 236);
+        var red = new Rgba32(238, 96, 88);
+        var green = new Rgba32(96, 202, 138);
+        var amber = new Rgba32(240, 170, 70);
+        var blue = new Rgba32(96, 148, 232);
+
+        var positions = new (int X, int Z)[]
+        {
+            (-34, -22), (-17, -22), (0, -22), (17, -22), (34, -22),
+            (-34, -2), (-17, -2), (0, -2), (17, -2), (34, -2),
+            (-34, 18), (-17, 18), (0, 18), (17, 18), (34, 18),
+        };
+        for (var index = 0; index < positions.Length; index++)
+        {
+            var (x, z) = positions[index];
+            var slot = (ushort)(20 + index);
+            TemplateKit.Box(w, x - 4, 1, z - 4, x + 4, 3, z + 4, stone);
+            switch (index)
+            {
+                case 0: // 透明平板玻璃
+                case 1: // 毛玻璃
+                case 7: // 半透明玻璃
+                    TemplateKit.Box(w, x - 4, 4, z, x + 4, 16, z,
+                        Optical(clear.R, clear.G, clear.B, 90, slot));
+                    TemplateKit.Box(w, x - 5, 4, z, x - 5, 16, z, timber);
+                    TemplateKit.Box(w, x + 5, 4, z, x + 5, 16, z, timber);
+                    break;
+                case 2: // 厚玻璃砖
+                    TemplateKit.Box(w, x - 3, 4, z - 3, x + 3, 12, z + 3,
+                        Optical(deepGlass.R, deepGlass.G, deepGlass.B, 200, slot));
+                    break;
+                case 3: // 玻璃球（透镜）
+                    TemplateKit.Ellipsoid(w, x, 10, z, 4, 4, 4, Optical(clear.R, clear.G, clear.B, 70, slot));
+                    break;
+                case 4: // 玻璃圆柱（棱镜条纹）
+                    TemplateKit.Cylinder(w, x, 10, z, 3, 3, 6, Optical(clear.R, clear.G, clear.B, 110, slot));
+                    break;
+                case 5: // 完美镜面
+                case 6: // 拉丝金属
+                    TemplateKit.Box(w, x - 4, 4, z, x + 4, 15, z,
+                        Solid(new Rgba32(228, 230, 234), slot));
+                    break;
+                case 8: // 发光玻璃砖
+                    TemplateKit.Box(w, x - 3, 4, z - 3, x + 3, 11, z + 3,
+                        Solid(new Rgba32(255, 214, 150), slot));
+                    break;
+                case 9: // 双层玻璃（多次界面）
+                    TemplateKit.Box(w, x - 4, 4, z - 2, x + 4, 15, z - 2,
+                        Optical(clear.R, clear.G, clear.B, 80, slot));
+                    TemplateKit.Box(w, x - 4, 4, z + 2, x + 4, 15, z + 2,
+                        Optical(clear.R, clear.G, clear.B, 80, slot));
+                    break;
+                case 10: // 棱镜阶梯
+                    for (var step = 0; step < 6; step++)
+                        TemplateKit.Box(w, x - 4 + step, 4, z, x + 4 - step, 5 + step * 2, z,
+                            Optical(clear.R, clear.G, clear.B, 120, slot));
+                    break;
+                case 11: // 红色吸收玻璃
+                case 12: // 绿色吸收玻璃
+                case 13: // 琥珀吸收玻璃
+                case 14: // 蓝色吸收玻璃
+                    var color = index switch
+                    {
+                        11 => red,
+                        12 => green,
+                        13 => amber,
+                        _ => blue,
+                    };
+                    TemplateKit.Box(w, x - 4, 4, z, x + 4, 16, z,
+                        Optical(color.R, color.G, color.B, 110, slot));
+                    break;
+            }
+        }
+
+        return w;
+    }
+
     public static VoxelWorld BuildCloudAndFog()
     {
         var w = new VoxelWorld();
@@ -266,6 +364,13 @@ internal static class TemplateScenes
             ProjectTemplateId.CornellBox => new[] { "盒体与漫反射方块", "顶灯", "金属球" },
             ProjectTemplateId.SphereOptics => new[] { "棋盘背景", "玻璃球", "金属球" },
             ProjectTemplateId.GlassStudy => new[] { "环境与棋盘", "透明玻璃", "毛玻璃", "有色玻璃" },
+            ProjectTemplateId.GlassShowcase => new[]
+            {
+                "展厅与棋盘",
+                "01 透明薄板玻璃", "02 毛玻璃", "03 厚玻璃砖", "04 玻璃透镜球", "05 玻璃圆柱",
+                "06 完美镜面", "07 拉丝金属", "08 半透明玻璃", "09 发光玻璃", "10 双层玻璃",
+                "11 棱镜阶梯", "12 红色吸收玻璃", "13 绿色吸收玻璃", "14 琥珀吸收玻璃", "15 蓝色吸收玻璃",
+            },
             ProjectTemplateId.CloudAndFog => new[] { "环境与山景", "薄雾", "云朵", "浓雾" },
             _ => new[] { "池底与池边", "水体" },
         };
@@ -278,6 +383,8 @@ internal static class TemplateScenes
                 ProjectTemplateId.CornellBox => value.MaterialSlot switch { 4 => 1, 3 => 2, _ => 0 },
                 ProjectTemplateId.SphereOptics => value.MaterialSlot switch { 10 => 1, 3 => 2, _ => 0 },
                 ProjectTemplateId.GlassStudy => value.MaterialSlot switch { 10 => 1, 11 => 2, 12 => 3, _ => 0 },
+                ProjectTemplateId.GlassShowcase => value.MaterialSlot is >= 20 and <= 34
+                    ? value.MaterialSlot - 19 : 0,
                 ProjectTemplateId.CloudAndFog => value.MaterialSlot switch { 13 => 1, 14 => 2, 16 => 3, _ => 0 },
                 _ => value.MaterialSlot == 15 ? 1 : 0,
             };
@@ -419,7 +526,7 @@ internal static class TemplateScenes
         return id switch
         {
             ProjectTemplateId.CornellBox or ProjectTemplateId.SphereOptics or ProjectTemplateId.GlassStudy or
-                ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy =>
+                ProjectTemplateId.GlassShowcase or ProjectTemplateId.CloudAndFog or ProjectTemplateId.WaterStudy =>
                 BuildOpticalParts(id, source),
             ProjectTemplateId.WorldOcean or ProjectTemplateId.WorldMist or ProjectTemplateId.WorldSunset or
                 ProjectTemplateId.WeatherRain or ProjectTemplateId.WeatherSnow or ProjectTemplateId.WeatherStorm or

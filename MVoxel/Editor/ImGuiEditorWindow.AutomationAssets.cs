@@ -268,6 +268,24 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>按内置模板生成项目文件，供模板场景的脚本验收</summary>
+    /// <param name="payload">参数：folder 新项目目录，template 模板 Id 或名称</param>
+    /// <returns>项目目录与模板 Id</returns>
+    private object CreateProjectFromTemplate(JsonElement payload)
+    {
+        var folder = ReadString(payload, "folder") ?? throw new ArgumentException("缺少 folder");
+        var templateText = ReadString(payload, "template") ?? throw new ArgumentException("缺少 template");
+        if (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any())
+            throw new InvalidOperationException("目标项目目录必须为空");
+        var template = MVoxel.Editor.Templates.ProjectTemplateCatalog.All
+            .FirstOrDefault(item => string.Equals(item.Id.ToString(), templateText, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(item.Name, templateText, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException($"未知模板：{templateText}");
+        var project = ProjectLayout.Create(Path.GetFullPath(folder), new DirectoryInfo(folder).Name);
+        MVoxel.Editor.Templates.ProjectTemplateCatalog.Populate(project, template.Id);
+        return new { project = project.RootPath, template = template.Id.ToString() };
+    }
+
     /// <summary>
     /// 按欢迎界面“从 vox 创建项目”的同一路径生成项目文件，供脚本复现与验证该导入流程
     /// </summary>

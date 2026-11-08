@@ -4669,32 +4669,76 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 与射线求交不同，它既不发射辅助射线也不需要随机方向，结果零方差。
         // 返回该点所在体素的 sRGB 颜色，a > 0 表示不透明实心；空气 / 半透明返回 0。
         // 玻璃界面反射：优先追踪真实场景，未命中才回退天空。
-        // 只做一次反弹的近似着色，避免为玻璃反射引入完整递归路径。
-        vec3 GlassSceneReflection(vec3 rayOrigin, vec3 rayDirection, inout uint state)
+        // 支持最多 N 段反射（金属表面可继续反射）、发光体反射与环境光遮挡权重。
+        vec3 GlassSceneReflection(vec3 rayOrigin, vec3 rayDirection, inout uint state, int maxSegments)
         {
-            float distance;
-            vec3 normal;
-            vec4 color;
-            uint flags;
-            uint slot;
-            ivec3 cell;
-            ivec3 extent;
-            if (!TraceClosest(rayOrigin + rayDirection * 0.002, rayDirection, distance, normal, color,
-                    flags, slot, cell, extent, false))
-                return Sky(rayDirection);
-            // 反射进半透明或发光体时按天空近似，避免反射链继续展开
-            if ((flags & 3u) != 0u)
-                return Sky(rayDirection);
-            vec3 hitPoint = rayOrigin + rayDirection * (distance + 0.002);
-            if (dot(normal, rayDirection) > 0.0) normal = -normal;
+            vec3 accumulated = vec3(0.0);
+            vec3 weight = vec3(1.0);
+            vec3 origin = rayOrigin;
+            vec3 direction = rayDirection;
+            float ambientWeight = values[P_GLASS_REFLECTION_AMBIENT];
+            float occlusionWeight = values[P_GLASS_REFLECTION_OCCLUSION];
+            bool reflectEmissive = values[P_GLASS_REFLECTION_EMISSIVE] > 0.5;
             vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
-            float sunVisibility = values[33] > 0.5
-                ? TraceSoftShadow(hitPoint + normal * 0.002, normal, sunDirection, 10000.0, state)
-                : 0.0;
-            vec3 sun = vec3(values[28], values[29], values[30]) * values[27] *
-                max(dot(normal, sunDirection), 0.0) * sunVisibility;
-            vec3 ambient = vec3(values[43]) * 0.5 + vec3(0.02);
-            return SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0))) * (sun + ambient);
+            for (int segment = 0; segment < maxSegments; segment++)
+            {
+                float distance;
+                vec3 normal;
+                vec4 color;
+                uint flags;
+                uint slot;
+                ivec3 cell;
+                ivec3 extent;
+                if (!TraceClosest(origin + direction * 0.002, direction, distance, normal, color,
+                        flags, slot, cell, extent, false))
+                {
+                    accumulated += weight * Sky(direction);
+                    break;
+                }
+                if (dot(normal, direction) > 0.0) normal = -normal;
+                vec3 hitPoint = origin + direction * (distance + 0.002);
+                MaterialSlotData mat = materialSlots[int(slot)];
+                vec3 albedo = SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0)));
+                bool translucent = (flags & 1u) != 0u;
+                // 反射进发光体时按自发光强度计入，否则按天空近似
+                if ((flags & 2u) != 0u && reflectEmissive)
+                {
+                    float emissionScale = max(mat.scalars.z, 0.0);
+                    accumulated += weight * albedo * min(values[80] * emissionScale, 8.0);
+                    break;
+                }
+                if (translucent)
+                {
+                    accumulated += weight * Sky(direction);
+                    break;
+                }
+                // 遮挡近似：在反射点半球方向探测两条例外射线，按遮挡比例压暗环境项
+                float blocked = 0.0;
+                if (occlusionWeight > 0.001)
+                {
+                    vec3 upHint = abs(normal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+                    vec3 probeA = normalize(normal + upHint);
+                    vec3 probeB = normalize(normal + cross(normal, upHint));
+                    vec3 probeOrigin = hitPoint + normal * 0.002;
+                    blocked += TraceAnyHitOccluder(probeOrigin, probeA, 16.0) ? 0.5 : 0.0;
+                    blocked += TraceAnyHitOccluder(probeOrigin, probeB, 16.0) ? 0.5 : 0.0;
+                }
+                float sunVisibility = values[33] > 0.5
+                    ? TraceSoftShadow(hitPoint + normal * 0.002, normal, sunDirection, 10000.0, state)
+                    : 0.0;
+                vec3 sun = vec3(values[28], values[29], values[30]) * values[27] *
+                    max(dot(normal, sunDirection), 0.0) * sunVisibility;
+                vec3 ambient = (vec3(values[43]) * ambientWeight + vec3(0.02)) *
+                    (1.0 - clamp(blocked * occlusionWeight, 0.0, 1.0));
+                accumulated += weight * albedo * (sun + ambient);
+                // 金属表面视为镜面，继续下一段反射；其他材质到此结束
+                bool isMetal = mat.scalars.y > 0.5;
+                if (!isMetal || segment + 1 >= maxSegments) break;
+                weight *= albedo;
+                origin = hitPoint;
+                direction = normalize(reflect(direction, normal));
+            }
+            return accumulated;
         }
 
         // 透射阴影：沿太阳方向穿过半透明体素时按 Beer 吸收累积颜色，
@@ -6075,7 +6119,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         // 玻璃反射默认追踪真实场景，室内玻璃边缘才能反射身后物体；
                         // 关闭后回退为只采样天空的旧行为
                         vec3 reflectionRadiance = values[P_GLASS_SCENE_REFLECTION] > 0.5
-                            ? GlassSceneReflection(hitPoint + hitNormal * 0.002, reflected, state)
+                            ? GlassSceneReflection(hitPoint + hitNormal * 0.002, reflected, state,
+                                max(int(values[P_GLASS_REFLECTION_BOUNCES]), 1))
                             : Sky(reflected);
                         radiance += throughput * reflectionRadiance * fresnel;
                         if (values[33] > 0.5)
