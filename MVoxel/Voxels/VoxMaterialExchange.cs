@@ -117,14 +117,19 @@ public static class VoxMaterialExchange
     /// </summary>
     /// <param name="document">解析后的 .vox 文档</param>
     /// <param name="baseName">素材名，用于生成材质显示名</param>
+    /// <param name="usedSlots">体素实际使用的材质槽；为空时导入全部 MATL</param>
     /// <returns>可直接写入世界文件的材质元数据</returns>
-    public static MaterialExchangeMetadata BuildImportMetadata(VoxDocument document, string baseName)
+    public static MaterialExchangeMetadata BuildImportMetadata(VoxDocument document, string baseName,
+        IReadOnlySet<ushort>? usedSlots = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         var metadata = new MaterialExchangeMetadata();
         foreach (var material in document.Materials)
         {
             if (material.Id <= 0 || material.Id >= MaterialAsset.TableSlots) continue;
+            // MagicaVoxel 会给整张色板的每个槽都写 MATL，只有体素真正用到的槽才需要建材质，
+            // 否则项目里会凭空多出两百多个没用的材质资产
+            if (usedSlots is { Count: > 0 } && !usedSlots.Contains((ushort)material.Id)) continue;
             var id = $"vox-material-{material.Id}";
             metadata.Definitions[id] = ConvertToAsset(material, baseName);
             metadata.Bindings[(ushort)material.Id] = id;

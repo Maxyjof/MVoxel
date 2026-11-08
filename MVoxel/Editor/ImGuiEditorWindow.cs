@@ -4102,7 +4102,7 @@ DockId=0x6A3C3007,0
                     ExportVoxAsset, path => OpenGeneratorAsset(path), ExportQubicleAsset,
                     path => FindOpenAssetReferenceNames(path).Count,
                     FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene,
-                    path => RequestTimelineSwitch(path));
+                    path => RequestTimelineSwitch(path), allowCreate: !IsAssetStage);
                 break;
             case "渲染配置": DrawConfigurationPanel(); break;
             case "生成器": DrawGeneratorToolbar(); ImGui.Separator(); DrawGeneratorEditor(); ImGui.Separator(); DrawGeneratorParameters(); DrawGeneratorMessage(); break;
@@ -5713,7 +5713,7 @@ DockId=0x6A3C3007,0
             ExportQubicleAsset,
             path => FindOpenAssetReferenceNames(path).Count,
             FindOpenAssetReferenceNames, OpenPrefabAssetStage, AddVoxelAssetReferenceToScene,
-            path => RequestTimelineSwitch(path));
+            path => RequestTimelineSwitch(path), allowCreate: !IsAssetStage);
         var selectedAssetPath = _assetBrowser.SelectedAssetPath;
         if (!string.Equals(selectedAssetPath, _lastAssetSelectionPath, StringComparison.OrdinalIgnoreCase))
         {

@@ -761,8 +761,15 @@ internal partial class ImGuiEditorWindow
                 // 否则镜面数据在导入这一步就丢了
                 var document = VoxFormat.ReadDocument(path);
                 world = VoxFormat.Compose(document);
+                // 只导入体素真正用到的材质槽，避免把整张色板的空白 MATL 全建成项目材质
+                var usedSlots = new HashSet<ushort>();
+                foreach (var (_, value) in world.EnumerateOccupied())
+                {
+                    if (value.MaterialSlot != 0) usedSlots.Add(value.MaterialSlot);
+                }
+
                 materials = VoxMaterialExchange.BuildImportMetadata(document,
-                    Path.GetFileNameWithoutExtension(path));
+                    Path.GetFileNameWithoutExtension(path), usedSlots);
             }
             else
             {
@@ -776,14 +783,34 @@ internal partial class ImGuiEditorWindow
             }
             var worldsDirectory = Path.Combine(_project.AssetsPath, "Worlds");
             Directory.CreateDirectory(worldsDirectory);
-            var fileName = UniqueAssetFileName(worldsDirectory,
-                SanitizeFileName(Path.GetFileNameWithoutExtension(path)), ".mvmodel");
+            var baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(path));
+            // 从 .vox 重新导入同名模型时原地更新：场景对象引用的是这个路径，
+            // 生成新文件会导致旧对象拿不到新材质，镜面就永远是漫反射
+            var samePath = Path.Combine(worldsDirectory, baseName + ".mvmodel");
+            var overwrite = extension == ".vox" && File.Exists(samePath);
+            var fileName = overwrite
+                ? baseName + ".mvmodel"
+                : UniqueAssetFileName(worldsDirectory, baseName, ".mvmodel");
             var worldPath = Path.Combine(worldsDirectory, fileName);
+            if (overwrite)
+            {
+                // 覆盖前留一份备份，误导入时还能找回原文件
+                var backupDirectory = Path.Combine(_project.RootPath, "Backup");
+                Directory.CreateDirectory(backupDirectory);
+                var backup = Path.Combine(backupDirectory,
+                    $"{baseName}-{DateTime.Now:yyyyMMdd-HHmmss}.mvmodel");
+                File.Copy(worldPath, backup, overwrite: true);
+                MVoxelLog.Info($"重新导入 .vox：已备份旧资产到 {backup}");
+            }
+
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(worldPath, materials);
             else LargeWorldFormat.Write(worldPath, world, materials);
             AssetMetaStore.EnsureMeta(worldPath);
+            if (overwrite) RefreshReferencedVoxelAsset(_project, worldPath);
             OpenWorldAsset("Worlds/" + fileName);
-            SetStatus($"已导入 {Path.GetFileName(path)}：{world.OccupiedVoxelCount:N0} 个体素");
+            SetStatus(overwrite
+                ? $"已重新导入 {Path.GetFileName(path)} 并更新 {fileName}：{world.OccupiedVoxelCount:N0} 个体素"
+                : $"已导入 {Path.GetFileName(path)}：{world.OccupiedVoxelCount:N0} 个体素");
             return new
             {
                 asset = "Worlds/" + fileName,
