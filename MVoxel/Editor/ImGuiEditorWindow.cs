@@ -330,6 +330,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         //让 ImGui 决定窗口光标形状：可拖动字段显示左右调整光标，输入框显示文本光标
         _controller.ManageCursor = true;
         _imguiContext = ImGui.GetCurrentContext();
+        UiScale.Set(UiDiagnostics.Dpi(this));
         _fonts.Load(_controller, UiDiagnostics.Dpi(this));
         _imguiRenderer = new VulkanImGuiRenderer(_vulkan, _controller);
         _thumbnailCache = new ThumbnailCache(_imguiRenderer);
@@ -1138,6 +1139,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     {
         if (MathF.Abs(dpi - _lastLoggedUiDpi) < 0.01F) return;
         _lastLoggedUiDpi = dpi;
+        // 字体已按新 DPI 重建，样式间距与控件高度必须同步换算
+        if (UiScale.Set(dpi)) ApplyImGuiStyle();
         var io = ImGui.GetIO();
         var style = ImGui.GetStyle();
         MVoxelLog.Info(
@@ -1194,19 +1197,25 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private void ApplyImGuiStyle()
     {
         var style = ImGui.GetStyle();
-        style.WindowRounding = 4F;
-        style.ChildRounding = 3F;
-        style.FrameRounding = 3F;
-        style.PopupRounding = 8F;
-        style.ScrollbarRounding = 2F;
-        style.GrabRounding = 2F;
-        style.WindowBorderSize = 1F;
-        style.ChildBorderSize = 1F;
-        style.PopupBorderSize = 1F;
-        style.FrameBorderSize = 1F;
-        style.DockingSeparatorSize = 2F;
-        style.ItemSpacing = new Vector2(7F, 5F);
-        style.WindowPadding = new Vector2(7F, 7F);
+        // 设计基准是 96 DPI：这里统一乘缩放系数，字体由字体目录按 DPI 放大
+        var scale = UiScale.Current;
+        style.WindowRounding = 4F * scale;
+        style.ChildRounding = 3F * scale;
+        style.FrameRounding = 3F * scale;
+        style.PopupRounding = 8F * scale;
+        style.ScrollbarRounding = 2F * scale;
+        style.GrabRounding = 2F * scale;
+        style.WindowBorderSize = 1F * scale;
+        style.ChildBorderSize = 1F * scale;
+        style.PopupBorderSize = 1F * scale;
+        style.FrameBorderSize = 1F * scale;
+        style.DockingSeparatorSize = 2F * scale;
+        style.ItemSpacing = new Vector2(7F, 5F) * scale;
+        style.WindowPadding = new Vector2(7F, 7F) * scale;
+        style.FramePadding = new Vector2(4F, 3F) * scale;
+        style.ScrollbarSize = 14F * scale;
+        style.GrabMinSize = 10F * scale;
+        style.IndentSpacing = 21F * scale;
         style.Colors[(int)ImGuiCol.WindowBg] = ToColor(EditorPalette.Window);
         style.Colors[(int)ImGuiCol.ChildBg] = ToColor(EditorPalette.Input);
         style.Colors[(int)ImGuiCol.PopupBg] = ToColor(EditorPalette.Panel);
@@ -4093,7 +4102,7 @@ DockId=0x6A3C3007,0
         else
         {
             DrawPanelWindowMenu(true);
-            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8F, 8F));
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(UiScale.Px(8F), UiScale.Px(8F)));
             ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,
                 new Vector2(6F, MathF.Max(5F, ImGui.GetFontSize() * .2F)));
             ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1F);
@@ -4393,7 +4402,7 @@ DockId=0x6A3C3007,0
         }
         ImGui.EndChild();
         ImGui.PopStyleColor();
-        ImGui.Dummy(new Vector2(0F, 3F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(3F)));
         DrawPrefabInspectorSection(selectedObject);
 
         var removeComponentIndex = -1;
@@ -4407,7 +4416,7 @@ DockId=0x6A3C3007,0
                     selectedObject.Components[componentIndex], componentIndex));
             }
         }
-        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(6F, 3F));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(UiScale.Px(6F), UiScale.Px(3F)));
         for (var componentIndex = 0; componentIndex < selectedObject.Components.Count; componentIndex++)
         {
             var component = selectedObject.Components[componentIndex];
@@ -4524,11 +4533,11 @@ DockId=0x6A3C3007,0
             if (resetComponent) ResetInspectorComponent(selectedObject, component);
             if (expanded)
             {
-                ImGui.Dummy(new Vector2(0F, 4F));
+                ImGui.Dummy(new Vector2(0F, UiScale.Px(4F)));
                 ImGui.Indent(12F);
                 DrawComponentSummary(selectedObject, component);
                 ImGui.Unindent(12F);
-                ImGui.Dummy(new Vector2(0F, 4F));
+                ImGui.Dummy(new Vector2(0F, UiScale.Px(4F)));
             }
             var cardBottom = ImGui.GetCursorScreenPos().Y;
             draw.AddRect(headerMin, new Vector2(headerMax.X, cardBottom), ToPackedColor(EditorPalette.Border), 2F);
@@ -4556,7 +4565,7 @@ DockId=0x6A3C3007,0
                 InstantiateGeneratedVoxels(selectedObject, instantiateTarget, "体素模型");
         }
 
-        ImGui.Dummy(new Vector2(0F, 6F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(6F)));
         var addWidth = Math.Min(220F, ImGui.GetContentRegionAvail().X);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0F, (ImGui.GetContentRegionAvail().X - addWidth) / 2F));
         ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
@@ -6030,13 +6039,13 @@ DockId=0x6A3C3007,0
                 ImGui.TextColored(ToColor(EditorPalette.Error), _projectPathError);
             }
 
-            if (ImGui.Button("确认", new Vector2(100F, 34F)))
+            if (ImGui.Button("确认", UiScale.Size(100F, 34F)))
             {
                 SubmitProjectPath();
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("取消", new Vector2(100F, 34F)))
+            if (ImGui.Button("取消", UiScale.Size(100F, 34F)))
             {
                 _projectPathDialogMode = 0;
             }
@@ -6070,9 +6079,9 @@ DockId=0x6A3C3007,0
     {
         ImGui.TextDisabled(_projectBrowserPath);
         ImGui.SameLine();
-        if (ImGui.Button("^##EditorBrowserUp", new Vector2(34F, 28F))) NavigateEditorProjectUp();
+        if (ImGui.Button("^##EditorBrowserUp", UiScale.Size(34F, 28F))) NavigateEditorProjectUp();
         ImGui.SameLine();
-        if (ImGui.Button("<##EditorBrowserBack", new Vector2(34F, 28F))) NavigateEditorProjectBack();
+        if (ImGui.Button("<##EditorBrowserBack", UiScale.Size(34F, 28F))) NavigateEditorProjectBack();
         ImGui.BeginChild("##EditorProjectBrowserFolders", new Vector2(0F, 390F), ImGuiChildFlags.Borders);
         try
         {
@@ -6745,11 +6754,11 @@ DockId=0x6A3C3007,0
         {
             ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。退出前要保存吗？");
             ImGui.Spacing();
-            if (ImGui.Button("保存并退出", new Vector2(120F, 30F))) ConfirmExitSave();
+            if (ImGui.Button("保存并退出", UiScale.Size(120F, 30F))) ConfirmExitSave();
             ImGui.SameLine();
-            if (ImGui.Button("不保存退出", new Vector2(120F, 30F))) ConfirmExitDiscard();
+            if (ImGui.Button("不保存退出", UiScale.Size(120F, 30F))) ConfirmExitDiscard();
             ImGui.SameLine();
-            if (ImGui.Button("取消", new Vector2(90F, 30F))) CancelExitConfirmation();
+            if (ImGui.Button("取消", UiScale.Size(90F, 30F))) CancelExitConfirmation();
             if (_exitDialogResolved)
             {
                 _exitDialogResolved = false;
@@ -6828,13 +6837,13 @@ DockId=0x6A3C3007,0
         {
             ImGui.TextWrapped("当前项目有未保存的场景或生成器源码。请选择如何处理这些修改。");
             ImGui.Spacing();
-            if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", new Vector2(120F, 30F)))
+            if (ImGui.Button(_afterProjectClose is null ? "保存并关闭" : "保存并继续", UiScale.Size(120F, 30F)))
                 ConfirmCloseProjectSave();
             ImGui.SameLine();
-            if (ImGui.Button(_afterProjectClose is null ? "不保存关闭" : "不保存继续", new Vector2(120F, 30F)))
+            if (ImGui.Button(_afterProjectClose is null ? "不保存关闭" : "不保存继续", UiScale.Size(120F, 30F)))
                 ConfirmCloseProjectDiscard();
             ImGui.SameLine();
-            if (ImGui.Button("取消", new Vector2(90F, 30F))) CancelCloseProjectConfirmation();
+            if (ImGui.Button("取消", UiScale.Size(90F, 30F))) CancelCloseProjectConfirmation();
             if (_projectCloseDialogResolved)
             {
                 _projectCloseDialogResolved = false;

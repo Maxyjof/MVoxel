@@ -3241,7 +3241,7 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
         ImGui.Spacing();
-        if (ImGui.Button("保存材质", new Vector2(120F, 30F)))
+        if (ImGui.Button("保存材质", UiScale.Size(120F, 30F)))
         {
             try
             {
@@ -3282,7 +3282,7 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Separator();
         ImGui.TextWrapped(Path.GetFileName(path));
         ImGui.TextDisabled($"格式  {Path.GetExtension(path).ToUpperInvariant()[1..]}    大小  {new FileInfo(path).Length / 1024F:0.0} KB");
-        if (ImGui.Button("设为环境贴图", new Vector2(150F, 30F)))
+        if (ImGui.Button("设为环境贴图", UiScale.Size(150F, 30F)))
         {
             try
             {
@@ -3298,7 +3298,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("清除环境贴图", new Vector2(120F, 30F)))
+        if (ImGui.Button("清除环境贴图", UiScale.Size(120F, 30F)))
         {
             _historyEnvironment = new HistoryEnvironment([], 0, 0);
             _pipeline?.SetEnvironment([], 0, 0);
@@ -3711,7 +3711,7 @@ internal sealed partial class ImGuiEditorWindow
             if (!string.IsNullOrEmpty(_pipelineStatus)) ImGui.TextWrapped(_pipelineStatus);
         }
 
-        if (ImGui.Button("恢复默认参数", new Vector2(138F, 30F)))
+        if (ImGui.Button("恢复默认参数", UiScale.Size(138F, 30F)))
         {
             var defaults = new RenderSettings();
             if (_project is null)

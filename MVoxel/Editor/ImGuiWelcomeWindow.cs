@@ -185,17 +185,17 @@ internal sealed class ImGuiWelcomeContent
         ImGui.EndGroup();
         ImGui.EndGroup();
 
-        ImGui.Dummy(new Vector2(0F, 16F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(16F)));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
-        if (ImGui.Button("新建项目", new Vector2(200F, 40F))) BeginPathDialog(1);
+        if (ImGui.Button("新建项目", UiScale.Size(200F, 40F))) BeginPathDialog(1);
         ImGui.SameLine();
-        if (ImGui.Button("打开项目", new Vector2(200F, 40F))) BeginPathDialog(2);
+        if (ImGui.Button("打开项目", UiScale.Size(200F, 40F))) BeginPathDialog(2);
         ImGui.SameLine();
-        if (ImGui.Button("从 .vox 新建", new Vector2(200F, 40F))) CreateProjectFromVoxFile();
+        if (ImGui.Button("从 .vox 新建", UiScale.Size(200F, 40F))) CreateProjectFromVoxFile();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("选择 MagicaVoxel .vox 文件\n自动在默认项目根目录创建同名项目并导入模型\n当前只支持单模型文件");
 
-        ImGui.Dummy(new Vector2(0F, 12F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(12F)));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
         ImGui.TextColored(ToColor(EditorPalette.Text), "最近打开的项目");
         ImGui.Separator();
@@ -209,7 +209,7 @@ internal sealed class ImGuiWelcomeContent
             ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
         if (recent.Count == 0)
         {
-            ImGui.Dummy(new Vector2(0F, 18F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(18F)));
             ImGui.SetCursorPosX(18F);
             ImGui.TextWrapped("还没有最近项目。点击上方“新建项目”，开始你的第一个作品。");
         }
@@ -495,7 +495,7 @@ internal sealed class ImGuiWelcomeContent
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         if (_pathMode == 1) flags |= ImGuiWindowFlags.AlwaysAutoResize;
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 24F));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(UiScale.Px(28F), UiScale.Px(24F)));
         if (CenteredModal.Begin("##WelcomeProjectPathDialog", flags))
         {
             var draw = ImGui.GetWindowDrawList();
@@ -504,12 +504,12 @@ internal sealed class ImGuiWelcomeContent
             draw.AddLine(window + new Vector2(3F, 9F), window + new Vector2(3F, windowSize.Y - 9F),
                 ToPackedColor(EditorPalette.Accent), 3F);
             ImGui.TextColored(ToColor(EditorPalette.Text), _pathMode == 1 ? "新建 MVoxel 项目" : "打开 MVoxel 项目");
-            ImGui.Dummy(new Vector2(0F, 6F));
-            ImGui.Dummy(new Vector2(0F, 14F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(6F)));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(14F)));
             if (_pathMode == 1)
             {
                 DrawTemplatePicker();
-                ImGui.Dummy(new Vector2(0F, 14F));
+                ImGui.Dummy(new Vector2(0F, UiScale.Px(14F)));
             }
 
             if (_pathMode == 1)
@@ -525,14 +525,14 @@ internal sealed class ImGuiWelcomeContent
                 ImGui.TextColored(ToColor(EditorPalette.Error), _errorText);
             }
 
-            ImGui.Dummy(new Vector2(0F, 14F));
-            if (ImGui.Button(_pathMode == 1 ? "创建项目" : "打开项目", new Vector2(120F, 36F)))
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(14F)));
+            if (ImGui.Button(_pathMode == 1 ? "创建项目" : "打开项目", UiScale.Size(120F, 36F)))
             {
                 SubmitPath();
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("取消", new Vector2(100F, 36F)))
+            if (ImGui.Button("取消", UiScale.Size(100F, 36F)))
             {
                 _pathMode = 0;
                 _errorText = string.Empty;
@@ -578,9 +578,9 @@ internal sealed class ImGuiWelcomeContent
         ImGui.TextDisabled(_browserPath);
         ImGui.SameLine();
         ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.PanelHeader));
-        if (ImGui.Button("^##ProjectBrowserUp", new Vector2(34F, 28F))) NavigateProjectBrowserUp();
+        if (ImGui.Button("^##ProjectBrowserUp", UiScale.Size(34F, 28F))) NavigateProjectBrowserUp();
         ImGui.SameLine();
-        if (ImGui.Button("<##ProjectBrowserBack", new Vector2(34F, 28F))) NavigateProjectBrowserBack();
+        if (ImGui.Button("<##ProjectBrowserBack", UiScale.Size(34F, 28F))) NavigateProjectBrowserBack();
         ImGui.PopStyleColor();
 
         ImGui.BeginChild("##ProjectBrowserFolders", new Vector2(0F, 350F), ImGuiChildFlags.Borders);
@@ -595,7 +595,7 @@ internal sealed class ImGuiWelcomeContent
                 var isProject = IsProjectFolder(directory);
                 var selected = string.Equals(_browserSelectedPath, directory, StringComparison.OrdinalIgnoreCase);
                 var label = $"目录  {name}{(isProject ? "    · MVoxel 项目" : string.Empty)}##{directory}";
-                if (ImGui.Selectable(label, selected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0F, 30F)))
+                if (ImGui.Selectable(label, selected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0F, UiScale.Px(30F))))
                 {
                     _browserSelectedPath = directory;
                     _errorText = string.Empty;

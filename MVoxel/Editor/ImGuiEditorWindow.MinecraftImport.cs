@@ -344,13 +344,13 @@ internal partial class ImGuiEditorWindow
         var selected = _mcSelValid ? (_mcSelMaxChunkX - _mcSelMinChunkX + 1) * (_mcSelMaxChunkZ - _mcSelMinChunkZ + 1) : 0;
         var canImport = _project is not null && _mcSelValid && !_mcImportBusy &&
                         selected is > 0 and <= McWorldImporter.MaximumSelectionChunks;
-        if (ImGui.Button("开始导入", new Vector2(120F, 32F)) && canImport)
+        if (ImGui.Button("开始导入", UiScale.Size(120F, 32F)) && canImport)
         {
             StartMcImport();
         }
 
         ImGui.SameLine();
-        if (ImGui.Button(_mcImportBusy ? "取消导入" : "取消", new Vector2(100F, 32F)))
+        if (ImGui.Button(_mcImportBusy ? "取消导入" : "取消", UiScale.Size(100F, 32F)))
         {
             CloseMcImport();
         }

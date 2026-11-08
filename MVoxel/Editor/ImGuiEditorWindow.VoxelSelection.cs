@@ -241,7 +241,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.TextDisabled($"范围 {data.SizeX} × {data.SizeY} × {data.SizeZ} = {data.Volume:N0} 格" +
             (data.Volume > VoxelSelectionMaxVolume ? "（超过单次扫描上限）" : string.Empty));
-        ImGui.Dummy(new Vector2(0F, 2F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         if (ImGui.Button("选择范围内该颜色的体素", new Vector2(-1F, 0F)))
             SelectVoxelsInRange(sceneObject, data);
 
@@ -330,7 +330,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Indent(10F);
             drawContent();
             ImGui.Unindent(10F);
-            ImGui.Dummy(new Vector2(0F, 2F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
             return;
         }
 

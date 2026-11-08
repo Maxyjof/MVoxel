@@ -307,7 +307,7 @@ internal static class BlockingOperationDialog
         ImGui.OpenPopup(id);
         ImGui.SetNextWindowPos(display / 2F, ImGuiCond.Always, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(cardSize, ImGuiCond.Always);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(28F, 22F));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(UiScale.Px(28F), UiScale.Px(22F)));
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         if (CenteredModal.Begin(id, flags))
@@ -318,14 +318,14 @@ internal static class BlockingOperationDialog
             draw.AddLine(window + new Vector2(3F, 9F), window + new Vector2(3F, windowSize.Y - 9F),
                 ToPacked(EditorPalette.Accent), 3F);
             ImGui.TextColored(ToColor(EditorPalette.Text), title);
-            ImGui.Dummy(new Vector2(0F, 4F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(4F)));
             ImGui.TextWrapped(detail);
             if (!isInformational)
             {
-                ImGui.Dummy(new Vector2(0F, 8F));
+                ImGui.Dummy(new Vector2(0F, UiScale.Px(8F)));
                 ImGui.ProgressBar(Math.Clamp(progress, 0F, 1F), new Vector2(-1F, 18F), $"{progress * 100F:0}%");
-                ImGui.Dummy(new Vector2(0F, 8F));
-                if (canCancel && ImGui.Button("取消本次操作", new Vector2(126F, 32F))) requestCancel?.Invoke();
+                ImGui.Dummy(new Vector2(0F, UiScale.Px(8F)));
+                if (canCancel && ImGui.Button("取消本次操作", UiScale.Size(126F, 32F))) requestCancel?.Invoke();
                 ImGui.SameLine();
                 ImGui.TextDisabled(cancelRequested ? "正在取消…" : canCancel ? "可继续等待，或取消。" : "当前步骤将安全完成。");
             }

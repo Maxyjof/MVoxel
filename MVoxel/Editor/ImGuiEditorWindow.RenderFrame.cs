@@ -215,7 +215,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.TextDisabled("每个相机各出一张，尺寸同上，构图按各自相机取景");
 
         ImGui.Separator();
-        if (ImGui.Button("导出", new Vector2(110F, 0F)))
+        if (ImGui.Button("导出", UiScale.Size(110F, 0F)))
         {
             SaveProjectSettings();
             if (settings.ExportDialogFormat == "video")
@@ -254,7 +254,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("取消", new Vector2(110F, 0F))) _showExportDialog = false;
+        if (ImGui.Button("取消", UiScale.Size(110F, 0F))) _showExportDialog = false;
 
         ImGui.End();
     }

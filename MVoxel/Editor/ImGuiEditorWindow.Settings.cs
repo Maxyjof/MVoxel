@@ -400,7 +400,7 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Begin(title, ref open, PanelWindowFlags))
         {
             if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _settingsScope = scope;
-            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9F, 7F));
+            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(UiScale.Px(9F), UiScale.Px(7F)));
             drawContent();
             ImGui.PopStyleVar();
             if (scope == 1 && _projectSettingsCategory == 1 &&
@@ -1279,7 +1279,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             ImGui.TextDisabled("项目中还没有调色盘资产。");
             ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96, ImGuiInputTextFlags.AutoSelectAll);
-            if (ImGui.Button("创建默认调色盘", new Vector2(170F, 30F)))
+            if (ImGui.Button("创建默认调色盘", UiScale.Size(170F, 30F)))
                 CreateProjectPaletteAsset(VoxelPalette.Build());
             return;
         }
@@ -1318,10 +1318,10 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.TextDisabled($"项目配置当前指向：{_projectSettings.ActivePalettePath}");
         ImGui.Separator();
         ImGui.InputText("新调色盘名称", ref _newProjectPaletteName, 96, ImGuiInputTextFlags.AutoSelectAll);
-        if (ImGui.Button("新建当前调色盘副本", new Vector2(180F, 30F)))
+        if (ImGui.Button("新建当前调色盘副本", UiScale.Size(180F, 30F)))
             CreateProjectPaletteAsset(_palette);
         ImGui.SameLine();
-        if (ImGui.Button("保存调色盘", new Vector2(128F, 30F)))
+        if (ImGui.Button("保存调色盘", UiScale.Size(128F, 30F)))
         {
             SetStatus(EditorPalettes.SaveProjectPalette(_project, _selectedProjectPalettePath, _palette)
                 ? $"已保存调色盘：{PaletteDisplayName(_selectedProjectPalettePath)}"
@@ -1329,12 +1329,12 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("重新载入", new Vector2(112F, 30F)))
+        if (ImGui.Button("重新载入", UiScale.Size(112F, 30F)))
             TryLoadProjectPalette(_selectedProjectPalettePath, false);
 
         ImGui.SameLine();
         ImGui.BeginDisabled(paths.Count <= 1);
-        if (ImGui.Button("删除调色盘", new Vector2(128F, 30F)))
+        if (ImGui.Button("删除调色盘", UiScale.Size(128F, 30F)))
             DeleteSelectedProjectPalette(paths);
         ImGui.EndDisabled();
 

@@ -230,7 +230,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PopID();
         }
 
-        ImGui.Dummy(new Vector2(0F, 2F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         var third = MathF.Max(ImGui.GetFontSize() * 2.5F,
             MathF.Floor((ImGui.GetContentRegionAvail().X - ImGui.GetStyle().ItemSpacing.X * 2F) / 3F) - 1F);
         if (ImGui.Button("添加点", new Vector2(third, 0F)))
@@ -370,7 +370,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.Unindent(10F);
-        ImGui.Dummy(new Vector2(0F, 2F));
+        ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
     }
 
     /// <summary>

@@ -219,7 +219,7 @@ internal sealed class ProjectAssetBrowser
         var entries = CollectEntries(project);
         if (entries.Count == 0)
         {
-            ImGui.Dummy(new Vector2(0F, 14F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(14F)));
             if (string.IsNullOrWhiteSpace(_searchText))
             {
                 ImGui.TextDisabled("此文件夹暂时没有资产。");
@@ -459,9 +459,9 @@ internal sealed class ProjectAssetBrowser
             var entered = ImGui.InputText("##资源新名称", ref _renameName, 260,
                 ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue);
             if (extension.Length > 0) ImGui.TextDisabled($"扩展名保持不变：{extension}");
-            var confirm = ImGui.Button("确定", new Vector2(110F, 0F)) || entered;
+            var confirm = ImGui.Button("确定", UiScale.Size(110F, 0F)) || entered;
             ImGui.SameLine();
-            var cancel = ImGui.Button("取消", new Vector2(110F, 0F)) ||
+            var cancel = ImGui.Button("取消", UiScale.Size(110F, 0F)) ||
                          ImGui.IsKeyPressed(ImGuiKey.Escape);
             if (confirm)
             {
@@ -501,9 +501,9 @@ internal sealed class ProjectAssetBrowser
                 }
                 ImGui.EndCombo();
             }
-            var moveConfirm = ImGui.Button("确定", new Vector2(110F, 0F));
+            var moveConfirm = ImGui.Button("确定", UiScale.Size(110F, 0F));
             ImGui.SameLine();
-            var moveCancel = ImGui.Button("取消", new Vector2(110F, 0F)) ||
+            var moveCancel = ImGui.Button("取消", UiScale.Size(110F, 0F)) ||
                              ImGui.IsKeyPressed(ImGuiKey.Escape);
             if (moveConfirm)
             {
@@ -559,12 +559,12 @@ internal sealed class ProjectAssetBrowser
                     "引用了该资产，删除后将出现断链。");
             }
             ImGui.BeginDisabled(editingThisAsset);
-            var confirm = ImGui.Button("删除", new Vector2(110F, 0F));
+            var confirm = ImGui.Button("删除", UiScale.Size(110F, 0F));
             ImGui.EndDisabled();
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && editingThisAsset)
                 ImGui.SetTooltip("正在编辑空间的资产不允许删除");
             ImGui.SameLine();
-            var cancel = ImGui.Button("取消", new Vector2(110F, 0F));
+            var cancel = ImGui.Button("取消", UiScale.Size(110F, 0F));
             if (confirm)
             {
                 var deletedPath = _deletePath;

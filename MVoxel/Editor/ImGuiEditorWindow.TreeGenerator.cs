@@ -61,7 +61,7 @@ internal sealed partial class ImGuiEditorWindow
             DrawTreeTrunkSection(ref updated);
             DrawTreeBranchSection(ref updated);
             ImGui.Unindent(8F);
-            ImGui.Dummy(new Vector2(0F, 2F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         }
 
         if (ImGui.CollapsingHeader("树冠与树叶##TreeCrownSection"))
@@ -69,7 +69,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Indent(8F);
             DrawTreeCrownSection(ref updated);
             ImGui.Unindent(8F);
-            ImGui.Dummy(new Vector2(0F, 2F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         }
 
         if (ImGui.CollapsingHeader("颜色与排序##TreeColorSection"))
@@ -77,7 +77,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.Indent(8F);
             DrawTreeColorSection(ref updated, ref sortingChanged);
             ImGui.Unindent(8F);
-            ImGui.Dummy(new Vector2(0F, 2F));
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         }
 
         // 参数改动只写数据，等用户点生成；排序变化只影响合成顺序，不需要重建体素

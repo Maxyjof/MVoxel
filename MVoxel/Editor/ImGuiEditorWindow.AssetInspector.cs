@@ -199,7 +199,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.TextDisabled($"地面  {(settings.ShowGround ? "开启" : "关闭")}    太阳  {(settings.SunEnabled ? "开启" : "关闭")}");
             ImGui.TextDisabled($"路径追踪  {(settings.PathTracingEnabled ? "开启" : "关闭")}    调色着色  {(settings.PaletteShading ? "开启" : "关闭")}");
             ImGui.TextDisabled($"曝光  {settings.Exposure:0.00}    视场角  {settings.CameraFovDegrees:0.0}°");
-            if (ImGui.Button("应用到当前项目", new Vector2(145F, 30F)))
+            if (ImGui.Button("应用到当前项目", UiScale.Size(145F, 30F)))
             {
                 var name = RenderPresetKey(_project!, path);
                 ApplyRenderPresetSettings(settings, name);
@@ -225,7 +225,7 @@ internal sealed partial class ImGuiEditorWindow
             var asset = GeneratorAsset.Load(path);
             ImGui.TextDisabled($"语言  {asset.Language}    源码  {asset.Source.Length:N0} 字符");
             ImGui.TextWrapped("生成器可以声明参数并将结果作为可撤销操作写入当前体素数据。");
-            if (ImGui.Button("在生成器面板打开", new Vector2(150F, 30F))) OpenGeneratorAsset(relativePath);
+            if (ImGui.Button("在生成器面板打开", UiScale.Size(150F, 30F))) OpenGeneratorAsset(relativePath);
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
         {
