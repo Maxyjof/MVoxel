@@ -178,6 +178,7 @@ internal sealed partial class ImGuiEditorWindow
              Param("glassReflectionEmissive", "boolean", false, "玻璃反射是否包含发光体"),
              Param("glassReflectionAmbient", "number", false, "玻璃反射环境光权重 0-2"),
              Param("glassReflectionOcclusion", "number", false, "玻璃反射遮挡权重 0-1"),
+             Param("navigationSamplingRelief", "boolean", false, "转视角时是否临时降低阴影与反射采样"),
              Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
              Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
              Param("softFillEnabled", "boolean", false, "是否启用环境柔光（对应 MagicaVoxel 的 Area 灯）"),
@@ -1533,6 +1534,7 @@ internal sealed partial class ImGuiEditorWindow
             glassReflectionEmissive = settings.GlassReflectionEmissive,
             glassReflectionAmbient = settings.GlassReflectionAmbient,
             glassReflectionOcclusion = settings.GlassReflectionOcclusion,
+            navigationSamplingRelief = settings.NavigationSamplingRelief,
             emissiveIntensity = settings.EmissiveIntensity,
             emissiveVoxels = settings.EmissiveVoxels,
             softFillEnabled = settings.SoftFillEnabled,
@@ -1647,6 +1649,8 @@ internal sealed partial class ImGuiEditorWindow
             settings.GlassReflectionAmbient = (float)glassReflectAmbient;
         if (ReadNumber(arguments, "glassReflectionOcclusion") is { } glassReflectOcclusion)
             settings.GlassReflectionOcclusion = (float)glassReflectOcclusion;
+        if (ReadBoolean(arguments, "navigationSamplingRelief") is { } navigationRelief)
+            settings.NavigationSamplingRelief = navigationRelief;
         if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
         if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
         if (ReadBoolean(arguments, "softFillEnabled") is { } softFill) settings.SoftFillEnabled = softFill;

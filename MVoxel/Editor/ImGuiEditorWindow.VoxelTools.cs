@@ -45,6 +45,8 @@ internal sealed partial class ImGuiEditorWindow
     private int _vulkanRecoveryAttempts;
     /// <summary>设备丢失时显示在视口顶部的提示，恢复成功后清空</summary>
     private string _gpuDeviceLostNotice = string.Empty;
+    /// <summary>上一帧是否处于相机拖动，用于只在开始时记录一次采样降级日志</summary>
+    private bool _navigationWasActive;
     private bool _worldLoadFailed;
     private readonly ObjectVoxelStore _objectVoxels = new();
     // 场景预览异常后的重启冷却：一次异常不应把整场会话锁在 CPU 预览
@@ -2298,6 +2300,13 @@ internal sealed partial class ImGuiEditorWindow
                                    ImGui.IsMouseDragging(ImGuiMouseButton.Middle);
             var settingsInteracting = Environment.TickCount64 - _renderSettingsInteractionAt < 150 && !cameraNavigating;
             if (cameraNavigating || settingsInteracting) previewSettings.PathSamplesPerFrame = 1;
+            if (cameraNavigating && !_navigationWasActive && previewSettings.NavigationSamplingRelief)
+            {
+                var relief = previewSettings.CreateNavigationPreview();
+                MVoxelLog.Info($"转视角采样降级：阴影采样 {relief.ShadowSamples}，" +
+                    $"反射遮挡 {relief.GlassReflectionOcclusion:0.00}，反射分段 {relief.GlassReflectionBounces}");
+            }
+            _navigationWasActive = cameraNavigating;
             // 相机交互也按完整视口像素渲染，不能通过缩小图像再放大换帧率。
             // 只有用户在渲染配置中主动调整的 ResolutionScale 可以改变内部尺寸。
             var renderScale = Math.Clamp(previewSettings.ResolutionScale, 0.25F, 1F);
