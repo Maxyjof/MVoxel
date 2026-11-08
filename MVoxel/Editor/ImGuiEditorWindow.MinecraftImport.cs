@@ -806,7 +806,14 @@ internal partial class ImGuiEditorWindow
             if (world.OccupiedVoxelCount == 0) LargeWorldFormat.WriteEmpty(worldPath, materials);
             else LargeWorldFormat.Write(worldPath, world, materials);
             AssetMetaStore.EnsureMeta(worldPath);
-            if (overwrite) RefreshReferencedVoxelAsset(_project, worldPath);
+            if (overwrite)
+            {
+                // 旧版本导入时给场景对象显式绑定过 .material，显式绑定优先于新资产里的材质，
+                // 镜面槽会被旧的漫反射材质覆盖；重新导入时清掉这些槽，让新材质默认值生效
+                var cleared = ClearMaterialSlotsForAsset("Worlds/" + fileName);
+                if (cleared > 0) MVoxelLog.Info($"重新导入 .vox：已清理 {cleared} 个对象的旧材质槽");
+                RefreshReferencedVoxelAsset(_project, worldPath);
+            }
             OpenWorldAsset("Worlds/" + fileName);
             SetStatus(overwrite
                 ? $"已重新导入 {Path.GetFileName(path)} 并更新 {fileName}：{world.OccupiedVoxelCount:N0} 个体素"
@@ -825,6 +832,35 @@ internal partial class ImGuiEditorWindow
             SetStatus($"导入 {extension} 失败：{exception.Message}");
             return new { error = exception.Message };
         }
+    }
+
+    /// <summary>
+    /// 清掉场景内引用指定模型资产的对象上显式绑定的材质槽，让资产内的默认材质生效
+    /// </summary>
+    /// <param name="relativePath">相对 Assets 的模型资产路径</param>
+    /// <returns>被清理的对象数量</returns>
+    private int ClearMaterialSlotsForAsset(string relativePath)
+    {
+        if (_sceneDocument is null) return 0;
+        var target = relativePath.Replace('\\', '/').TrimStart('/');
+        var cleared = 0;
+        foreach (var sceneObject in _sceneDocument.Objects)
+        {
+            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+            if (component is null) continue;
+            var data = SceneComponentTypes.ReadVoxelModel(component);
+            // 场景组件里的模型路径可能带 Assets/ 前缀，两种写法都要能匹配
+            var model = (data.Model ?? string.Empty).Replace('\\', '/').TrimStart('/');
+            var matches = string.Equals(model, target, StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(model, "Assets/" + target, StringComparison.OrdinalIgnoreCase);
+            if (!matches) continue;
+            if (data.MaterialSlots is not { Length: > 0 }) continue;
+            SceneComponentTypes.WriteVoxelModel(component, data with { MaterialSlots = [] });
+            cleared++;
+        }
+
+        if (cleared > 0) MarkSceneDocumentDirty();
+        return cleared;
     }
 
     /// <summary>
