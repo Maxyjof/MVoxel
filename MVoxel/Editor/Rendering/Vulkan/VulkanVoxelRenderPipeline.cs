@@ -76,6 +76,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private int _dragPreviewGeometryVersion = -1;
     private int _dragPreviewAccelerationVersion = -1;
     private bool _dragPreviewAccelerationCurrent;
+    /// <summary>窗口连续缩放时输出图像重建的最小间隔，避免每帧重建造成长帧</summary>
+    private const long OutputRecreateThrottleMs = 120;
+    /// <summary>上次成功重建输出图像的时间戳</summary>
+    private long _lastOutputRecreateMs;
     private double _lastComputeIdleWaitMs;
     /// <summary>AMD 调度诊断日志的节流时间戳，避免每帧刷屏</summary>
     private long _amdSchedulingLogMs;
@@ -2461,7 +2465,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return false;
         }
 
-        EnsureOutputImage((uint)widthPixels, (uint)heightPixels);
+        if (!EnsureOutputImage((uint)widthPixels, (uint)heightPixels)) return true;
         UpdateShadowAcceleration(settings);
         bool backendChanged = _lastHardwareBackend.HasValue && _lastHardwareBackend.Value != _hardwareShadowsActive;
         _lastHardwareBackend = _hardwareShadowsActive;
@@ -2916,12 +2920,27 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     /// <param name="width">图像宽度</param>
     /// <param name="height">图像高度</param>
-    private void EnsureOutputImage(uint width, uint height)
+    /// <summary>
+    /// 确保输出图像尺寸与当前视口一致；缩放防抖期间返回 false，调用方复用上一帧纹理
+    /// </summary>
+    /// <param name="width">图像宽度</param>
+    /// <param name="height">图像高度</param>
+    /// <returns>尺寸已就绪返回 true；本次因防抖暂缓重建返回 false</returns>
+    private bool EnsureOutputImage(uint width, uint height)
     {
         if (_outputImage.Handle != 0 && _outputWidth == width && _outputHeight == height)
         {
-            return;
+            return true;
         }
+
+        // 缩放防抖：窗口连续拖动时最多每 120ms 重建一次输出图像，
+        // 中间帧复用上一张纹理，避免每帧 20~50ms 的重建成为长帧
+        if (_outputImage.Handle != 0 &&
+            Environment.TickCount64 - _lastOutputRecreateMs < OutputRecreateThrottleMs)
+        {
+            return false;
+        }
+        _lastOutputRecreateMs = Environment.TickCount64;
 
         var api = _api!;
         var recreateWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -3009,6 +3028,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _clearAccumulationPending = true;
             UpdateComputeDescriptors();
             MVoxelLog.Info($"重建视口输出图像 {width}x{height}，用时 {recreateWatch.Elapsed.TotalMilliseconds:0.0}ms");
+            return true;
         }
         catch
         {
