@@ -808,6 +808,9 @@ internal partial class ImGuiEditorWindow
             AssetMetaStore.EnsureMeta(worldPath);
             if (overwrite)
             {
+                // 旧版本导入生成的材质文件已经没用了，移到 Backup 里保留可恢复，避免资产面板里堆一堆废弃材质
+                var moved = MoveStaleGeneratedMaterials(baseName, materials);
+                if (moved > 0) MVoxelLog.Info($"重新导入 .vox：已把 {moved} 个旧材质文件移到 Backup");
                 // 旧版本导入时给场景对象显式绑定过 .material，显式绑定优先于新资产里的材质，
                 // 镜面槽会被旧的漫反射材质覆盖；重新导入时清掉这些槽，让新材质默认值生效
                 var cleared = ClearMaterialSlotsForAsset("Worlds/" + fileName);
@@ -832,6 +835,39 @@ internal partial class ImGuiEditorWindow
             SetStatus($"导入 {extension} 失败：{exception.Message}");
             return new { error = exception.Message };
         }
+    }
+
+    /// <summary>
+    /// 把旧导入生成、这次已不再使用的材质文件移到 Backup，保留可恢复而不直接删除
+    /// </summary>
+    /// <param name="baseName">导入资产主名，用于识别同名生成的材质</param>
+    /// <param name="materials">本次导入的材质元数据</param>
+    /// <returns>被移动的文件数量</returns>
+    private int MoveStaleGeneratedMaterials(string baseName, MaterialExchangeMetadata? materials)
+    {
+        if (_project is not { } project || materials is null) return 0;
+        var directory = Path.Combine(project.AssetsPath, "Materials");
+        if (!Directory.Exists(directory)) return 0;
+        var keep = materials.Definitions.Values
+            .Select(asset => asset.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var prefixes = new[] { baseName + " 材质", baseName + "_材质" };
+        var backupDirectory = Path.Combine(project.RootPath, "Backup", "Materials",
+            DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+        var moved = 0;
+        foreach (var file in Directory.EnumerateFiles(directory, "*.material"))
+        {
+            var stem = Path.GetFileNameWithoutExtension(file);
+            if (!prefixes.Any(prefix => stem.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) continue;
+            if (keep.Contains(stem)) continue;
+            Directory.CreateDirectory(backupDirectory);
+            File.Move(file, Path.Combine(backupDirectory, Path.GetFileName(file)), overwrite: true);
+            var meta = file + ".meta";
+            if (File.Exists(meta)) File.Move(meta, Path.Combine(backupDirectory, Path.GetFileName(meta)), overwrite: true);
+            moved++;
+        }
+
+        return moved;
     }
 
     /// <summary>

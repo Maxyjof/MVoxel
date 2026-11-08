@@ -124,6 +124,7 @@ public static class VoxMaterialExchange
     {
         ArgumentNullException.ThrowIfNull(document);
         var metadata = new MaterialExchangeMetadata();
+        var index = 0;
         foreach (var material in document.Materials)
         {
             if (material.Id <= 0 || material.Id >= MaterialAsset.TableSlots) continue;
@@ -131,7 +132,9 @@ public static class VoxMaterialExchange
             // 否则项目里会凭空多出两百多个没用的材质资产
             if (usedSlots is { Count: > 0 } && !usedSlots.Contains((ushort)material.Id)) continue;
             var id = $"vox-material-{material.Id}";
-            metadata.Definitions[id] = ConvertToAsset(material, baseName);
+            // 显示名按导入顺序连续编号，避免直接暴露色板索引导致序号跳跃
+            index++;
+            metadata.Definitions[id] = ConvertToAsset(material, $"{baseName} 材质 {index:D3}");
             metadata.Bindings[(ushort)material.Id] = id;
         }
 
@@ -141,17 +144,21 @@ public static class VoxMaterialExchange
     /// <summary>
     /// 单个 MATL 材质到项目材质的映射：金属走金属度与粗糙度，玻璃走折射率与通透度，发光走自发光
     /// </summary>
-    private static MaterialAsset ConvertToAsset(VoxMaterial material, string baseName)
+    private static MaterialAsset ConvertToAsset(VoxMaterial material, string displayName)
     {
         var type = material.Type ?? string.Empty;
         var isMetal = type.Contains("metal", StringComparison.OrdinalIgnoreCase) || material.Metal > 0F;
-        // 只有明确声明玻璃、透射大于 0 或给了折射率的材质才按玻璃处理：
-        // MagicaVoxel 会给普通材质写 _trans=0，按“>=0”判断会把所有漫反射都变成透射
+        // 玻璃只认显式类型或真实透射：MagicaVoxel 会给所有材质写 _ri 和 _ior 默认值，
+        // 按折射率判定会把整场景都当成玻璃，发光材质也会被跳过
         var isGlass = !isMetal && (type.Contains("glass", StringComparison.OrdinalIgnoreCase) ||
-                                   material.Transmission > 0F || material.RefractionIndex > 0F);
+                                   material.Transmission > 0F);
+        // 只有显式发光类型或 _emit 强度大于 0 才算自发光：
+        // MagicaVoxel 会给所有材质写 _flux=1 的倍率，按 _flux 判断会让整个场景过曝
         var isEmissive = !isMetal && !isGlass && (type.Contains("emit", StringComparison.OrdinalIgnoreCase) ||
                                                   material.Emissive > 0F);
-        var asset = new MaterialAsset { Name = $"{baseName} 材质 {material.Id}" };
+        // 普通材质必须显式把自发光关掉：材质表里未设置会按全局自发光 1.0 处理，
+        // 不关的话整个场景每个表面都在发光，画面直接过曝
+        var asset = new MaterialAsset { Name = displayName, EmissiveScale = 0F };
         if (isMetal)
         {
             // MagicaVoxel 的金属材质用 _metal 做权重、_rough 做粗糙度；
@@ -175,7 +182,10 @@ public static class VoxMaterialExchange
 
         if (isEmissive)
         {
-            asset.EmissiveScale = material.Emissive > 0F ? material.Emissive : Math.Max(material.Flux, 0.01F);
+            // 优先用 _emit 强度，只有 _flux 时用倍率；两者都没有但类型是发光时给 1
+            asset.EmissiveScale = material.Emissive > 0F
+                ? material.Emissive
+                : material.Flux > 0F ? material.Flux : 1F;
             return asset;
         }
 
