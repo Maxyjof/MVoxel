@@ -53,8 +53,6 @@ internal sealed class ProjectAssetBrowser
     /// <summary>重命名对话框下次打开时是否把键盘焦点交给名称输入框</summary>
     private bool _focusRenameInput;
 
-    /// <summary>工具栏“新建”按钮请求打开创建菜单</summary>
-    private bool _openCreateMenu;
     private string? _deletePath;
     private bool _openRenameDialog;
     private bool _openDeleteDialog;
@@ -99,8 +97,7 @@ internal sealed class ProjectAssetBrowser
         Action<string>? exportVoxRequest = null, Action<string>? openGeneratorRequest = null,
         Action<string>? exportQubicleRequest = null, Func<string, int>? countReferences = null,
         Func<string, IReadOnlyList<string>>? findReferenceNames = null, Action<string>? openPrefabRequest = null,
-        Action<string>? instantiateVoxelRequest = null, Action<string>? openTimelineRequest = null,
-        bool allowCreate = true)
+        Action<string>? instantiateVoxelRequest = null, Action<string>? openTimelineRequest = null)
     {
         if (!ProjectAssetCatalog.FolderExists(project, _selectedFolder))
         {
@@ -114,17 +111,7 @@ internal sealed class ProjectAssetBrowser
             assetChanged(item);
         };
 
-        DrawToolbar(project, allowCreate);
-        if (_openCreateMenu)
-        {
-            ImGui.OpenPopup("##新建资产菜单");
-            _openCreateMenu = false;
-        }
-        if (project is not null && ImGui.BeginPopup("##新建资产菜单"))
-        {
-            DrawCreateAssetMenu(project, _selectedFolder, reportStatus, trackedChange, openGeneratorRequest);
-            ImGui.EndPopup();
-        }
+        DrawToolbar(project);
         ImGui.Separator();
 
         var bodyHeight = Math.Max(1F, ImGui.GetContentRegionAvail().Y);
@@ -150,17 +137,10 @@ internal sealed class ProjectAssetBrowser
 
     }
 
-    private void DrawToolbar(ProjectHandle? project, bool allowCreate)
+    private void DrawToolbar(ProjectHandle? project)
     {
         ImGui.TextColored(ToColor(EditorPalette.Text), BuildBreadcrumb(project));
-        // 资产编辑空间里底部工具条只负责导航：新建入口只在右键菜单里，
-        // 避免编辑资产时误在资产目录里再建一份
-        if (project is not null && allowCreate)
-        {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("新建")) _openCreateMenu = true;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("在当前文件夹创建资产，与右键“创建”菜单一致");
-        }
+        // 工具条只负责导航与筛选；新建入口只在空白处右键菜单里，不在顶部放按钮
         if (!string.IsNullOrEmpty(_selectedFolder))
         {
             ImGui.SameLine();
