@@ -613,8 +613,8 @@ internal sealed class ProjectAssetBrowser
             ProjectAssetKind.Prefab => $"双击进入预制体编辑空间{editing}",
             ProjectAssetKind.Timeline => "双击在时间轴窗口打开",
             ProjectAssetKind.Generator => "双击在生成器面板打开",
-            ProjectAssetKind.Material => "双击选中；材质参数在右侧检查器中修改",
-            ProjectAssetKind.Scene => "双击选中；切换场景请用“文件 > 打开场景”",
+            ProjectAssetKind.Material => "单击选中；材质参数在右侧检查器中修改",
+            ProjectAssetKind.Scene => "单击选中；切换场景请用“文件 > 打开场景”",
             _ => "双击用系统程序打开",
         };
     }
