@@ -808,14 +808,17 @@ internal partial class ImGuiEditorWindow
             AssetMetaStore.EnsureMeta(worldPath);
             if (overwrite)
             {
-                // 旧版本导入生成的材质文件已经没用了，移到 Backup 里保留可恢复，避免资产面板里堆一堆废弃材质
-                var moved = MoveStaleGeneratedMaterials(baseName, materials);
-                if (moved > 0) MVoxelLog.Info($"重新导入 .vox：已把 {moved} 个旧材质文件移到 Backup");
-                // 旧版本导入时给场景对象显式绑定过 .material，显式绑定优先于新资产里的材质，
-                // 镜面槽会被旧的漫反射材质覆盖；重新导入时清掉这些槽，让新材质默认值生效
-                var cleared = ClearMaterialSlotsForAsset("Worlds/" + fileName);
-                if (cleared > 0) MVoxelLog.Info($"重新导入 .vox：已清理 {cleared} 个对象的旧材质槽");
+                // 场景对象上显式绑定的材质文件优先于资产默认材质，必须先把它们刷新成本次导入的参数，
+                // 否则旧的漫反射材质会继续盖住镜面，旧的自发光默认值还会让场景过曝
+                var refreshed = RefreshBoundMaterialFiles("Worlds/" + fileName, materials);
+                if (refreshed > 0) MVoxelLog.Info($"重新导入 .vox：已刷新 {refreshed} 个场景引用的材质文件");
+                // 没被任何场景引用的旧材质文件才移到 Backup，被引用的不能挪走
+                var referenced = CollectReferencedMaterialPaths();
+                var moved = MoveStaleGeneratedMaterials(baseName, materials, referenced);
+                if (moved > 0) MVoxelLog.Info($"重新导入 .vox：已把 {moved} 个未引用材质文件移到 Backup");
                 RefreshReferencedVoxelAsset(_project, worldPath);
+                // 材质文件变了要立刻重建运行时材质表
+                ReloadMaterialTable();
             }
             OpenWorldAsset("Worlds/" + fileName);
             SetStatus(overwrite
@@ -838,12 +841,14 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 把旧导入生成、这次已不再使用的材质文件移到 Backup，保留可恢复而不直接删除
+    /// 把旧导入生成、这次已不再使用且没有任何场景引用的材质文件移到 Backup，保留可恢复而不直接删除
     /// </summary>
     /// <param name="baseName">导入资产主名，用于识别同名生成的材质</param>
     /// <param name="materials">本次导入的材质元数据</param>
+    /// <param name="referenced">场景里仍在引用的材质相对路径</param>
     /// <returns>被移动的文件数量</returns>
-    private int MoveStaleGeneratedMaterials(string baseName, MaterialExchangeMetadata? materials)
+    private int MoveStaleGeneratedMaterials(string baseName, MaterialExchangeMetadata? materials,
+        IReadOnlySet<string> referenced)
     {
         if (_project is not { } project || materials is null) return 0;
         var directory = Path.Combine(project.AssetsPath, "Materials");
@@ -860,6 +865,8 @@ internal partial class ImGuiEditorWindow
             var stem = Path.GetFileNameWithoutExtension(file);
             if (!prefixes.Any(prefix => stem.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) continue;
             if (keep.Contains(stem)) continue;
+            // 仍被场景对象显式引用的文件不能挪走，否则绑定会断
+            if (referenced.Contains("Materials/" + Path.GetFileName(file))) continue;
             Directory.CreateDirectory(backupDirectory);
             File.Move(file, Path.Combine(backupDirectory, Path.GetFileName(file)), overwrite: true);
             var meta = file + ".meta";
@@ -871,32 +878,86 @@ internal partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 清掉场景内引用指定模型资产的对象上显式绑定的材质槽，让资产内的默认材质生效
+    /// 收集当前场景、挂起场景与预制体场景里显式引用的材质相对路径
+    /// </summary>
+    /// <returns>形如 Materials/xxx.material 的路径集合</returns>
+    private HashSet<string> CollectReferencedMaterialPaths()
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Collect(_sceneDocument);
+        Collect(_voxelStage?.Scene);
+        Collect(_prefabStage?.Scene);
+        return result;
+
+        void Collect(SceneDocument? scene)
+        {
+            if (scene is null) return;
+            foreach (var sceneObject in scene.Objects)
+            {
+                foreach (var component in sceneObject.Components)
+                {
+                    if (!SceneComponentTypes.IsVoxelModel(component)) continue;
+                    var data = SceneComponentTypes.ReadVoxelModel(component);
+                    foreach (var binding in data.MaterialSlots ?? [])
+                    {
+                        var path = (binding.MaterialAsset ?? string.Empty).Replace('\\', '/').TrimStart('/');
+                        if (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)) path = path["Assets/".Length..];
+                        if (path.Length > 0) result.Add(path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 用本次导入的材质定义刷新场景对象显式引用的材质文件，显式绑定优先，
+    /// 文件内容不刷新的话镜面与自发光参数都不会生效
     /// </summary>
     /// <param name="relativePath">相对 Assets 的模型资产路径</param>
-    /// <returns>被清理的对象数量</returns>
-    private int ClearMaterialSlotsForAsset(string relativePath)
+    /// <param name="materials">本次导入的材质元数据</param>
+    /// <returns>被刷新的材质文件数量</returns>
+    private int RefreshBoundMaterialFiles(string relativePath, MaterialExchangeMetadata? materials)
     {
-        if (_sceneDocument is null) return 0;
+        if (_project is not { } project || materials is null) return 0;
         var target = relativePath.Replace('\\', '/').TrimStart('/');
-        var cleared = 0;
-        foreach (var sceneObject in _sceneDocument.Objects)
-        {
-            var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-            if (component is null) continue;
-            var data = SceneComponentTypes.ReadVoxelModel(component);
-            // 场景组件里的模型路径可能带 Assets/ 前缀，两种写法都要能匹配
-            var model = (data.Model ?? string.Empty).Replace('\\', '/').TrimStart('/');
-            var matches = string.Equals(model, target, StringComparison.OrdinalIgnoreCase) ||
-                          string.Equals(model, "Assets/" + target, StringComparison.OrdinalIgnoreCase);
-            if (!matches) continue;
-            if (data.MaterialSlots is not { Length: > 0 }) continue;
-            SceneComponentTypes.WriteVoxelModel(component, data with { MaterialSlots = [] });
-            cleared++;
-        }
+        var refreshed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Refresh(_sceneDocument);
+        Refresh(_voxelStage?.Scene);
+        Refresh(_prefabStage?.Scene);
+        return refreshed.Count;
 
-        if (cleared > 0) MarkSceneDocumentDirty();
-        return cleared;
+        void Refresh(SceneDocument? scene)
+        {
+            if (scene is null) return;
+            foreach (var sceneObject in scene.Objects)
+            {
+                var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
+                if (component is null) continue;
+                var data = SceneComponentTypes.ReadVoxelModel(component);
+                var model = (data.Model ?? string.Empty).Replace('\\', '/').TrimStart('/');
+                var matches = string.Equals(model, target, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(model, "Assets/" + target, StringComparison.OrdinalIgnoreCase);
+                if (!matches) continue;
+                foreach (var binding in data.MaterialSlots ?? [])
+                {
+                    if (!materials.Bindings.TryGetValue((ushort)binding.Slot, out var id)) continue;
+                    if (!materials.Definitions.TryGetValue(id, out var definition)) continue;
+                    var assetPath = (binding.MaterialAsset ?? string.Empty).Replace('\\', '/').TrimStart('/');
+                    if (assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                        assetPath = assetPath["Assets/".Length..];
+                    if (assetPath.Length == 0) continue;
+                    var absolute = Path.GetFullPath(Path.Combine(project.AssetsPath,
+                        assetPath.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!absolute.StartsWith(Path.GetFullPath(project.AssetsPath) + Path.DirectorySeparatorChar,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+                    definition.Save(absolute);
+                    AssetMetaStore.EnsureMeta(absolute);
+                    refreshed.Add(assetPath);
+                }
+            }
+        }
     }
 
     /// <summary>
