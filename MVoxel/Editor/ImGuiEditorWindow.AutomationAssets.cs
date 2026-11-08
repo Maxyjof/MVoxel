@@ -268,6 +268,23 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 按欢迎界面“从 vox 创建项目”的同一路径生成项目文件，供脚本复现与验证该导入流程
+    /// </summary>
+    /// <param name="payload">参数：folder 新项目目录，vox 源文件路径</param>
+    /// <returns>项目目录与导入体素数</returns>
+    private object CreateProjectFromVox(JsonElement payload)
+    {
+        var folder = ReadString(payload, "folder") ?? throw new ArgumentException("缺少 folder");
+        var vox = ReadString(payload, "vox") ?? throw new ArgumentException("缺少 vox");
+        if (!File.Exists(vox)) throw new FileNotFoundException("vox 文件不存在", vox);
+        if (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any())
+            throw new InvalidOperationException("目标项目目录必须为空");
+        var project = ProjectLayout.Create(Path.GetFullPath(folder), new DirectoryInfo(folder).Name);
+        var voxels = MVoxel.Editor.Templates.ProjectTemplateCatalog.PopulateFromVox(project, Path.GetFullPath(vox));
+        return new { project = project.RootPath, voxels };
+    }
+
     /// <summary>读取体素资产内的材质定义与槽位绑定，核对导入后的金属度与粗糙度</summary>
     /// <param name="payload">参数：path 为相对 Assets 的路径</param>
     /// <returns>材质定义与绑定列表</returns>

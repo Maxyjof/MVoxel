@@ -271,6 +271,9 @@ internal sealed partial class ImGuiEditorWindow
             [Param("enabled", "boolean", true, "是否开启")]),
         new("project.importVox", "项目", "导入体素模型", "按路径导入 .vox/.qb/.schem/.mvmodel 到项目并打开，返回资产路径与体素统计",
             [Param("path", "string", true, "体素模型文件路径")]),
+        new("project.createFromVox", "项目", "从vox新建项目", "按欢迎界面“从 MagicaVoxel 文件创建项目”的同一路径生成项目文件，供脚本复现该流程",
+            [Param("folder", "string", true, "新项目目录，必须不存在或为空"),
+             Param("vox", "string", true, "MagicaVoxel .vox 文件路径")]),
         new("perf.stats", "性能", "读取性能汇总", "返回最近若干帧的 GPU 采样与视口耗时的均值、P95 与峰值", []),
         new("camera.setPostProcess", "相机", "设置相机后处理效果", "开关相机后处理栈里的效果并写入强度与采样数，用于非光追画质标定",
             [Param("name", "string", false, "相机对象名"), Param("effect", "string", true, "效果类型，如 AmbientOcclusion 或 VoxelIndirectLight"), Param("enabled", "boolean", false, "是否启用"), Param("intensity", "number", false, "强度"), Param("samples", "integer", false, "采样数")]),
@@ -460,6 +463,7 @@ internal sealed partial class ImGuiEditorWindow
             }),
             "project.importVox" => RunOnUi(() =>
                 ImportVoxFromPath(ReadString(payload, "path") ?? throw new ArgumentException("缺少 path"))),
+            "project.createFromVox" => CreateProjectFromVox(payload),
             "perf.stats" => DescribePerformanceStats(),
             "ui.setPanel" => SetPanel(payload),            "ui.setCenterTab" => SetCenterTab(payload),
             "asset.list" => ListProjectAssets(payload),

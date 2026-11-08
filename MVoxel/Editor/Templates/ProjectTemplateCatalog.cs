@@ -418,16 +418,27 @@ public static class ProjectTemplateCatalog
             if (slot is <= 0 or > ushort.MaxValue)
                 throw new InvalidDataException($"导入材质槽超出1到65535范围：{slot}");
 
+            // 普通材质必须显式关闭自发光，否则材质表按全局自发光处理会把整个场景照到过曝
             var asset = MaterialAsset.CreateDefault($"{modelName} 材质 {slot}");
+            asset.EmissiveScale = 0F;
             if (source.Roughness >= 0F) asset.Roughness = Math.Clamp(source.Roughness, 0.01F, 1F);
             if (source.Specular >= 0F) asset.Specular = Math.Clamp(source.Specular, 0F, 1F);
             else if (source.SpecularLevel >= 0F) asset.Specular = Math.Clamp(source.SpecularLevel / 2F, 0F, 1F);
 
+            var type = source.Type ?? string.Empty;
+            var isMetal = type.Equals("_metal", StringComparison.OrdinalIgnoreCase) || source.Metal > 0F;
+            // 玻璃只认显式类型或真实透射：MagicaVoxel 会给所有材质写 _ri/_ior 默认值，
+            // 按折射率判定会把所有材质都变成玻璃
+            var isGlass = !isMetal && (type.Equals("_glass", StringComparison.OrdinalIgnoreCase) ||
+                                       source.Transmission > 0F);
             // 0.99.7 起 _ior 是相对 1 的偏移量（常见 0.3），真实折射率写在 _ri（常见 1.3）。
             // 旧文件只有 _ior 时它就是折射率本身，所以仅在缺少 _ri 时按 1 + _ior 解释。
-            var refraction = source.RefractionIndex > 0F ? source.RefractionIndex
-                : source.Ior > 0F ? 1F + source.Ior : -1F;
-            if (refraction > 0F) asset.Ior = Math.Clamp(refraction, 1F, 2.5F);
+            if (isGlass)
+            {
+                var refraction = source.RefractionIndex > 0F ? source.RefractionIndex
+                    : source.Ior > 0F ? 1F + source.Ior : 1.5F;
+                asset.Ior = Math.Clamp(refraction, 1F, 2.5F);
+            }
             // _d 是介质密度，与吸收步长同量纲；旧文件的 _att 优先
             if (source.Absorption >= 0F) asset.AbsorptionStep = Math.Clamp(source.Absorption, 0F, 8F);
             else if (source.Density >= 0F) asset.AbsorptionStep = Math.Clamp(source.Density, 0F, 8F);
@@ -450,10 +461,12 @@ public static class ProjectTemplateCatalog
             if (string.Equals(source.MediaType, "_scatter", StringComparison.OrdinalIgnoreCase))
                 asset.VolumeScattering = 1F;
 
-            switch (source.Type.ToLowerInvariant())
+            switch (type.ToLowerInvariant())
             {
                 case "_metal":
                     asset.Metallic ??= 1F;
+                    // 没写 _rough 的金属按镜面处理，否则会落到全局粗糙度看起来像漫反射
+                    asset.Roughness ??= 0.01F;
                     break;
                 case "_glass":
                     asset.Metallic ??= 0F;
