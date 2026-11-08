@@ -512,7 +512,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 ImGui.SetNextItemWidth(-1F);
                 ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048, ImGuiInputTextFlags.AutoSelectAll);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("新建项目的默认保存位置");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("新建项目与“从 vox 新建”的默认保存位置；打开或创建项目后会自动更新为该项目所在目录");
 
                 if (ImGui.Button("恢复默认项目根目录"))
                 {

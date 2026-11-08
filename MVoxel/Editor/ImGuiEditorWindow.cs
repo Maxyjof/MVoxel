@@ -6316,6 +6316,22 @@ DockId=0x6A3C3007,0
     /// </summary>
     /// <param name="voxFilePath">MagicaVoxel 文件路径</param>
     /// <param name="fromWelcome">是否由欢迎界面发起，用于失败后回到对应入口</param>
+    /// <summary>
+    /// 记住最近打开项目所在的父目录，作为新建项目与“从 vox 新建”的默认位置
+    /// </summary>
+    /// <param name="projectRoot">项目根目录</param>
+    private void RememberProjectDirectory(string projectRoot)
+    {
+        var full = Path.GetFullPath(projectRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var parent = Path.GetDirectoryName(full);
+        if (string.IsNullOrWhiteSpace(parent)) return;
+        var current = (_editorSettings.ProjectRootPath ?? string.Empty).Trim().Trim('"');
+        if (string.Equals(current, parent, StringComparison.OrdinalIgnoreCase)) return;
+        _editorSettings.ProjectRootPath = parent;
+        SaveEditorSettings();
+        MVoxelLog.Info($"已把默认项目目录更新为：{parent}");
+    }
+
     private void BeginCreateVoxProject(string voxFilePath, bool fromWelcome)
     {
         if (DeferProjectReplacement(() => BeginCreateVoxProject(voxFilePath, fromWelcome))) return;
@@ -6570,6 +6586,8 @@ DockId=0x6A3C3007,0
         _voxelModelReferenceCache = Array.Empty<string>();
         _lastAssetSelectionPath = string.Empty;
         RecentProjects.Record(project);
+        // 记住项目所在目录，新建项目与“从 vox 新建”默认就落到这里
+        RememberProjectDirectory(project.RootPath);
         try
         {
             LoadProjectSettings(project);
