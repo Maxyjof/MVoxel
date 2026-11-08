@@ -41,6 +41,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private VulkanWindowContext? _vulkan;
     private VulkanImGuiRenderer? _imguiRenderer;
     private readonly EditorFontCatalog _fonts = new();
+    /// <summary>上次记录界面缩放信息时的 DPI，避免每帧刷日志</summary>
+    private float _lastLoggedUiDpi = -1F;
     private readonly ProjectAssetBrowser _assetBrowser = new();
 
     /// <summary>体素世界缩略图缓存；随 ImGui 渲染器创建与销毁</summary>
@@ -432,6 +434,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.SetCurrentContext(_imguiContext);
             var updateMark = PerformanceMark();
             _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
+            LogUiScaleIfChanged(UiDiagnostics.Dpi(this));
             _elapsedSeconds += (float)Math.Max(args.Time, 0.0);
             _controller?.Update((float)Math.Max(args.Time, 1.0 / 120.0));
             MeasureSince(updateMark, ref _analysisLive.UpdateMs);
@@ -1126,6 +1129,24 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             Vsync = VSyncMode.Off,
             Icon = AppBranding.LoadWindowIcon(),
         };
+    }
+
+    /// <summary>
+    /// DPI 变化时记录一次界面缩放信息，便于排查只在高分屏出现的布局问题
+    /// </summary>
+    private void LogUiScaleIfChanged(float dpi)
+    {
+        if (MathF.Abs(dpi - _lastLoggedUiDpi) < 0.01F) return;
+        _lastLoggedUiDpi = dpi;
+        var io = ImGui.GetIO();
+        var style = ImGui.GetStyle();
+        MVoxelLog.Info(
+            $"界面缩放：DPI={dpi:0.00}，字体 {ImGui.GetFontSize():0.0}px，行高 {ImGui.GetFrameHeight():0.0}px，" +
+            $"FramePadding={style.FramePadding.X:0.0}x{style.FramePadding.Y:0.0}，" +
+            $"ItemSpacing={style.ItemSpacing.X:0.0}x{style.ItemSpacing.Y:0.0}，" +
+            $"DisplaySize={io.DisplaySize.X:0}x{io.DisplaySize.Y:0}，" +
+            $"FramebufferScale={io.DisplayFramebufferScale.X:0.00}x{io.DisplayFramebufferScale.Y:0.00}，" +
+            $"窗口 {ClientSize.X}x{ClientSize.Y}，场景工具栏高度 {SceneToolbarButtonHeight:0.0}px");
     }
 
     private void ConfigureImGui()
@@ -2211,17 +2232,32 @@ DockId=0x6A3C3007,0
         };
     }
 
+    /// <summary>场景工具栏按钮高度：随字体与 DPI 增长，避免高缩放下文字被裁切</summary>
+    private static float SceneToolbarButtonHeight => MathF.Max(24F, ImGui.GetFrameHeight() * 1.25F);
+
+    /// <summary>场景工具栏按钮宽度：容纳最长按钮文字并随 DPI 增长</summary>
+    private static float SceneToolbarButtonWidth
+    {
+        get
+        {
+            var text = ImGui.CalcTextSize("切面查看").X + ImGui.GetStyle().FramePadding.X * 2F + 16F;
+            return MathF.Max(82F, text);
+        }
+    }
+
     /// <summary>场景窗口顶部工具栏：切面、相机、信息依次靠右，统一按钮尺寸与状态色。</summary>
     private void DrawSceneToolbar()
     {
-        const float buttonWidth = 82F;
-        const float buttonHeight = 24F;
-        // 记下这一行的屏幕位置，左上角三个模式按钮要对齐到同一行
-        _sceneToolbarRowTop = ImGui.GetCursorScreenPos();
-        _sceneToolbarRowHeight = buttonHeight;
+        var buttonHeight = SceneToolbarButtonHeight;
         var spacing = ImGui.GetStyle().ItemSpacing.X;
         var left = ImGui.GetCursorPosX();
         var available = ImGui.GetContentRegionAvail().X;
+        // 四个按钮必须放进同一行：窗口很窄时按可用宽度收缩，避免挤出视口
+        var buttonWidth = MathF.Min(SceneToolbarButtonWidth,
+            MathF.Max(56F, (available - spacing * 3F) / 4F));
+        // 记下这一行的屏幕位置，左上角三个模式按钮要对齐到同一行
+        _sceneToolbarRowTop = ImGui.GetCursorScreenPos();
+        _sceneToolbarRowHeight = buttonHeight;
         ImGui.SetCursorPosX(left + Math.Max(0F, available - buttonWidth * 4F - spacing * 3F));
 
         if (SceneToolbarButton("图层##SceneLayers", ImGui.IsPopupOpen("##SceneLayersPopup"),
@@ -2262,7 +2298,8 @@ DockId=0x6A3C3007,0
     private bool DrawSceneFloatingTools(ImDrawListPtr draw, Vector2 origin, Vector2 size)
     {
         var saved = ImGui.GetCursorScreenPos();
-        var buttonSize = Math.Max(28F, ImGui.GetFrameHeight() * 1.25F);
+        // 与右侧工具栏共用同一高度，横向按钮行才能与工具栏严丝合缝地对齐
+        var buttonSize = SceneToolbarButtonHeight;
         // 三个模式按钮与右侧工具栏同一行、纵向居中；竖排工具列仍贴在视口左上角
         var top = SceneGizmoRowTop(origin, buttonSize);
         var hovered = false;
