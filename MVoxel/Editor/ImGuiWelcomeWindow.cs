@@ -127,6 +127,7 @@ internal sealed class ImGuiWelcomeContent
         var screen = ImGui.GetIO().DisplaySize;
         var panelWidth = Math.Min(780F, Math.Max(520F, screen.X - 32F));
         var recent = RecentProjects.Load();
+        var titleBarHeight = UiScale.Px(TitleBarHeight);
         var recentLineHeight = ImGui.GetTextLineHeight();
         var recentRowHeight = Math.Max(62F, recentLineHeight * 2F + 24F);
         const float recentRowGap = 4F;
@@ -135,7 +136,7 @@ internal sealed class ImGuiWelcomeContent
             : recent.Count * (recentRowHeight + recentRowGap + ImGui.GetStyle().ItemSpacing.Y * 2F) + 8F +
               ImGui.GetStyle().WindowPadding.Y * 2F + 4F;
         var crashNoticeHeight = MeasureCrashNoticeHeight(new Vector2(panelWidth, screen.Y));
-        var contentHeight = ImGui.GetStyle().WindowPadding.Y * 2F + TitleBarHeight + crashNoticeHeight +
+        var contentHeight = ImGui.GetStyle().WindowPadding.Y * 2F + titleBarHeight + crashNoticeHeight +
                             8F + 80F + 16F + 40F + 12F + ImGui.GetTextLineHeightWithSpacing() +
                             5F + recentContentHeight + ImGui.GetTextLineHeightWithSpacing() * 2F + 16F +
                             ImGui.GetStyle().ItemSpacing.Y * 6F;
@@ -147,22 +148,26 @@ internal sealed class ImGuiWelcomeContent
         var flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
                     ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings |
                     ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
+        // 自绘标题栏必须铺满窗口上缘：先清掉窗口内边距，否则顶部会出现一条背景白边
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
         ImGui.Begin("##MVoxelWelcome", flags);
         var display = ImGui.GetWindowSize();
 
-        var titleBarPosition = ImGui.GetCursorScreenPos();
-        ImGui.InvisibleButton("##WelcomeTitleBar", new Vector2(display.X, TitleBarHeight));
-        var titleBarMax = titleBarPosition + new Vector2(display.X, TitleBarHeight);
+        var titleBarPosition = ImGui.GetWindowPos();
+        ImGui.SetCursorScreenPos(titleBarPosition);
+        ImGui.InvisibleButton("##WelcomeTitleBar", new Vector2(display.X, titleBarHeight));
+        var titleBarMax = titleBarPosition + new Vector2(display.X, titleBarHeight);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(titleBarPosition, titleBarMax, ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.PanelHeader)));
         drawList.AddLine(titleBarMax - new Vector2(0F, 1F), titleBarMax - new Vector2(display.X, 1F),
             ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Border)), 1F);
-        drawList.AddText(titleBarPosition + new Vector2(14F, (TitleBarHeight - ImGui.GetTextLineHeight()) * 0.5F),
+        drawList.AddText(titleBarPosition + new Vector2(UiScale.Px(14F),
+                (titleBarHeight - ImGui.GetTextLineHeight()) * 0.5F),
             ImGui.ColorConvertFloat4ToU32(ToColor(EditorPalette.Text)), "欢迎使用 MVoxel");
-        ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight));
+        ImGui.SetCursorPos(new Vector2(0F, titleBarHeight));
 
         DrawCrashNotice(display);
-        ImGui.SetCursorPos(new Vector2(0F, TitleBarHeight + crashNoticeHeight));
+        ImGui.SetCursorPos(new Vector2(0F, titleBarHeight + crashNoticeHeight));
 
         var contentWidth = Math.Min(660F, display.X - 68F);
         var contentLeft = MathF.Floor(Math.Max(34F, (display.X - contentWidth) / 2F));
@@ -299,6 +304,7 @@ internal sealed class ImGuiWelcomeContent
         DrawRecentProjectDeleteDialog();
         DrawPathDialog();
         ImGui.End();
+        ImGui.PopStyleVar();
         if (operation is not null)
         {
             ImGui.EndDisabled();
@@ -451,7 +457,7 @@ internal sealed class ImGuiWelcomeContent
         var textWidth = Math.Max(1F, width - ImGui.GetStyle().WindowPadding.X * 2F - 2F);
         var summary = $"时间：{crash.OccurredAt:yyyy-MM-dd HH:mm:ss}  ·  {crash.Summary}";
         var logPath = $"详细日志：{crash.ReportPath}";
-        var childFlags = height <= display.Y - TitleBarHeight - 20F
+        var childFlags = height <= display.Y - UiScale.Px(TitleBarHeight) - 20F
             ? ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
             : ImGuiWindowFlags.None;
         ImGui.SetCursorPos(new Vector2(margin, TitleBarHeight + 10F));

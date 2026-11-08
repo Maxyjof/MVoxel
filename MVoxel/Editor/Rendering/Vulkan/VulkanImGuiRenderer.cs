@@ -548,8 +548,9 @@ internal sealed unsafe class VulkanImGuiRenderer : IDisposable
         SamplerCreateInfo createInfo = new()
         {
             SType = StructureType.SamplerCreateInfo,
-            MagFilter = Filter.Nearest,
-            MinFilter = Filter.Nearest,
+            // 矢量字体按线性采样，最近邻会让中文笔画出现锯齿和模糊
+            MagFilter = Filter.Linear,
+            MinFilter = Filter.Linear,
             MipmapMode = SamplerMipmapMode.Nearest,
             AddressModeU = SamplerAddressMode.ClampToEdge,
             AddressModeV = SamplerAddressMode.ClampToEdge,
