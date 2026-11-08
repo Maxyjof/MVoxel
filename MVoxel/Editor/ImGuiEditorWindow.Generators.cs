@@ -216,14 +216,12 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawGeneratorWindow()
     {
         if (!_showGeneratorPanel) return;
-        var open = true;
         if (_applyPreset && _layoutPreset == LayoutPreset.Generator) ImGui.SetNextWindowFocus();
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(560F, 620F), ImGuiCond.FirstUseEver);
-        if (!ImGui.Begin("生成器##生成器面板", ref open, ImGuiWindowFlags.NoCollapse))
+        if (!BeginToolWindow("生成器##生成器面板", ImGuiWindowFlags.NoCollapse, () => _showGeneratorPanel = false))
         {
             ImGui.End();
-            if (!open) _showGeneratorPanel = false;
             return;
         }
 
@@ -234,7 +232,6 @@ internal sealed partial class ImGuiEditorWindow
         DrawGeneratorParameters();
         DrawGeneratorMessage();
         ImGui.End();
-        if (!open) _showGeneratorPanel = false;
     }
 
     /// <summary>
@@ -303,7 +300,6 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SameLine();
             if (ImGui.Button("恢复已保存版本") && _generatorRelativePath is not null)
                 OpenGeneratorAsset(_generatorRelativePath, discardCurrentDraft: true);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("重新读取文件，放弃当前未保存的源码修改。");
         }
     }
 
@@ -364,7 +360,7 @@ internal sealed partial class ImGuiEditorWindow
         {
             ImGui.EndDisabled();
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("源码已更改，请先重新读取声明或保存源码，再检查参数后运行。");
+                ImGui.SetTooltip("源码已更改，请先重新读取声明或保存源码");
         }
     }
 

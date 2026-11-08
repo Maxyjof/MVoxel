@@ -1289,6 +1289,10 @@ CIMGUI_API ImGuiID igDockSpaceOverViewport(ImGuiID dockspace_id,const ImGuiViewp
 {
     return ImGui::DockSpaceOverViewport(dockspace_id,viewport,flags,window_class);
 }
+CIMGUI_API void igMvoxelSetTitleBarDragExcludeRight(float width)
+{
+    return ImGui::MvoxelSetTitleBarDragExcludeRight(width);
+}
 CIMGUI_API void igSetNextWindowDockID(ImGuiID dock_id,ImGuiCond cond)
 {
     return ImGui::SetNextWindowDockID(dock_id,cond);

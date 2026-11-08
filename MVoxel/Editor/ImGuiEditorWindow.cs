@@ -33,6 +33,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
 {
     private const int CapsLockVirtualKey = 0x14;
     private const uint MainDockspaceId = 0x6A3C3001;
+    // ImGui 内部标志 ImGuiDockNodeFlags_NoWindowMenuButton (1 << 14)：隐藏停靠节点标签栏自带的
+    // 「横线 + 三角」窗口菜单按钮，它会与面板自绘的三点菜单重叠并抢走鼠标命中。
+    private const ImGuiDockNodeFlags NoDockNodeWindowMenuButton = (ImGuiDockNodeFlags)(1 << 14);
     private const float HierarchyRowIconSize = 18F;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
     private readonly string? _startupProjectPath;
@@ -105,6 +108,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private Vector3? _renderOrbitAnchor;
     private bool _applyPreset;
     private bool _editPanelLayout;
+    /// <summary>待在 ImGui 帧外加载的布局 ini；帧内重建 DockContext 会让已提交的窗口脱离停靠。</summary>
+    private string? _pendingDockLayoutIni;
     private LayoutPreset _layoutPreset = LayoutPreset.Default;
     private string _statusText = "就绪";
     private IReadOnlyList<string> _sceneValidationErrors = Array.Empty<string>();
@@ -439,6 +444,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             //设备丢失后先重建 Vulkan 设备，否则整个窗口会因为无法呈现而冻结
             RecoverVulkanDeviceIfNeeded();
             ImGui.SetCurrentContext(_imguiContext);
+            // 布局 ini 必须在上一帧 Render 之后、下一帧 NewFrame 之前加载
+            ApplyPendingDockLayout();
             var updateMark = PerformanceMark();
             _fonts.Refresh(_controller!, UiDiagnostics.Dpi(this));
             LogUiScaleIfChanged(UiDiagnostics.Dpi(this));
@@ -732,6 +739,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             "editor.exitEditor" => QueueExitEditor(Unwrap(request)),
             "editor.selectObject" => QueueSelectObject(request),
             "editor.selection" => DescribeSelection(),
+            "editor.undo" => RunOnUi(() => new { changed = ApplyUndo() }),
+            "editor.redo" => RunOnUi(() => new { changed = ApplyRedo() }),
             "editor.commands" => ListEditorCommands(request),
             "editor.exec" => ExecuteEditorCommand(request),
             "editor.invokeAutomation" => InvokeAutomation(request),
@@ -809,6 +818,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             scaleX = data.ScaleX,
             scaleY = data.ScaleY,
             scaleZ = data.ScaleZ,
+            rotationX = data.RotationX,
+            rotationY = data.RotationY,
+            rotationZ = data.RotationZ,
         };
     }
 
@@ -1181,6 +1193,10 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                                      savedLayout.Contains("[Window][场景##场景窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][渲染##渲染窗口]", StringComparison.Ordinal) &&
                                      savedLayout.Contains("[Window][检查器##检查器窗口]", StringComparison.Ordinal) &&
+                                     // 旧版切换布局会把面板全部解除停靠，这类 ini 即使结构完整也要回退到预设；
+                                     // 只要核心面板还有一个处于停靠状态就保留用户自己的摆放
+                                     (IsPanelDocked(savedLayout, "场景##场景窗口") ||
+                                      IsPanelDocked(savedLayout, "检查器##检查器窗口")) &&
                                      !savedLayout.Contains("[Window][场景与渲染##中央面板]", StringComparison.Ordinal);
         if (hasCurrentPanelLayout)
         {
@@ -1189,12 +1205,38 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
         else
         {
-            ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
+            var fallbackLayout = GetPresetDockLayout(_layoutPreset);
+            if (_activeLayoutFile is not null && File.Exists(_activeLayoutFile))
+            {
+                try
+                {
+                    var customLayout = File.ReadAllText(_activeLayoutFile);
+                    ValidateLayout(customLayout);
+                    if (IsPanelDocked(customLayout, "场景##场景窗口") || IsPanelDocked(customLayout, "检查器##检查器窗口"))
+                        fallbackLayout = MigrateLayoutWindowNames(customLayout);
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+                {
+                }
+            }
+
+            ImGui.LoadIniSettingsFromMemory(fallbackLayout);
             _requestedInspectorTab = 0;
             AtomicFile.WriteText(layoutVersionPath, layoutVersion);
         }
 
         ApplyImGuiStyle();
+    }
+
+    /// <summary>检查 ini 里某个面板窗口段是否仍带 DockId（即仍处于停靠状态）。</summary>
+    private static bool IsPanelDocked(string ini, string windowName)
+    {
+        var header = $"[Window][{windowName}]";
+        var start = ini.IndexOf(header, StringComparison.Ordinal);
+        if (start < 0) return false;
+        var end = ini.IndexOf("\n[", start + header.Length, StringComparison.Ordinal);
+        var section = end < 0 ? ini[start..] : ini[start..end];
+        return section.Contains("DockId=0x", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -1230,6 +1272,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         style.Colors[(int)ImGuiCol.FrameBgActive] = ToColor(EditorPalette.Pressed);
         style.Colors[(int)ImGuiCol.TitleBg] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.TitleBgActive] = ToColor(EditorPalette.PanelHeader);
+        // 折叠窗口的标题条必须跟主题走：ImGui 默认 TitleBgCollapsed 是半透明黑，
+        // 浅色主题下折叠后就变成一条黑条，和展开状态完全不像同一个窗口
+        style.Colors[(int)ImGuiCol.TitleBgCollapsed] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.MenuBarBg] = ToColor(EditorPalette.PanelHeader);
         style.Colors[(int)ImGuiCol.Header] = ToColor(EditorPalette.AccentSoft);
         style.Colors[(int)ImGuiCol.HeaderHovered] = ToColor(EditorPalette.SelectedHover);
@@ -1285,15 +1330,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         }
 
 
-        if (_resetDockLayoutRequested)
-        {
-            ImGui.LoadIniSettingsFromMemory(GetPresetDockLayout(_layoutPreset));
-            _resetDockLayoutRequested = false;
-            _applyPreset = true;
-            _focusModelingTools = _layoutPreset == LayoutPreset.Modeling;
-            _requestedCenterTab = _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
-            _requestedInspectorTab = _layoutPreset == LayoutPreset.Modeling ? null : _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
-        }
+        // 布局 ini 已经由 ApplyPendingDockLayout 在帧外加载，这里不能再重建 DockContext
+        // 告诉定制版 ImGui：标题栏最右侧是自绘的三点/叉号按钮，落在这里的按下不算“拖动整窗”
+        ImGuiDockTitleBar.SyncButtonArea(ImGui.GetFrameHeight(), ImGui.GetStyle().WindowPadding.X);
         UiDiagnostics.PrepareTabs(ref _requestedCenterTab, ref _requestedInspectorTab);
         var welcomeIsOpen = _welcomeWindow?.IsOpen == true;
         var operation = _projectOperation.Snapshot;
@@ -1338,6 +1377,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawSceneSizeWarning();
         DrawProjectAssets();
         DrawPluginPanels();
+        DrawPluginManagerWindow();
+        DrawScriptRunnerWindow();
         DrawGeneratorWindow();
         DrawAnalysisWindows();
         DrawEnvironmentWindow();
@@ -1391,28 +1432,34 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             return;
         }
 
+        //菜单栏按“文件 → 编辑 → 对象 → 工具 → 扩展 → 视图 → 帮助”组织：
+        //左边是改变内容与数据的动作，右边是看法与帮助，
+        //窗口属于纯视图容器，按约定放在工具与插件之后
         if (ImGui.BeginMenu("项目"))
         {
             if (ImGui.MenuItem("新建项目", "Ctrl+N")) ShowProjectPathDialog(create: true);
             if (ImGui.MenuItem("打开项目", "Ctrl+O")) ShowProjectPathDialog(create: false);
             if (ImGui.MenuItem("保存项目", "Ctrl+S", false, _project is not null)) SaveProject();
             if (ImGui.MenuItem("另存项目为…", null, false, _project is not null)) ShowSaveAsDialog();
-            if (ImGui.MenuItem("新建体素模型", null, false, _project is not null)) CreateVoxelModel();
+            ImGui.Separator();
+            if (ImGui.BeginMenu("导入", _project is not null))
+            {
+                if (ImGui.MenuItem("MVoxel 原生体素数据…")) ImportVoxAsWorld(native: true);
+                if (ImGui.MenuItem("兼容体素格式（.vox / .qb / .schem）…")) ImportVoxAsWorld();
+                if (ImGui.MenuItem("网格模型（obj / stl / glb / gltf）…")) ShowMeshImportDialog();
+                if (ImGui.MenuItem("Minecraft 存档…")) ShowMinecraftImportDialog();
+                ImGui.EndMenu();
+            }
             if (ImGui.BeginMenu("导出", _project is not null))
             {
                 if (ImGui.MenuItem("选中模型 → MVoxel 原生 (.mvmodel)")) ExportWorkingVoxels(true, false, native: true);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("保留原生颜色、材质槽与标记，不使用 MagicaVoxel 的尺寸或色板上限。材质定义保存在项目内。");
                 if (ImGui.MenuItem("整个场景体素 → MVoxel 原生 (.mvworld)")) ExportWorkingVoxels(false, false, native: true);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("导出合并体素数据，包括隐藏模型；保留层级、相机、光照与材质定义请使用另存项目。");
-                if (ImGui.BeginMenu("兼容导出"))
+                if (ImGui.BeginMenu("兼容格式"))
                 {
                     if (ImGui.MenuItem("选中模型 → MagicaVoxel (.vox)")) ExportWorkingVoxels(true, false);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅交换几何和颜色：单模型每轴最多 256 格、255 个非空颜色。超过 256 格自动拆成子对象并写入场景图；不导出 MVoxel 材质参数与层级。");
                     if (ImGui.MenuItem("整个场景体素 → MagicaVoxel (.vox)")) ExportWorkingVoxels(false, false);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("只导出当前打开的场景文件，含隐藏对象。MagicaVoxel 世界为 -1024 到 +1024（每轴 2048 格），场景按此窗口分区写成多个 .vox；每个对象在场景图里是一个组，超过 256 格的模型作为命名子对象分层存放。");
                     if (ImGui.MenuItem("选中模型 → Blender 网格 (.obj)")) ExportWorkingVoxels(true, false, obj: true);
                     if (ImGui.MenuItem("整个场景体素 → Blender 网格 (.obj)")) ExportWorkingVoxels(false, false, obj: true);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("导出外表面与顶点颜色；不包含材质参数、相机和层级。大型场景可能产生很大的文件。");
                     if (ImGui.MenuItem("选中模型 → Qubicle (.qb)")) ExportWorkingVoxels(true, true);
                     if (ImGui.MenuItem("整个场景体素 → Qubicle (.qb)")) ExportWorkingVoxels(false, true);
                     ImGui.EndMenu();
@@ -1425,77 +1472,100 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             }
             ImGui.Separator();
             if (ImGui.MenuItem("关闭项目", enabled: _project is not null)) RequestCloseProject();
-            if (ImGui.MenuItem("导入 MVoxel 原生体素数据…", enabled: _project is not null)) ImportVoxAsWorld(native: true);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("导入 .mvmodel/.mvworld，保留原生颜色、材质槽与标记；若来自其他项目，材质定义需一同放入 Materials。");
-            if (ImGui.MenuItem("兼容导入（.vox / .qb / .schem）…", enabled: _project is not null)) ImportVoxAsWorld();
-            if (ImGui.MenuItem("导入网格模型（obj/stl/glb/gltf）…", enabled: _project is not null)) ShowMeshImportDialog();
-            if (ImGui.MenuItem("导入 Minecraft 存档…", enabled: _project is not null)) ShowMinecraftImportDialog();
             if (ImGui.MenuItem("退出", "Alt+F4")) RequestExit();
             ImGui.EndMenu();
         }
 
-        if (_openWindowMenuRequested) { ImGui.OpenPopup("窗口"); _openWindowMenuRequested = false; }
         if (ImGui.BeginMenu("编辑"))
         {
             var undo = _voxelHistory.PeekUndo();
             var redo = _voxelHistory.PeekRedo();
             var bindings = _editorSettings.ActiveScheme().Bindings;
             if (ImGui.MenuItem("撤销", bindings.GetValueOrDefault("edit.undo"), false, undo is not null || _historyCommands.Count > 0)) ApplyUndo();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(undo is null ? "撤销上一步；按住快捷键可连续撤销。" : $"撤销：{undo.Name}；按住快捷键可连续撤销。");
             if (ImGui.MenuItem("重做", bindings.GetValueOrDefault("edit.redo"), false, redo is not null)) ApplyRedo();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{(redo is null ? "重做上一步" : $"重做：{redo.Name}")}；备用快捷键 {bindings.GetValueOrDefault("edit.redoAlternate")}，支持按住连续重做。");
             ImGui.Separator();
             var selected = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId);
             if (ImGui.MenuItem("聚焦选中对象", enabled: selected is not null) && selected is not null) FocusHierarchyObject(selected);
             if (ImGui.MenuItem(selected?.Visible == false ? "显示选中对象" : "隐藏选中对象", enabled: selected is not null) && selected is not null)
             { selected.Visible = !selected.Visible; MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }
             if (ImGui.MenuItem(selected?.Locked == true ? "解锁选中对象" : "锁定选中对象", enabled: selected is not null) && selected is not null) ToggleSceneObjectLock(selected);
-            if (ImGui.BeginMenu("创建子对象", selected is not null))
+            if (ImGui.MenuItem("取消选择", enabled: selected is not null)) _selectedSceneObjectId = null;
+            ImGui.Separator();
+            if (ImGui.BeginMenu("设置"))
             {
-                DrawHierarchyCreateMenu(selected!);
+                if (ImGui.MenuItem("编辑器设置")) OpenSettings(0);
+                if (ImGui.MenuItem("项目设置", enabled: _project is not null)) OpenSettings(1);
+                if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
+                ImGui.Separator();
+                if (ImGui.MenuItem("快速画面设置"))
+                {
+                    _showRenderConfig = true;
+                    _requestedInspectorTab = 1;
+                }
                 ImGui.EndMenu();
             }
-            if (ImGui.MenuItem("取消选择", enabled: selected is not null)) _selectedSceneObjectId = null;
+            if (ImGui.BeginMenu("主题"))
+            {
+                foreach (var themeName in EditorPalette.ThemeNames)
+                {
+                    if (!ImGui.MenuItem(themeName, null, _editorSettings.Theme == themeName)) continue;
+                    _editorSettings.Theme = themeName;
+                    EditorPalette.ApplyTheme(themeName);
+                    ApplyImGuiStyle();
+                    SaveEditorSettings();
+                }
+
+                ImGui.Separator();
+                if (ImGui.MenuItem("主题管理")) OpenSettings(_project is null ? 0 : 1, _project is null ? 4 : 4, "editor.appearance.theme");
+                ImGui.EndMenu();
+            }
             ImGui.EndMenu();
         }
 
-        if (ImGui.BeginMenu("窗口"))
+        //对象菜单只放“往场景里放东西”，与工具菜单的“怎么改体素”分开，
+        //避免建模时在工具菜单里翻找新建入口
+        if (ImGui.BeginMenu("对象"))
         {
-            if (ImGui.BeginMenu("常规"))
+            if (ImGui.MenuItem("新建体素模型", null, false, _project is not null)) CreateVoxelModel();
+            ImGui.Separator();
+            ImGui.TextDisabled("灯光");
+            if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
+            if (ImGui.MenuItem("添加聚光灯", enabled: _project is not null)) CreateLightObject(LightShape.Spot);
+            if (ImGui.MenuItem("添加方向光", enabled: _project is not null)) CreateLightObject(LightShape.Directional);
+            if (ImGui.MenuItem("添加面积灯", enabled: _project is not null)) CreateLightObject(LightShape.Area);
+            ImGui.Separator();
+            var createParent = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId);
+            if (ImGui.BeginMenu("创建子对象", createParent is not null))
             {
-                if (ImGui.MenuItem("场景", "F1")) { _showSceneWindow = true; _requestedCenterTab = 0; ImGui.SetWindowFocus("场景##场景窗口"); }
-                if (ImGui.MenuItem("层级")) { _showHierarchy = true; ImGui.SetWindowFocus("层级##层级面板"); }
-                if (ImGui.MenuItem("检查器")) { _showInspector = true; _requestedInspectorTab = 0; }
-                if (ImGui.MenuItem("调色盘")) { _showModelingTools = true; _showPaletteWindow = true; _focusModelingTools = true; }
-                if (ImGui.MenuItem("项目资产")) { _showProjectAssets = true; ImGui.SetWindowFocus("项目资产##资源浏览器"); }
+                DrawHierarchyCreateMenu(createParent!);
                 ImGui.EndMenu();
             }
-            if (ImGui.BeginMenu("渲染"))
-            {
-                if (ImGui.MenuItem("渲染", "F2")) { _showRenderWindow = true; _requestedCenterTab = 1; ImGui.SetWindowFocus("渲染##渲染窗口"); }
-                if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
-                if (ImGui.MenuItem("环境配置")) OpenEnvironmentWindow();
-                if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
-                if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
-                if (ImGui.MenuItem("时间轴")) _showTimelineWindow = true;
-                ImGui.EndMenu();
-            }
-            if (ImGui.BeginMenu("工具"))
-            {
-                if (ImGui.MenuItem("生成器")) { _showGeneratorPanel = true; ImGui.SetWindowFocus("生成器##生成器面板"); }
-                if (ImGui.MenuItem("体素度量")) { _showVoxelMeasurements = true; ImGui.SetWindowFocus("体素度量"); }
-                if (ImGui.MenuItem("性能分析器")) { _showPerformanceAnalyzer = true; ImGui.SetWindowFocus("性能分析器"); }
-                ImGui.EndMenu();
-            }
+            ImGui.EndMenu();
+        }
+
+        //工具菜单只保留动作：视口模式、体素编辑模式与场景校验；
+        //面板可见性统一归窗口菜单，避免同一功能在两处重复出现
+        if (ImGui.BeginMenu("工具"))
+        {
+            ImGui.TextDisabled("视口工具");
+            if (ImGui.MenuItem("相机", null, _activeTool == EditorTool.Camera)) _activeTool = EditorTool.Camera;
+            if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
+            ImGui.Separator();
+            ImGui.TextDisabled("体素编辑工具");
+            if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw, _voxelEditTargetId is not null)) _activeTool = EditorTool.Draw;
+            if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase, _voxelEditTargetId is not null)) _activeTool = EditorTool.Erase;
+            ImGui.Separator();
+            if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
             ImGui.EndMenu();
         }
 
         if (ImGui.BeginMenu("插件"))
         {
+            if (ImGui.MenuItem("插件管理…")) OpenPluginManagerWindow();
+            if (ImGui.MenuItem("脚本运行器…")) OpenScriptRunnerWindow();
+            ImGui.Separator();
             if (ImGui.MenuItem("安装插件包…")) _pendingActions.Enqueue(InstallPluginPackageFromMenu);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("选择 .mvplugin 文件安装到编辑器；项目启用状态保持不变。");
             if (ImGui.MenuItem("打包插件目录…")) _pendingActions.Enqueue(PackPluginFromMenu);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("将包含 package.json 的目录打包为 .mvplugin 文件。");
             var diagnostics = _project is null ? Array.Empty<ProjectPluginDiagnostic>() : PluginManager.Diagnose(_project);
             if (_project is { } pluginProject && ImGui.BeginMenu("管理项目插件"))
             {
@@ -1505,14 +1575,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 {
                     var isEnabled = enabled.Contains(package.Id);
                     var displayName = string.IsNullOrWhiteSpace(package.Name) ? package.Id : package.Name;
-                    if (ImGui.MenuItem($"{displayName}##plugin:{package.Id}", null, isEnabled))
+                    if (ImGui.MenuItem($"{displayName}  {package.Version}##plugin:{package.Id}", null, isEnabled))
                         _pendingActions.Enqueue(() => SetProjectPluginFromMenu(pluginProject, package.Id, !isEnabled));
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.BeginTooltip();
-                        ImGui.TextUnformatted($"{package.Id} · {package.Version}");
-                        ImGui.EndTooltip();
-                    }
                 }
                 foreach (var missing in diagnostics.Where(item => !item.Installed))
                 {
@@ -1526,13 +1590,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                 if (_pluginRuntime.ActivationStatus.Count == 0) ImGui.TextDisabled("没有已启用的插件");
                 foreach (var (id, status) in _pluginRuntime.ActivationStatus.OrderBy(item => item.Key, StringComparer.Ordinal))
                 {
-                    ImGui.TextUnformatted(id);
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.BeginTooltip();
-                        ImGui.TextUnformatted(status);
-                        ImGui.EndTooltip();
-                    }
+                    //菜单项文字直接带出状态，菜单栏不使用悬停提示
+                    ImGui.MenuItem($"{id}：{status}", null, false, false);
                 }
                 ImGui.EndMenu();
             }
@@ -1562,62 +1621,41 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.EndMenu();
         }
 
-        DrawLayoutMenu();
-
-        if (ImGui.BeginMenu("工具"))
+        if (_openWindowMenuRequested) { ImGui.OpenPopup("窗口"); _openWindowMenuRequested = false; }
+        if (ImGui.BeginMenu("窗口"))
         {
-            ImGui.TextDisabled("视口工具");
-            if (ImGui.MenuItem("相机", null, _activeTool == EditorTool.Camera)) _activeTool = EditorTool.Camera;
-            if (ImGui.MenuItem("选择", null, _activeTool == EditorTool.Pick)) _activeTool = EditorTool.Pick;
-            ImGui.Separator();
-            ImGui.TextDisabled("体素编辑工具");
-            if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw, _voxelEditTargetId is not null)) _activeTool = EditorTool.Draw;
-            if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase, _voxelEditTargetId is not null)) _activeTool = EditorTool.Erase;
-            ImGui.Separator();
-            ImGui.TextDisabled("场景对象");
-            if (ImGui.MenuItem("添加点光源", enabled: _project is not null)) CreateLightObject(LightShape.Point);
-            if (ImGui.MenuItem("添加聚光灯", enabled: _project is not null)) CreateLightObject(LightShape.Spot);
-            if (ImGui.MenuItem("添加方向光", enabled: _project is not null)) CreateLightObject(LightShape.Directional);
-            if (ImGui.MenuItem("添加面积灯", enabled: _project is not null)) CreateLightObject(LightShape.Area);
-            ImGui.Separator();
-            ImGui.TextDisabled("度量与诊断");
-            if (ImGui.MenuItem("体素度量", null, ref _showVoxelMeasurements)) _measurementRefreshSeconds = 1F;
-            if (ImGui.MenuItem("性能分析器", null, ref _showPerformanceAnalyzer))
+            if (ImGui.BeginMenu("常规"))
             {
-                _analysisAllocatedBytes = 0;
-                _analysisRefreshSeconds = 0;
+                if (ImGui.MenuItem("场景", "F1")) { _showSceneWindow = true; _requestedCenterTab = 0; ImGui.SetWindowFocus("场景##场景窗口"); }
+                if (ImGui.MenuItem("层级")) { _showHierarchy = true; ImGui.SetWindowFocus("层级##层级面板"); }
+                if (ImGui.MenuItem("检查器")) { _showInspector = true; _requestedInspectorTab = 0; }
+                if (ImGui.MenuItem("调色盘")) { _showModelingTools = true; _showPaletteWindow = true; _focusModelingTools = true; }
+                if (ImGui.MenuItem("项目资产")) { _showProjectAssets = true; ImGui.SetWindowFocus("项目资产##资源浏览器"); }
+                ImGui.EndMenu();
             }
-            if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
-            ImGui.EndMenu();
-        }
-
-        if (ImGui.BeginMenu("主题"))
-        {
-            foreach (var themeName in EditorPalette.ThemeNames)
+            if (ImGui.BeginMenu("渲染"))
             {
-                if (!ImGui.MenuItem(themeName, null, _editorSettings.Theme == themeName)) continue;
-                _editorSettings.Theme = themeName;
-                EditorPalette.ApplyTheme(themeName);
-                ApplyImGuiStyle();
-                SaveEditorSettings();
+                if (ImGui.MenuItem("渲染", "F2")) { _showRenderWindow = true; _requestedCenterTab = 1; ImGui.SetWindowFocus("渲染##渲染窗口"); }
+                if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
+                if (ImGui.MenuItem("环境配置")) OpenEnvironmentWindow();
+                if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
+                if (ImGui.MenuItem("动画")) _showAnimationWindow = true;
+                if (ImGui.MenuItem("时间轴")) _showTimelineWindow = true;
+                ImGui.EndMenu();
             }
-
-            ImGui.Separator();
-            if (ImGui.MenuItem("主题管理")) OpenSettings(_project is null ? 0 : 1, _project is null ? 4 : 4, "editor.appearance.theme");
-            ImGui.EndMenu();
-        }
-
-        if (ImGui.BeginMenu("设置"))
-        {
-            if (ImGui.MenuItem("编辑器设置")) OpenSettings(0);
-            if (ImGui.MenuItem("快捷键方案")) OpenSettings(0, 2, "editor.input.shortcuts");
-            if (ImGui.MenuItem("项目设置", enabled: _project is not null)) OpenSettings(1);
-            ImGui.Separator();
-            if (ImGui.MenuItem("快速画面设置"))
+            if (ImGui.BeginMenu("工具"))
             {
-                _showRenderConfig = true;
-                _requestedInspectorTab = 1;
+                if (ImGui.MenuItem("生成器")) { _showGeneratorPanel = true; ImGui.SetWindowFocus("生成器##生成器面板"); }
+                if (ImGui.MenuItem("体素度量", null, ref _showVoxelMeasurements)) _measurementRefreshSeconds = 1F;
+                if (ImGui.MenuItem("性能分析器", null, ref _showPerformanceAnalyzer))
+                {
+                    _analysisAllocatedBytes = 0;
+                    _analysisRefreshSeconds = 0;
+                }
+                ImGui.EndMenu();
             }
+            ImGui.Separator();
+            DrawLayoutMenu();
             ImGui.EndMenu();
         }
 
@@ -1642,7 +1680,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
                     ImGuiWindowFlags.NoNavFocus | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
         ImGui.Begin("##MVoxelDockspaceHost", flags);
         ImGui.DockSpace(MainDockspaceId, Vector2.Zero,
-            ImGuiDockNodeFlags.PassthruCentralNode);
+            ImGuiDockNodeFlags.PassthruCentralNode | NoDockNodeWindowMenuButton);
         ImGui.End();
     }
 
@@ -1681,13 +1719,16 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (!ImGui.Begin("层级##层级面板", ref _showHierarchy, PanelWindowFlags))
+        if (!ImGui.Begin("层级##层级面板", PanelWindowFlags))
         {
+            // 折叠后 Begin 返回 false，但标题栏按钮仍要显示，否则折叠面板既不能关也不能开菜单
+            if (ImGui.IsWindowCollapsed()) DrawPanelWindowMenu(() => _showHierarchy = false);
             ImGui.End();
             return;
         }
 
-        DrawPanelWindowMenu();
+        RegisterWindowGroup("hierarchy", () => _showHierarchy = false);
+        DrawPanelWindowMenu(() => _showHierarchy = false);
         DrawHierarchyContent();
         ImGui.End();
     }
@@ -1714,7 +1755,6 @@ DockId=0x6A3C3007,0
                 if (objects.Count == 0)
                 {
                     if (ImGui.Button("创建第一个体素模型", new Vector2(-1F, ImGui.GetFrameHeight()))) CreateVoxelModel();
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("也可以选择绘制工具，直接在网格上落笔，自动创建模型。");
                 }
                 else
                 {
@@ -1760,7 +1800,7 @@ DockId=0x6A3C3007,0
         var nodeFlags = children.Length == 0
             ? ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen
             : ImGuiTreeNodeFlags.None;
-        if (_selectedSceneObjectId == sceneObject.Id)
+        if (IsInSceneSelection(sceneObject.Id))
         {
             nodeFlags |= ImGuiTreeNodeFlags.Selected;
         }
@@ -1808,13 +1848,18 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorScreenPos(treeCursor);
 
         var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
-        var rowHovered = rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax);
-        if (rowHovered || _selectedSceneObjectId == sceneObject.Id)
+        // 几何命中不含遮挡：浮动窗口盖住层级时，行不应该显示悬停底色，也不该被双击聚焦
+        var rowHovered = ImGui.IsWindowHovered() &&
+                         (rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax));
+        // Unity 的 Hierarchy 会把多选里的每一行都标出来，主对象用更实的底色区分
+        var inSelection = IsInSceneSelection(sceneObject.Id);
+        if (rowHovered || inSelection)
         {
             var drawList = ImGui.GetWindowDrawList();
-            var rowColor = _selectedSceneObjectId == sceneObject.Id
+            var rowColor = IsPrimarySceneSelection(sceneObject.Id)
                 ? Color.FromArgb(150, EditorPalette.Accent)
-                : Color.FromArgb(42, EditorPalette.AccentSoft);
+                : inSelection ? Color.FromArgb(78, EditorPalette.Accent)
+                    : Color.FromArgb(42, EditorPalette.AccentSoft);
             drawList.AddRectFilled(rowMin, fullRowMax,
                 ToPackedColor(rowColor), 2F);
         }
@@ -2003,40 +2048,57 @@ DockId=0x6A3C3007,0
     {
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
-        SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
-        if (_requestedCenterTab == 0) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("场景##场景窗口", ref _showSceneWindow, PanelWindowFlags))
+        // 面板被三点菜单关闭后不再提交窗口；位置和焦点设置必须留在各自的分支里，
+        // 否则 SetNextWindow* 会落到下一个实际提交的窗口上。
+        if (_showSceneWindow)
         {
-        }
-        else
-        {
-            DrawPanelWindowMenu();
-            _centerTab = 0;
-            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _focusedCenterTab = 0;
-            DrawSceneView();
-        }
-        ImGui.End();
-
-        SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
-        if (_requestedCenterTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染##渲染窗口", ref _showRenderWindow, PanelWindowFlags))
-        {
-            _requestedCenterTab = null;
-        }
-        else
-        {
-            DrawPanelWindowMenu();
-            _centerTab = 1;
-            var renderViewFocused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
-            if (renderViewFocused && !_renderViewWasFocused)
+            SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
+            if (_requestedCenterTab == 0) ImGui.SetNextWindowFocus();
+            if (ImGui.Begin("场景##场景窗口", PanelWindowFlags))
             {
-                _renderViewNeedsInitialRender = true;
+                RegisterWindowGroup("scene", () => _showSceneWindow = false);
+                DrawPanelWindowMenu(() => _showSceneWindow = false);
+                _centerTab = 0;
+                if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _focusedCenterTab = 0;
+                DrawSceneView();
             }
-            _renderViewWasFocused = renderViewFocused;
-            if (renderViewFocused) _focusedCenterTab = 1;
-            DrawRenderView();
+            else if (ImGui.IsWindowCollapsed())
+            {
+                DrawPanelWindowMenu(() => _showSceneWindow = false);
+            }
+            ImGui.End();
         }
-        ImGui.End();
+        else
+        {
+            // 场景窗口被关闭时清掉半途的框选，重新打开后不会接着上一次的拖拽状态
+            _objectBoxSelecting = false;
+        }
+
+        if (_showRenderWindow)
+        {
+            SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
+            if (_requestedCenterTab == 1) ImGui.SetNextWindowFocus();
+            if (ImGui.Begin("渲染##渲染窗口", PanelWindowFlags))
+            {
+                RegisterWindowGroup("render", () => _showRenderWindow = false);
+                DrawPanelWindowMenu(() => _showRenderWindow = false);
+                _centerTab = 1;
+                var renderViewFocused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
+                if (renderViewFocused && !_renderViewWasFocused)
+                {
+                    _renderViewNeedsInitialRender = true;
+                }
+                _renderViewWasFocused = renderViewFocused;
+                if (renderViewFocused) _focusedCenterTab = 1;
+                DrawRenderView();
+            }
+            else
+            {
+                if (ImGui.IsWindowCollapsed()) DrawPanelWindowMenu(() => _showRenderWindow = false);
+                _requestedCenterTab = null;
+            }
+            ImGui.End();
+        }
 
         _requestedCenterTab = null;
     }
@@ -2056,6 +2118,11 @@ DockId=0x6A3C3007,0
         var origin = ImGui.GetCursorScreenPos();
         var size = ImGui.GetContentRegionAvail();
         _lastSceneViewportSize = size;
+        // ImGui 的 IsMouseHoveringRect 只做几何命中，完全不考虑窗口遮挡：
+        // 插件管理、脚本运行器等浮动窗口压在视口上时，场景仍会照常响应。这里补一层
+        // “当前窗口是否真的被鼠标指着”的判定，鼠标被上层窗口吃掉时视口不得再接管输入。
+        var sceneWindowHovered = ImGui.IsWindowHovered();
+        var viewportHovered = sceneWindowHovered && ImGui.IsMouseHoveringRect(origin, origin + size);
         var drawList = ImGui.GetWindowDrawList();
         var sceneSettings = CurrentSceneRenderSettings;
         drawList.AddRectFilled(origin, origin + size, ToPackedColor(SceneBackgroundDisplayColor(_editorSettings.SceneRenderSettings)));
@@ -2074,12 +2141,13 @@ DockId=0x6A3C3007,0
         var floatingRowTop = SceneGizmoRowTop(origin, floatingToolSize);
         var floatingRowMax = new Vector2(floatingRowTop.X + GizmoModeRowWidth(floatingToolSize),
             floatingRowTop.Y + floatingToolSize);
-        var floatingToolsHovered =
-            ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
-                origin + new Vector2(8F + floatingToolSize, 10F + 5F * (floatingToolSize + 3F))) ||
-            ImGui.IsMouseHoveringRect(floatingRowTop, floatingRowMax);
+        // 浮动工具区同样要先确认视口窗口真的被指着，否则被窗口盖住时还会画出悬停高亮
+        var floatingToolsHovered = sceneWindowHovered &&
+            (ImGui.IsMouseHoveringRect(origin + new Vector2(8F, 10F),
+                 origin + new Vector2(8F + floatingToolSize, 10F + 5F * (floatingToolSize + 3F))) ||
+             ImGui.IsMouseHoveringRect(floatingRowTop, floatingRowMax));
         // 下拉面板展开时，面板区域也算在工具区内，避免点击穿透到场景
-        if (_gizmoPanel != GizmoPanelKind.None &&
+        if (_gizmoPanel != GizmoPanelKind.None && sceneWindowHovered &&
             ImGui.IsMouseHoveringRect(_gizmoPanelMinimum, _gizmoPanelMaximum)) floatingToolsHovered = true;
         _colorSampleSceneOrigin = origin;
         _colorSampleSceneSize = size;
@@ -2141,8 +2209,6 @@ DockId=0x6A3C3007,0
                     DrawVoxelWorldPreview(drawList, origin, size, camera, _showVoxelOutlines && IsVoxelEditingMode,
                         GetSceneInspectionWorld(GetRenderWorld(uint.MaxValue, sceneVisibility: true)));
                 if (!gridBehindModel && _showGrid) SceneGrid.Draw(drawList, origin, size, camera, _sceneCameraDistance);
-                if (showVoxelWorld && _project is not null && !IsVoxelDrawingMode && showCpuVoxelPreview)
-                    DrawCpuSelectionOutline(drawList, origin, size, camera);
                 if (!showCpuVoxelPreview)
                 {
                     var text = "正在准备显卡视图…";
@@ -2163,14 +2229,22 @@ DockId=0x6A3C3007,0
         if (!_screenColorSampling && _project is not null && !gizmoHovered && !floatingToolsHovered && !gizmoInput &&
             (showVoxelWorld || GetVoxelWorldObject() is null))
         {
-            // 选择工具下拖动空白区域进入框选；单击未拖动时继续走体素拾取
-            if (_sceneGizmoMode == SceneGizmoMode.Select && _activeTool == EditorTool.Pick &&
-                HandleObjectBoxSelection(origin, size, camera)) { }
-            else HandleVoxelToolInput(origin, size, camera);
+            // 框选与变换模式解耦：选中对象后 SyncToolModeWithSelection 会切回上次的变换工具，
+            // 若仍要求 SceneGizmoMode.Select，框选会在第一次选中对象后再也触发不了。
+            // 只要没命中 gizmo / 浮动工具，选择与相机工具下拖空白都能框选；单击未拖动仍走体素拾取。
+            var boxSelectAllowed = _activeTool is EditorTool.Pick or EditorTool.Camera &&
+                                   !IsVoxelSelectionEditing(GetSelectedSceneObject());
+            if (boxSelectAllowed && HandleObjectBoxSelection(origin, size, camera)) { }
+            else
+            {
+                // 中途切工具或进入范围盒编辑时，别把半途的框选状态留到下次回到选择工具
+                if (!boxSelectAllowed) _objectBoxSelecting = false;
+                HandleVoxelToolInput(origin, size, camera);
+            }
 
             // 场景里双击对象时聚焦到它：先由单击选中，再按双击触发聚焦
             if (ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) &&
-                ImGui.IsMouseHoveringRect(origin, origin + size) &&
+                viewportHovered &&
                 GetSelectedSceneObject() is { } doubleClicked &&
                 TryGetObjectScreenRect(doubleClicked, origin, size, camera, out var objectMinimum,
                     out var objectMaximum) &&
@@ -2180,7 +2254,7 @@ DockId=0x6A3C3007,0
             DrawVoxelBrushPreview(drawList, origin, size, camera);
         }
         else if (_project is null && !gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
-                 ImGui.IsMouseHoveringRect(origin, origin + size))
+                 viewportHovered)
         {
             RequestWelcomeWindow();
         }
@@ -2276,7 +2350,7 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorPosX(left + Math.Max(0F, available - buttonWidth * 4F - spacing * 3F));
 
         if (SceneToolbarButton("图层##SceneLayers", ImGui.IsPopupOpen("##SceneLayersPopup"),
-                buttonWidth, buttonHeight, "管理图层并设置场景窗口可见性，不影响相机的图层遮罩。"))
+                buttonWidth, buttonHeight))
             ImGui.OpenPopup("##SceneLayersPopup");
         if (ImGui.BeginPopup("##SceneLayersPopup"))
         {
@@ -2285,26 +2359,19 @@ DockId=0x6A3C3007,0
         }
         ImGui.SameLine(0F, spacing);
 
-        if (SceneToolbarButton("切面查看##SceneSlice", _sceneSliceEnabled, buttonWidth, buttonHeight,
-                "非破坏性切面，仅影响场景窗口；启用后可选择轴和位置。"))
+        if (SceneToolbarButton("切面查看##SceneSlice", _sceneSliceEnabled, buttonWidth, buttonHeight))
         {
             _sceneSliceEnabled = !_sceneSliceEnabled;
             _sceneSliceWorld = null;
         }
 
         ImGui.SameLine(0F, spacing);
-        var cameraTip = IsCapsLockEnabled()
-            ? _editorSettings.McMode
-                ? "相机设置。Caps Lock：WASD 移动、Q/E 升降、鼠标转向；左键破坏、右键放置、Shift 加速、中键平移。"
-                : "相机设置。Caps Lock：WASD 移动、Q/E 升降、鼠标转向；左键放置、右键破坏、Shift 加速、中键平移。"
-            : "相机设置。左键放置、右键环绕、中键平移、Shift+左键破坏、滚轮缩放；点击 XYZ 控件定向。";
         if (SceneToolbarButton("相机##SceneCameraButton", ImGui.IsPopupOpen("##SceneCameraPopup"),
-                buttonWidth, buttonHeight, cameraTip))
+                buttonWidth, buttonHeight))
             ImGui.OpenPopup("##SceneCameraPopup");
 
         ImGui.SameLine(0F, spacing);
-        if (SceneToolbarButton("信息##SceneInformation", _showSceneStatistics, buttonWidth, buttonHeight,
-                "显示或隐藏帧率、帧耗时、体素数量和当前视角。"))
+        if (SceneToolbarButton("信息##SceneInformation", _showSceneStatistics, buttonWidth, buttonHeight))
             _showSceneStatistics = !_showSceneStatistics;
 
         DrawSceneCameraPopup();
@@ -2349,17 +2416,6 @@ DockId=0x6A3C3007,0
             var c = position + new Vector2(buttonSize * .5F);
             var ink = ToPackedColor(EditorPalette.Text);
             DrawSceneToolIcon(draw, i, c, buttonSize, scaleLocked ? AlphaColor(ink, .35F) : ink);
-            if (over && scaleLocked)
-                ImGui.SetTooltip("当前选中的是切线或朝向手柄，没有缩放语义，缩放工具不可用");
-            else if (over)
-                ImGui.SetTooltip(i switch
-                {
-                    0 => "选择（Q）：点击对象选中；再次点击退出选中",
-                    1 => "移动（W）",
-                    2 => "旋转（E）",
-                    3 => "缩放（R）",
-                    _ => "全部（T）：同时显示移动、旋转与缩放手柄",
-                });
             ImGui.PopID();
         }
         ImGui.SetCursorScreenPos(saved);
@@ -2421,24 +2477,21 @@ DockId=0x6A3C3007,0
         var spaceMinimum = top;
         DrawGizmoRowButton("##GizmoSpaceToggle", top, new Vector2(spaceWidth, size), spaceText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Space,
-            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Space ? GizmoPanelKind.None : GizmoPanelKind.Space,
-            "变换手柄坐标系：全局沿世界轴，局部沿对象自身轴。");
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Space ? GizmoPanelKind.None : GizmoPanelKind.Space);
 
         var pivotText = _editorSettings.GizmoPivotCenter ? "中心" : "枢轴";
         var pivotWidth = Math.Max(size * 1.7F, ImGui.CalcTextSize(pivotText).X + 26F);
         var pivotTop = top + new Vector2(spaceWidth + 4F, 0F);
         DrawGizmoRowButton("##GizmoPivotToggle", pivotTop, new Vector2(pivotWidth, size), pivotText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Pivot,
-            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Pivot ? GizmoPanelKind.None : GizmoPanelKind.Pivot,
-            "变换枢轴：枢轴绕对象原点，中心绕选中范围中心。");
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Pivot ? GizmoPanelKind.None : GizmoPanelKind.Pivot);
 
         var snapText = "吸附";
         var snapWidth = Math.Max(size * 1.5F, ImGui.CalcTextSize(snapText).X + 26F);
         var snapTop = top + new Vector2(spaceWidth + pivotWidth + 8F, 0F);
         DrawGizmoRowButton("##GizmoSnapToggle", snapTop, new Vector2(snapWidth, size), snapText, ref hovered,
             _gizmoPanel == GizmoPanelKind.Snap,
-            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Snap ? GizmoPanelKind.None : GizmoPanelKind.Snap,
-            "移动、旋转、缩放的吸附步长设置。");
+            () => _gizmoPanel = _gizmoPanel == GizmoPanelKind.Snap ? GizmoPanelKind.None : GizmoPanelKind.Snap);
 
         _gizmoRowMinimum = top;
         _gizmoRowMaximum = new Vector2(snapTop.X + snapWidth, top.Y + size);
@@ -2572,7 +2625,7 @@ DockId=0x6A3C3007,0
 
     /// <summary>横向行里的一个小按钮，点击后执行回调；右侧画一个小三角表示可展开</summary>
     private void DrawGizmoRowButton(string id, Vector2 position, Vector2 size, string label, ref bool hovered,
-        bool active, Action onClick, string tooltip)
+        bool active, Action onClick)
     {
         ImGui.SetCursorScreenPos(position);
         ImGui.PushID(id);
@@ -2591,7 +2644,6 @@ DockId=0x6A3C3007,0
         var arrow = new Vector2(minimum.X + size.X - 10F, minimum.Y + size.Y * .5F);
         draw.AddTriangleFilled(arrow + new Vector2(-3F, -2F), arrow + new Vector2(3F, -2F), arrow + new Vector2(0F, 3F),
             ToPackedColor(EditorPalette.MutedText));
-        if (over && tooltip.Length > 0) ImGui.SetTooltip(tooltip);
         ImGui.PopID();
     }
 
@@ -2649,12 +2701,11 @@ DockId=0x6A3C3007,0
         draw.AddRectFilled(P(-9F, -9F), P(-5F, -5F), color);
     }
 
-    private static bool SceneToolbarButton(string label, bool active, float width, float height, string tooltip)
+    private static bool SceneToolbarButton(string label, bool active, float width, float height)
     {
         if (active) ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
         var clicked = ImGui.Button(label, new Vector2(width, height));
         if (active) ImGui.PopStyleColor();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
         if (clicked)
         {
             // 让随后打开的弹窗贴在按钮正下方
@@ -3356,59 +3407,6 @@ DockId=0x6A3C3007,0
         }
     }
 
-    /// <summary>
-    /// CPU 回退没有着色器的选中描边，用选中子树的包围盒线框给出选中提示
-    /// </summary>
-    /// <param name=drawList>场景绘制列表</param>
-    /// <param name=origin>视口左上角屏幕坐标</param>
-    /// <param name=size>视口尺寸</param>
-    /// <param name=camera>观察相机</param>
-    private void DrawCpuSelectionOutline(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera)
-    {
-        if (_sceneDocument is null || GetSelectedSceneObject() is not { } selected) return;
-        var ids = new HashSet<StableId> { selected.Id };
-        var children = _sceneDocument.Objects.Where(item => item.ParentId is not null)
-            .ToLookup(item => item.ParentId!.Value);
-        var queue = new Queue<StableId>();
-        queue.Enqueue(selected.Id);
-        while (queue.TryDequeue(out var parent))
-            foreach (var child in children[parent])
-                if (ids.Add(child.Id)) queue.Enqueue(child.Id);
-        long minimumX = long.MaxValue, minimumY = long.MaxValue, minimumZ = long.MaxValue;
-        long maximumX = long.MinValue, maximumY = long.MinValue, maximumZ = long.MinValue;
-        var any = false;
-        foreach (var id in ids)
-        {
-            if (!_objectVoxels.TryGetWorld(id, out var world) || !world.TryGetBounds(out var minimum, out var maximum))
-                continue;
-            any = true;
-            minimumX = Math.Min(minimumX, minimum.X); minimumY = Math.Min(minimumY, minimum.Y);
-            minimumZ = Math.Min(minimumZ, minimum.Z);
-            maximumX = Math.Max(maximumX, maximum.X); maximumY = Math.Max(maximumY, maximum.Y);
-            maximumZ = Math.Max(maximumZ, maximum.Z);
-        }
-
-        if (!any) return;
-        // 包围盒按格中心取整，最大侧加 1 得到格子边界
-        Span<Vector3> corners = stackalloc Vector3[8];
-        corners[0] = new Vector3(minimumX, minimumY, minimumZ);
-        corners[1] = new Vector3(maximumX + 1, minimumY, minimumZ);
-        corners[2] = new Vector3(maximumX + 1, maximumY + 1, minimumZ);
-        corners[3] = new Vector3(minimumX, maximumY + 1, minimumZ);
-        corners[4] = new Vector3(minimumX, minimumY, maximumZ + 1);
-        corners[5] = new Vector3(maximumX + 1, minimumY, maximumZ + 1);
-        corners[6] = new Vector3(maximumX + 1, maximumY + 1, maximumZ + 1);
-        corners[7] = new Vector3(minimumX, maximumY + 1, maximumZ + 1);
-        ReadOnlySpan<(int Start, int End)> edges = stackalloc (int, int)[]
-        {
-            (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
-        };
-        var color = ToPackedColor(EditorPalette.Accent);
-        foreach (var (start, end) in edges)
-            if (SceneProjection.ClipLine(corners[start], corners[end], origin, size, camera, out var a, out var b))
-                drawList.AddLine(a, b, color, 1.6F);
-    }
-
     /// <summary>判断投影后的面片是否与视口矩形相交，用于跳过整面不可见的填充</summary>
     /// <param name="points">面片屏幕顶点</param>
     /// <param name="origin">视口左上角</param>
@@ -3908,12 +3906,10 @@ DockId=0x6A3C3007,0
         ImGui.SetCursorScreenPos(origin + new Vector2(size.X - buttonWidth * 2F - spacing - 12F, 10F));
         var canExport = _pipeline?.IsAvailable == true;
         ImGui.BeginDisabled(!canExport);
-        if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight,
-                "打开导出对话框：选择格式、比例与分辨率后再导出")) _showExportDialog = true;
+        if (SceneToolbarButton("导出…##RenderExport", false, buttonWidth, buttonHeight)) _showExportDialog = true;
         ImGui.EndDisabled();
         ImGui.SetCursorScreenPos(origin + new Vector2(Math.Max(12F + buttonWidth + spacing, size.X - buttonWidth - 12F), 10F));
-        if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight,
-                $"帧率、体素工作集、派发量和 CPU 更新耗时\n视场角 {activeRenderSettings.CameraFovDegrees:0}° · 视口 {size.X:0}×{size.Y:0}\n统计来自当前视图，不运行性能台架"))
+        if (SceneToolbarButton("信息##RenderInformation", _showRenderStatistics, buttonWidth, buttonHeight))
             _showRenderStatistics = !_showRenderStatistics;
         if (_showRenderStatistics) DrawSceneStatistics(drawList, origin + new Vector2(0F, buttonHeight + 14F), renderView: true);
         DrawExportDialog();
@@ -4102,12 +4098,14 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 0) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("检查器##检查器窗口", ref _showInspector, PanelWindowFlags))
+        if (!ImGui.Begin("检查器##检查器窗口", PanelWindowFlags))
         {
+            if (ImGui.IsWindowCollapsed()) DrawPanelWindowMenu(inspectorPanel: true, closePanel: () => _showInspector = false);
         }
         else
         {
-            DrawPanelWindowMenu(true);
+            RegisterWindowGroup("inspector", () => _showInspector = false);
+            DrawPanelWindowMenu(inspectorPanel: true, closePanel: () => _showInspector = false);
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(UiScale.Px(8F), UiScale.Px(8F)));
             ImGui.PushStyleVar(ImGuiStyleVar.FramePadding,
                 new Vector2(6F, MathF.Max(5F, ImGui.GetFontSize() * .2F)));
@@ -4129,9 +4127,10 @@ DockId=0x6A3C3007,0
             if (inspector.DockId != 0) ImGui.SetNextWindowDockID(inspector.DockId, ImGuiCond.FirstUseEver);
             var mainLock = _inspectorLockedObjectId;
             _inspectorLockedObjectId = inspector.Locked;
-            if (ImGui.Begin($"{inspector.Kind} {inspector.Id}##ExtraInspector{inspector.Id}", ref inspector.Open, ImGuiWindowFlags.NoCollapse))
+            if (ImGui.Begin($"{inspector.Kind} {inspector.Id}##ExtraInspector{inspector.Id}", ImGuiWindowFlags.NoCollapse))
             {
-                DrawPanelWindowMenu();
+                RegisterWindowGroup($"extra{inspector.Id}", () => inspector.Open = false);
+                DrawPanelWindowMenu(() => inspector.Open = false);
                 DrawExtraWindowContents(inspector.Kind);
             }
             ImGui.End();
@@ -4164,65 +4163,163 @@ DockId=0x6A3C3007,0
         }
     }
 
-    private void DrawPanelWindowMenu(bool inspectorPanel = false)
+    /// <summary>各面板登记的停靠节点：关闭窗口时同一节点的标签页一起关掉</summary>
+    private readonly Dictionary<string, (uint Dock, Action Close)> _windowGroupMembers = new(StringComparer.Ordinal);
+
+    /// <summary>把当前窗口登记到它的停靠节点，供“关闭窗口”按节点批量关闭</summary>
+    private void RegisterWindowGroup(string key, Action close)
+    {
+        _windowGroupMembers[key] = (ImGui.GetWindowDockID(), close);
+    }
+
+    /// <summary>关闭窗口：同一停靠节点里的其它标签页一起关掉，与 Unity 关闭整个窗口一致</summary>
+    private void CloseWindowGroup(Action closeThis)
+    {
+        var dock = ImGui.GetWindowDockID();
+        if (dock != 0)
+        {
+            foreach (var member in _windowGroupMembers.Values.Where(item => item.Dock == dock).ToArray())
+            {
+                if (!ReferenceEquals(member.Close, closeThis)) member.Close();
+            }
+        }
+
+        closeThis();
+    }
+
+    /// <summary>
+    /// 工具窗口统一入口：不传 p_open，避免 ImGui 自带的叉号与三点按钮并存。
+    /// 显隐完全由 close 回调控制，折叠状态下同样补画标题栏按钮。
+    /// </summary>
+    /// <param name="name">窗口名（可带 ##ID）</param>
+    /// <param name="flags">窗口标志</param>
+    /// <param name="close">关闭动作</param>
+    /// <returns>与 ImGui.Begin 一致：窗口可见且未折叠时返回 true</returns>
+    private bool BeginToolWindow(string name, ImGuiWindowFlags flags, Action close)
+    {
+        var visible = ImGui.Begin(name, flags);
+        if (visible)
+        {
+            RegisterWindowGroup($"tool:{name}", close);
+            DrawPanelWindowMenu(close);
+        }
+        else if (ImGui.IsWindowCollapsed())
+        {
+            DrawPanelWindowMenu(close);
+        }
+
+        return visible;
+    }
+
+    /// <summary>窗口标题栏右侧的统一按钮：左边三点是「面板菜单」，右边叉号是「关闭窗口」。
+    /// 关闭会连同同一停靠节点的其它标签页一起关掉；折叠状态同样显示这两个按钮。
+    /// </summary>
+    /// <param name="closePanel">关闭动作，一般只把对应显隐标志置否</param>
+    /// <param name="inspectorPanel">是否由检查器请求自动展开菜单</param>
+    private void DrawPanelWindowMenu(Action? closePanel = null, bool inspectorPanel = false)
     {
         var dockId = ImGui.GetWindowDockID();
-        if (dockId == 0) return;
-        var cursor = ImGui.GetCursorScreenPos();
         var position = ImGui.GetWindowPos();
         var size = ImGui.GetWindowSize();
-        var height = ImGui.GetFrameHeight();
-        var buttonMin = new Vector2(position.X + size.X - height - ImGui.GetStyle().WindowPadding.X - 2F, position.Y);
+        var height = MathF.Max(ImGui.GetFrameHeight(), ImGui.GetFontSize());
+        // 叉号贴最右，三点在它左侧，两者等宽等高、间距固定
+        var rightPadding = ImGui.GetStyle().WindowPadding.X * .5F;
+        var closeMin = new Vector2(position.X + size.X - rightPadding - height, position.Y);
+        var closeMax = closeMin + new Vector2(height);
+        var menuMin = new Vector2(closeMin.X - height - 2F, position.Y);
+        var menuMax = menuMin + new Vector2(height);
+
+        // 折叠窗口与悬浮窗口是真实窗口，hover 可靠；停靠标签栏拿不到 ImGui 的 hover，退回几何命中
+        var ownerHovered = ImGui.IsWindowHovered();
+        bool Hit(Vector2 minimum, Vector2 maximum) =>
+            ImGui.IsMouseHoveringRect(minimum, maximum, false) && (ownerHovered || dockId != 0);
+
+        var draw = ImGui.GetWindowDrawList();
+        var rounding = ImGui.GetStyle().FrameRounding;
+        var menuHovered = Hit(menuMin, menuMax);
+        var closeHovered = Hit(closeMin, closeMax);
+        var menuOpen = ImGui.IsPopupOpen("##面板菜单");
+        var mouseDown = ImGui.IsMouseDown(ImGuiMouseButton.Left);
+        var mouseClicked = ImGui.IsMouseClicked(ImGuiMouseButton.Left);
+
         ImGui.PushClipRect(position, position + size, false);
-        ImGui.SetCursorScreenPos(buttonMin);
-        ImGui.PushID($"PanelMenu{dockId}");
+        ImGui.PushID($"PanelHeader{dockId}");
+
+        // 三点：指向/按下/展开三态都要有可见反馈
+        if (menuOpen || (menuHovered && mouseDown))
+            draw.AddRectFilled(menuMin, menuMax, ToPackedColor(EditorPalette.Pressed), rounding);
+        else if (menuHovered)
+            draw.AddRectFilled(menuMin, menuMax, ToPackedColor(EditorPalette.Hover), rounding);
+        var menuActive = menuHovered || menuOpen;
+        var menuColor = ToPackedColor(menuActive ? EditorPalette.Accent : EditorPalette.Text);
+        var menuCenter = menuMin + new Vector2(height * .5F);
+        var dotRadius = menuActive ? 1.6F : 1.3F;
+        for (var i = -1; i <= 1; i++) draw.AddCircleFilled(menuCenter + new Vector2(0F, i * 4F), dotRadius, menuColor);
+
+        // 叉号：同样三态；指向时用强调色，按下更实
+        if (closeHovered && mouseDown)
+            draw.AddRectFilled(closeMin, closeMax, ToPackedColor(EditorPalette.Pressed), rounding);
+        else if (closeHovered)
+            draw.AddRectFilled(closeMin, closeMax, ToPackedColor(EditorPalette.Hover), rounding);
+        var closeColor = ToPackedColor(closeHovered ? EditorPalette.Accent : EditorPalette.Text);
+        var closeCenter = closeMin + new Vector2(height * .5F);
+        var arm = MathF.Round(height * .22F);
+        draw.AddLine(closeCenter - new Vector2(arm, arm), closeCenter + new Vector2(arm, arm), closeColor, 1.4F);
+        draw.AddLine(closeCenter + new Vector2(-arm, arm), closeCenter + new Vector2(arm, -arm), closeColor, 1.4F);
+
+        if (menuHovered || closeHovered) ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
         if (inspectorPanel && _openInspectorPanelMenuRequested)
         {
-            ImGui.OpenPopup("##添加窗口");
+            ImGui.OpenPopup("##面板菜单");
             _openInspectorPanelMenuRequested = false;
         }
-        if (ImGui.InvisibleButton("##窗口菜单", new Vector2(height))) ImGui.OpenPopup("##添加窗口");
-        var draw = ImGui.GetWindowDrawList();
-        var color = ToPackedColor(EditorPalette.Text);
-        var center = buttonMin + new Vector2(height * .5F);
-        for (var i = -1; i <= 1; i++) draw.AddCircleFilled(center + new Vector2(0F, i * 4F), 1.3F, color);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("添加窗口标签");
-        ImGui.SetNextWindowPos(buttonMin + new Vector2(height, height), ImGuiCond.Appearing, new Vector2(1F, 0F));
-        if (ImGui.BeginPopup("##添加窗口"))
+
+        if (menuHovered && mouseClicked) ImGui.OpenPopup("##面板菜单");
+        // 关闭一整组：同一停靠节点里的标签页都关掉
+        if (closeHovered && mouseClicked && closePanel is not null) CloseWindowGroup(closePanel);
+
+        ImGui.SetNextWindowPos(menuMin + new Vector2(height, height), ImGuiCond.Appearing, new Vector2(1F, 0F));
+        if (ImGui.BeginPopup("##面板菜单"))
         {
-            if (ImGui.BeginMenu("常规"))
+            // 添加窗口标签需要把新窗口挂到同一个停靠节点；完全浮动的窗口只提供关闭
+            if (dockId != 0)
             {
-                foreach (var name in new[] { "场景", "层级", "检查器", "调色盘", "项目资产" })
-                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
-                ImGui.EndMenu();
+                if (ImGui.BeginMenu("常规"))
+                {
+                    foreach (var name in new[] { "场景", "层级", "检查器", "调色盘", "项目资产" })
+                        if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                    ImGui.EndMenu();
+                }
+                if (ImGui.BeginMenu("渲染"))
+                {
+                    foreach (var name in new[] { "渲染", "渲染配置" })
+                        if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                    ImGui.EndMenu();
+                }
+                if (ImGui.BeginMenu("工具"))
+                {
+                    foreach (var name in new[] { "生成器", "体素度量", "性能分析器" })
+                        if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
+                    ImGui.EndMenu();
+                }
+                ImGui.Separator();
             }
-            if (ImGui.BeginMenu("渲染"))
-            {
-                foreach (var name in new[] { "渲染", "渲染配置" })
-                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
-                ImGui.EndMenu();
-            }
-            if (ImGui.BeginMenu("工具"))
-            {
-                foreach (var name in new[] { "生成器", "体素度量", "性能分析器" })
-                    if (ImGui.MenuItem(name)) _extraInspectors.Add(new ExtraInspector { Id = ++_nextInspectorId, DockId = dockId, Kind = name });
-                ImGui.EndMenu();
-            }
+            if (closePanel is not null && ImGui.MenuItem("关闭窗口")) CloseWindowGroup(closePanel);
             ImGui.EndPopup();
         }
+
         ImGui.PopID();
         ImGui.PopClipRect();
-        ImGui.SetCursorScreenPos(cursor);
     }
 
     private void DrawExportQueueWindow(Vector2 display)
     {
-        var open = true;
         ImGui.SetNextWindowPos(new Vector2(Math.Max(8F, display.X - 440F),
             Math.Max(8F, display.Y - StatusHeight - 290F)), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new Vector2(420F, 270F), ImGuiCond.Always);
         var flags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoSavedSettings;
-        if (!ImGui.Begin("导出队列##ExportQueueWindow", ref open, flags))
+        if (!BeginToolWindow("导出队列##ExportQueueWindow", flags, () => _exportQueueExpanded = false))
         {
             ImGui.End();
             return;
@@ -4272,7 +4369,6 @@ DockId=0x6A3C3007,0
             ImGui.PopID();
         }
         ImGui.End();
-        if (!open) _exportQueueExpanded = false;
     }
 
     private float ExportProgress(ExportJob job)
@@ -4403,7 +4499,7 @@ DockId=0x6A3C3007,0
                 ImGui.EndCombo();
             }
 
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；渲染窗口中相机的图层遮罩决定本对象是否被该相机渲染");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("对象所属图层；相机按图层遮罩决定是否渲染本对象");
 
         }
         ImGui.EndChild();
@@ -5145,7 +5241,6 @@ DockId=0x6A3C3007,0
                 _sceneGizmoMode = editing ? _lastTransformMode : SceneGizmoMode.Select;
                 if (!editing) _selectedSceneObjectId = selectedObject.Id;
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅编辑此模型的体素；再次点击退出绘制模式。");
             var data = SceneComponentTypes.ReadVoxelModel(component);
             var mirrored = data.MirrorX;
             BeginInspectorField("镜像 X", "绕模型局部 X 轴的包围盒中心翻转体素；操作可撤销，编辑共享资产时保留原始资产。请先将模型缩放恢复为 1。");
@@ -5160,8 +5255,6 @@ DockId=0x6A3C3007,0
             {
                 if (ImGui.Button("剥离为独立资产…", new Vector2(-1F, 0F)))
                     StripEmbeddedVoxelData(selectedObject, component);
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("把当前内嵌体素写成外部 .mvmodel 资产并改为引用；重名时自动追加序号。");
             }
             if (hasEmbeddedData && string.IsNullOrWhiteSpace(data.Model) && ImGui.BeginPopupContextItem("##VoxelAnimationKeyMenu"))
             {
@@ -5344,7 +5437,7 @@ DockId=0x6A3C3007,0
             changed |= ImGui.Checkbox("接收全局风", ref data.ReceiveGlobalWind);
             changed |= ImGui.Checkbox("接收局部风场", ref data.ReceiveLocalWind);
             changed |= ImGui.Checkbox("子对象一并接收", ref data.IncludeChildren);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("启用后会将风力接收规则传播到当前对象层级下的子对象。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("启用后风力接收规则会传播到当前对象下的子对象。");
             changed |= InspectorDragFloatField("受力倍率", "体素模型对风场响应的强度。", ref data.ForceScale, .05F, 0F, 1000F);
             changed |= InspectorDragFloatField("阻尼", "风力响应的速度阻尼。", ref data.Drag, .01F, 0F, 1F);
             changed |= InspectorDragFloatField("柔韧度", "体素模型受风形变的响应程度。", ref data.Flexibility, .01F, 0F, 1F);
@@ -5436,7 +5529,7 @@ DockId=0x6A3C3007,0
             if (ImGui.CollapsingHeader("相机后处理", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 changed |= ImGui.Checkbox("覆盖项目默认后处理", ref postProcess.OverrideProjectDefaults);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("开启后应用相机效果；新添加的色调映射、辉光、色彩调整和输出抖动未配置时继承项目设置。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("开启后应用相机后处理；未配置的效果继承项目设置。");
                 foreach (var effect in postProcess.Effects.ToArray())
                 {
                     ImGui.PushID(effect.Type.ToString());
@@ -5458,8 +5551,6 @@ DockId=0x6A3C3007,0
                         CameraPostProcessEffectType.SplitToning => "分离色调",
                         _ => effect.Type.ToString(),
                     });
-                    if (effect.Type == CameraPostProcessEffectType.DepthOfField && ImGui.IsItemHovered())
-                        ImGui.SetTooltip("仅路径追踪生效；物理相机使用镜头参数，普通相机可继承项目参数或单独设置。启用覆盖后使用此开关。");
                     if (effect.Type == CameraPostProcessEffectType.DepthOfField && !physicalCamera)
                     {
                         BeginInspectorField("独立景深参数", "关闭时继承项目的光圈半径和对焦距离。");
@@ -5658,7 +5749,7 @@ DockId=0x6A3C3007,0
             }
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("插件可以通过自己的面板解释这些数据；没有专用面板时可在此编辑 JSON。保存前会校验格式。");
+            ImGui.SetTooltip("没有专用面板时在此编辑 JSON，保存前会校验格式。");
     }
 
     private void RotateModel(SceneObject sceneObject, OrthogonalRotation rotation)
@@ -5698,13 +5789,15 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染配置##渲染配置窗口", ref _showRenderConfig, PanelWindowFlags))
+        if (!ImGui.Begin("渲染配置##渲染配置窗口", PanelWindowFlags))
         {
+            if (ImGui.IsWindowCollapsed()) DrawPanelWindowMenu(() => _showRenderConfig = false);
             _requestedInspectorTab = null;
         }
         else
         {
-            DrawPanelWindowMenu();
+            RegisterWindowGroup("renderConfig", () => _showRenderConfig = false);
+            DrawPanelWindowMenu(() => _showRenderConfig = false);
             ImGui.TextColored(ToColor(EditorPalette.Text), "渲染配置");
             DrawConfigurationPanel();
             if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && ImGui.IsAnyItemActive())
@@ -5724,13 +5817,11 @@ DockId=0x6A3C3007,0
         ImGui.SameLine();
         if (ImGui.Button("环境配置…", new Vector2(halfButton, 32F)))
             OpenEnvironmentWindow();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("打开独立的环境配置窗口：天空与地面、水面、天气、雾气（含高度雾、噪声与散射）");
 
         DrawSettingsSectionHeader("场景视图辅助显示");
         ImGui.Checkbox("显示网格##scene", ref _showGrid);
         ImGui.Checkbox("体素棱线描边##scene", ref _showVoxelOutlines);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只在绘制模式下显示，并且只描边当前正在编辑的模型；近处显示棱线，远处随屏幕上的体素尺寸逐渐淡出");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只在绘制模式下描边当前编辑的模型，远处棱线随体素尺寸淡出");
         DrawSettingsSectionHeader("渲染参数");
         DrawRenderSettingsPanel();
     }
@@ -5755,13 +5846,15 @@ DockId=0x6A3C3007,0
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
-        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets, PanelWindowFlags & ~ImGuiWindowFlags.HorizontalScrollbar))
+        if (!ImGui.Begin("项目资产##资源浏览器", PanelWindowFlags & ~ImGuiWindowFlags.HorizontalScrollbar))
         {
+            if (ImGui.IsWindowCollapsed()) DrawPanelWindowMenu(() => _showProjectAssets = false);
             ImGui.End();
             return;
         }
 
-        DrawPanelWindowMenu();
+        RegisterWindowGroup("projectAssets", () => _showProjectAssets = false);
+        DrawPanelWindowMenu(() => _showProjectAssets = false);
         _assetBrowser.Draw(_project, SetStatus, HandleAssetChanged, OpenVoxelAssetStage, InstantiatePrefabAsset, ExportVoxAsset, OpenGeneratorAsset,
             ExportQubicleAsset,
             path => FindOpenAssetReferenceNames(path).Count,
@@ -5843,8 +5936,8 @@ DockId=0x6A3C3007,0
         foreach (var panel in panels)
         {
             if (!_visiblePluginPanels.Contains(panel.Id)) continue;
-            var open = true;
-            if (!ImGui.Begin($"{panel.Name}##PluginPanel:{panel.Id}", ref open, PanelWindowFlags))
+            if (!BeginToolWindow($"{panel.Name}##PluginPanel:{panel.Id}", PanelWindowFlags,
+                    () => _visiblePluginPanels.Remove(panel.Id)))
             {
                 ImGui.End();
                 continue;
@@ -5872,12 +5965,6 @@ DockId=0x6A3C3007,0
                         var arguments = input;
                         _pendingActions.Enqueue(() => ExecutePluginCommand(command.Id, arguments));
                     }
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.BeginTooltip();
-                        ImGui.TextUnformatted(command.Id);
-                        ImGui.EndTooltip();
-                    }
                     ImGui.PopID();
                 }
             }
@@ -5890,7 +5977,6 @@ DockId=0x6A3C3007,0
                 ImGui.PopTextWrapPos();
             }
             ImGui.End();
-            if (!open) _visiblePluginPanels.Remove(panel.Id);
         }
     }
 
@@ -5954,9 +6040,11 @@ DockId=0x6A3C3007,0
 
     private void SetPanelDefaults(Vector2 position, Vector2 size)
     {
-        var condition = _applyPreset ? ImGuiCond.Always : ImGuiCond.FirstUseEver;
-        ImGui.SetNextWindowPos(position, condition);
-        ImGui.SetNextWindowSize(size, condition);
+        // ImGui 的 SetNextWindowPos 会隐式请求解除停靠。若这里用 ImGuiCond.Always 强制设位置，
+        // 切换布局时所有已停靠面板都会被摘出 DockSpace 变成浮动窗口。面板尺寸由 DockSpace ini
+        // 的 SizeRef 决定，这里只给首次创建（或用户主动拖出）的浮动窗口一个默认位置与尺寸。
+        ImGui.SetNextWindowPos(position, ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(size, ImGuiCond.FirstUseEver);
     }
 
     private void SelectLayout(LayoutPreset preset)
@@ -5965,20 +6053,20 @@ DockId=0x6A3C3007,0
         _activeLayoutFile = null;
         _activeLayoutName = string.Empty;
         SaveLayoutSelection($"@builtin:{preset}");
-        _applyPreset = true;
+        _pendingDockLayoutIni = GetPresetDockLayout(preset);
         _resetDockLayoutRequested = true;
         ApplyPresetPanels(preset);
-        _requestedCenterTab = preset == LayoutPreset.Rendering ? 1 : 0;
-        _focusModelingTools = preset == LayoutPreset.Modeling;
-        _requestedInspectorTab = preset == LayoutPreset.Modeling ? null : preset == LayoutPreset.Rendering ? 1 : 0;
     }
 
     private void ApplyPresetPanels(LayoutPreset preset, bool openDiagnostics = true)
     {
         _showModelingTools = true;
+        _showPaletteWindow = true;
         _showInspector = true;
         _showRenderConfig = preset == LayoutPreset.Rendering;
         _showHierarchy = true;
+        _showSceneWindow = true;
+        _showRenderWindow = true;
         _showProjectAssets = true;
         _showGeneratorPanel = preset == LayoutPreset.Generator;
         if (!openDiagnostics) return;
@@ -6173,7 +6261,6 @@ DockId=0x6A3C3007,0
 
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Description}\n规模：{selected.Scale}\n重点：{selected.Focus}\n学习目标：{selected.LearningGoal}");
         TemplateLearningPreview.Draw(_selectedProjectTemplate);
     }
 

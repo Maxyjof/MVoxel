@@ -52,8 +52,6 @@ internal static class TemplateLearningPreview
             else draw.AddText(origin + new Vector2(12F, 12F), 0xffdddddd,
                 task.IsCompleted ? "预览不可用，仍可创建项目" : "正在后台生成模板预览…");
             ImGui.Dummy(size);
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("来自实际模板几何与体素颜色的正交缩略图，不是最终光照渲染；缩略图缓存不改变编辑器分辨率或模型精度。");
         }
         ImGui.SeparatorText("三步练习");
         var steps = Steps(id);

@@ -48,14 +48,11 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawProbeVolumeWindow()
     {
         if (!_showProbeVolumeWindow) return;
-        var open = _showProbeVolumeWindow;
-        if (!ImGui.Begin("探针体积##ProbeVolumeWindow", ref open, PanelWindowFlags))
+        if (!BeginToolWindow("探针体积##ProbeVolumeWindow", PanelWindowFlags, () => _showProbeVolumeWindow = false))
         {
             ImGui.End();
-            _showProbeVolumeWindow = open;
             return;
         }
-        _showProbeVolumeWindow = open;
         ImGui.TextWrapped("探针体积：沿固定方向集对体素世界采集可见天空与一次反弹，网格参数与可见度一起写入烘焙数据。勾选“自动烘焙”的对象会在场景内容稳定后自动重烘；也可以在这里手动重烘。");
         if (_sceneDocument is null)
         {
@@ -110,7 +107,7 @@ internal sealed partial class ImGuiEditorWindow
             MarkSceneDocumentDirty();
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("开启后，只有世界里真的有东西变了（对象变换、体素数据、可见性或图层）才自动重烘一次；调整下面这些参数不会自动重烘，改完点上面的按钮。结果只在本会话生效。");
+            ImGui.SetTooltip("只在实际内容变化时自动重烘，调参不触发，改完点生成探针数据");
 
         ImGui.SeparatorText("烘焙质量");
         DrawProbeBakeQualitySettings();
@@ -139,19 +136,19 @@ internal sealed partial class ImGuiEditorWindow
     {
         SliderInt("每探针方向数##ProbeRays", ref _renderSettings.ProbeBakeRays, 8, 256);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("每个探针的采样方向数。方向越多，天空可见度与反弹能量估计越稳，相邻探针之间的跳变越小。默认 64，最高 256。");
+            ImGui.SetTooltip("每个探针的采样方向数，越多越稳定，默认 64");
         if (ImGui.IsItemDeactivatedAfterEdit()) SaveProjectSettings();
         SliderInt("探针数量上限##ProbeMaxProbes", ref _renderSettings.ProbeBakeMaxProbes, 1024, 262144);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("单个探针体积允许的最大探针数。体积或密度放大时按这个上限等比降密度；调高会显著增加烘焙时间。默认 65,536。");
+            ImGui.SetTooltip("单个探针体积的探针数上限，调高会显著增加烘焙时间，默认 65,536");
         if (ImGui.IsItemDeactivatedAfterEdit()) SaveProjectSettings();
         SliderInt("平滑次数##ProbeSmoothing", ref _renderSettings.ProbeBakeSmoothing, 0, 4);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("烘焙结果的三维盒式平滑迭代次数。相邻探针平均能压掉斑块，次数过多会让洞穴里的明暗边界变软。默认 1。");
+            ImGui.SetTooltip("三维盒式平滑迭代次数，过多会让明暗边界变软，默认 1");
         if (ImGui.IsItemDeactivatedAfterEdit()) SaveProjectSettings();
         SliderFloat("最长探测距离##ProbeDistance", ref _renderSettings.ProbeBakeDistance, 0F, 512F, "%.0f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("探针射线的最大行进距离，0 表示按探针体积对角线自动取值。");
+            ImGui.SetTooltip("探针射线的最大行进距离，0 表示按探针体积对角线自动取值");
         if (ImGui.IsItemDeactivatedAfterEdit()) SaveProjectSettings();
     }
 

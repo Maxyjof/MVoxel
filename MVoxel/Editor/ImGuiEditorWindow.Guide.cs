@@ -87,7 +87,6 @@ internal sealed partial class ImGuiEditorWindow
                     if (ImGui.SmallButton(label))
                     { _guidePage = page; _guideReference = reference; _guideAnchor = target.Length > 1 ? target[1] : null; _guideScrollTop = true; }
                     ImGui.PopID();
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("跳转到 " + GuidePageNames[page] + (target.Length > 1 ? " / " + target[1] : ""));
                 }
                 else ImGui.TextWrapped(line);
                 continue;
@@ -158,7 +157,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Image(thumbnail != 0 ? thumbnail : image.Id, size);
         if (ImGui.IsItemClicked())
         { _guidePreviewImage = name; _guidePreviewCaption = caption; _guidePreviewZoom = 1F; _guidePreviewFit = true; _guidePreviewResetSize = true; }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("点击放大；预览支持原尺寸、缩放和滚动查看");
         var draw = ImGui.GetWindowDrawList();
         var color = ImGui.GetColorU32(new Vector4(1F, .2F, .1F, 1F));
         void Mark(float x, float y, float w, float h)

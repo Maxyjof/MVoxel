@@ -672,25 +672,21 @@ internal sealed partial class ImGuiEditorWindow
             if (_sceneDocumentDirty) _voxelStageExitRequested = true;
             else ReturnStage();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回原场景；有未保存的修改时可选择保存或放弃");
         ImGui.SameLine();
         ImGui.TextUnformatted($"{(_prefabStage is null ? "体素资产" : "预制体")}：{Path.GetFileName(stagePath)}{(_sceneDocumentDirty ? " *" : "")}");
         var stageObjects = _sceneDocument?.Objects.Count ?? 0;
         ImGui.SameLine();
         ImGui.TextDisabled($"{_objectVoxels.TotalOccupiedVoxelCount} 体素 · {stageObjects} 对象");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("统计当前编辑空间中已载入的体素总数与对象数");
         ImGui.SameLine();
         ImGui.BeginDisabled(!_sceneDocumentDirty);
         if (ImGui.SmallButton("保存资产")) SaveAssetStage();
         ImGui.EndDisabled();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(_sceneDocumentDirty ? "保存到资产文件（Ctrl+S）" : "没有未保存的修改");
+        if (!_sceneDocumentDirty && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("没有未保存的修改");
         ImGui.SameLine();
         if (ImGui.SmallButton("另存副本")) SaveAssetStageCopy();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("复制一份当前资产并切换到副本继续编辑，适合做设计分叉");
         ImGui.SameLine();
         if (ImGui.SmallButton("定位")) _assetBrowser.SelectAsset(stagePath);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("让资产面板跳回当前编辑资产所在的目录并选中它");
         if (_voxelStageExitRequested)
         {
             ImGui.OpenPopup("返回场景##VoxelStageExit");

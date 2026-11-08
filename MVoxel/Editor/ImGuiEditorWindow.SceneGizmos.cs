@@ -83,6 +83,20 @@ internal sealed partial class ImGuiEditorWindow
     // 每帧最多处理多少区块：单个 32³ 区块最多 3.2 万格，24 块约 2-4ms，几乎无感
     private const int DragPrewarmChunksPerFrame = 24;
 
+    // 静态世界预热：选中对象后在空闲帧合成“排除该对象”的场景，工作集与 BVH 放到后台线程，
+    // 按下拖动时只剩上传和加速结构重建
+    private VoxelWorld? _dragPrewarmStaticWorld;
+    private StableId _dragPrewarmStaticObjectId;
+    private VoxelWorld? _dragPrewarmStaticSceneSource;
+    private string _dragPrewarmStaticMaterialSignature = string.Empty;
+    private Task<VulkanVoxelRenderPipeline.PreparedWorkset>? _dragPrewarmStaticTask;
+    private VulkanVoxelRenderPipeline.PreparedWorkset? _dragPrewarmStaticPrepared;
+    private string _dragPrewarmStaticError = string.Empty;
+    private VoxelWorld? _dragPrewarmStableScene;
+    private int _dragPrewarmStableFrames;
+    // 场景停止变化约这么多帧后再合成静态世界，避免连续编辑时空转
+    private const int DragPrewarmSettleFrames = 10;
+
     /// <summary>
     /// 判断当前拖动实例缓存是否可以直接复用
     /// </summary>
@@ -112,9 +126,11 @@ internal sealed partial class ImGuiEditorWindow
             !_scenePipeline.CanUseDragPreview(source.OccupiedVoxelCount))
         {
             ResetDragPrewarm();
+            ResetStaticDragPrewarm();
             return;
         }
 
+        TickStaticDragPrewarm(selected);
         if (DragInstanceCacheMatches(selected.Id, source)) return;
 
         if (!_dragPrewarmRunning || _dragPrewarmObjectId != selected.Id ||
@@ -198,6 +214,88 @@ internal sealed partial class ImGuiEditorWindow
         _dragPrewarmSourceVersion = -1;
     }
 
+    /// <summary>
+    /// 空闲帧预热拖动用的静态世界：场景稳定后合成“排除选中对象”的世界，
+    /// 再把工作集、BVH 与打包字节放到后台线程
+    /// </summary>
+    /// <param name="selected">当前选中的网格对象</param>
+    private void TickStaticDragPrewarm(SceneObject selected)
+    {
+        // 距离 LOD 会随相机变化改变工作集，开启时不做预建，避免上传与当前参数不一致
+        var lod = CurrentSceneRenderSettings.CreateScenePreview().SceneLod;
+        var scene = _world;
+        if (lod.Enabled || scene is null || _sceneDocument is null)
+        {
+            ResetStaticDragPrewarm();
+            return;
+        }
+
+        if (_dragPrewarmStaticTask is { IsCompleted: true } finished)
+        {
+            _dragPrewarmStaticTask = null;
+            if (finished.IsCompletedSuccessfully)
+            {
+                _dragPrewarmStaticPrepared = finished.Result;
+                _dragPrewarmStaticError = string.Empty;
+                MVoxelLog.Info($"拖动静态世界预热完成：{finished.Result.Workset.Cells.Count:N0} 格");
+            }
+            else
+            {
+                _dragPrewarmStaticError = finished.Exception?.GetBaseException().Message ?? "未知原因";
+                MVoxelLog.Warn($"拖动静态世界预热失败：{_dragPrewarmStaticError}");
+            }
+        }
+
+        if (_dragPrewarmStaticTask is not null) return;
+        // 预建数据与当前合成世界、场景引用、材质表都对得上才算有效
+        var valid = _dragPrewarmStaticPrepared is { } prepared &&
+            _dragPrewarmStaticWorld is { } builtWorld &&
+            prepared.Workset.SourceVersion == builtWorld.ContentVersion &&
+            _dragPrewarmStaticObjectId == selected.Id &&
+            ReferenceEquals(_dragPrewarmStaticSceneSource, scene) &&
+            string.Equals(_dragPrewarmStaticMaterialSignature, _runtimeMaterialSignature, StringComparison.Ordinal);
+        if (valid) return;
+
+        // 场景一直在变时先不合成，等它连续稳定几帧，避免连续编辑时空转
+        if (!ReferenceEquals(_dragPrewarmStableScene, scene))
+        {
+            _dragPrewarmStableScene = scene;
+            _dragPrewarmStableFrames = 0;
+            return;
+        }
+
+        if (++_dragPrewarmStableFrames < DragPrewarmSettleFrames) return;
+        var staticWorld = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
+            remap: RemapRuntimeMaterial, excludeObjectId: selected.Id);
+        _dragPrewarmStaticWorld = staticWorld;
+        _dragPrewarmStaticObjectId = selected.Id;
+        _dragPrewarmStaticSceneSource = scene;
+        _dragPrewarmStaticMaterialSignature = _runtimeMaterialSignature;
+        _dragPrewarmStaticPrepared = null;
+        _dragPrewarmStaticError = string.Empty;
+        // 工作集、BVH 与打包都在后台算，主线程只留下一次合成
+        _dragPrewarmStaticTask = Task.Run(() =>
+        {
+            var workset = VoxelGpuWorkset.Build(staticWorld, 0, null, null, greedyMerge: false, includeInterior: false);
+            return VulkanVoxelRenderPipeline.PrepareWorkset(workset);
+        });
+        MVoxelLog.Info($"拖动静态世界预热开始：{staticWorld.OccupiedVoxelCount:N0} 格");
+    }
+
+    /// <summary>释放静态世界预热缓存；后台任务已启动时只丢弃引用，结果由 GC 回收</summary>
+    private void ResetStaticDragPrewarm()
+    {
+        _dragPrewarmStaticWorld = null;
+        _dragPrewarmStaticObjectId = StableId.Empty;
+        _dragPrewarmStaticSceneSource = null;
+        _dragPrewarmStaticMaterialSignature = string.Empty;
+        _dragPrewarmStaticTask = null;
+        _dragPrewarmStaticPrepared = null;
+        _dragPrewarmStaticError = string.Empty;
+        _dragPrewarmStableScene = null;
+        _dragPrewarmStableFrames = 0;
+    }
+
     // 拖动实例世界缓存：键为对象、体素世界版本、组合世界版本与运行时材质表指纹
     private StableId _dragInstanceCacheObjectId;
     private VoxelWorld? _dragInstanceCacheSource;
@@ -210,6 +308,8 @@ internal sealed partial class ImGuiEditorWindow
     private StableId? _sceneGizmoGridDragObjectId;
     // 拖动实例渲染：静态世界排除被拖对象，对象单独建 BLAS，拖动只改实例平移
     private VoxelWorld? _dragInstanceStaticWorld;
+    // 静态世界的后台预建数据：按下时直接上传，省掉主线程构建
+    private VulkanVoxelRenderPipeline.PreparedWorkset? _dragInstanceStaticPrepared;
     private VoxelWorld? _dragInstanceObjectWorld;
     private StableId _dragInstanceObjectId = StableId.Empty;
     private float _sceneGizmoDragStartValue;
@@ -987,7 +1087,10 @@ internal sealed partial class ImGuiEditorWindow
             return true;
         }
 
-        if (!ImGui.IsMouseHoveringRect(origin, origin + size) || orientationGizmoHovered) return false;
+        // 几何命中不含遮挡：浮动窗口盖在视口上时，窗口必须优先吃掉这次点击，
+        // 否则点窗口里的按钮会顺带抓住背后的 gizmo 手柄。
+        if (!ImGui.IsWindowHovered() || !ImGui.IsMouseHoveringRect(origin, origin + size) ||
+            orientationGizmoHovered) return false;
         if (HandleCurveDeleteKey()) return true;
         if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left)) return false;
 
@@ -1180,6 +1283,13 @@ internal sealed partial class ImGuiEditorWindow
                     _sceneGizmoRotationDelta = 0F;
                     _sceneGizmoDragRotation = true;
                     _sceneGizmoDragging = true;
+                    if (selected.Transform.Mode == TransformMode.Grid)
+                    {
+                        // 体素模型拖动期间用拖动实例显示旋转结果，松手才写入体素并记撤销
+                        BeginGridDragPreview(selected);
+                        BeginModelRotationPreview(selected);
+                    }
+
                     return true;
                 }
 
@@ -1280,6 +1390,12 @@ internal sealed partial class ImGuiEditorWindow
             {
                 var step = RotationSnapStep(_sceneGizmoDragAxis) * (MathF.PI / 180F);
                 _sceneGizmoRotationDelta = MathF.Round(_sceneGizmoRotationDelta / step) * step;
+            }
+            if (selected.Transform.Mode == TransformMode.Grid)
+            {
+                // 体素模型按拖动轴实时重采样预览，其他两轴角度保持不变
+                UpdateModelRotationPreview(selected, _sceneGizmoDragAxis, _sceneGizmoRotationDelta);
+                return;
             }
             if (selected.Transform.Mode == TransformMode.Free)
             {
@@ -1396,6 +1512,9 @@ internal sealed partial class ImGuiEditorWindow
         // 预热未完成时在这里补完：宁可按下时多花一次，也不要让拖动开始帧半途重建
         EnsureDragPreviewPrewarmed();
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
+        // 平移拖动不旋转实例：清掉上一次旋转预览留下的残差，避免移动时模型带着角度
+        _sceneGizmoGridDragRotation = Quaternion.Identity;
+        _sceneGizmoGridDragPivot = default;
         _sceneGizmoGridDragStartTransform = sceneObject.Transform.Grid;
         // 只记状态不复制体素：拖动期间对象世界不会被修改，松手时才真正平移；
         // 这里克隆 29 万体素会在按下的瞬间产生明显卡顿
@@ -1482,11 +1601,26 @@ internal sealed partial class ImGuiEditorWindow
 
         var objectMs = watch.Elapsed.TotalMilliseconds;
         watch.Restart();
-        _dragInstanceStaticWorld = _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
-            remap: RemapRuntimeMaterial, excludeObjectId: sceneObject.Id);
+        // 空闲帧已经合成过同一份静态世界时直接复用，按下拖动不再付这次合成
+        var reusePrewarmedStatic = _dragPrewarmStaticWorld is { } prewarmedStatic &&
+            _dragPrewarmStaticObjectId == sceneObject.Id &&
+            ReferenceEquals(_dragPrewarmStaticSceneSource, _world) &&
+            string.Equals(_dragPrewarmStaticMaterialSignature, _runtimeMaterialSignature, StringComparison.Ordinal);
+        _dragInstanceStaticWorld = reusePrewarmedStatic
+            ? _dragPrewarmStaticWorld
+            : _objectVoxels.Compose(_sceneDocument, uint.MaxValue, true,
+                remap: RemapRuntimeMaterial, excludeObjectId: sceneObject.Id);
+        // 预建数据必须与这次静态世界是同一份内容，否则交给管线按普通流程重建
+        _dragInstanceStaticPrepared = reusePrewarmedStatic &&
+            _dragPrewarmStaticPrepared is { } prepared &&
+            _dragInstanceStaticWorld is { } staticWorld &&
+            prepared.Workset.SourceVersion == staticWorld.ContentVersion
+                ? prepared
+                : null;
         var staticMs = watch.Elapsed.TotalMilliseconds;
         MVoxelLog.Info($"拖动实例准备：对象世界 {objectMs:0.0}ms（{_dragInstanceObjectWorld?.OccupiedVoxelCount ?? 0:N0} 格，缓存命中={objectCacheHit}），" +
-            $"静态世界 {staticMs:0.0}ms（{_dragInstanceStaticWorld?.OccupiedVoxelCount ?? 0:N0} 格）");
+            $"静态世界 {staticMs:0.0}ms（{_dragInstanceStaticWorld?.OccupiedVoxelCount ?? 0:N0} 格，预热命中={reusePrewarmedStatic}），" +
+            $"预建工作集 {(_dragInstanceStaticPrepared is null ? "无" : "有")}");
         _dragInstanceObjectId = sceneObject.Id;
     }
 
@@ -1648,6 +1782,7 @@ internal sealed partial class ImGuiEditorWindow
         _sceneSettleDisplay = false;
         _dragInstanceStaticWorld = null;
         _dragInstanceObjectWorld = null;
+        _dragInstanceStaticPrepared = null;
         _dragInstanceObjectId = StableId.Empty;
         _sceneGizmoGridDragCells = VoxelCoord64.Zero;
         return true;
@@ -1684,15 +1819,8 @@ internal sealed partial class ImGuiEditorWindow
             _sceneGizmoDragRotation = false;
             if (selected.Transform.Mode == TransformMode.Grid)
             {
-                // 体素网格上的旋转是重新采样生成的：按拖动角度对基准重采样，不再只取 90 度整数倍
-                var radians = _sceneGizmoRotationDelta;
-                if (_editorSettings.RotationSnapEnabled)
-                {
-                    var step = RotationSnapStep(_sceneGizmoDragAxis) * (MathF.PI / 180F);
-                    radians = MathF.Round(radians / step) * step;
-                }
-
-                if (MathF.Abs(radians) > .0001F) ApplyModelRotationDelta(selected, _sceneGizmoDragAxis, radians);
+                // 体素模型的旋转在拖动期间已实时预览，这里按最后角度正式提交一步撤销
+                FinishModelRotationPreview(selected);
             }
             else if (MathF.Abs(_sceneGizmoRotationDelta) > .0001F) MarkSceneDocumentDirty();
             return;

@@ -295,13 +295,13 @@ host.RegisterComponent = host.registerComponent;
         return JsonSerializer.SerializeToElement(value);
     }
 
-    private static Engine CreateJavaScriptEngine(TimeSpan timeout)
+    internal static Engine CreateJavaScriptEngine(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
         return new Engine(options => options.TimeoutInterval(timeout).LimitRecursion(128));
     }
 
-    private static string ToJavaScriptSource(string source) =>
+    internal static string ToJavaScriptSource(string source) =>
         source.Replace("export async function ", "async function ", StringComparison.Ordinal)
              .Replace("export function ", "function ", StringComparison.Ordinal);
 
@@ -454,7 +454,7 @@ host.RegisterComponent = host.registerComponent;
         return host;
     }
 
-    private sealed class LuaTimeoutDebugger : IDebugger
+    internal sealed class LuaTimeoutDebugger : IDebugger
     {
         private readonly long _deadline;
 

@@ -117,10 +117,43 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     private VkBuffer _dragBlasBuffer;
     private DeviceMemory _dragBlasMemory;
     private AccelerationStructureKHR _dragBlas;
+    // 拖动几何与 BLAS 存储按容量保留：旋转预览每跨一个角度档只覆盖数据并重建 BLAS，
+    // 不再销毁重建缓冲，去掉每一步的显存分配开销
+    private ulong _dragVertexCapacity;
+    private ulong _dragIndexCapacity;
+    private ulong _dragCellCapacity;
+    private ulong _dragBlasCapacity;
+    private ulong _blasCapacity;
+    private ulong _scratchCapacity;
+    //拖动几何的主机端数组按容量复用，旋转预览重建时不再反复分配大数组
+    private float[] _dragVertexScratch = Array.Empty<float>();
+    private uint[] _dragIndexScratch = Array.Empty<uint>();
+    private byte[] _dragCellScratch = Array.Empty<byte>();
+    // scratch 超过该容量就在重建后释放，避免整份场景重建把显存长期占住
+    private const ulong ScratchRetentionLimit = 48UL * 1024UL * 1024UL;
     private int _dragCellCount;
     private long _dragOriginX, _dragOriginY, _dragOriginZ;
     private long _dragOffsetX, _dragOffsetY, _dragOffsetZ;
+    private System.Numerics.Quaternion _dragRotation = System.Numerics.Quaternion.Identity;
+    private System.Numerics.Vector3 _dragPivot;
     private int _dragGeometryVersion = -1;
+    // 最近一次写进实例缓冲的拖动实例平移，用于诊断实例实际摆放位置
+    private System.Numerics.Vector3 _lastDragTranslation;
+
+    /// <summary>诊断：TLAS 是否有效</summary>
+    internal bool DiagnosticHasTlas => _tlas.Handle != 0;
+
+    /// <summary>诊断：拖动实例是否可见</summary>
+    internal bool DiagnosticDragInstanceVisible => _dragInstanceVisible;
+
+    /// <summary>诊断：最近一次写入实例缓冲的拖动对象平移</summary>
+    internal System.Numerics.Vector3 DiagnosticLastDragTranslation => _lastDragTranslation;
+
+    /// <summary>诊断：拖动对象 BLAS 是否有效</summary>
+    internal bool DiagnosticHasDragBlas => _dragBlas.Handle != 0;
+
+    /// <summary>诊断：加速结构使用的静态工作集原点</summary>
+    internal VoxelCoord64 DiagnosticStaticOrigin => new(_staticOriginX, _staticOriginY, _staticOriginZ);
     private uint _instanceCount;
     private bool _dragInstanceVisible;
     private long _staticOriginX, _staticOriginY, _staticOriginZ;
@@ -246,22 +279,30 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     internal VoxelCoord64 DragInstanceOffset => new(_dragOffsetX, _dragOffsetY, _dragOffsetZ);
 
     /// <summary>加速结构是否包含可用的拖动对象实例</summary>
-    internal bool HasDragAcceleration => _dragBlas.Handle != 0 && _dragCellCount > 0;
+    internal bool HasDragAcceleration => _dragInstanceVisible && _dragBlas.Handle != 0 && _dragCellCount > 0;
 
     /// <summary>
-    /// 只改写拖动实例的平移并重建 TLAS；静态 BLAS 与对象 BLAS 保持不动
+    /// 只改写拖动实例的变换（平移 + 绕枢轴旋转）并重建 TLAS；BLAS 保持不动
     /// </summary>
     /// <param name="offset">拖动对象相对起始位置的整格平移</param>
+    /// <param name="rotation">绕枢轴旋转的四元数</param>
+    /// <param name="pivot">枢轴世界坐标</param>
     /// <returns>实例变换更新成功时为 true</returns>
-    internal bool UpdateDragInstance(VoxelCoord64 offset)
+    internal bool UpdateDragInstance(VoxelCoord64 offset, System.Numerics.Quaternion rotation,
+        System.Numerics.Vector3 pivot)
     {
-        if (_tlas.Handle == 0 || _dragBlas.Handle == 0 || _instanceBuffer.Handle == 0) return false;
-        if (offset.X == _dragOffsetX && offset.Y == _dragOffsetY && offset.Z == _dragOffsetZ) return true;
+        if (_tlas.Handle == 0 || _dragBlas.Handle == 0 || _instanceBuffer.Handle == 0 ||
+            !_dragInstanceVisible) return false;
+        if (offset.X == _dragOffsetX && offset.Y == _dragOffsetY && offset.Z == _dragOffsetZ &&
+            rotation.Equals(_dragRotation) && pivot == _dragPivot)
+            return true;
         try
         {
             _dragOffsetX = offset.X;
             _dragOffsetY = offset.Y;
             _dragOffsetZ = offset.Z;
+            _dragRotation = rotation;
+            _dragPivot = pivot;
             WriteInstanceBuffer();
             RebuildTlas();
             return true;
@@ -270,6 +311,68 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         {
             _lastError = exception.ToString();
             MVoxelLog.Error("更新拖动对象实例变换失败，回退软件 BVH", exception);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 只重建拖动对象的几何与 BLAS，保留静态世界的加速结构；旋转预览逐角度重采样时使用
+    /// </summary>
+    /// <param name="dragCells">拖动对象的体素列表</param>
+    /// <param name="dragOrigin">拖动对象工作集原点</param>
+    /// <param name="dragVersion">拖动几何版本</param>
+    /// <param name="dragOffset">整格平移</param>
+    /// <param name="staticOrigin">静态工作集原点</param>
+    /// <param name="rotation">实例旋转</param>
+    /// <param name="pivot">旋转枢轴</param>
+    /// <returns>重建成功时为 true</returns>
+    private bool RebuildDragGeometry(IReadOnlyList<VoxelGpuCell> dragCells, VoxelCoord64 dragOrigin,
+        int dragVersion, VoxelCoord64 dragOffset, VoxelCoord64 staticOrigin,
+        System.Numerics.Quaternion rotation, System.Numerics.Vector3 pivot)
+    {
+        try
+        {
+            // 调用方已经结束在途计算，立即提交又按队列顺序等待完成，
+            // 这里不再额外 DeviceWaitIdle，避免每一步旋转预览都停一次整条 GPU 管线
+            if (_dragBlas.Handle != 0) _accelerationApi.DestroyAccelerationStructure(_device, _dragBlas, null);
+            _dragBlas = default;
+            // 几何缓冲与 BLAS 存储按容量复用：角度档变化只覆盖数据并重建加速结构
+            var watch = Stopwatch.StartNew();
+            CreateDragGeometryBuffers(dragCells);
+            var geometryMs = watch.Elapsed.TotalMilliseconds;
+            watch.Restart();
+            CreateDragBlas(dragCells.Count);
+            var blasMs = watch.Elapsed.TotalMilliseconds;
+            _dragCellCount = dragCells.Count;
+            _dragOriginX = dragOrigin.X;
+            _dragOriginY = dragOrigin.Y;
+            _dragOriginZ = dragOrigin.Z;
+            _dragOffsetX = dragOffset.X;
+            _dragOffsetY = dragOffset.Y;
+            _dragOffsetZ = dragOffset.Z;
+            _dragRotation = rotation;
+            _dragPivot = pivot;
+            _dragGeometryVersion = dragVersion;
+            _dragInstanceVisible = true;
+            _staticOriginX = staticOrigin.X;
+            _staticOriginY = staticOrigin.Y;
+            _staticOriginZ = staticOrigin.Z;
+            WriteInstanceBuffer();
+            RebuildTlas();
+            if (geometryMs + blasMs >= 12.0)
+            {
+                MVoxelLog.Info($"拖动实例几何重建：总计 {geometryMs + blasMs:0.0}ms" +
+                    $"（几何 {geometryMs:0.0}ms，BLAS {blasMs:0.0}ms），体素 {dragCells.Count:N0}");
+            }
+
+            return _tlas.Handle != 0;
+        }
+        catch (Exception exception)
+        {
+            _lastError = exception.ToString();
+            if (_context.IsDeviceLost || _lastError.Contains("ErrorDeviceLost", StringComparison.OrdinalIgnoreCase))
+                _context.MarkDeviceLost();
+            MVoxelLog.Error("重建拖动对象几何失败，回退软件 BVH", exception);
             return false;
         }
     }
@@ -442,7 +545,8 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// <returns>加速结构可用时返回 true</returns>
     internal bool EnsureShadowAcceleration(IReadOnlyList<VoxelGpuCell> cells, int sourceVersion,
         IReadOnlyList<VoxelGpuCell>? dragCells = null, VoxelCoord64 dragOrigin = default,
-        VoxelCoord64 dragOffset = default, int dragVersion = -1, VoxelCoord64 staticOrigin = default)
+        VoxelCoord64 dragOffset = default, int dragVersion = -1, VoxelCoord64 staticOrigin = default,
+        System.Numerics.Quaternion? dragRotation = null, System.Numerics.Vector3? dragPivot = null)
     {
         if (_disposed || (dragCells?.Count is not > 0 && cells.Count == 0) ||
             cells.Count > MaxAccelerationVoxels || (dragCells?.Count > MaxAccelerationVoxels) == true)
@@ -456,16 +560,29 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             return false;
         }
 
+        // 拖动几何版本是内容哈希，可能为负数，不能用“版本小于 0”判断有没有拖动对象；
+        // 这里统一以是否真的传入拖动体素为准
+        var hasDrag = dragCells is { Count: > 0 };
         // 只有拖动对象的实例平移发生变化：TLAS 是唯一会变的结构，
         // 静态与对象几何都可以原样复用，这一步就是拖动时的 2ms 级更新
-        if (dragVersion >= 0 && _dragGeometryVersion == dragVersion &&
+        if (hasDrag && _dragGeometryVersion == dragVersion &&
             _sourceVersion == sourceVersion && _tlas.Handle != 0 && _dragBlas.Handle != 0)
         {
-            return UpdateDragInstance(dragOffset);
+            return UpdateDragInstance(dragOffset, dragRotation ?? System.Numerics.Quaternion.Identity,
+                dragPivot ?? default);
+        }
+
+        // 旋转预览会让拖动对象的几何持续变化：只重建对象自己的几何与 BLAS，
+        // 静态世界的加速结构保持不动，避免每步都等待整份场景的重建
+        if (hasDrag && _sourceVersion == sourceVersion && _tlas.Handle != 0 &&
+            _blas.Handle != 0 && _dragBlas.Handle != 0 && _dragGeometryVersion != dragVersion)
+        {
+            return RebuildDragGeometry(dragCells!, dragOrigin, dragVersion, dragOffset, staticOrigin,
+                dragRotation ?? System.Numerics.Quaternion.Identity, dragPivot ?? default);
         }
 
         // 从拖动状态退出且静态几何没变：只隐藏实例 1，不重建 BLAS
-        if (dragVersion < 0 && _dragInstanceVisible && _sourceVersion == sourceVersion &&
+        if (!hasDrag && _dragInstanceVisible && _sourceVersion == sourceVersion &&
             _tlas.Handle != 0)
         {
             _dragInstanceVisible = false;
@@ -483,7 +600,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             }
         }
 
-        if (_sourceVersion == sourceVersion && _tlas.Handle != 0 && dragVersion < 0 && !_dragInstanceVisible)
+        if (_sourceVersion == sourceVersion && _tlas.Handle != 0 && !hasDrag && !_dragInstanceVisible)
             return true;
         _lastBuildMs = 0;
         _lastBuildIdleMs = 0;
@@ -505,7 +622,6 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             DestroyAccelerationResources();
             // 拖动对象单独建一份几何、体素快照与 BLAS；它的实例变换由 TLAS 承担，
             // 拖动过程中只改实例平移，不会让静态几何的 BLAS 失效
-            var hasDrag = dragCells is { Count: > 0 };
             if (cells.Count > 0) CreateGeometryBuffers(cells, includeCellBuffer: true);
             if (hasDrag) CreateDragGeometryBuffers(dragCells!);
             _lastGeometryMs = phaseWatch.Elapsed.TotalMilliseconds;
@@ -522,6 +638,8 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             _dragOffsetX = hasDrag ? dragOffset.X : 0;
             _dragOffsetY = hasDrag ? dragOffset.Y : 0;
             _dragOffsetZ = hasDrag ? dragOffset.Z : 0;
+            _dragRotation = dragRotation ?? System.Numerics.Quaternion.Identity;
+            _dragPivot = dragPivot ?? default;
             _dragGeometryVersion = hasDrag ? dragVersion : -1;
             _dragInstanceVisible = hasDrag;
             _staticOriginX = staticOrigin.X;
@@ -655,11 +773,17 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// </summary>
     private void CreateDragGeometryBuffers(IReadOnlyList<VoxelGpuCell> cells)
     {
-        var vertices = new float[checked(cells.Count * VerticesPerVoxel * 3)];
-        var indices = new uint[checked(cells.Count * IndicesPerVoxel)];
-        var packed = new byte[checked(cells.Count * CellStride)];
+        //旋转预览每跨一个角度档都会重建几何，数组按容量复用，避免每一步产生数 MB 的大对象分配
+        var vertexLength = checked(cells.Count * VerticesPerVoxel * 3);
+        var indexLength = checked(cells.Count * IndicesPerVoxel);
+        var cellLength = checked(cells.Count * CellStride);
+        if (_dragVertexScratch.Length < vertexLength) _dragVertexScratch = new float[NextCapacityLength(vertexLength)];
+        if (_dragIndexScratch.Length < indexLength) _dragIndexScratch = new uint[NextCapacityLength(indexLength)];
+        if (_dragCellScratch.Length < cellLength) _dragCellScratch = new byte[NextCapacityLength(cellLength)];
         var vertexOffset = 0;
         var indexOffset = 0;
+        //复用缓冲时旧内容的描边标记必须清掉，体素数据本身整段覆盖
+        Array.Clear(_dragCellScratch, 0, cellLength);
         for (var cellIndex = 0; cellIndex < cells.Count; cellIndex++)
         {
             var cell = cells[cellIndex];
@@ -671,28 +795,74 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             var ez = (float)cell.ExtentZ;
             for (var vertex = 0; vertex < VerticesPerVoxel; vertex++)
             {
-                vertices[vertexOffset++] = x + (vertex is 1 or 2 or 5 or 6 ? ex : 0F);
-                vertices[vertexOffset++] = y + (vertex is 2 or 3 or 6 or 7 ? ey : 0F);
-                vertices[vertexOffset++] = z + (vertex >= 4 ? ez : 0F);
+                _dragVertexScratch[vertexOffset++] = x + (vertex is 1 or 2 or 5 or 6 ? ex : 0F);
+                _dragVertexScratch[vertexOffset++] = y + (vertex is 2 or 3 or 6 or 7 ? ey : 0F);
+                _dragVertexScratch[vertexOffset++] = z + (vertex >= 4 ? ez : 0F);
             }
             var baseVertex = (uint)(cellIndex * VerticesPerVoxel);
             for (var index = 0; index < BoxTriangleIndices.Length; index++)
-                indices[indexOffset++] = baseVertex + BoxTriangleIndices[index];
-            WritePackedCell(packed.AsSpan(cellIndex * CellStride, CellStride), cell);
-            // 拖动中的对象必然是当前选中对象：给实例快照打上选中标记，
-            // 外轮廓因此跟实例一起移动，不需要再单独维护一份蒙版
-            MemoryMarshal.Write(packed.AsSpan(cellIndex * CellStride + 36, 4), 1);
+                _dragIndexScratch[indexOffset++] = baseVertex + BoxTriangleIndices[index];
+            WritePackedCell(_dragCellScratch.AsSpan(cellIndex * CellStride, CellStride), cell);
+            //拖动中的对象必然是当前选中对象：给实例快照打上选中标记，
+            //外轮廓因此跟实例一起移动，不需要再单独维护一份蒙版
+            MemoryMarshal.Write(_dragCellScratch.AsSpan(cellIndex * CellStride + 36, 4), 1);
         }
 
-        _dragVertexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(vertices.AsSpan()),
+        UploadReusableHostBuffer(MemoryMarshal.AsBytes(_dragVertexScratch.AsSpan(0, vertexLength)),
             (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
-            out _dragVertexMemory);
-        _dragIndexBuffer = CreateHostBuffer(MemoryMarshal.AsBytes(indices.AsSpan()),
+            ref _dragVertexBuffer, ref _dragVertexMemory, ref _dragVertexCapacity);
+        UploadReusableHostBuffer(MemoryMarshal.AsBytes(_dragIndexScratch.AsSpan(0, indexLength)),
             (BufferUsageFlags)0x00080000U | BufferUsageFlags.ShaderDeviceAddressBit,
-            out _dragIndexMemory);
-        _dragCellBuffer = CreateHostBuffer(packed,
+            ref _dragIndexBuffer, ref _dragIndexMemory, ref _dragIndexCapacity);
+        UploadReusableHostBuffer(_dragCellScratch.AsSpan(0, cellLength),
             BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
-            out _dragCellMemory);
+            ref _dragCellBuffer, ref _dragCellMemory, ref _dragCellCapacity);
+    }
+
+    /// <summary>
+    /// 计算下一档数组长度，减少连续重建时的扩容次数
+    /// </summary>
+    /// <param name="required">所需最小元素数</param>
+    /// <returns>不小于需求的长度</returns>
+    private static int NextCapacityLength(int required)
+    {
+        var capacity = 4096;
+        while (capacity < required) capacity = checked(capacity * 2);
+        return capacity;
+    }
+
+    /// <summary>
+    /// 写入按容量保留的主机可见缓冲：容量足够时只覆盖有效字节，不足才重新分配
+    /// </summary>
+    /// <param name="data">本次有效数据</param>
+    /// <param name="usage">缓冲用途</param>
+    /// <param name="buffer">目标缓冲</param>
+    /// <param name="memory">目标显存</param>
+    /// <param name="capacity">当前容量字节数</param>
+    private void UploadReusableHostBuffer(ReadOnlySpan<byte> data, BufferUsageFlags usage,
+        ref VkBuffer buffer, ref DeviceMemory memory, ref ulong capacity)
+    {
+        var required = (ulong)Math.Max(data.Length, 1);
+        if (buffer.Handle == 0 || capacity < required)
+        {
+            if (buffer.Handle != 0) DestroyBuffer(ref buffer, ref memory);
+            capacity = NextCapacity(required);
+            buffer = CreateDeviceBuffer(capacity, usage, out memory, hostVisible: true);
+        }
+
+        if (data.Length > 0) UploadMapped(memory, data);
+    }
+
+    /// <summary>
+    /// 计算下一档缓冲容量，减少连续编辑时的重新分配
+    /// </summary>
+    /// <param name="required">所需最小字节数</param>
+    /// <returns>不小于需求的容量</returns>
+    private static ulong NextCapacity(ulong required)
+    {
+        var capacity = 64UL * 1024UL;
+        while (capacity < required) capacity = checked(capacity * 2UL);
+        return capacity;
     }
 
     /// <summary>
@@ -700,22 +870,32 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     /// </summary>
     /// <param name="voxelCount">体素数量</param>
     private void CreateDragBlas(int voxelCount) =>
-        CreateBlas(voxelCount, _dragVertexBuffer, _dragIndexBuffer, out _dragBlas,
-            out _dragBlasBuffer, out _dragBlasMemory);
+        BuildBlas(voxelCount, _dragVertexBuffer, _dragIndexBuffer, ref _dragBlas,
+            ref _dragBlasBuffer, ref _dragBlasMemory, ref _dragBlasCapacity);
 
     /// <summary>
     /// 创建体素三角形 BLAS
     /// </summary>
     /// <param name="voxelCount">体素数量</param>
     private void CreateBlas(int voxelCount) =>
-        CreateBlas(voxelCount, _vertexBuffer, _indexBuffer, out _blas, out _blasBuffer, out _blasMemory);
+        BuildBlas(voxelCount, _vertexBuffer, _indexBuffer, ref _blas,
+            ref _blasBuffer, ref _blasMemory, ref _blasCapacity);
 
-    private void CreateBlas(int voxelCount, VkBuffer vertexBuffer, VkBuffer indexBuffer,
-        out AccelerationStructureKHR blas, out VkBuffer blasBuffer, out DeviceMemory blasMemory)
+    /// <summary>
+    /// 构建三角形 BLAS，存储缓冲按容量复用
+    /// </summary>
+    /// <param name="voxelCount">体素数量</param>
+    /// <param name="vertexBuffer">顶点缓冲</param>
+    /// <param name="indexBuffer">索引缓冲</param>
+    /// <param name="blas">加速结构句柄，调用方需先释放旧句柄</param>
+    /// <param name="blasBuffer">加速结构存储缓冲</param>
+    /// <param name="blasMemory">加速结构显存</param>
+    /// <param name="blasCapacity">存储缓冲容量</param>
+    private void BuildBlas(int voxelCount, VkBuffer vertexBuffer, VkBuffer indexBuffer,
+        ref AccelerationStructureKHR blas, ref VkBuffer blasBuffer, ref DeviceMemory blasMemory,
+        ref ulong blasCapacity)
     {
         blas = default;
-        blasBuffer = default;
-        blasMemory = default;
         var triangles = new AccelerationStructureGeometryTrianglesDataKHR
         {
             SType = StructureType.AccelerationStructureGeometryTrianglesDataKhr,
@@ -749,9 +929,16 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         };
         _accelerationApi.GetAccelerationStructureBuildSizes(_device, AccelerationStructureBuildTypeKHR.DeviceKhr,
             in info, in primitives, out sizes);
-        blasBuffer = CreateDeviceBuffer(sizes.AccelerationStructureSize,
-            BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
-            out blasMemory);
+        // 加速结构存储按容量保留：旋转预览每步只需要在已有缓冲里重建结构
+        if (blasBuffer.Handle == 0 || blasCapacity < sizes.AccelerationStructureSize)
+        {
+            if (blasBuffer.Handle != 0) DestroyBuffer(ref blasBuffer, ref blasMemory);
+            blasCapacity = NextCapacity(sizes.AccelerationStructureSize);
+            blasBuffer = CreateDeviceBuffer(blasCapacity,
+                BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+                out blasMemory);
+        }
+
         var createInfo = new AccelerationStructureCreateInfoKHR
         {
             SType = StructureType.AccelerationStructureCreateInfoKhr,
@@ -760,7 +947,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             Type = AccelerationStructureTypeKHR.BottomLevelKhr,
         };
         Check(_accelerationApi.CreateAccelerationStructure(_device, in createInfo, null, out blas), "创建体素 BLAS");
-        CreateScratch(sizes.BuildScratchSize);
+        EnsureScratch(sizes.BuildScratchSize);
         info.DstAccelerationStructure = blas;
         info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
@@ -779,7 +966,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                     (_context.SupportsHardwareRayTracing ? PipelineStageFlags.RayTracingShaderBitKhr : 0),
                 0, 1, in barrier, 0, null, 0, null);
         });
-        DestroyScratch();
+        TrimScratch();
     }
 
     /// <summary>
@@ -867,7 +1054,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
             GeometryCount = 1,
             PGeometries = &geometry,
         };
-        CreateScratch(_tlasScratchSize);
+        EnsureScratch(_tlasScratchSize);
         info.DstAccelerationStructure = _tlas;
         info.ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = _scratchAddress };
         var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primitives };
@@ -886,7 +1073,6 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
                     (_context.SupportsHardwareRayTracing ? PipelineStageFlags.RayTracingShaderBitKhr : 0),
                 0, 1, in barrier, 0, null, 0, null);
         });
-        DestroyScratch();
     }
 
     /// <summary>
@@ -899,27 +1085,39 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         Span<byte> buffer = stackalloc byte[64 * 2];
         // 实例 0：静态 BLAS，单位变换
         WriteInstance(buffer[..64], _blas.Handle != 0 ? _blas : _dragBlas,
-            0U, _blas.Handle != 0 ? 0xFF000000U : 0x00000000U, 0F, 0F, 0F);
-        // 实例 1：拖动对象，平移 = (拖动原点 - 静态原点) + 累计格位移。
-        // BLAS 顶点使用自己的局部原点，因此实例矩阵承担全部平移
+            0U, _blas.Handle != 0 ? 0xFF000000U : 0x00000000U,
+            System.Numerics.Matrix4x4.Identity, System.Numerics.Vector3.Zero);
+        // 实例 1：拖动对象。局部坐标先绕枢轴旋转，再平移回静态空间；
+        // 旋转中心用实例自己的局部原点，因此只有 TLAS 需要逐帧重建
         var dragVisible = _dragInstanceVisible && _dragBlas.Handle != 0;
+        var localOrigin = new System.Numerics.Vector3(
+            (float)_dragOriginX, (float)_dragOriginY, (float)_dragOriginZ);
+        var staticOffset = new System.Numerics.Vector3(
+            (float)-_staticOriginX, (float)-_staticOriginY, (float)-_staticOriginZ);
+        var rotation = System.Numerics.Matrix4x4.CreateFromQuaternion(
+            System.Numerics.Quaternion.Normalize(_dragRotation));
+        var pivotToOrigin = localOrigin - _dragPivot;
+        var rotatedPivotToOrigin = System.Numerics.Vector3.Transform(pivotToOrigin, rotation);
+        var translation = staticOffset + _dragPivot + rotatedPivotToOrigin +
+            new System.Numerics.Vector3((float)_dragOffsetX, (float)_dragOffsetY, (float)_dragOffsetZ);
+        _lastDragTranslation = translation;
         WriteInstance(buffer[64..], dragVisible ? _dragBlas : _blas,
-            1U, dragVisible ? 0xFF000000U : 0x00000000U,
-            _dragOffsetX + (_dragOriginX - _staticOriginX),
-            _dragOffsetY + (_dragOriginY - _staticOriginY),
-            _dragOffsetZ + (_dragOriginZ - _staticOriginZ));
+            1U, dragVisible ? 0xFF000000U : 0x00000000U, rotation, translation);
         UploadMapped(_instanceMemory, buffer[..(int)(64 * instanceCount)]);
     }
 
     private void WriteInstance(Span<byte> destination, AccelerationStructureKHR structure,
-        uint customIndex, uint maskAndIndex, float offsetX, float offsetY, float offsetZ)
+        uint customIndex, uint maskAndIndex, System.Numerics.Matrix4x4 rotation,
+        System.Numerics.Vector3 translation)
     {
-        // VkAccelerationStructureInstanceKHR 的行主序 3×4 变换：平移在每行第 4 列
+        // VkAccelerationStructureInstanceKHR 按列向量约定：p' = 矩阵 * p，平移在每行第 4 列。
+        // System.Numerics 的矩阵按行向量约定（p' = p * M），因此这里写它的转置：
+        // 第 i 行取 M 的第 i 列，纯平移时两种写法等价，旋转时必须是转置否则会反向
         var transform = new float[]
         {
-            1F, 0F, 0F, offsetX,
-            0F, 1F, 0F, offsetY,
-            0F, 0F, 1F, offsetZ,
+            rotation.M11, rotation.M21, rotation.M31, translation.X,
+            rotation.M12, rotation.M22, rotation.M32, translation.Y,
+            rotation.M13, rotation.M23, rotation.M33, translation.Z,
         };
         MemoryMarshal.AsBytes(transform.AsSpan()).CopyTo(destination);
         // 第一个 DWORD 的低 24 位是实例自定义索引，高 8 位是 mask；
@@ -1289,16 +1487,26 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
     }
 
     /// <summary>
-    /// 创建临时加速结构构建 scratch 缓冲
+    /// 确保临时加速结构构建 scratch 缓冲足够大，容量够时直接复用
     /// </summary>
     /// <param name="size">所需大小</param>
-    private void CreateScratch(ulong size)
+    private void EnsureScratch(ulong size)
     {
-        DestroyScratch();
         // 多分配一段对齐余量，保证设备地址可以向上对齐到驱动要求
-        _scratchBuffer = CreateDeviceBuffer(size + _scratchAlignment - 1,
-            BufferUsageFlags.StorageBufferBit, out _scratchMemory);
+        var required = size + _scratchAlignment - 1;
+        if (_scratchBuffer.Handle != 0 && _scratchCapacity >= required) return;
+        DestroyScratch();
+        _scratchCapacity = NextCapacity(required);
+        _scratchBuffer = CreateDeviceBuffer(_scratchCapacity, BufferUsageFlags.StorageBufferBit, out _scratchMemory);
         _scratchAddress = AlignUp(GetAddress(_scratchBuffer), _scratchAlignment);
+    }
+
+    /// <summary>
+    /// 释放过大的 scratch 缓冲，避免整份场景重建后长期占用显存
+    /// </summary>
+    private void TrimScratch()
+    {
+        if (_scratchCapacity > ScratchRetentionLimit) DestroyScratch();
     }
 
     /// <summary>
@@ -1311,6 +1519,7 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _scratchBuffer = default;
         _scratchMemory = default;
         _scratchAddress = 0;
+        _scratchCapacity = 0;
     }
 
     /// <summary>
@@ -1477,6 +1686,11 @@ internal sealed unsafe class VulkanHardwareRayTracingPipeline : IDisposable
         _blas = default;
         _tlas = default;
         _dragBlas = default;
+        _blasCapacity = 0;
+        _dragBlasCapacity = 0;
+        _dragVertexCapacity = 0;
+        _dragIndexCapacity = 0;
+        _dragCellCapacity = 0;
         _dragCellCount = 0;
         _dragGeometryVersion = -1;
         _dragInstanceVisible = false;

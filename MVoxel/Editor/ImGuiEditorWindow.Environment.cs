@@ -27,9 +27,10 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.SetNextWindowFocus();
             _focusEnvironmentWindow = false;
         }
-        var open = _showEnvironmentWindow;
         ImGui.SetNextWindowSize(new Vector2(520F, 620F), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("环境配置##EnvironmentWindow", ref open, PanelWindowFlags))
+        var environmentVisible = BeginToolWindow("环境配置##EnvironmentWindow", PanelWindowFlags,
+            () => _showEnvironmentWindow = false);
+        if (environmentVisible)
         {
             ImGui.TextDisabled("当前场景唯一环境配置");
             ImGui.SameLine();
@@ -44,7 +45,6 @@ internal sealed partial class ImGuiEditorWindow
                     _pipeline?.ResetAccumulation();
                 }
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前场景环境恢复为默认值，保存场景后生效");
             ImGui.Separator();
             if (_sceneDocument is null)
             {
@@ -69,25 +69,24 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
         ImGui.End();
-        _showEnvironmentWindow = open;
     }
 
     private static void DrawEnvironmentWeather(SceneEnvironmentSettings environment)
     {
         if (!ImGui.CollapsingHeader("天气", ImGuiTreeNodeFlags.DefaultOpen)) return;
         ImGui.DragInt("天气种子", ref environment.WeatherSeed, 1F, 0, 65535);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("改变雨雪、闪电与热浪的随机分布；相同种子与时间轴帧得到相同结果。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("改变雨雪、闪电与热浪的随机分布，同种子同帧结果一致");
         SliderFloat("雨雪可见距离", ref environment.WeatherViewDistance, 1F, 256F, "%.0f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("雨雪在相机周围的最大显示距离（世界单位）；距离越大，绘制工作量越高。此参数不改变模型精度。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("雨雪在相机周围的最大显示距离，越大绘制开销越高");
         SliderFloat("风强度", ref environment.WeatherWindStrength, 0F, 4F, "%.2f");
         SliderFloat("风向", ref environment.WeatherWindDirection, 0F, 360F, "%.0f°");
         SliderFloat("降雨强度", ref environment.WeatherRainIntensity, 0F, 1F, "%.2f");
         SliderFloat("降雪强度", ref environment.WeatherSnowIntensity, 0F, 1F, "%.2f");
         SliderFloat("雷暴强度", ref environment.WeatherStormIntensity, 0F, 1F, "%.2f");
         SliderFloat("热浪强度", ref environment.WeatherHeatHaze, 0F, 1F, "%.2f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("渲染视图中使用随天气时间和种子变化的屏幕空间位移模拟热浪；这不是物理折射。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("屏幕空间位移模拟热浪，不是物理折射");
         SliderFloat("闪电频率", ref environment.WeatherLightningFrequency, 0F, 4F, "%.2f");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("闪电需要雷暴强度大于零；雷暴亮度目前为画面近似效果。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("需要雷暴强度大于零，亮度为画面近似");
     }
 
     private static void DrawSkyAndGround(SceneEnvironmentSettings environment)
@@ -112,47 +111,47 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.SeparatorText("基础");
         DrawColorSlider("雾颜色", ref environment.FogColor);
-        Tip("雾的内散射基色，按 sRGB 显示值保存，与天空色由“天空混合”加权。");
+        Tip("雾的内散射基色，与天空色按天空混合加权");
         SliderFloat("雾浓度", ref environment.FogDensity, 0F, .05F, "%.4f");
-        Tip("消光系数 σt（每格）。0 关闭雾；实时渲染与路径追踪共用同一密度。");
+        Tip("消光系数，每格；0 关闭雾");
         SliderFloat("雾起始距离", ref environment.FogStart, 0F, 100000F, "%.0f 格");
-        Tip("从相机起算的雾起始距离，近处保持清晰；路径追踪中只作用于主射线段。");
+        Tip("从相机起算的雾起始距离");
         SliderFloat("天空混合", ref environment.FogSkyBlend, 0F, 1F, "%.2f");
-        Tip("0 完全用天空色作雾色，1 完全用上方雾颜色。");
+        Tip("0 用天空色作雾色，1 用上方雾颜色");
         SliderFloat("最大不透明度", ref environment.FogMaxOpacity, 0F, 1F, "%.2f");
-        Tip("雾的最大遮蔽量，保留一部分远景轮廓。");
+        Tip("雾的最大遮蔽量");
         SliderFloat("内散射亮度", ref environment.FogInscatterStrength, 0F, 4F, "%.2f");
-        Tip("雾被环境光照亮的亮度倍率；不改变雾对表面颜色的消光。");
+        Tip("雾被环境光照亮的倍率，不改变消光");
 
         ImGui.SeparatorText("高度与分布");
         SliderFloat("雾层基准高度", ref environment.FogHeight, -512F, 1024F, "%.1f 格");
-        Tip("世界 Y 高度，此处密度等于雾浓度；抬高雾层可只覆盖低洼区域。");
+        Tip("世界 Y 高度，此处密度等于雾浓度");
         SliderFloat("高度衰减", ref environment.FogHeightFalloff, 0F, .2F, "%.4f");
-        Tip("密度按 exp(-b·(y-基准高度)) 衰减，0 为均匀雾；沿视线做解析积分，不增加采样开销。");
+        Tip("沿高度方向的密度衰减，0 为均匀雾");
         SliderFloat("体积计算距离", ref environment.FogViewDistance, 0F, 8192F, "%.0f 格");
-        Tip("0 表示跟随命中距离；非零时限制体积雾积分范围与天空雾的等效距离。");
+        Tip("0 表示跟随命中距离，非零时限制体积雾积分范围");
         SliderFloat("密度起伏", ref environment.FogNoiseStrength, 0F, 1F, "%.2f");
-        Tip("三维值噪声对密度的扰动幅度，营造不均匀雾团；解析积分与体积步进均生效。");
+        Tip("三维噪声对密度的扰动幅度");
         SliderFloat("噪声频率", ref environment.FogNoiseScale, .001F, .5F, "%.3f");
-        Tip("噪声的空间频率，数值越小雾团越大。");
+        Tip("噪声空间频率，越小雾团越大");
         SliderFloat("噪声漂移", ref environment.FogNoiseSpeed, 0F, 4F, "%.2f");
-        Tip("随风强度、风向与时间流动的速度；0 为静止雾。");
+        Tip("噪声随风与时间流动的速度，0 为静止");
 
         ImGui.SeparatorText("散射与光照");
         SliderFloat("各向异性 g", ref environment.FogAnisotropy, -.95F, .95F, "%.2f");
-        Tip("Henyey–Greenstein 相函数；正值越大，朝向太阳的前向散射光晕越集中。");
+        Tip("相函数，正值越大前向散射光晕越集中");
         SliderFloat("单次散射反照率", ref environment.FogAlbedo, 0F, 1F, "%.2f");
-        Tip("1 为纯散射雾（明亮），0 为纯吸收雾（灰暗）。");
+        Tip("1 为纯散射雾，0 为纯吸收雾");
         SliderFloat("太阳内散射", ref environment.FogSunScatterStrength, 0F, 4F, "%.2f");
-        Tip("太阳在雾中形成的光晕强度；路径追踪的散射点会被几何遮挡，形成体积光柱。");
+        Tip("太阳在雾中形成的光晕强度");
         DrawColorSlider("太阳内散射色", ref environment.FogSunScatterColor);
-        Tip("叠加在太阳颜色上的色比，可用来做暖色晨雾或冷色月雾。");
+        Tip("叠加在太阳颜色上的色比");
         SliderFloat("天空雾强度", ref environment.FogSkyFogStrength, 0F, 1F, "%.2f");
-        Tip("天空与背景融入雾色的比例，控制远景地平线衔接；高度雾天然让天顶更清。");
+        Tip("天空与背景融入雾色的比例");
 
         ImGui.SeparatorText("体积质量");
         SliderInt("体积采样步数（实时）", ref environment.FogVolumetricSteps, 0, 64);
-        Tip("0 使用零噪声的解析高度雾积分；大于 0 时沿视线抖动步进并逐点查询太阳阴影，产生体积光柱，步数越高开销越大。路径追踪不使用此值，始终按参与介质逐段采样。");
+        Tip("0 使用解析高度雾；大于 0 时抖动步进并查询太阳阴影，步数越高开销越大");
     }
 
     private static void DrawEnvironmentWater(SceneEnvironmentSettings environment)
@@ -160,7 +159,7 @@ internal sealed partial class ImGuiEditorWindow
         if (!ImGui.CollapsingHeader("水面", ImGuiTreeNodeFlags.DefaultOpen)) return;
         if (ImGui.Checkbox("显示水面", ref environment.ShowWater) && environment.ShowWater)
             environment.WaterAnimationEnabled = true;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面；波浪改变表面法线，不改变轮廓或产生透明折射");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("无限水平水面，波浪只改表面法线");
         SliderFloat("水面高度", ref environment.WaterHeight, -100000F, 100000F, "%.1f 格");
         DrawColorSlider("水面颜色", ref environment.WaterColor);
         SliderFloat("波浪大小", ref environment.WaterWaveSize, 0F, 4F, "%.2f");

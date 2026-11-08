@@ -1486,7 +1486,7 @@ internal sealed partial class ImGuiEditorWindow
             _sceneSliceKeepGreater = keepGreater;
             _sceneSliceWorld = null;
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("保留坐标大于或等于切面位置的一侧。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("保留坐标大于或等于切面位置的一侧");
 
         var minimum = _sceneSliceAxis switch { 0 => min.X, 1 => min.Y, _ => min.Z };
         var maximum = _sceneSliceAxis switch { 0 => max.X, 1 => max.Y, _ => max.Z };
@@ -2068,6 +2068,15 @@ internal sealed partial class ImGuiEditorWindow
                 ? BuildModelLodView(settings.SceneLod, camera, sceneWorld)
                 : null;
             worldMs = coreWatch.Elapsed.TotalMilliseconds;
+            //导航期间冻结内部体素判定，停下并稳定后最多切换一次，
+            //避免相机在实体格边缘来回扫动时整份重建工作集与加速结构
+            UpdateSceneInteriorStability(camera);
+            //相机每动一帧就要整帧重新求交着色，抗锯齿多采样会把单帧代价按采样数成倍放大；
+            //导航期间只压到单采样，分辨率、光照与材质效果全部保留，停下后立即恢复项目设定
+            if (_sceneNavigationActive && settings.RealtimeAntiAliasingSamples > 1)
+            {
+                settings = settings.CreateSceneNavigationPreview();
+            }
             if (dragInstance)
             {
                 var dragObjectWorld = _sceneSliceEnabled
@@ -2077,7 +2086,11 @@ internal sealed partial class ImGuiEditorWindow
                 pipeline.SyncWorldDragPreview(GetSceneInspectionWorld(_dragInstanceStaticWorld!), dragObjectWorld,
                     _sceneGizmoGridDragCells, 0, settings.SceneLod,
                     new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                    greedyMerge: false, includeInterior: IsCameraInsideOccupiedVoxel(camera));
+                    greedyMerge: false, includeInterior: IncludeInteriorVoxels,
+                    //旋转预览的档内残差交给实例变换，逐帧只更新 TLAS，不重建体素几何
+                    rotation: _sceneGizmoGridDragRotation, pivot: _sceneGizmoGridDragPivot,
+                    //选中对象时已在空闲帧把静态世界工作集建好；内部体素变体参数不同，不能复用
+                    staticPrepared: IncludeInteriorVoxels ? null : _dragInstanceStaticPrepared);
             }
             else
             {
@@ -2088,7 +2101,7 @@ internal sealed partial class ImGuiEditorWindow
                         0, settings.SceneLod,
                         new System.Numerics.Vector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
                         greedyMerge: false,
-                        includeInterior: IsCameraInsideOccupiedVoxel(camera),
+                        includeInterior: IncludeInteriorVoxels,
                         chunkFilter: sceneChunkFilter,
                         visibilitySignature: sceneVisibilitySignature,
                         modelLod: sceneModelLod);
@@ -2347,8 +2360,10 @@ internal sealed partial class ImGuiEditorWindow
             // 相机、场景或配置改变时仍会重绘。
             if (!effective.PathTracingEnabled)
             {
-                // 环绕/平移相机时保持 AO、光照和后处理完整；仅编辑渲染控件时才启用轻量预览。
-                var realtimeSettings = settingsInteracting ? previewSettings.CreateInteractionPreview() : previewSettings;
+                // 环绕/平移相机时保持 AO、光照和后处理完整；仅编辑渲染控件时才启用轻量预览
+                var realtimeSettings = settingsInteracting
+                    ? previewSettings.CreateInteractionPreview()
+                    : cameraNavigating ? previewSettings.CreateNavigationPreview() : previewSettings;
                 var realtimeFrame = BuildFrameState(camera, frameSize, scale, width, height,
                     pathMode: false, outlines: false);
                 var submitsBefore = pipeline.SubmitCount;
@@ -3185,7 +3200,7 @@ internal sealed partial class ImGuiEditorWindow
         var useVoxelOpacity = material.Opacity is null;
         if (ImGui.Checkbox("不透明度跟随体素 Alpha", ref useVoxelOpacity))
             material.Opacity = useVoxelOpacity ? null : 0.25F;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅作用于半透明体素。跟随时使用体素颜色的 Alpha；0 更清澈，1 吸收更强。需要保存材质后生效。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("跟随体素 Alpha，0 更清澈、1 吸收更强；需保存材质生效");
         if (!useVoxelOpacity)
         {
             var opacity = material.Opacity ?? 0.25F;
@@ -3193,15 +3208,15 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.SliderFloat("不透明度##mat", ref opacity, 0F, 1F, "%.2f")) material.Opacity = opacity;
         }
         DrawFollowableSlider("体积散射", "体积散射##mat", 0F, 1F, material.VolumeScattering, value => material.VolumeScattering = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制介质内部的雾状亮度。清澈玻璃通常接近 0；更大的值适合浑浊液体。默认 0.15。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("介质内部雾状亮度，默认 0.15；清澈玻璃接近 0");
         DrawFollowableSlider("雾化密度", "雾化密度##mat", 0F, 8F, material.HazeDensity, value => material.HazeDensity = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("与颜色吸收独立的额外消光：0 无额外雾化，数值越大越浓；受不透明度和介质厚度影响。默认 0。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("额外消光，0 无雾化，数值越大越浓，默认 0");
         var scatterBase = material.ScatteringColor ?? new Rgba32(255, 255, 255);
         var scatterColor = new System.Numerics.Vector3(scatterBase.R / 255F, scatterBase.G / 255F, scatterBase.B / 255F);
         var followScatter = material.ScatteringColor is null;
         if (ImGui.Checkbox("散射色跟随体素基础色", ref followScatter))
             material.ScatteringColor = followScatter ? null : scatterBase;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("设置雾体受光后的颜色；需增加体积散射和雾化密度才能看出明显效果。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("雾体受光后的颜色，需配合体积散射与雾化密度才明显");
         if (!followScatter && ImGui.ColorEdit3("散射色", ref scatterColor))
             material.ScatteringColor = new Rgba32(
                 (byte)Math.Round(Math.Clamp(scatterColor.X, 0F, 1F) * 255F),
@@ -3210,10 +3225,10 @@ internal sealed partial class ImGuiEditorWindow
         DrawFollowableSlider("吸收步长", "吸收步长##mat", 0F, 8F, material.AbsorptionStep, value => material.AbsorptionStep = value);
         DrawFollowableSlider("折射率", "折射率##mat", 1F, 2.5F, material.Ior, value => material.Ior = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("1 表示不偏折；水约 1.33，玻璃约 1.5，钻石约 2.4。\n未设置时不偏折。");
+            ImGui.SetTooltip("1 表示不偏折；水约 1.33，玻璃约 1.5，钻石约 2.4");
         DrawFollowableSlider("镜面强度", "镜面强度##mat", 0F, 1F, material.Specular, value => material.Specular = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("菲涅尔 F0 倍率。0 完全无高光（哑光），1 为标准值，金属反射色不受影响。");
+            ImGui.SetTooltip("菲涅尔 F0 倍率，0 为哑光，1 为标准值");
 
         var absorption = material.AbsorptionColor ?? new Rgba32(0, 0, 0);
         var absorptionColor = new System.Numerics.Vector3(absorption.R / 255F, absorption.G / 255F, absorption.B / 255F);
@@ -3746,8 +3761,7 @@ internal sealed partial class ImGuiEditorWindow
         Toggle("自动性能优化", ref _settingsToggleAutoPerformance,
             value => settings.AutoPerformanceScaling = value);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("仅限制大型场景视口内的实时 AO 与阴影采样（超过 70 万格关闭实时 AO）；" +
-                "不降低场景窗口或渲染窗口的分辨率，也不影响导出质量。");
+            ImGui.SetTooltip("仅限制大型场景视口的实时 AO 与阴影采样，不降低分辨率或导出质量");
 
         DrawRenderSettingsAccordion("lighting", "光照与阴影", () => DrawLightingSection(settings));
         DrawRenderSettingsAccordion("palette", "基础色与色相", () => DrawPaletteSection(settings));
@@ -3755,7 +3769,9 @@ internal sealed partial class ImGuiEditorWindow
         DrawRenderSettingsAccordion("path", "路径追踪", () => DrawPathTraceSection(settings));
         DrawRenderSettingsAccordion("material", "全局材质", () => DrawGlobalMaterialSection(settings));
         DrawRenderSettingsAccordion("camera", "相机", () => DrawCameraSection(settings));
-        DrawRenderSettingsAccordion("lod", "距离 LOD", () => DrawLodSection(settings));
+        DrawRenderSettingsAccordion("lod", "距离 LOD", () => DrawLodSection(
+            (_project is null ? _editorSettings.SceneRenderSettings : _projectSettings.SceneRenderSettings).SceneLod,
+            settings.RenderLod));
         // 所有分组绘制完才清空定位请求，保证“独占展开”对同一次绘制里的每个分组都生效
         _requestedRenderSettingsSection = null;
         SaveEditableRenderSettings(settings, before);
@@ -3819,7 +3835,7 @@ internal sealed partial class ImGuiEditorWindow
             _settingsToggleSun = settings.SunEnabled;
         ImGui.Checkbox("强制使用 Compute 路径", ref settings.ForceComputePath);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("忽略显卡的硬件光追能力，强制走 Compute 计算路径。RDNA2 等支持 ray query 但实际更慢的显卡可据此对比；切换后需重建渲染设备或重启编辑器生效。");
+            ImGui.SetTooltip("忽略硬件光追，强制走 Compute 路径；切换后需重建渲染设备");
         SliderFloat("方位角##sun", ref settings.SunAzimuthDegrees, 0F, 360F, "%.0f°");
         SliderFloat("仰角##sun", ref settings.SunElevationDegrees, 2F, 90F, "%.0f°");
         SliderFloat("强度##sun", ref settings.SunIntensity, 0F, 6F, "%.2f");
@@ -3830,41 +3846,41 @@ internal sealed partial class ImGuiEditorWindow
             settings.SunShadowMethod = (SunShadowMethod)sunMethod;
         if (ImGui.IsItemHovered())
         {
-            string description = "实时与路径追踪共用。渐进采样静止后累积，移动时可能有噪点；半影重建使用独立遮挡与几何导引；PCSS 使用缓存太阳深度图，细节受贴图精度限制。";
+            string description = "实时与路径追踪共用；PCSS 使用缓存太阳深度图，细节受贴图精度限制";
             if (ReferenceEquals(settings, _renderSettings) && _pipeline?.SunShadowFallbackReason is { Length: > 0 } reason)
                 description += "\n" + reason;
             ImGui.SetTooltip(description);
         }
         SliderInt("太阳阴影质量##sun", ref settings.ShadowSamples, 1, 8);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("控制太阳采样或 PCSS 搜索和过滤数量。提高档位通常改善细节，同时增加 GPU 开销；重建和贴图仍受导引与精度限制。");
+            ImGui.SetTooltip("太阳采样或 PCSS 搜索过滤数量，越高越细，GPU 开销也越大");
         if (settings.SunShadowMethod == SunShadowMethod.Progressive)
         {
             SliderInt("实时太阳累积帧数", ref settings.SunAccumulationFrames, 1, 512);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("仅控制实时视口的静止收敛；相机、场景和设置变化后重新累积。路径追踪使用其累积样本上限。动画持续变化时不能完成静止收敛。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("实时视口静止收敛的累积帧数，相机与场景变化后重新累积");
         }
         if (settings.SunShadowMethod == SunShadowMethod.ShadowMap)
         {
             int resolution = settings.SunShadowMapResolution <= 512 ? 0 : settings.SunShadowMapResolution <= 1024 ? 1 : 2;
             if (ImGui.Combo("太阳阴影贴图精度", ref resolution, "512\01024\02048\0"))
                 settings.SunShadowMapResolution = 512 << resolution;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只调整太阳深度图，不改变视口或模型精度。太阳与几何变化时重建；相机移动复用缓存。覆盖边缘回退射线查询，细小遮挡可能需要提高精度。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只调整太阳深度图精度，不改变视口或模型精度");
         }
         if (ImGui.CollapsingHeader("环境柔光"))
         {
             ImGui.Checkbox("启用环境柔光", ref settings.SoftFillEnabled);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("对应 MagicaVoxel Render 面板的 Area 灯。一块跟随相机朝向的大面积柔光板，用来照亮只有开口采光的室内中段；灯笼仍负责局部高光。");
+                ImGui.SetTooltip("对应 MagicaVoxel Area 灯的相机朝向柔光板，用来照亮室内中段");
             SliderFloat("柔光强度", ref settings.SoftFillIntensity, 0F, 32F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("补光板的辐射强度，数值越大室内越亮；MagicaVoxel 参考画面里的 Area 是 7。");
+                ImGui.SetTooltip("补光板辐射强度，MagicaVoxel 参考值为 7");
             DrawColorSlider("柔光颜色", ref settings.SoftFillColor);
             SliderFloat("柔光板尺寸", ref settings.SoftFillSize, 0.1F, 3F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("补光板半边长相对场景包围盒的倍率，越大阴影越柔、越接近整体环境光。");
+                ImGui.SetTooltip("半边长相对场景包围盒的倍率，越大阴影越柔");
             SliderFloat("柔光板距离", ref settings.SoftFillDistance, 0.1F, 4F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("补光板到相机的距离相对场景包围盒的倍率，越大越像远距离柔光。");
+                ImGui.SetTooltip("到相机的距离相对包围盒的倍率，越大越像远距离柔光");
         }
         if (ImGui.CollapsingHeader("接触阴影 AO"))
         {
@@ -3874,17 +3890,17 @@ internal sealed partial class ImGuiEditorWindow
             SliderFloat("AO 对比", ref settings.AoPower, 0.3F, 3F, "%.2f");
             SliderInt("AO 邻域精度", ref settings.AoSamples, 4, 64);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("实时通道用解析邻域占用查询算遮蔽，不发射 AO 射线，因此任何档位都没有噪点。数值较高时多取一层邻域，接触阴影范围更宽、开销略增。");
+                ImGui.SetTooltip("解析邻域遮蔽查询，任何档位都无噪点；档位越高范围越宽");
             SliderFloat("体素间接光强度", ref settings.VoxelIndirectLightStrength, 0F, 4F, "%.2f");
             SliderInt("体素间接光精度", ref settings.VoxelIndirectLightSamples, 1, 32);
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("实时通道的邻域一次反弹精度档位，不再表示随机方向数，调高不会引入噪点；两项精度共用同一组确定性点查询。");
+                ImGui.SetTooltip("邻域一次反弹精度档位，调高不会引入噪点");
             SliderFloat("探针体积GI强度", ref settings.ProbeVolumeGiStrength, 0F, 4F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("烘焙探针的三线性辐照度补光权重，按表面位置取样、零射线零噪点；依赖探针体积窗口里烘焙出的数据。");
+                ImGui.SetTooltip("烘焙探针的三线性辐照度补光权重，依赖探针体积烘焙数据");
             SliderFloat("实时历史平滑", ref settings.RealtimeTemporalWeight, 0F, 0.98F, "%.2f");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("实时光照已是确定性解析估计，静止画面逐帧一致，默认 0 即不读写历史图。保留供后续时间抗锯齿使用；相机或设置变化时历史自动作废。");
+                ImGui.SetTooltip("实时光照为确定性估计，默认 0 不读写历史；保留给时间抗锯齿");
         }
 
     }
@@ -3893,7 +3909,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         ImGui.SeparatorText("基础色与色相");
         Toggle("调色盘着色", ref _settingsTogglePalette, value => settings.PaletteShading = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色盘，不使用贴图");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素使用纯色，基础色来自当前调色盘");
         SliderFloat("饱和度", ref settings.Saturation, 0F, 2.5F, "%.2f");
         SliderFloat("色相偏移", ref settings.HueShiftDegrees, 0F, 360F, "%.0f°");
         SliderFloat("对比度", ref settings.ColorContrast, 0.3F, 2.5F, "%.2f");
@@ -3917,11 +3933,11 @@ internal sealed partial class ImGuiEditorWindow
 
         SliderInt("半径（1=单格）", ref _brushRadius, 1, 8);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip($"当前笔刷包围尺寸：{_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} 格；轮廓只标出中心格。球形笔刷位于此范围内。");
+            ImGui.SetTooltip($"当前笔刷包围尺寸：{_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} × {_brushRadius * 2 - 1} 格；轮廓只标出中心格");
         if (_activeTool == EditorTool.Box)
         {
             ImGui.Checkbox("空心长方体", ref _hollowBox);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只绘制边界，适合建造外壳；厚度为一格。两端落在同一平面时结果仍是平面。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("只绘制边界，厚度为一格");
         }
         if (ImGui.Checkbox("自发光笔刷（提灯）", ref _brushEmissive))
         {
@@ -3944,7 +3960,7 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("白平衡色温（K）", ref settings.WhiteBalance, 2000F, 12000F, "%.0f K");
         SliderFloat("暗角", ref settings.Vignette, 0F, 1F, "%.2f");
         Toggle("输出抖动（消除色带）", ref _settingsToggleDither, value => settings.Dither = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("体素颜色按 sRGB 存储，渲染计算在线性空间进行");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("用输出抖动打散色阶，消除渐变中的色带");
     }
 
     private void DrawPathTraceSection(RenderSettings settings)
@@ -3958,16 +3974,16 @@ internal sealed partial class ImGuiEditorWindow
         SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192, "%d spp");
         SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f×");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("仅在你主动调整时改变路径追踪视口分辨率；1.00× 为完整窗口分辨率。相机交互和大型场景优化不会自动降低分辨率。");
+            ImGui.SetTooltip("路径追踪视口分辨率倍率，1.00× 为完整窗口分辨率");
         SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
         SliderFloat("光线终止阈值（RR）", ref settings.RussianRouletteThreshold, 0.0005F, 0.05F, "%.4f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("路径权重低于此值（约 1/255，低于输出 LSB）时提前终止并做无偏存活判定。");
+            ImGui.SetTooltip("路径权重低于此值时提前终止，并做无偏存活判定");
         SliderFloat("辐射度截断（消防萤火虫）", ref settings.RadianceClamp, 1F, 200F, "%.1f");
         Toggle("快速降噪（渲染视图）", ref _settingsTogglePathDenoise, value => settings.PathDenoising = value);
         SliderFloat("降噪强度", ref settings.PathDenoiseStrength, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("在呈现通道对累积结果做保边缘邻域滤波，不增加路径追踪样本，导出画面也会使用该设置。");
+            ImGui.SetTooltip("保边缘邻域滤波，不增加路径样本，导出画面也使用");
     }
 
     private void DrawGlobalMaterialSection(RenderSettings settings)
@@ -3979,46 +3995,46 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
         ImGui.Checkbox("薄板玻璃近似", ref settings.ThinGlassApproximation);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射。\n体素化的圆柱壳、球壳每一格台阶都有独立法线，逐格折射会把台阶放大成规则棱镜条纹，而真实的窗玻璃和灯罩玻璃是薄板，本身不该聚焦成像。关闭后恢复逐格折射。");
+            ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，避免体素化薄壳产生棱镜条纹");
         SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值就按薄板处理；0 表示关闭判定，所有透明介质仍按体折射处理。厚水体、厚冰块超过阈值后仍保留真实折射。");
+            ImGui.SetTooltip("沿入射方向穿过的同种介质不超过此长度就按薄板处理，0 表示关闭判定");
         ImGui.SeparatorText("玻璃反射与透射阴影");
         ImGui.Checkbox("玻璃反射追踪场景", ref settings.GlassSceneReflection);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("开启后玻璃界面反射真实场景（棋盘、家具等），未命中才回退天空；关闭后沿用只反射天空的旧行为，收敛更省但室内观感偏亮。");
+            ImGui.SetTooltip("玻璃反射真实场景，未命中时回退天空");
         SliderFloat("玻璃太阳高光强度", ref settings.GlassGlintIntensity, 0F, 24F, "%.1f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("玻璃界面反射太阳时的强度倍率，默认 6 与旧版一致；调低可消除边缘的强白亮带。");
+            ImGui.SetTooltip("玻璃界面反射太阳的强度倍率，默认 6");
         ImGui.Checkbox("透射阴影染色", ref settings.GlassTransmissionShadow);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("太阳光穿过半透明体素时按 Beer 吸收累积颜色，有色玻璃会得到带色阴影；每段阴影最多额外追踪 8 次，关闭可换取采样性能。");
+            ImGui.SetTooltip("太阳穿过半透明体素时按 Beer 吸收累积颜色，得到带色阴影");
         SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("0 等于玻璃完全透光不挡光，1 按实际透射率衰减；中间值用于软化玻璃产生的高对比阴影。");
+            ImGui.SetTooltip("0 完全透光，1 按实际透射率衰减");
         SliderInt("玻璃反射分段数", ref settings.GlassReflectionBounces, 1, 3, "%d 段");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("1 只反射一次；2 以上允许反射到金属表面后继续反射，室内镜面与玻璃会互相映照，代价是更多求交。");
+            ImGui.SetTooltip("1 只反射一次，2 段以上可继续反射到金属面");
         ImGui.Checkbox("反射包含发光体", ref settings.GlassReflectionEmissive);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("开启后玻璃反射到灯面会直接带上灯光颜色；关闭按天空近似，室内灯影更干净但少了灯的倒影。");
+            ImGui.SetTooltip("玻璃反射到灯面时带上灯光颜色，关闭则按天空近似");
         SliderFloat("反射环境光权重", ref settings.GlassReflectionAmbient, 0F, 2F, "%.2f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("反射点环境光强度，默认 0.5；调低让玻璃反射更暗、对比更强，室内观感更接近 MagicaVoxel。");
+            ImGui.SetTooltip("反射点环境光强度，默认 0.5；调低让反射更暗");
         SliderFloat("反射遮挡权重", ref settings.GlassReflectionOcclusion, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("按反射点半球方向的遮挡比例压暗环境光：室内被墙挡住的部分更暗，玻璃边缘不会一片高亮。");
+            ImGui.SetTooltip("按半球遮挡比例压暗反射点的环境光");
         ImGui.Checkbox("拖动视角时降低采样", ref settings.NavigationSamplingRelief);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("转视角时临时降低阴影与反射的射线数量，光照、阴影、反射和分辨率保持不变，松手立即恢复完整质量。");
+            ImGui.SetTooltip("转视角时临时降低阴影、反射射线与抗锯齿采样，光照和分辨率不变，松手恢复完整质量");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("主动采样暴露发光面并与反弹命中做 MIS；关闭可比较采样收敛。仅用于路径追踪，不改变实时模式。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("主动采样暴露的发光面，并与反弹命中做 MIS 合并");
         ImGui.Checkbox("光源树重要性采样", ref settings.EmissiveLightTree);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时按光源功率与接收点距离采样；关闭可与均匀采样比较。少量发光面仍使用均匀采样。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时按光源功率与距离采样");
         Toggle("太阳直接光采样", ref _settingsToggleMis, value => settings.SunDirectLighting = value);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪是否直接采样太阳；本地光源与自发光体素不受影响");
     }
 
     private void DrawCameraSection(RenderSettings settings)
@@ -4034,12 +4050,13 @@ internal sealed partial class ImGuiEditorWindow
     /// 绘制模型级 LOD 配置区：场景窗口与渲染窗口各一份，默认关闭，
     /// 可调整级数、每级生效距离与是否把代表体素预烘焙进来源文件
     /// </summary>
-    /// <param name="settings">目标渲染设置</param>
-    private void DrawLodSection(RenderSettings settings)
+    /// <param name="sceneLod">场景窗口的 LOD 配置，取自场景渲染设置</param>
+    /// <param name="renderLod">渲染窗口的 LOD 配置，取自渲染窗口设置</param>
+    private void DrawLodSection(VoxelLodSettings sceneLod, VoxelLodSettings renderLod)
     {
         ImGui.TextDisabled("按模型对象独立分档，同一模型的所有区块使用同一级。");
-        DrawLodGroup("场景窗口", settings.SceneLod);
-        DrawLodGroup("渲染窗口", settings.RenderLod);
+        DrawLodGroup("场景窗口", sceneLod);
+        DrawLodGroup("渲染窗口", renderLod);
         SyncAutoBakeLod();
     }
 
@@ -4055,7 +4072,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("按每个模型对象到相机的距离分档简化体素；同一模型的所有区块整体切换级数。");
+            ImGui.SetTooltip("按每个模型到相机的距离分档简化体素，同一模型整体切换级数");
 
         if (!enabled)
         {
@@ -4070,7 +4087,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("第 0 级为完整细节，第 k 级把模型按 2^k 网格折叠成一个代表体素。");
+            ImGui.SetTooltip("第 0 级为完整细节，第 k 级按 2^k 网格折叠成代表体素");
 
         for (var index = 0; index < Math.Max(lod.LevelCount - 1, 0); index++)
         {
@@ -4095,9 +4112,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("勾选后把各级代表体素烘焙进体素数据来源文件：场景内嵌数据写入场景文件，" +
-                             "独立模型资产写入资产文件，预制体内嵌数据写入预制体文件。保存时生成，" +
-                             "体积随级数与模型数量增加；关闭时只在渲染时即时粗化，不改动文件。");
+            ImGui.SetTooltip("勾选后把代表体素烘焙进体素数据来源文件，保存时生成；关闭时只在渲染时即时粗化");
     }
 
     private static void SliderFloat(string label, ref float value, float minimum, float maximum, string format)

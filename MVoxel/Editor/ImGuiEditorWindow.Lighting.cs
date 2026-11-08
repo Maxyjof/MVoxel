@@ -91,8 +91,6 @@ internal sealed partial class ImGuiEditorWindow
         if (data.Shape == LightShape.Area)
         {
             ImGui.TextDisabled("面积灯始终投射遮挡射线");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("矩形发光面的每个采样点都要做可见性测试，关掉阴影会让整块灯板穿墙漏光，因此面积灯不提供关闭开关。");
         }
         else
         {

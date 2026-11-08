@@ -3894,6 +3894,7 @@ CIMGUI_API bool igTabItemButton(const char* label,ImGuiTabItemFlags flags);
 CIMGUI_API void igSetTabItemClosed(const char* tab_or_docked_window_label);
 CIMGUI_API ImGuiID igDockSpace(ImGuiID dockspace_id,const ImVec2 size,ImGuiDockNodeFlags flags,const ImGuiWindowClass* window_class);
 CIMGUI_API ImGuiID igDockSpaceOverViewport(ImGuiID dockspace_id,const ImGuiViewport* viewport,ImGuiDockNodeFlags flags,const ImGuiWindowClass* window_class);
+CIMGUI_API void igMvoxelSetTitleBarDragExcludeRight(float width);
 CIMGUI_API void igSetNextWindowDockID(ImGuiID dock_id,ImGuiCond cond);
 CIMGUI_API void igSetNextWindowClass(const ImGuiWindowClass* window_class);
 CIMGUI_API ImGuiID igGetWindowDockID(void);

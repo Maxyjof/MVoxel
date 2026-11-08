@@ -613,6 +613,51 @@ public static class PluginManager
     }
 
     /// <summary>
+    /// 删除用户安装的插件目录并把它从当前项目清单移除。内置插件、越界目录、
+    /// 与 ID 不一致的目录一律拒绝；安装时留下的暂存/备份目录一并清掉。
+    /// </summary>
+    /// <param name="pluginId">插件 ID</param>
+    /// <param name="project">当前项目，可为 null</param>
+    /// <returns>被删除的插件目录绝对路径</returns>
+    public static string Uninstall(string pluginId, ProjectHandle? project = null)
+    {
+        if (!IsValidPluginId(pluginId)) throw new InvalidDataException("插件 ID 无效");
+        if (pluginId is MvoxMcpPluginId or LuaSamplePluginId)
+            throw new InvalidOperationException("内置插件不能删除，只能在项目里停用");
+        var package = ListInstalled().FirstOrDefault(item => string.Equals(item.Id, pluginId, StringComparison.Ordinal))
+            ?? throw new FileNotFoundException("找不到要删除的插件", pluginId);
+        if (!string.Equals(package.Source, "installed", StringComparison.Ordinal))
+            throw new InvalidOperationException("内置插件不能删除");
+        var root = Path.GetFullPath(AppPaths.PluginDirectory);
+        var directory = Path.GetFullPath(package.RootDirectory);
+        if (!string.Equals(directory, Path.Combine(root, pluginId), StringComparison.OrdinalIgnoreCase) ||
+            !directory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("插件目录不在编辑器插件目录内或与 ID 不一致，拒绝删除");
+
+        if (project is not null)
+        {
+            var enabled = ReadEnabled(project, strict: false)
+                .Where(id => !string.Equals(id, pluginId, StringComparison.Ordinal))
+                .ToHashSet(StringComparer.Ordinal);
+            WritePluginState(project, enabled, ListInstalled().ToDictionary(item => item.Id, StringComparer.Ordinal));
+        }
+
+        Directory.Delete(directory, recursive: true);
+        foreach (var leftover in Directory.EnumerateDirectories(root, pluginId + ".*")
+                     .Where(path => IsInstallWorkDirectory(Path.GetFileName(path))))
+        {
+            try { Directory.Delete(leftover, recursive: true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MVoxelLog.Warn($"插件残留目录清理失败：{leftover}，原因：{exception.Message}");
+            }
+        }
+
+        MVoxelLog.Info($"已删除插件：{pluginId}（{directory}）");
+        return directory;
+    }
+
+    /// <summary>
     /// 验证插件脚本入口名称
     /// </summary>
     /// <param name="packageInfo">插件清单</param>
@@ -729,6 +774,15 @@ public static class PluginManager
                 throw new InvalidOperationException($"插件仍被已启用插件依赖：{dependent.Id}");
             current.Remove(pluginId);
         }
+        WritePluginState(project, current, installed);
+    }
+
+    /// <summary>
+    /// 写入项目插件清单与锁文件。卸载插件时用它强制移除记录，绕过依赖检查。
+    /// </summary>
+    private static void WritePluginState(ProjectHandle project, ISet<string> current,
+        IReadOnlyDictionary<string, EditorPluginPackage> installed)
+    {
         var manifest = new PluginManifest { Enabled = current.Order(StringComparer.Ordinal).ToList() };
         AtomicFile.WriteText(Path.Combine(project.PluginsPath, "manifest.json"),
             JsonSerializer.Serialize(manifest, JsonOptions));

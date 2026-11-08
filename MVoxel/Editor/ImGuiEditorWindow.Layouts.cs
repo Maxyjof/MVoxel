@@ -89,6 +89,26 @@ internal sealed partial class ImGuiEditorWindow
         }
     }
 
+    /// <summary>
+    /// 在 ImGui 帧外应用排队的布局 ini。加载 ini 会清空并重建整个 DockContext，
+    /// 若放在新帧开始之后执行，本帧已提交的窗口会失去停靠节点而全部变成浮动窗口。
+    /// 调用点在上一帧 Render 之后、下一帧 NewFrame 之前。
+    /// </summary>
+    private void ApplyPendingDockLayout()
+    {
+        if (_pendingDockLayoutIni is not { } ini) return;
+        _pendingDockLayoutIni = null;
+        _resetDockLayoutRequested = false;
+        ImGui.LoadIniSettingsFromMemory(ini);
+        _applyPreset = _layoutPreset != LayoutPreset.Custom;
+        _focusModelingTools = _layoutPreset == LayoutPreset.Modeling;
+        if (_layoutPreset == LayoutPreset.Custom) return;
+        _requestedCenterTab = _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
+        _requestedInspectorTab = _layoutPreset == LayoutPreset.Modeling
+            ? null
+            : _layoutPreset == LayoutPreset.Rendering ? 1 : 0;
+    }
+
     private static string GetPresetDockLayout(LayoutPreset preset)
     {
         var (left, right, bottom) = preset switch
@@ -215,7 +235,6 @@ internal sealed partial class ImGuiEditorWindow
             _activeLayoutFile = path;
             _activeLayoutName = name ?? Path.GetFileName(path)[..^".layout.ini".Length];
             _layoutPreset = LayoutPreset.Custom;
-            _applyPreset = false;
             SaveLayoutSelection(_activeLayoutName);
             SetStatus($"布局已保存：{_activeLayoutName}");
         }
@@ -231,10 +250,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             var contents = File.ReadAllText(path);
             ValidateLayout(contents);
-            ImGui.LoadIniSettingsFromMemory(MigrateLayoutWindowNames(contents));
+            _pendingDockLayoutIni = MigrateLayoutWindowNames(contents);
             _layoutPreset = LayoutPreset.Custom;
-            _applyPreset = false;
-            _resetDockLayoutRequested = false;
+            _resetDockLayoutRequested = true;
             RestoreLayoutPanels(contents);
             _activeLayoutFile = path;
             _activeLayoutName = name;

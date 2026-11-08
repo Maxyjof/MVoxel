@@ -12,7 +12,6 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawThemeManager()
     {
         ImGui.TextUnformatted("主题管理");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("主题保存在本机编辑器配置；内置主题可修改或恢复，用户主题可复制和删除。");
         var name = _editorSettings.Theme;
         ImGui.SetNextItemWidth(Math.Max(120F, ImGui.GetContentRegionAvail().X * .5F));
         if (ImGui.BeginCombo("##管理主题选择", name))

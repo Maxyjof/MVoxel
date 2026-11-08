@@ -130,9 +130,6 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus(editing ? "已退出曲线编辑" : "已进入曲线编辑：拖动控制点改位置，拖动前后切线改角度，拖动朝向手柄改截面旋转");
         }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("编辑模式会在场景视图显示控制点、前后切线与朝向手柄；" +
-                             "退出后仍会显示曲线路径，但不会响应手柄拖动。");
         // 说明文字按可见宽度分行，避免把检查器撑出横向滚动条
         DrawInspectorHint("生成的体素保存在场景文件中，不进入绘制模式，只能通过编辑曲线间接修改。");
     }
@@ -174,8 +171,6 @@ internal sealed partial class ImGuiEditorWindow
                 SetStatus("已按相邻控制点重算自动切线，手动调整过的点不会被覆盖");
             }
 
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("只重算切线模式为“自动”的点；对齐、镜像与自由模式的点保持原样。");
             ImGui.SameLine();
         }
 
@@ -191,9 +186,6 @@ internal sealed partial class ImGuiEditorWindow
             state.GeometryChanged = true;
             SetStatus("已反转曲线方向");
         }
-
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("控制点顺序与前后切线一起反转，曲线形状不变，起点和终点互换。");
     }
 
     /// <summary>
@@ -245,8 +237,6 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("已在曲线末尾添加控制点");
         }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("新点接在最后一个点后面，方向沿用末端走向；已有控制点会自动重算自动切线。");
         ImGui.SameLine();
         if (ImGui.Button("在选中点后插入", new Vector2(third, 0F)) && _curvePointIndex >= 0 &&
             _curvePointIndex < state.Points.Count)
@@ -307,7 +297,7 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("拖动场景里的切线手柄时，自动模式会切换成自由模式，保留你的手动调整。");
+                ImGui.SetTooltip("拖动切线手柄时，自动模式会切换成自由模式");
             var linkingMode = point.TangentMode;
             var curve = state.Data with { Points = state.Points.ToArray() };
             CurveSpline.BasisAt(curve, index, out var up, out _);
@@ -455,7 +445,7 @@ internal sealed partial class ImGuiEditorWindow
             state.GeometryChanged = true;
         }
 
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("给生成体素加上自发光标记，和笔刷的发光开关效果一致。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("给生成体素加自发光标记");
         var materialSlot = (int)state.Data.MaterialSlot;
         if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
                 ushort.MaxValue))
@@ -519,9 +509,6 @@ internal sealed partial class ImGuiEditorWindow
             _pipeline?.ResetAccumulation();
             SetStatus("已清空曲线生成的体素；曲线本身保留，修改参数或点“重新生成体素”即可恢复");
         }
-
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("只删除隐藏的体素数据，曲线控制点仍然保留；点“重新生成体素”可以随时重建。");
     }
 
     /// <summary>

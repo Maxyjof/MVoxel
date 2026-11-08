@@ -3813,6 +3813,10 @@ namespace ImGui
     IMGUI_API void          DebugRenderKeyboardPreview(ImDrawList* draw_list);
     IMGUI_API void          DebugRenderViewportThumbnail(ImDrawList* draw_list, ImGuiViewportP* viewport, const ImRect& bb);
 
+    // [MVoxel] Width of the host-drawn button strip at the right end of a dock node title bar.
+    // Presses starting inside it are not treated as "drag title bar to move/undock the node".
+    IMGUI_API void          MvoxelSetTitleBarDragExcludeRight(float width);
+
     // Obsolete functions
 #ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     //inline void   SetItemUsingMouseWheel()                                            { SetItemKeyOwner(ImGuiKey_MouseWheelY); }      // Changed in 1.89

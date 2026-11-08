@@ -121,7 +121,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         var data = SceneComponentTypes.ReadSurfaceDeposit(component);
         var changed = ImGui.Checkbox("启用投射", ref data.Enabled);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制此投射组件；接收层可在下方选择。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制此投射组件是否生效");
         BeginInspectorField("接收图层", "仅对所选图层中可见的体素表面生效；解析地面仅在选择全部图层时接收投射。");
         var layerNames = _sceneDocument?.LayerNames ?? ["默认"];
         var layerLabel = data.ReceiverLayers == uint.MaxValue ? "全部图层" : data.ReceiverLayers == 0 ? "无图层" : "自定义图层";

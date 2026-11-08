@@ -114,28 +114,33 @@ internal sealed partial class ImGuiEditorWindow
         _timelineFrame = (int)_timelineWeatherFrame;
     }
 
+    /// <summary>关闭时间轴：有未保存修改时先弹确认，避免直接丢掉改动</summary>
+    private void CloseTimelineWindow()
+    {
+        if (TimelineIsDirty)
+        {
+            _timelineCloseConfirmation = true;
+            _showTimelineWindow = true;
+            return;
+        }
+
+        _timelineWeatherPlaying = false;
+        _showTimelineWindow = false;
+    }
+
     private void DrawTimelineWindow()
     {
         if (!_showTimelineWindow) return;
-        var open = _showTimelineWindow;
         if (_timelineCloseConfirmation)
         {
             //确认框在时间轴窗口内，关窗或退出时把它显式抬到前面，避免提示被其他面板挡住
             ImGui.SetNextWindowCollapsed(false, ImGuiCond.Always);
             ImGui.SetNextWindowFocus();
         }
-        if (!ImGui.Begin("时间轴##TimelineWindow", ref open, PanelWindowFlags))
+        if (!BeginToolWindow("时间轴##TimelineWindow", PanelWindowFlags, CloseTimelineWindow))
         {
             ImGui.End();
-            if (!open && TimelineIsDirty) { _timelineCloseConfirmation = true; _showTimelineWindow = true; }
-            else _showTimelineWindow = open;
             return;
-        }
-        if (!open)
-        {
-            _timelineWeatherPlaying = false;
-            if (TimelineIsDirty) { _timelineCloseConfirmation = true; _showTimelineWindow = true; }
-            else _showTimelineWindow = false;
         }
         if (_project is null)
         {
@@ -197,16 +202,13 @@ internal sealed partial class ImGuiEditorWindow
             _timelineWeatherFrame = _timelineFrame;
             _timelineWeatherPlaying = !_timelineWeatherPlaying;
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("以时间轴帧率预览天气和对象轨道；暂停或拖动播放头保持当前帧。");
         if (ImGui.SliderInt("播放头", ref _timelineFrame, 0, Math.Max(1, _timelineAsset.LengthFrames)))
             _timelineWeatherFrame = _timelineFrame;
         ImGui.SameLine();
         ImGui.TextDisabled($"{_timelineFrame / (float)Math.Max(1, _timelineAsset.FrameRate):0.00}s");
         if (ImGui.Button("保存时间轴")) SaveTimelineAsset();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("保存到当前时间轴资产；临时时间轴会先要求选择 Assets 内的保存位置。");
         ImGui.SameLine();
         if (ImGui.Button("另存为…")) SaveTimelineAsset(saveAs: true);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("把当前内容另存为项目 Assets 内的新时间轴资产，原资产保持不变。");
         ImGui.SameLine();
         ImGui.BeginDisabled(string.IsNullOrWhiteSpace(_timelineAssetPath));
         if (ImGui.Button("重载")) RequestTimelineSwitch(_timelineAssetPath, forceReload: true);
@@ -292,7 +294,6 @@ internal sealed partial class ImGuiEditorWindow
             if (ImGui.Button("保存")) TryConfirmTimelineSave();
             ImGui.SameLine();
             if (ImGui.Button("另存为…")) TryConfirmTimelineSave(saveAs: true);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("另存为新资产后再继续，原资产保持不变。");
             ImGui.SameLine();
             if (ImGui.Button("不保存")) ConfirmTimelineDiscard();
             ImGui.SameLine();

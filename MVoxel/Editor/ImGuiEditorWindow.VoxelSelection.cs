@@ -126,9 +126,7 @@ internal sealed partial class ImGuiEditorWindow
 
         ImGui.EndDisabled();
         if (!hasModel && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip("框选组件只对启用了模型组件的对象生效；请先给该对象添加模型组件。");
-        else if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("进入后可在场景视图拖动框选盒；也可以直接修改下面的起点和长宽高。");
+            ImGui.SetTooltip("需要对象上有启用的模型组件；请先添加模型组件");
 
         var changed = false;
         var startX = data.StartX;
@@ -152,8 +150,6 @@ internal sealed partial class ImGuiEditorWindow
         var worldMinimum = data.WorldMinimum(objectOrigin);
         ImGui.TextDisabled($"局部原点 {data.OriginX}, {data.OriginY}, {data.OriginZ} · 世界起点 " +
             $"{worldMinimum.X}, {worldMinimum.Y}, {worldMinimum.Z}");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("局部原点 = 对象原点 + 组件原点偏移。世界起点是实际参与体素匹配的最小角。");
         ImGui.SameLine();
         if (ImGui.SmallButton("对齐模型"))
         {
@@ -183,9 +179,6 @@ internal sealed partial class ImGuiEditorWindow
             }
         }
 
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("把局部原点重新对齐到模型包围盒最小角，起点自动补偿，范围框在场景里不会移动。");
-
         BeginInspectorField("目标颜色", "要挑选的体素颜色；透明度也参与匹配。");
         var color = new Vector4(data.ColorR / 255F, data.ColorG / 255F, data.ColorB / 255F, data.ColorA / 255F);
         var pickerWidth = MathF.Max(ImGui.GetFontSize() * 4F, ImGui.GetContentRegionAvail().X -
@@ -202,7 +195,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("点开色条可以取任意颜色；右侧按钮直接取当前笔刷色或上次拾取到的颜色。");
+            ImGui.SetTooltip("点开色条取任意颜色");
         ImGui.SameLine();
         if (ImGui.SmallButton("取笔刷色"))
         {
@@ -226,7 +219,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("开启后只挑出提灯、灯罩这类发光体素；关闭则不区分普通颜色和自发光。");
+            ImGui.SetTooltip("关闭时普通颜色与自发光体素一并匹配");
 
         if (changed)
         {
@@ -244,9 +237,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Dummy(new Vector2(0F, UiScale.Px(2F)));
         if (ImGui.Button("选择范围内该颜色的体素", new Vector2(-1F, 0F)))
             SelectVoxelsInRange(sceneObject, data);
-
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("扫描一次范围，把匹配目标颜色的体素记为当前选择；下方各栏都作用在这批体素上。");
 
         var selectedCount = _voxelSelectionObjectId == sceneObject.Id ? _voxelSelectionCells.Length : 0;
         if (selectedCount > 0)
@@ -364,9 +354,9 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.ColorEdit4("##VoxelSelectionPaintColor", ref _voxelSelectionPaintColor,
             ImGuiColorEditFlags.Float | ImGuiColorEditFlags.AlphaBar);
         ImGui.Checkbox("保留自发光标记", ref _voxelSelectionKeepEmissive);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("关闭后换色的体素不再发光，适合把灯改成普通材质。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("关闭后换色的体素不再发光");
         ImGui.Checkbox("保留材质槽", ref _voxelSelectionKeepMaterial);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("关闭后材质槽统一归零，体素改用全局材质。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("关闭后材质槽归零，改用全局材质");
         if (ImGui.Button("应用换色", new Vector2(-1F, 0F))) ApplyVoxelSelectionRecolor(sceneObject);
     }
 

@@ -31,9 +31,7 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawAnimationWindow()
     {
         if (!_showAnimationWindow) return;
-        var open = _showAnimationWindow;
-        if (!ImGui.Begin("动画##AnimationWindow", ref open, PanelWindowFlags)) { ImGui.End(); _showAnimationWindow = open; return; }
-        _showAnimationWindow = open;
+        if (!BeginToolWindow("动画##AnimationWindow", PanelWindowFlags, () => _showAnimationWindow = false)) { ImGui.End(); return; }
         ImGui.Checkbox("锁定动画对象", ref _animationWindowLocked);
         var linked = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _animationLinkedObjectId);
         if (!_animationWindowLocked && _selectedSceneObjectId is not null) linked = _sceneDocument?.Objects.FirstOrDefault(item => item.Id == _selectedSceneObjectId);
@@ -59,7 +57,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         ImGui.TextDisabled(string.IsNullOrWhiteSpace(animation.ClipAsset) ? "未保存动画片段" : animation.ClipAsset);
         if (ImGui.Button("另存为动画片段…")) SaveAnimationClipAs(linked, animation);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前动画片段保存为项目Assets/Animations中的文件，并让动画组件引用它");
         var frame = animation.CurrentFrame;
         if (ImGui.DragInt("当前帧", ref frame, 1F, 0, 100000)) animation.CurrentFrame = frame;
         var recording = animation.Recording;
@@ -75,7 +72,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SameLine();
         if (ImGui.Button("插入旋转关键帧")) InsertAnimationKey(linked, animation, animation.CurrentFrame, "Transform",
             linked.Transform.Mode == TransformMode.Grid ? "GridRotation" : "Quaternion");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("格点模型记录 90 度整数旋转，在关键帧之间保持上一个朝向。");
         DrawAnimationParameterList(linked, animation);
         ImGui.SeparatorText("关键帧曲线");
         var clipPath = animation.ClipAsset;
@@ -113,7 +109,6 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawAnimationHierarchy(SceneObject root)
     {
         var opened = ImGui.TreeNodeEx($"节点：{root.Name}", ImGuiTreeNodeFlags.DefaultOpen);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("动画对象层级，锁定动画对象后可继续编辑子节点");
         if (!opened) return;
         foreach (var child in _sceneDocument?.Objects.Where(item => item.ParentId == root.Id) ?? [])
             DrawAnimationHierarchy(child);

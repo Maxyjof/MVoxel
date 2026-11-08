@@ -169,11 +169,15 @@ public sealed class RenderSettings
     public bool AmbientOcclusionEnabled = true;
 
     /// <summary>
-    /// AO 强度，0 关闭效果 1 全量
+    /// 实时通道每像素的抗锯齿采样数，1 表示不做抗锯齿
     /// </summary>
     public int RealtimeAntiAliasingSamples = 4;
     public int RealtimeAntiAliasingPattern;
     public float RealtimeAntiAliasingSpread = 1F;
+    /// <summary>
+    /// 场景窗口是否开启实时抗锯齿；默认关闭，只影响编辑器场景视口，不影响渲染窗口与导出
+    /// </summary>
+    public bool SceneAntiAliasingEnabled;
     public float FxaaThreshold = .125F;
     public float FxaaStrength = .75F;
     public float WaterFootprintFiltering = 1F;
@@ -669,7 +673,7 @@ public sealed class RenderSettings
     }
 
     /// <summary>
-    /// 拖动视角时使用的采样降级副本：只降低阴影与反射的射线数量，
+    /// 拖动视角时使用的采样降级副本：降低阴影与反射的射线数量，并把抗锯齿压到单采样；
     /// 光照、阴影、反射开关与分辨率全部保留，松手后立即回到完整采样
     /// </summary>
     internal RenderSettings CreateNavigationPreview()
@@ -682,7 +686,23 @@ public sealed class RenderSettings
             preview.ShadowSamples = Math.Min(preview.ShadowSamples, 2);
             preview.GlassReflectionOcclusion = 0F;
             preview.GlassReflectionBounces = 1;
+            // 实时通道每像素按抗锯齿采样数逐次求交，导航期间压到单采样
+            preview.RealtimeAntiAliasingSamples = 1;
         }
+        return preview;
+    }
+
+    /// <summary>
+    /// 场景窗口导航期间使用的抗锯齿降级副本：相机每次移动都要整帧重画，
+    /// 多采样抗锯齿会把单帧代价按采样数成倍放大；这里只临时压到单采样，
+    /// 分辨率、光照、材质与全部效果保持原样，相机停下后立即回到项目设定
+    /// </summary>
+    internal RenderSettings CreateSceneNavigationPreview()
+    {
+        var preview = (RenderSettings)MemberwiseClone();
+        preview.SceneLod = SceneLod.Clone();
+        preview.RenderLod = RenderLod.Clone();
+        if (NavigationSamplingRelief) preview.RealtimeAntiAliasingSamples = 1;
         return preview;
     }
 
@@ -723,6 +743,9 @@ public sealed class RenderSettings
         var preview = (RenderSettings)MemberwiseClone();
         preview.Backend = RenderBackend.Gpu;
         preview.PathTracingEnabled = false;
+        // 场景窗口默认不做抗锯齿：相机每移动一帧都要整帧重新求交着色，
+        // 多采样会按采样数成倍放大单帧代价；需要平滑边缘时在项目设置里打开
+        if (!SceneAntiAliasingEnabled) preview.RealtimeAntiAliasingSamples = 1;
         preview.ShowGround = false;
         preview.ShowWater = false;
         preview.AmbientOcclusionEnabled = false;
@@ -804,6 +827,18 @@ public sealed class RenderSettings
         RealtimeTemporalWeight = float.IsFinite(RealtimeTemporalWeight)
             ? Math.Clamp(RealtimeTemporalWeight, 0F, .98F)
             : 0F;
+        // 抗锯齿采样数只允许 1/2/4/8/16：着色器按列数分行，其他值会让抖动网格错位
+        RealtimeAntiAliasingSamples = RealtimeAntiAliasingSamples switch
+        {
+            <= 1 => 1,
+            2 => 2,
+            <= 4 => 4,
+            <= 8 => 8,
+            _ => 16,
+        };
+        RealtimeAntiAliasingSpread = float.IsFinite(RealtimeAntiAliasingSpread)
+            ? Math.Clamp(RealtimeAntiAliasingSpread, 0.25F, 1F)
+            : 1F;
         AoStrength = Math.Clamp(AoStrength, 0F, 1F);
         AoPower = Math.Clamp(AoPower, 0.2F, 4F);
         VoxelIndirectLightStrength = Math.Clamp(float.IsFinite(VoxelIndirectLightStrength) ? VoxelIndirectLightStrength : 0.35F, 0F, 4F);

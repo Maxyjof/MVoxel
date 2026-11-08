@@ -171,13 +171,16 @@ public sealed class VoxelRenderParameters
     public const int DragOffsetX = 233, DragOffsetY = 234, DragOffsetZ = 235;
     /// <summary>拖动对象实例的体素数量与实例自定义索引</summary>
     public const int DragCellCount = 236;
+    /// <summary>拖动对象实例绕枢轴旋转的四元数（已归一化）与枢轴世界坐标</summary>
+    public const int DragRotationX = 245, DragRotationY = 246, DragRotationZ = 247, DragRotationW = 248;
+    public const int DragPivotX = 249, DragPivotY = 250, DragPivotZ = 251;
     /// <summary>玻璃场景反射开关、太阳高光倍率、透射阴影开关与强度</summary>
     public const int GlassSceneReflection = 237, GlassGlintIntensity = 238;
     public const int GlassTransmissionShadow = 239, GlassTransmissionShadowStrength = 240;
     /// <summary>玻璃反射分段数、发光体反射开关、环境光权重与遮挡权重</summary>
     public const int GlassReflectionBounces = 241, GlassReflectionEmissive = 242;
     public const int GlassReflectionAmbient = 243, GlassReflectionOcclusion = 244;
-    public const int SlotCount = 245;
+    public const int SlotCount = 252;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -295,6 +298,9 @@ public sealed class VoxelRenderParameters
             ("P_DRAG_ORIGIN_X", DragOriginX), ("P_DRAG_ORIGIN_Y", DragOriginY), ("P_DRAG_ORIGIN_Z", DragOriginZ),
             ("P_DRAG_OFFSET_X", DragOffsetX), ("P_DRAG_OFFSET_Y", DragOffsetY), ("P_DRAG_OFFSET_Z", DragOffsetZ),
             ("P_DRAG_CELL_COUNT", DragCellCount),
+            ("P_DRAG_ROT_X", DragRotationX), ("P_DRAG_ROT_Y", DragRotationY),
+            ("P_DRAG_ROT_Z", DragRotationZ), ("P_DRAG_ROT_W", DragRotationW),
+            ("P_DRAG_PIVOT_X", DragPivotX), ("P_DRAG_PIVOT_Y", DragPivotY), ("P_DRAG_PIVOT_Z", DragPivotZ),
         };
 
         var builder = new StringBuilder();

@@ -341,14 +341,26 @@ internal sealed partial class ImGuiEditorWindow
             new Vector2(layout.RightWidth, layout.MainHeight));
         if (_focusModelingTools) ImGui.SetNextWindowFocus();
         _focusModelingTools = false;
-        if (ImGui.Begin("调色盘##建模工具窗口", ref _showPaletteWindow, PanelWindowFlags))
+        if (ImGui.Begin("调色盘##建模工具窗口", PanelWindowFlags))
         {
-            DrawPanelWindowMenu();
+            RegisterWindowGroup("palette", ClosePalettePanel);
+            DrawPanelWindowMenu(ClosePalettePanel);
             DrawPaletteContents();
         }
-        // 关闭按钮与窗口菜单共用可见性：关闭后菜单仍可重新打开
+        else if (ImGui.IsWindowCollapsed())
+        {
+            DrawPanelWindowMenu(ClosePalettePanel);
+        }
+        // 两个可见性标记保持一致，关闭后仍可从“视图”菜单重新打开
         if (!_showPaletteWindow) _showModelingTools = false;
         ImGui.End();
+    }
+
+    /// <summary>关闭调色盘：显隐标志必须成对复位，否则视图菜单会误判它仍在显示</summary>
+    private void ClosePalettePanel()
+    {
+        _showPaletteWindow = false;
+        _showModelingTools = false;
     }
 
     private void DrawPaletteContents() => DrawPaletteContentsCore();

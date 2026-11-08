@@ -108,7 +108,7 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Combo("##TreeStyle", ref style, "阔叶树\0针叶树\0灌木\0棕榈\0垂柳\0樱花树\0枯树\0"))
             data = data.WithStyleDefaults((TreeStyle)style);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("阔叶树：直干加椭球树冠\n针叶树：层叠锥形\n灌木：低矮丛生\n棕榈：弯干加放射叶片\n垂柳：树冠垂条\n樱花树：矮阔叶粉冠\n枯树：只留枝干");
+            ImGui.SetTooltip("切换风格会套用该风格的推荐参数");
         BeginInspectorField("种子", "同一组参数与种子永远生成同一棵树；换种子会改变枝条与树冠的随机分布。");
         var seed = data.Seed;
         var seedWidth = MathF.Max(ImGui.GetFontSize() * 4F,
@@ -118,7 +118,6 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.DragInt("##TreeSeed", ref seed, .5F, -1_000_000, 1_000_000)) data = data with { Seed = seed };
         ImGui.SameLine();
         if (ImGui.SmallButton("随机种子")) data = data with { Seed = Random.Shared.Next(-1_000_000, 1_000_001) };
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只改种子，点“生成体素”后生效");
     }
 
     /// <summary>
@@ -213,7 +212,7 @@ internal sealed partial class ImGuiEditorWindow
         if (variation != data.ColorVariation) data = data with { ColorVariation = variation };
         var emissive = data.EmissiveLeaves;
         if (ImGui.Checkbox("树叶自发光", ref emissive)) data = data with { EmissiveLeaves = emissive };
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("给树叶加自发光标记，适合灵树、夜樱这类题材。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("给树叶加自发光标记，适合灵树、夜樱这类题材");
         var materialSlot = (int)data.MaterialSlot;
         if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
                 ushort.MaxValue))
@@ -270,8 +269,6 @@ internal sealed partial class ImGuiEditorWindow
                 $"已超过 {ProceduralVoxelBudget:N0} 格上限，超出的部分被截断");
         if (ImGui.Button("生成体素", new Vector2(-1F, 0F)))
             RebuildGeneratedVoxels(sceneObject, component, "已生成树体素");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("按当前参数重新生成一棵树，替换组件里已有的体素数据；参数调整不会自动生效。");
     }
 
     /// <summary>
@@ -286,9 +283,6 @@ internal sealed partial class ImGuiEditorWindow
         if (ImGui.Button("实例化为体素模型", new Vector2(-1F, 0F)))
             _pendingTreeInstantiate = component;
         ImGui.PopStyleColor(2);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("把当前生成的体素固定成模型组件：之后可以进入绘制模式，但不能再改回树生成器；" +
-                             "如果只是想换个样子，请先调参数再点“生成体素”。");
         ImGui.PushStyleColor(ImGuiCol.Text, ToColor(EditorPalette.MutedText));
         ImGui.PopStyleColor();
     }

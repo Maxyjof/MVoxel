@@ -65,7 +65,6 @@ internal sealed partial class ImGuiEditorWindow
             {
                 OpenVoxelAssetStage(relativePath);
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(native ? "在独立空间中编辑此资产" : "先导入为原生资产，再进入独立编辑空间");
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
         {

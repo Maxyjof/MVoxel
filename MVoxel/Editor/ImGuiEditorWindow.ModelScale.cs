@@ -13,7 +13,12 @@ namespace MVoxel.Editor;
 /// </summary>
 internal sealed partial class ImGuiEditorWindow
 {
-    private sealed record ScaleBaseMeta(int[]? Rotation = null);
+    /// <summary>
+    /// 缩放基准元数据：记录离散朝向与基准快照在世界里的摆放原点，
+    /// 后者保证多次旋转后仍能回到同一份原始模型，不会被当前包围盒带着漂移
+    /// </summary>
+    private sealed record ScaleBaseMeta(int[]? Rotation = null, long? OriginX = null, long? OriginY = null,
+        long? OriginZ = null);
 
     private static readonly JsonSerializerOptions ScaleMetaJson = new(JsonSerializerDefaults.Web)
     {
@@ -42,16 +47,19 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 读取基准快照：内容按包围盒最小角为零保存，另存缩放时的对象朝向
+    /// 读取基准快照：内容按包围盒最小角为零保存，另存缩放时的对象朝向与基准摆放原点
     /// </summary>
     /// <param name="sceneObject">目标对象</param>
     /// <param name="local">局部坐标基准</param>
     /// <param name="rotation">记录时的朝向</param>
+    /// <param name="origin">记录时的基准摆放原点；旧版快照没有该字段时为空</param>
     /// <returns>快照存在且可读时为 true</returns>
-    private bool TryReadScaleBaseLocal(SceneObject sceneObject, out VoxelWorld local, out OrthogonalRotation rotation)
+    private bool TryReadScaleBaseLocal(SceneObject sceneObject, out VoxelWorld local, out OrthogonalRotation rotation,
+        out VoxelCoord64? origin)
     {
         local = new VoxelWorld();
         rotation = OrthogonalRotation.Identity;
+        origin = null;
         try
         {
             var path = ScaleBaseModelPath(sceneObject);
@@ -62,6 +70,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 var meta = JsonSerializer.Deserialize<ScaleBaseMeta>(File.ReadAllText(metaPath), ScaleMetaJson);
                 rotation = ParseRotation(meta?.Rotation);
+                if (meta is { OriginX: { } x, OriginY: { } y, OriginZ: { } z })
+                    origin = new VoxelCoord64(x, y, z);
             }
 
             return true;
@@ -84,7 +94,7 @@ internal sealed partial class ImGuiEditorWindow
     {
         try
         {
-            if (!snapshot.TryGetBounds(out _, out _))
+            if (!snapshot.TryGetBounds(out var minimum, out _))
             {
                 SetStatus("模型为空，无法建立缩放基准");
                 return false;
@@ -92,8 +102,10 @@ internal sealed partial class ImGuiEditorWindow
 
             Directory.CreateDirectory(ScaleBaseDirectory);
             LargeWorldFormat.Write(ScaleBaseModelPath(sceneObject), ModelScaleRule.ToLocal(snapshot));
-            var meta = new ScaleBaseMeta(RotationValues(sceneObject.Transform.Grid.Rotation));
+            var meta = new ScaleBaseMeta(RotationValues(sceneObject.Transform.Grid.Rotation),
+                minimum.X, minimum.Y, minimum.Z);
             AtomicFile.WriteText(ScaleBaseMetaPath(sceneObject), JsonSerializer.Serialize(meta, ScaleMetaJson));
+            _scaleBaseOrigin = minimum;
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or OverflowException)
@@ -101,6 +113,26 @@ internal sealed partial class ImGuiEditorWindow
             MVoxelLog.Error($"写入缩放基准失败：{sceneObject.Name}", exception);
             SetStatus($"写入缩放基准失败：{exception.Message}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 给旧版基准快照补记摆放原点：老元数据只存了朝向，没有原点会让旋转以当前包围盒为基准而漂移
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="rotation">快照记录时的朝向</param>
+    /// <param name="origin">推断出的摆放原点</param>
+    private void TryUpdateScaleBaseOrigin(SceneObject sceneObject, OrthogonalRotation rotation, VoxelCoord64 origin)
+    {
+        try
+        {
+            if (!Directory.Exists(ScaleBaseDirectory)) return;
+            var meta = new ScaleBaseMeta(RotationValues(rotation), origin.X, origin.Y, origin.Z);
+            AtomicFile.WriteText(ScaleBaseMetaPath(sceneObject), JsonSerializer.Serialize(meta, ScaleMetaJson));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            MVoxelLog.Warn($"补记缩放基准原点失败：{sceneObject.Name}，{exception.Message}");
         }
     }
 
@@ -264,7 +296,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="note">附带说明，可为空</param>
     private void RestoreModelScale(SceneObject sceneObject, ComponentRecord component)
     {
-        if (!TryReadScaleBaseLocal(sceneObject, out var local, out var recordedRotation))
+        if (!TryReadScaleBaseLocal(sceneObject, out var local, out var recordedRotation, out _))
         {
             // 还没缩放过的模型本来就在基准尺寸，不需要提示
             if (IsAtBaseScale(sceneObject)) return;
@@ -308,7 +340,8 @@ internal sealed partial class ImGuiEditorWindow
             RotationX = 0F, RotationY = 0F, RotationZ = 0F,
         });
         _scaleBaseObjectId = sceneObject.Id;
-        _scaleBaseRotation = sceneObject.Transform.Grid.Rotation;
+        var baseRotation = sceneObject.Transform.Grid.Rotation;
+        _scaleBaseRotation = baseRotation.IsValid ? baseRotation : OrthogonalRotation.Identity;
         _scaleBaseWorld = ModelScaleRule.ToLocal(current);
         var size = ModelScaleRule.IsUniform(data.ScaleX, data.ScaleY, data.ScaleZ)
             ? $"{data.ScaleX:0.###}x"
@@ -318,15 +351,19 @@ internal sealed partial class ImGuiEditorWindow
 
     /// <summary>
     /// 取得缩放基准：对象在基准尺寸时基准就是它自己（最近一次编辑的结果），
-    /// 非基准尺寸时用缓存或磁盘快照；都没有时把当前尺寸反算回 1x 补一份
+    /// 非基准尺寸时用缓存或磁盘快照；都没有时把当前尺寸反算回 1x 补一份。
+    /// 基准按它自己的摆放原点复位，而不是当前包围盒最小角，
+    /// 否则对象旋转后包围盒会移动，下一次旋转就会以移动过的基准重新采样而漂移
     /// </summary>
     /// <param name="sceneObject">目标对象</param>
     /// <param name="current">对象当前体素</param>
     /// <param name="origin">对象当前包围盒最小角</param>
-    /// <returns>摆在当前位置、可直接重采样的基准；无法建立时为空</returns>
+    /// <returns>摆在原始位置、可直接重采样的基准；无法建立时为空</returns>
     private VoxelWorld? ResolveScaleBase(SceneObject sceneObject, VoxelWorld current, VoxelCoord64 origin)
     {
+        // 旧场景可能留下全零的离散旋转，按单位旋转参与运算，避免把整份基准乘成零
         var rotation = sceneObject.Transform.Grid.Rotation;
+        if (!rotation.IsValid) rotation = OrthogonalRotation.Identity;
         var modelRotation = ReadModelRotation(sceneObject);
         var hasModelRotation = MathF.Abs(modelRotation.X) > .001F || MathF.Abs(modelRotation.Y) > .001F ||
                                MathF.Abs(modelRotation.Z) > .001F;
@@ -335,30 +372,38 @@ internal sealed partial class ImGuiEditorWindow
             // 基准尺寸且没有浮点旋转时，模型数据就是基准；已有旋转或缓存时不能覆盖，
             // 否则当前这份“已经旋转过的体素”会被当成基准，导致反复旋转层层糊掉
             if (_scaleBaseObjectId == sceneObject.Id && _scaleBaseWorld is { } cachedBase)
-                return ModelScaleRule.Align(OrientScaleBase(cachedBase, _scaleBaseRotation, rotation), origin);
-            if (!TryReadScaleBaseLocal(sceneObject, out var storedBase, out var storedBaseRotation) ||
-                storedBase.OccupiedVoxelCount == 0)
+                return ModelScaleRule.Align(OrientScaleBase(cachedBase, _scaleBaseRotation, rotation),
+                    ResolveBasePlacement(sceneObject));
+            if (!TryReadScaleBaseLocal(sceneObject, out var storedBase, out var storedBaseRotation,
+                    out var storedOrigin) || storedBase.OccupiedVoxelCount == 0)
             {
                 if (!TryWriteScaleBase(sceneObject, current)) return null;
                 storedBase = current;
                 storedBaseRotation = rotation;
+                storedOrigin = _scaleBaseOrigin;
             }
 
             _scaleBaseObjectId = sceneObject.Id;
             _scaleBaseRotation = storedBaseRotation;
             _scaleBaseWorld = ModelScaleRule.ToLocal(storedBase);
-            return ModelScaleRule.Align(OrientScaleBase(storedBase, storedBaseRotation, rotation), origin);
+            AdoptBaseOrigin(sceneObject, storedBaseRotation, storedOrigin);
+            return ModelScaleRule.Align(OrientScaleBase(storedBase, storedBaseRotation, rotation),
+                ResolveBasePlacement(sceneObject));
         }
 
         if (_scaleBaseObjectId == sceneObject.Id && _scaleBaseWorld is { } cached)
-            return ModelScaleRule.Align(OrientScaleBase(cached, _scaleBaseRotation, rotation), origin);
+            return ModelScaleRule.Align(OrientScaleBase(cached, _scaleBaseRotation, rotation),
+                ResolveBasePlacement(sceneObject));
 
-        if (TryReadScaleBaseLocal(sceneObject, out var stored, out var storedRotation) && stored.OccupiedVoxelCount > 0)
+        if (TryReadScaleBaseLocal(sceneObject, out var stored, out var storedRotation, out var storedOrigin2) &&
+            stored.OccupiedVoxelCount > 0)
         {
             _scaleBaseObjectId = sceneObject.Id;
             _scaleBaseRotation = storedRotation;
             _scaleBaseWorld = stored;
-            return ModelScaleRule.Align(OrientScaleBase(stored, storedRotation, rotation), origin);
+            AdoptBaseOrigin(sceneObject, storedRotation, storedOrigin2);
+            return ModelScaleRule.Align(OrientScaleBase(stored, storedRotation, rotation),
+                ResolveBasePlacement(sceneObject));
         }
 
         // 老项目没有基准快照：把当前尺寸反算回 1x 作为基准，之后的缩放都基于它
@@ -383,6 +428,27 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
+    /// 基准摆放位置：优先用快照记录的原点；旧快照缺失时先按对象当前位置补记一次
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <returns>基准摆放原点</returns>
+    private VoxelCoord64 ResolveBasePlacement(SceneObject sceneObject) =>
+        _scaleBaseOrigin ?? sceneObject.Transform.Grid.Position;
+
+    /// <summary>
+    /// 采纳快照的摆放原点并缓存；旧版快照没有原点时按对象当前位置补记，
+    /// 保证之后的旋转都从同一份原始模型重新采样
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="rotation">快照记录时的朝向</param>
+    /// <param name="origin">快照记录的原点，旧版为空</param>
+    private void AdoptBaseOrigin(SceneObject sceneObject, OrthogonalRotation rotation, VoxelCoord64? origin)
+    {
+        _scaleBaseOrigin = origin ?? sceneObject.Transform.Grid.Position;
+        if (origin is null) TryUpdateScaleBaseOrigin(sceneObject, rotation, _scaleBaseOrigin.Value);
+    }
+
+    /// <summary>
     /// 把基准从记录时的朝向转到对象当前朝向，保证先旋转再缩放的结果和当前模型一致
     /// </summary>
     /// <param name="local">局部坐标基准</param>
@@ -399,10 +465,17 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     /// <summary>
-    /// 用缩放结果替换对象当前体素；主模型对象保留无归属体素语义，分层对象更新所有权集合
+    /// 用缩放或旋转结果替换对象当前体素；主模型对象保留无归属体素语义，分层对象更新所有权集合
     /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="replacement">替换后的体素世界</param>
+    /// <param name="origin">替换后对象格变换的位置</param>
+    /// <param name="newRotation">新的离散朝向，为空时保持原值</param>
+    /// <param name="scale">新的倍数，为空时保持原值</param>
+    /// <param name="modelAfter">操作完成后的模型组件数据；为空时沿用命令创建时的数据</param>
     private bool ReplaceObjectVoxels(SceneObject sceneObject, VoxelWorld replacement, VoxelCoord64 origin,
-        OrthogonalRotation? newRotation = null, (float X, float Y, float Z)? scale = null)
+        OrthogonalRotation? newRotation = null, (float X, float Y, float Z)? scale = null,
+        VoxelModelComponentData? modelAfter = null)
     {
         if (_sceneDocument is null) return false;
         var world = _objectVoxels.GetOrCreate(sceneObject.Id);
@@ -417,6 +490,8 @@ internal sealed partial class ImGuiEditorWindow
             {
                 sceneObject.Transform.SetGrid(forward ? after : before);
                 UpdateTransformMarker(sceneObject);
+                if (modelAfter is { } target && forward)
+                    SceneComponentTypes.WriteVoxelModel(component, target);
                 if (scale is { } factor)
                     SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with
                     {
@@ -444,16 +519,22 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelWorld? _scaleBaseWorld;
     /// <summary>基准模型记录时对象的朝向，重采样前先转到当前朝向</summary>
     private OrthogonalRotation _scaleBaseRotation = OrthogonalRotation.Identity;
+    /// <summary>基准模型在世界里的摆放原点，旋转重采样始终以它为准，避免跟着包围盒漂移</summary>
+    private VoxelCoord64? _scaleBaseOrigin;
 
     /// <summary>
-    /// 把旋转写成九个整数，供基准元数据持久化
+    /// 把旋转写成九个整数，供基准元数据持久化；非法旋转按单位旋转保存
     /// </summary>
     /// <param name="rotation">离散旋转</param>
     /// <returns>行优先的九个元素</returns>
-    private static int[] RotationValues(OrthogonalRotation rotation) =>
-    [
-        rotation.M00, rotation.M01, rotation.M02, rotation.M10, rotation.M11, rotation.M12, rotation.M20, rotation.M21, rotation.M22,
-    ];
+    private static int[] RotationValues(OrthogonalRotation rotation)
+    {
+        var valid = rotation.IsValid ? rotation : OrthogonalRotation.Identity;
+        return
+        [
+            valid.M00, valid.M01, valid.M02, valid.M10, valid.M11, valid.M12, valid.M20, valid.M21, valid.M22,
+        ];
+    }
 
     /// <summary>
     /// 从基准元数据还原旋转，缺失或非法时按单位旋转处理
@@ -462,12 +543,33 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>离散旋转</returns>
     private static OrthogonalRotation ParseRotation(int[]? values)
     {
-        if (values is not { Length: 9 }) return OrthogonalRotation.Identity;
+        if (values is not { Length: 9 } || !IsSignedPermutation(values)) return OrthogonalRotation.Identity;
         var rotation = new OrthogonalRotation(
             (sbyte)values[0], (sbyte)values[1], (sbyte)values[2],
             (sbyte)values[3], (sbyte)values[4], (sbyte)values[5],
             (sbyte)values[6], (sbyte)values[7], (sbyte)values[8]);
         return rotation.IsValid ? rotation : OrthogonalRotation.Identity;
+    }
+
+    /// <summary>
+    /// 校验九元素矩阵是否为合法的符号置换矩阵：每行每列恰有一个 ±1
+    /// </summary>
+    /// <param name="values">行优先的九个元素</param>
+    /// <returns>合法时为 true</returns>
+    private static bool IsSignedPermutation(int[] values)
+    {
+        Span<int> rows = stackalloc int[3];
+        Span<int> columns = stackalloc int[3];
+        for (var index = 0; index < 9; index++)
+        {
+            if (values[index] is < -1 or > 1) return false;
+            var magnitude = Math.Abs(values[index]);
+            rows[index / 3] += magnitude;
+            columns[index % 3] += magnitude;
+        }
+
+        return rows[0] == 1 && rows[1] == 1 && rows[2] == 1 &&
+               columns[0] == 1 && columns[1] == 1 && columns[2] == 1;
     }
 
     /// <summary>
@@ -480,6 +582,7 @@ internal sealed partial class ImGuiEditorWindow
         _scaleBaseObjectId = null;
         _scaleBaseWorld = null;
         _scaleBaseRotation = OrthogonalRotation.Identity;
+        _scaleBaseOrigin = null;
     }
 
     private readonly CancellationTokenSource _scaleCancellation = new();

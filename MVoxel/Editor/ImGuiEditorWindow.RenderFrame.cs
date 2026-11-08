@@ -46,12 +46,10 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("自由比例铺满整个视图；选定比例后视图按该比例留黑边。\n导出时的分辨率与比例在导出对话框里单独设置。");
+            ImGui.SetTooltip("自由比例铺满视图，选定比例后视图按该比例留黑边");
 
         ImGui.SameLine();
         if (ImGui.Button("管理…##RenderFramePresets")) _showFramePresetManager = true;
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("增删改名、调整顺序。预设按项目保存，不影响其他项目。");
 
         if (_showFramePresetManager) DrawFramePresetManager(settings);
     }
@@ -116,7 +114,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             var frameRate = settings.ExportDialogVideoFrameRate;
             if (ImGui.InputInt("视频帧率", ref frameRate)) settings.ExportDialogVideoFrameRate = Math.Clamp(frameRate, 1, 240);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("视频时长由所选时间轴决定；帧率可独立设置。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("视频帧率，时长由所选时间轴决定");
             if (string.IsNullOrWhiteSpace(settings.ExportDialogTimelineAsset))
             {
                 //只有“当前时间轴”能在这里直接算出帧数，避免对话框每帧去读资产文件
@@ -157,7 +155,7 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("改这里会同时改变渲染视图的取景，方便边调边看。");
+            ImGui.SetTooltip("同时改变渲染视图取景，便于边调边看");
 
         ImGui.TextUnformatted("分辨率");
         ImGui.SetNextItemWidth(-1F);

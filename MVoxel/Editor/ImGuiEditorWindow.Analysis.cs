@@ -385,7 +385,7 @@ internal sealed partial class ImGuiEditorWindow
         var unit = ImGui.GetFontSize();
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(unit * 35F, unit * 18F), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("体素度量", ref _showVoxelMeasurements))
+        if (BeginToolWindow("体素度量", ImGuiWindowFlags.None, () => _showVoxelMeasurements = false))
         {
             DrawExtraMeasurements();
         }
@@ -398,7 +398,7 @@ internal sealed partial class ImGuiEditorWindow
         if (_applyPreset && _layoutPreset == LayoutPreset.Analysis) ImGui.SetNextWindowFocus();
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(unit * 50F, unit * 40F), ImGuiCond.FirstUseEver);
-        if (ImGui.Begin("性能分析器", ref _showPerformanceAnalyzer))
+        if (BeginToolWindow("性能分析器", ImGuiWindowFlags.None, () => _showPerformanceAnalyzer = false))
         {
             DrawExtraPerformance();
         }
@@ -436,17 +436,12 @@ internal sealed partial class ImGuiEditorWindow
         if (recording) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.72F, 0.18F, 0.18F, 1F));
         if (ImGui.Button(recording ? "录制中" : "已暂停")) SetAnalysisPaused(recording);
         if (recording) ImGui.PopStyleColor();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("打开分析器即开始记录；点击暂停会保留已有帧和当前所选帧，再次点击继续记录，不会清空历史。" + Environment.NewLine +
-                "关闭分析器窗口也会停止采样。");
 
         ImGui.SameLine();
         if (ImGui.Button("清空")) ResetAnalysisFrames();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("清空所有已记录帧，不改变当前的录制或暂停状态");
 
         ImGui.SameLine();
         if (ImGui.Button("最新帧")) SelectLatestAnalysisFrame();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("选中最新一帧并恢复跟随；对应 Unity 性能分析器的 Current 按钮");
 
         ImGui.SameLine();
         ImGui.TextDisabled(recording
@@ -474,7 +469,6 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.Text($"工作集  {ToMiB(_analysisWorkingSet):0.0} MiB   私有内存  {ToMiB(_analysisPrivateBytes):0.0} MiB");
         ImGui.Text($"托管堆  {ToMiB(_analysisManagedBytes):0.0} MiB   托管分配  {ToMiB(_analysisAllocatedPerSecond):0.00} MiB/s");
         ImGui.Text($"GC 次数  0代 {_analysisGen0:N0}  ·  1代 {_analysisGen1:N0}  ·  2代 {_analysisGen2:N0}");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("进程启动以来的累计回收次数；内存与分配速度约每秒刷新");
 
         ImGui.SeparatorText("视口最近一次资源更新（CPU）");
         DrawAnalysisPipeline("场景", _scenePipeline);
@@ -543,23 +537,6 @@ internal sealed partial class ImGuiEditorWindow
         var scaleText = $"{scaleMs:0} ms";
         draw.AddText(new Vector2(origin.X + width - ImGui.CalcTextSize(scaleText).X - 4F, origin.Y + 2F), 0xffc8c8c8, scaleText);
         ImGui.InvisibleButton("##性能帧柱状图", new Vector2(width, height));
-        var hovered = ImGui.IsItemHovered();
-        if (hovered)
-        {
-            var index = Math.Clamp((int)((ImGui.GetIO().MousePos.X - origin.X) / barWidth), 0, _analysisFrameCount - 1);
-            var sample = _analysisFrames[(offset + index) % AnalysisFrameCapacity];
-            ImGui.SetTooltip($"第 {sample.Serial} 帧" + Environment.NewLine +
-                $"帧间隔 {sample.IntervalMs:0.00} ms" + Environment.NewLine +
-                $"界面回调 {sample.CallbackMs:0.00} ms" + Environment.NewLine +
-                (sample.GpuValid
-                    ? $"GPU 计算 {sample.GpuMs:0.00} ms（采样 {sample.GpuSamplingMs:0.00} + 收尾 {sample.GpuFinishMs:0.00}，异步回读）"
-                    : "GPU 计算 等待回读或不可用") + Environment.NewLine +
-                $"中央视口 {sample.ViewportCpuMs:0.00} ms · 提交 {sample.ViewportSubmits} 次" + Environment.NewLine +
-                "点击会暂停录制并查看该帧的逐层耗时" + Environment.NewLine + Environment.NewLine +
-                "颜色依次为更新、其他界面、中央视口其余部分、视口 GPU 提交、ImGui 合成、Vulkan 呈现、未归类。" + Environment.NewLine +
-                "黄色细线是 GPU Compute 耗时，不参与堆叠；帧间隔包含垂直同步等待。");
-        }
-
         if (ImGui.IsItemClicked())
         {
             var index = Math.Clamp((int)((ImGui.GetIO().MousePos.X - origin.X) / barWidth), 0, _analysisFrameCount - 1);
@@ -596,10 +573,6 @@ internal sealed partial class ImGuiEditorWindow
                 : recentGpu > 0D
                     ? $"GPU 最近完成 {recentGpu:0.00} ms（本帧等待回读）"
                     : "GPU 计算 等待回读或不可用"));
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("帧间隔是两次编辑器帧开始之间的墙钟，包含垂直同步与调度等待。" +
-                Environment.NewLine + "GPU 计算来自 Vulkan 时间戳，异步回读，可能晚一到三帧。" +
-                Environment.NewLine + "这些数字用于定位热点，不是完整调用栈。");
 
         const ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV |
                                       ImGuiTableFlags.SizingStretchProp;
@@ -725,16 +698,9 @@ internal sealed partial class ImGuiEditorWindow
             ? $"GPU 计算  平均 {gpuSum / gpuCount:0.00} ms  ·  峰值 {gpuMax:0.00} ms  ·  {gpuCount}/{count} 帧有效"
             : "GPU 计算  暂无有效时间戳");
         if (gpuCount > 0)
-        {
             ImGui.Text($"  ├ 采样  平均 {gpuSamplingSum / gpuCount:0.00} ms  ·  收尾  平均 {gpuFinishSum / gpuCount:0.00} ms");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("采样段是路径求交、弹射与直接光，收尾段是降噪、Bloom、描边与 FXAA。" +
-                    Environment.NewLine + "两者之间的间隔是队列提交与调度开销，合计不等于简单相加。");
-        }
+
         ImGui.TextDisabled($"超过 33.3 ms 的帧 {slowFrames} 帧  ·  最近一帧 {latest.CallbackMs:0.00} ms");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("P95 表示 95% 的采样帧不超过该值，比平均值更容易暴露偶发卡顿。" +
-                Environment.NewLine + "GPU 统计只包含成功回读时间戳的帧，异步回读期间会显示较少样本。");
     }
 
     private static double ToMiB(double bytes) => bytes / (1024D * 1024D);
@@ -756,14 +722,9 @@ internal sealed partial class ImGuiEditorWindow
         {
             ImGui.TextDisabled($"  构建分解 快照 {timing.SnapshotMs:0.00} 收集 {timing.CollectMs:0.00} " +
                 $"排序 {timing.SortMs:0.00} 剔除 {timing.CullMs:0.00} 构盒 {timing.MergeMs:0.00} 汇总 {timing.GatherMs:0.00} ms");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("工作集构建的 CPU 分阶段耗时：快照列区块并排序，" +
-                    Environment.NewLine + "收集把区块字典落成数组，排序按局部索引稳定，" +
-                    Environment.NewLine + "剔除去掉全封闭内部体素，构盒做贪心合并或 LOD 粗化，汇总拼接输出数组。");
         }
         ImGui.Text($"发光面 {pipeline.EmissiveFaceCount:N0}  光源树节点 {pipeline.EmissiveTreeNodeCount:N0}  " +
             $"索引同步 {pipeline.EmissiveSyncMilliseconds:0.00} ms");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("最近一次 CPU 发光面提取、排序、光源树构建或更新、打包与上传耗时，不是 GPU 采样耗时。反向 PDF 使用二分面查询和相同的光源树分支概率。");
         ImGui.Text($"GPU 时间戳  {(pipeline.GpuTimingSupported ? "可用" : "不可用")}  " +
             $"最近完成 {pipeline.LastGpuFrameMs:0.00} ms（采样 {pipeline.LastGpuSamplingMs:0.00} + 收尾 {pipeline.LastGpuFinishMs:0.00}）");
         ImGui.Text($"体素/BVH 缓冲容量 {ToMiB(capacity.VoxelBytes + (double)capacity.BvhBytes):0.0} MiB");

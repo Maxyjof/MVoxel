@@ -49,11 +49,10 @@ internal sealed partial class ImGuiEditorWindow
     {
         EnsureModelBrushMaterialTarget();
         ImGui.SeparatorText("画笔颜色");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("选择新方块的基础颜色，不修改已有方块或材质资产参数。");
         var color = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
         ImGui.ColorButton("当前画笔颜色", new Vector4(color.R / 255F, color.G / 255F, color.B / 255F, color.A / 255F),
             ImGuiColorEditFlags.NoTooltip, new Vector2(ImGui.GetFrameHeight() * 2F, ImGui.GetFrameHeight()));
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"新方块基础色：RGB({color.R}, {color.G}, {color.B})，Alpha {color.A}。透明效果由材质控制。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"新方块基础色：RGB({color.R}, {color.G}, {color.B})，Alpha {color.A}");
         var label = _sampledBrushColor.HasValue ? "取样色" : $"色板 {_paletteIndex + 1}";
         ContinueMaterialControl(ImGui.CalcTextSize(label).X);
         ImGui.TextUnformatted(label);
@@ -66,15 +65,12 @@ internal sealed partial class ImGuiEditorWindow
             _screenColorSamplingArmed = false;
             SetStatus(sampling ? "已取消取色" : "点击场景体素取原色，其他位置取显示颜色；Esc取消");
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景体素取原色、材质和发光标记；其他位置只取显示颜色。材质槽只能在所属模型使用，按Esc取消。");
         DrawPaletteSelector();
         if (_project is not null)
         {
             if (ImGui.SmallButton("编辑项目色板")) OpenSettings(1, 3);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("编辑基础色板，不修改材质资产参数。");
         }
         ImGui.SeparatorText("画笔材质");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("只对新方块生效。局部改材质只能擦除后重绘；材质参数在材质检查器编辑，独立效果请手动复制资产后绑定。");
         DrawBrushMaterialSelector();
         DrawBrushProperties();
     }
@@ -109,7 +105,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("本模型的本地槽位，仅用于新方块；局部改材质请擦除后重绘。切换模型后画笔恢复槽0。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("本模型的本地槽位，仅用于新方块；切换模型后恢复槽0");
         selected = FindCurrentBrushMaterial();
         if (selected is not null && !IsEmbeddedStageMaterial(selected) && ImGui.Button("打开材质检查器")) OpenMaterialInspector(selected);
     }
@@ -117,7 +113,6 @@ internal sealed partial class ImGuiEditorWindow
     private void DrawModelMaterialSlotsCore(SceneObject modelObject)
     {
         if (!ImGui.CollapsingHeader("材质槽位", ImGuiTreeNodeFlags.SpanAvailWidth)) return;
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("槽0固定默认材质，槽1至65535映射共享资产。替换引用影响本组件使用该编号的全部方块，不改体素编号。独立效果请手动复制资产后绑定。");
         var component = modelObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
         if (component is null) return;
         var data = SceneComponentTypes.ReadVoxelModel(component);
@@ -127,7 +122,6 @@ internal sealed partial class ImGuiEditorWindow
             : new Dictionary<int, int>();
         ImGui.PushID($"model-materials-{modelObject.Id}");
         ImGui.TextUnformatted("槽0 · 默认材质");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("固定默认槽，不能删除或绑定资产。");
         var defaultCount = $"{usage.GetValueOrDefault(0):N0}个方块";
         ContinueMaterialControl(ImGui.CalcTextSize(defaultCount).X);
         ImGui.TextDisabled(defaultCount);
@@ -155,7 +149,7 @@ internal sealed partial class ImGuiEditorWindow
                 }, binding.MaterialAsset);
                 ImGui.EndCombo();
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(bound ? $"{binding.MaterialAsset}\n替换共享资产引用，不修改体素编号。" : "体素保留此编号，但组件没有绑定。可在此重新绑定，新增槽位不会复用该编号。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(bound ? $"{binding.MaterialAsset}\n替换共享资产引用" : "体素保留此编号，但组件没有绑定");
             material = bindings.TryGetValue(slot, out var current) ? FindMaterialAsset(current.MaterialAsset) : null;
             if (material is not null)
             {
@@ -178,7 +172,8 @@ internal sealed partial class ImGuiEditorWindow
                 }
             }
             ImGui.EndDisabled();
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) ImGui.SetTooltip(bound ? "只删除组件引用，体素编号保留并显示为未绑定。" : "已无组件绑定，编号仍被体素占用。局部修改请擦除后重绘。");
+            if (!bound && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("未绑定资产的槽位没有可删除的引用");
             ImGui.PopID();
         }
         ImGui.Separator();
@@ -194,7 +189,7 @@ internal sealed partial class ImGuiEditorWindow
             }, null);
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("选择现有资产添加槽位，不复用仍被体素占用的编号；新材质请先在资产面板创建。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("添加槽位时会跳过仍被体素占用的编号");
         if (requestDelete) ImGui.OpenPopup("删除材质槽位");
         DrawDeleteMaterialSlotConfirmation(modelObject, component, usage);
         ImGui.PopID();

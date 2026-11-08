@@ -73,6 +73,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private VoxelCoord64 _dragPreviewOffset;
     private VoxelWorld? _dragPreviewSource;
     private int _dragPreviewSourceVersion = -1;
+    /// <summary>拖动对象实例绕枢轴的旋转；旋转只改实例变换，不重建 BLAS</summary>
+    private System.Numerics.Quaternion _dragPreviewRotation = System.Numerics.Quaternion.Identity;
+    private System.Numerics.Vector3 _dragPreviewPivot;
     private int _dragPreviewGeometryVersion = -1;
     private int _dragPreviewAccelerationVersion = -1;
     private bool _dragPreviewAccelerationCurrent;
@@ -544,6 +547,34 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal const int MaxFullWorksetCells = 8_000_000;
 
     /// <summary>
+    /// 后台预建的工作集输入：BVH 与打包字节都在工作线程算好，主线程只做上传
+    /// </summary>
+    internal sealed class PreparedWorkset(VoxelGpuWorkset workset, byte[] cellBytes, VoxelGpuBvh bvh)
+    {
+        /// <summary>源工作集</summary>
+        internal VoxelGpuWorkset Workset { get; } = workset;
+
+        /// <summary>已打包的体素字节</summary>
+        internal byte[] CellBytes { get; } = cellBytes;
+
+        /// <summary>已构建的 GPU BVH</summary>
+        internal VoxelGpuBvh Bvh { get; } = bvh;
+    }
+
+    /// <summary>
+    /// 在任意线程预建工作集的 BVH 与打包字节，供固定工作集在后台预热
+    /// </summary>
+    /// <param name="workset">待预建的工作集</param>
+    /// <returns>可直接上传的预建数据</returns>
+    internal static PreparedWorkset PrepareWorkset(VoxelGpuWorkset workset)
+    {
+        ArgumentNullException.ThrowIfNull(workset);
+        var bvh = VoxelGpuBvh.Build(workset);
+        var bytes = bvh.OrderedCells.Count == 0 ? Array.Empty<byte>() : PackCells(bvh.OrderedCells);
+        return new PreparedWorkset(workset, bytes, bvh);
+    }
+
+    /// <summary>
     /// 同步稀疏体素世界到 Vulkan 工作集
     /// </summary>
     /// <param name="world">体素世界</param>
@@ -555,11 +586,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="chunkFilter">区块可见性过滤；场景与实时视口按视锥剔除，路径追踪与导出传 null 保留完整世界</param>
     /// <param name="visibilitySignature">过滤对应的相机位姿签名，变化时重建工作集</param>
     /// <param name="modelLod">模型级 LOD 视图；场景与渲染视口传入，编辑类同步可省略以沿用上次视图</param>
+    /// <param name="prebuilt">后台已建好的工作集；源版本匹配时直接复用</param>
+    /// <param name="prepared">与 prebuilt 配套的 BVH 与打包数据；匹配时上传不再重算</param>
     internal void SyncWorld(VoxelWorld world, int maximumCells = 0,
         VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null, bool greedyMerge = true,
         bool includeInterior = false, Func<ChunkCoord64, bool>? chunkFilter = null,
         long visibilitySignature = 0, VoxelModelLodView? modelLod = null,
-        VoxelGpuWorkset? prebuilt = null)
+        VoxelGpuWorkset? prebuilt = null, PreparedWorkset? prepared = null)
     {
         ArgumentNullException.ThrowIfNull(world);
         // 设备已经丢失时不再构建和上传工作集：故障设备上的每个原生调用都可能再次触发驱动异常
@@ -666,7 +699,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (_context is not null)
         {
             var uploadWatch = System.Diagnostics.Stopwatch.StartNew();
-            UploadWorkset(next);
+            var usablePrepared = prepared is not null && ReferenceEquals(prepared.Workset, next) ? prepared : null;
+            if (usablePrepared is not null)
+                MVoxelLog.Info($"工作集上传复用后台预建：{next.Cells.Count:N0} 格，跳过 BVH 与打包");
+            UploadWorkset(next, usablePrepared);
             SyncUploadMs = uploadWatch.Elapsed.TotalMilliseconds;
         }
 
@@ -716,9 +752,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="staticWorld">排除被拖对象后的场景世界</param>
     /// <param name="dragWorld">被拖对象的体素世界</param>
     /// <param name="offset">相对拖动起始位置的整格平移</param>
+    /// <param name="staticPrepared">静态世界的后台预建数据；为空时按普通流程构建</param>
     internal void SyncWorldDragPreview(VoxelWorld staticWorld, VoxelWorld dragWorld, VoxelCoord64 offset,
         int maximumCells = 0, VoxelLodSettings? lod = null, System.Numerics.Vector3? camera = null,
-        bool greedyMerge = false, bool includeInterior = false)
+        bool greedyMerge = false, bool includeInterior = false,
+        System.Numerics.Quaternion? rotation = null, System.Numerics.Vector3? pivot = null,
+        PreparedWorkset? staticPrepared = null)
     {
         ArgumentNullException.ThrowIfNull(staticWorld);
         ArgumentNullException.ThrowIfNull(dragWorld);
@@ -727,7 +766,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (dragChanged)
         {
             // 对象在拖动期间不会改动体素，这里只在拖动开始时付一次构建成本；
-            // 后续每步复用同一份快照，只换实例平移
+            // 后续每步复用同一份快照，只换实例变换
             var workset = VoxelGpuWorkset.Build(dragWorld, 0, null, null, greedyMerge: false, includeInterior: false);
             _dragPreviewCells = workset.Cells;
             _dragPreviewOrigin = workset.Origin;
@@ -740,11 +779,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             }
         }
 
-        SyncWorld(staticWorld, maximumCells, lod, camera, greedyMerge, includeInterior);
+        SyncWorld(staticWorld, maximumCells, lod, camera, greedyMerge, includeInterior,
+            prebuilt: staticPrepared?.Workset, prepared: staticPrepared);
         _dragPreviewActive = true;
-        if (offset.X != _dragPreviewOffset.X || offset.Y != _dragPreviewOffset.Y || offset.Z != _dragPreviewOffset.Z)
+        var nextRotation = rotation ?? System.Numerics.Quaternion.Identity;
+        var nextPivot = pivot ?? System.Numerics.Vector3.Zero;
+        if (offset.X != _dragPreviewOffset.X || offset.Y != _dragPreviewOffset.Y ||
+            offset.Z != _dragPreviewOffset.Z || !nextRotation.Equals(_dragPreviewRotation) ||
+            nextPivot != _dragPreviewPivot)
         {
             _dragPreviewOffset = offset;
+            _dragPreviewRotation = nextRotation;
+            _dragPreviewPivot = nextPivot;
             ResetAccumulation();
         }
     }
@@ -753,6 +799,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     internal void ClearDragPreview()
     {
         if (!_dragPreviewActive) return;
+        MVoxelLog.Info($"结束拖动实例预览：拖动源版本 {_dragPreviewSourceVersion}，" +
+            $"预览格数 {_dragPreviewCells.Count:N0}");
         _dragPreviewActive = false;
         _dragPreviewSource = null;
         _dragPreviewSourceVersion = -1;
@@ -1277,6 +1325,59 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <summary>诊断：当前是否走砖驻留路径</summary>
     internal bool DiagnosticUsingBrickPath => _usingBrickPath;
 
+    /// <summary>诊断：拖动实例预览是否处于激活状态</summary>
+    internal bool DiagnosticDragPreviewActive => _dragPreviewActive;
+
+    /// <summary>诊断：拖动实例变换是否已经生效</summary>
+    internal bool DiagnosticDragPreviewAccelerationCurrent => _dragPreviewAccelerationCurrent;
+
+    /// <summary>诊断：拖动实例的体素数</summary>
+    internal int DiagnosticDragPreviewCells => _dragPreviewCells.Count;
+
+    /// <summary>诊断：拖动实例几何版本与已生效的加速结构版本</summary>
+    internal long DiagnosticDragPreviewGeometryVersion => _dragPreviewGeometryVersion;
+
+    /// <summary>诊断：拖动实例已生效的加速结构版本</summary>
+    internal long DiagnosticDragPreviewAccelerationVersion => _dragPreviewAccelerationVersion;
+
+    /// <summary>诊断：拖动实例的当前工作集原点</summary>
+    internal VoxelCoord64 DiagnosticDragPreviewOrigin => _dragPreviewOrigin;
+
+    /// <summary>诊断：拖动实例叠加的残差旋转</summary>
+    internal System.Numerics.Quaternion DiagnosticDragPreviewRotation => _dragPreviewRotation;
+
+    /// <summary>诊断：拖动实例的旋转枢轴</summary>
+    internal System.Numerics.Vector3 DiagnosticDragPreviewPivot => _dragPreviewPivot;
+
+    /// <summary>诊断：硬件加速结构里是否已有拖动实例</summary>
+    internal bool DiagnosticDragAccelerationAvailable => _shadowAcceleration?.HasDragAcceleration ?? false;
+
+    /// <summary>诊断：硬件加速结构里拖动实例的体素数</summary>
+    internal int DiagnosticDragAccelerationCells => _shadowAcceleration?.DragAccelerationCellCount ?? 0;
+
+    /// <summary>诊断：硬件加速结构里拖动实例的局部原点</summary>
+    internal VoxelCoord64 DiagnosticDragAccelerationOrigin => _shadowAcceleration?.DragAccelerationOrigin ?? default;
+
+    /// <summary>诊断：拖动实例的 TLAS 是否有效</summary>
+    internal bool DiagnosticDragHasTlas => _shadowAcceleration?.DiagnosticHasTlas ?? false;
+
+    /// <summary>诊断：拖动实例 BLAS 是否有效</summary>
+    internal bool DiagnosticDragHasBlas => _shadowAcceleration?.DiagnosticHasDragBlas ?? false;
+
+    /// <summary>诊断：实例 1 是否标记为可见</summary>
+    internal bool DiagnosticDragInstanceVisible => _shadowAcceleration?.DiagnosticDragInstanceVisible ?? false;
+
+    /// <summary>诊断：最近写入实例缓冲的拖动对象平移</summary>
+    internal System.Numerics.Vector3 DiagnosticDragTranslation =>
+        _shadowAcceleration?.DiagnosticLastDragTranslation ?? default;
+
+    /// <summary>诊断：加速结构使用的静态工作集原点</summary>
+    internal VoxelCoord64 DiagnosticDragStaticOrigin =>
+        _shadowAcceleration?.DiagnosticStaticOrigin ?? default;
+
+    /// <summary>诊断：着色器用于平移射线的加速结构原点</summary>
+    internal VoxelCoord64 DiagnosticShadowOrigin => _shadowAccelerationOrigin;
+
     /// <summary>诊断：主射线是否绑定硬件 ray query</summary>
     internal bool DiagnosticHardwareShadowsActive => _hardwareShadowsActive;
 
@@ -1566,6 +1667,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         parameters[VoxelRenderParameters.DragOffsetX] = _dragPreviewOffset.X;
         parameters[VoxelRenderParameters.DragOffsetY] = _dragPreviewOffset.Y;
         parameters[VoxelRenderParameters.DragOffsetZ] = _dragPreviewOffset.Z;
+        parameters[VoxelRenderParameters.DragRotationX] = _dragPreviewRotation.X;
+        parameters[VoxelRenderParameters.DragRotationY] = _dragPreviewRotation.Y;
+        parameters[VoxelRenderParameters.DragRotationZ] = _dragPreviewRotation.Z;
+        parameters[VoxelRenderParameters.DragRotationW] = _dragPreviewRotation.W;
+        parameters[VoxelRenderParameters.DragPivotX] = _dragPreviewPivot.X;
+        parameters[VoxelRenderParameters.DragPivotY] = _dragPreviewPivot.Y;
+        parameters[VoxelRenderParameters.DragPivotZ] = _dragPreviewPivot.Z;
         parameters[VoxelRenderParameters.DragCellCount] = _dragPreviewCells.Count;
         parameters[VoxelRenderParameters.OutlineMaskActive] = _outlineMaskActive ? 1F : 0F;
         parameters[VoxelRenderParameters.EnvEnabled] = HasEnvironment ? 1F : 0F;
@@ -2355,7 +2463,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             var worksetOrigin = _workset.Origin;
             var built = _shadowAcceleration.EnsureShadowAcceleration(hardwareCells, version, dragCells,
                 _dragPreviewOrigin, _dragPreviewOffset,
-                dragCells is not null ? _dragPreviewGeometryVersion : -1, worksetOrigin);
+                dragCells is not null ? _dragPreviewGeometryVersion : -1, worksetOrigin,
+                _dragPreviewRotation, _dragPreviewPivot);
             _lastShadowAccelerationBuildMs = buildWatch.Elapsed.TotalMilliseconds;
             if (!built)
             {
@@ -2393,8 +2502,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         if (_hardwareShadowPipeline.Handle == 0 || _shadowAcceleration?.HasAccelerationStructure != true) return;
         if (dragCells is not null)
         {
-            // 同一拖动内只有平移变化：这一步约 2ms，替换掉每次跨格重建整份 BLAS
-            if (!_shadowAcceleration.UpdateDragInstance(_dragPreviewOffset))
+            // 同一拖动内只有实例变换变化：这一步约 2ms，替换掉每次跨格重建整份 BLAS
+            if (!_shadowAcceleration.UpdateDragInstance(_dragPreviewOffset, _dragPreviewRotation,
+                    _dragPreviewPivot))
             {
                 _dragPreviewAccelerationCurrent = false;
                 return;
@@ -4042,6 +4152,22 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             SceneLightData sceneLights[];
         };
 
+        // 拖动实例的旋转四元数按行主序；这里只做向量旋转，长度不变，
+        // 因此把射线转回物体局部空间后求得的距离可以直接与其它命中比较。
+        vec3 RotateVectorByQuaternion(vec3 vector, vec4 rotation)
+        {
+            vec3 axis = rotation.xyz;
+            float scalar = rotation.w;
+            return 2.0 * dot(axis, vector) * axis +
+                (scalar * scalar - dot(axis, axis)) * vector +
+                2.0 * scalar * cross(axis, vector);
+        }
+
+        vec3 InverseRotateVectorByQuaternion(vec3 vector, vec4 rotation)
+        {
+            return RotateVectorByQuaternion(vector, vec4(-rotation.xyz, rotation.w));
+        }
+
         bool IntersectBox(vec3 rayOrigin, vec3 rayDirection, vec3 boxMin, vec3 boxMax,
             out float distance, out vec3 normal, bool computeNormal)
         {
@@ -4308,6 +4434,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     int hardwareCount = int(values[P_HW_RT_CELL_COUNT]);
                     // 加速结构按其构建时的体素原点存放相对坐标，工作集原点此后可能改动
                     vec3 shadowOrigin = vec3(values[P_SHADOW_ORIGIN_X], values[P_SHADOW_ORIGIN_Y], values[P_SHADOW_ORIGIN_Z]);
+                    // 拖动实例的局部坐标绕枢轴旋转后再平移回世界：把射线转到同一局部空间，
+                    // 盒体求交与实例几何才能保持一致
+                    vec4 dragRotation = normalize(vec4(values[P_DRAG_ROT_X], values[P_DRAG_ROT_Y],
+                        values[P_DRAG_ROT_Z], values[P_DRAG_ROT_W]));
+                    vec3 dragPivot = vec3(values[P_DRAG_PIVOT_X], values[P_DRAG_PIVOT_Y], values[P_DRAG_PIVOT_Z]);
+                    vec3 dragOriginWorld = vec3(values[P_DRAG_ORIGIN_X], values[P_DRAG_ORIGIN_Y],
+                        values[P_DRAG_ORIGIN_Z]);
+                    vec3 dragTranslation = dragPivot + RotateVectorByQuaternion(dragOriginWorld - dragPivot,
+                        dragRotation) + vec3(values[P_DRAG_OFFSET_X], values[P_DRAG_OFFSET_Y],
+                        values[P_DRAG_OFFSET_Z]);
+                    vec3 dragLocalOrigin = InverseRotateVectorByQuaternion(rayOrigin - dragTranslation, dragRotation);
+                    vec3 dragLocalDirection = InverseRotateVectorByQuaternion(rayDirection, dragRotation);
                     rayQueryEXT query;
                     rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsNoOpaqueEXT, 0xFF,
                         rayOrigin - shadowOrigin, 0.0, rayDirection, rayLimit);
@@ -4351,8 +4489,18 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         if (!dragHit && editRegion && all(greaterThan(minimum + vec3(extent), editMin)) &&
                             all(lessThan(minimum, editMax))) continue;
                         float distance; vec3 normal;
-                        if (!IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent), distance, normal, !anyHit) ||
-                            distance >= closestDistance) continue;
+                        if (dragHit)
+                        {
+                            // 拖动实例的盒体在实例局部空间里仍是轴对齐的，
+                            // 法线再转回世界空间供着色使用
+                            vec3 localMinimum = vec3(candidate.position.xyz);
+                            if (!IntersectBox(dragLocalOrigin, dragLocalDirection, localMinimum,
+                                    localMinimum + vec3(extent), distance, normal, !anyHit)) continue;
+                            normal = RotateVectorByQuaternion(normal, dragRotation);
+                        }
+                        else if (!IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent),
+                                     distance, normal, !anyHit)) continue;
+                        if (distance >= closestDistance) continue;
                         closestDistance = distance;
                         hitNormal = normal;
                         hitColor = candidate.color;
@@ -4558,6 +4706,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // 加速结构按其构建时的体素原点存放相对坐标；工作集原点变化后仍要按原原点换算
             vec3 relativeOrigin = rayOrigin - vec3(values[P_SHADOW_ORIGIN_X],
                 values[P_SHADOW_ORIGIN_Y], values[P_SHADOW_ORIGIN_Z]);
+            // 拖动实例带旋转时，遮挡求交也要转到实例局部空间
+            vec4 dragRotation = normalize(vec4(values[P_DRAG_ROT_X], values[P_DRAG_ROT_Y],
+                values[P_DRAG_ROT_Z], values[P_DRAG_ROT_W]));
+            vec3 dragPivot = vec3(values[P_DRAG_PIVOT_X], values[P_DRAG_PIVOT_Y], values[P_DRAG_PIVOT_Z]);
+            vec3 dragOriginWorld = vec3(values[P_DRAG_ORIGIN_X], values[P_DRAG_ORIGIN_Y],
+                values[P_DRAG_ORIGIN_Z]);
+            vec3 dragTranslation = dragPivot + RotateVectorByQuaternion(dragOriginWorld - dragPivot,
+                dragRotation) + vec3(values[P_DRAG_OFFSET_X], values[P_DRAG_OFFSET_Y],
+                values[P_DRAG_OFFSET_Z]);
+            vec3 dragLocalOrigin = InverseRotateVectorByQuaternion(rayOrigin - dragTranslation, dragRotation);
+            vec3 dragLocalDirection = InverseRotateVectorByQuaternion(rayDirection, dragRotation);
             int hardwareCount = int(values[P_HW_RT_CELL_COUNT]);
             rayQueryEXT query;
             rayQueryInitializeEXT(query, shadowTopLevel, gl_RayFlagsNoOpaqueEXT, 0xFF,
@@ -4590,8 +4749,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 ivec3 extent = ivec3(max(candidate.position.w & 255, 1),
                     max((candidate.position.w >> 8) & 255, 1), max((candidate.position.w >> 16) & 255, 1));
                 float distance; vec3 normal;
-                if (IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent),
-                    distance, normal, false) && distance < maxDistance) return true;
+                if (dragHit)
+                {
+                    vec3 localMinimum = vec3(candidate.position.xyz);
+                    if (IntersectBox(dragLocalOrigin, dragLocalDirection, localMinimum,
+                        localMinimum + vec3(extent), distance, normal, false) &&
+                        distance < maxDistance) return true;
+                }
+                else if (IntersectBox(rayOrigin, rayDirection, minimum, minimum + vec3(extent),
+                             distance, normal, false) && distance < maxDistance) return true;
             }
             return false;
             #else
@@ -7248,7 +7414,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// 创建或扩容设备本地体素缓冲并上传工作集
     /// </summary>
     /// <param name="workset">待上传的工作集</param>
-    private void UploadWorkset(VoxelGpuWorkset workset)
+    /// <param name="prepared">后台预建的 BVH 与打包数据；匹配时跳过主线程构建</param>
+    private void UploadWorkset(VoxelGpuWorkset workset, PreparedWorkset? prepared = null)
     {
         if (_context is null || _api is not { } api || _context.IsDeviceLost)
         {
@@ -7258,10 +7425,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 描述符和缓冲会在本次同步里改写，必须等上一轮分块计算结束
         WaitForComputeIdle();
         var phaseWatch = System.Diagnostics.Stopwatch.StartNew();
-        var bvh = VoxelGpuBvh.Build(workset);
-        SyncBvhBuildMs = phaseWatch.Elapsed.TotalMilliseconds;
+        var bvh = prepared?.Bvh ?? VoxelGpuBvh.Build(workset);
+        SyncBvhBuildMs = prepared is null ? phaseWatch.Elapsed.TotalMilliseconds : 0;
         phaseWatch.Restart();
-        var bytes = PackCells(bvh.OrderedCells);
+        var bytes = prepared?.CellBytes ?? PackCells(bvh.OrderedCells);
         _sceneOrderedCells = bvh.OrderedCells;
         _sceneOrderedOrigin = workset.Origin;
         _sceneSelectionDirty = true;

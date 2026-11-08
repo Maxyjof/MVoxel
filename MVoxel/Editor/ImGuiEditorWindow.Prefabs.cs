@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using ImGuiNET;
 using MVoxel.Core;
 using MVoxel.Project;
@@ -635,7 +635,6 @@ internal partial class ImGuiEditorWindow
                         var updated = SyncPendingPrefabRevisions(path);
                         SetStatus($"已尝试同步 {updated} 个预制体实例；无法安全合并的内容会保留");
                     }
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("保留实例覆盖，并尝试合并可安全处理的来源更新。");
                 }
 
                 if (ImGui.CollapsingHeader($"实例覆盖（{overrides.Count}）"))

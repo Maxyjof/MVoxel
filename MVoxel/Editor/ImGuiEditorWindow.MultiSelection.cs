@@ -16,6 +16,9 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>混合值输入框里的草稿文本，按“组件 + 字段”区分</summary>
     private readonly Dictionary<string, string> _multiMixedText = new();
 
+    /// <summary>选择集合 + 场景修订签名；变化时清掉混合值草稿，对应 Unity 的 SetIsDifferentCacheDirty</summary>
+    private string _multiSelectionCacheKey = string.Empty;
+
     /// <summary>多选时等待提交的浮点旋转，松手后统一重采样</summary>
     private readonly Dictionary<StableId, System.Numerics.Vector3> _multiRotationPending = new();
 
@@ -34,16 +37,29 @@ internal sealed partial class ImGuiEditorWindow
             .Select(id => _sceneDocument.Objects.FirstOrDefault(item => item.Id == id))
             .Where(item => item is not null).Select(item => item!).ToArray();
         if (objects.Length == 0) return;
+        // 对应 Unity 的 SerializedObject.Update()：选择集合或场景数据变化后，
+        // 上一组对象的混合值草稿必须失效，否则会显示过期文本
+        var cacheKey = string.Join(",", objects.Select(item => item.Id)) + "|" + _historySceneRevision;
+        if (cacheKey != _multiSelectionCacheKey)
+        {
+            _multiSelectionCacheKey = cacheKey;
+            _multiMixedText.Clear();
+        }
+
         ImGui.TextDisabled($"已选择 {objects.Length} 个对象");
+        // 整个选择集合都处于选中态，主对象用圆点和强调色标出；点击列表项可换主对象
         foreach (var item in objects)
         {
+            var primary = item.Id == _selectedSceneObjectId;
             ImGui.PushID(item.Id.ToString());
-            if (ImGui.Selectable(item.Name, _selectedSceneObjectId == item.Id))
+            if (primary) ImGui.PushStyleColor(ImGuiCol.Text, ToColor(EditorPalette.Accent));
+            if (ImGui.Selectable((primary ? "● " : "   ") + item.Name, true))
             {
                 _selectedSceneObjectId = item.Id;
                 _revealHierarchySelection = item.Id;
             }
 
+            if (primary) ImGui.PopStyleColor();
             ImGui.PopID();
         }
 
@@ -270,11 +286,17 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawSharedComponents(SceneObject[] objects)
     {
-        var sharedTypes = objects
+        var allTypes = objects
             .SelectMany(item => item.Components.Select(component => component.TypeId))
-            .Distinct(StringComparer.Ordinal)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        var sharedTypes = allTypes
             .Where(typeId => objects.All(item => item.Components.Any(component => component.TypeId == typeId)))
             .ToArray();
+        // Unity 的多选 Inspector 只显示共有组件，并把被隐藏的组件数量告诉用户
+        var hiddenComponents = allTypes.Length - sharedTypes.Length;
+        if (hiddenComponents > 0)
+            ImGui.TextDisabled($"已隐藏 {hiddenComponents} 个组件：只有全部对象共有的组件可多选编辑");
+        var objectNames = objects.Select(item => item.Name).ToArray();
         foreach (var typeId in sharedTypes)
         {
             var components = objects
@@ -291,15 +313,18 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             var colorGroups = CollectColorGroups(names);
+            var locked = 0;
             foreach (var name in names)
             {
-                if (MultiLockedFields.Contains(name, StringComparer.Ordinal)) continue;
+                if (MultiLockedFields.Contains(name, StringComparer.Ordinal)) { locked++; continue; }
                 if (colorGroups.Contains(name)) continue;
-                DrawSharedComponentField(components, name);
+                DrawSharedComponentField(components, name, objectNames);
             }
 
             foreach (var group in colorGroups)
                 DrawSharedColorField(components, group);
+            // Unity 把无法批量编辑的属性灰显并说明原因，不悄悄丢掉
+            if (locked > 0) DrawLockedRow("内部字段", $"{locked} 个内部数据字段不支持多选批量编辑");
         }
     }
 
@@ -342,7 +367,7 @@ internal sealed partial class ImGuiEditorWindow
         var value = new System.Numerics.Vector3((float)colors[0].R / 255F, (float)colors[0].G / 255F,
             (float)colors[0].B / 255F);
         // 颜色不一致时仍可批量覆盖：显示首个对象的颜色作为起点，改动即写入全部
-        if (!same && ImGui.IsItemHovered()) ImGui.SetTooltip("颜色不一致，改这里会统一覆盖全部选中对象");
+        if (!same && ImGui.IsItemHovered()) ImGui.SetTooltip("颜色不一致，改动会覆盖全部选中对象");
 
         if (!ImGui.ColorEdit3("##MultiColor_" + prefix, ref value)) return;
         foreach (var component in components)
@@ -362,7 +387,7 @@ internal sealed partial class ImGuiEditorWindow
                 : Enumerable.Empty<string>())
             .FirstOrDefault(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
 
-    private void DrawSharedComponentField(ComponentRecord[] components, string name)
+    private void DrawSharedComponentField(ComponentRecord[] components, string name, string[] objectNames)
     {
         var numbers = components.Select(component => TryReadNumber(component, name, out var number) ? (double?)number : null)
             .ToArray();
@@ -376,7 +401,8 @@ internal sealed partial class ImGuiEditorWindow
             var values = numbers.Select(value => value!.Value).ToArray();
             if (values.Skip(1).Any(value => Math.Abs(value - values[0]) > .000001D))
             {
-                DrawMixedInput(key, value => ApplyNumbers(components, name, value));
+                DrawMixedInput(key, value => ApplyNumbers(components, name, value),
+                    values.Select((value, index) => (objectNames[index], value, value.ToString("0.###"))).ToArray());
                 return;
             }
 
@@ -391,7 +417,9 @@ internal sealed partial class ImGuiEditorWindow
             var flags = booleans.Select(value => value!.Value).ToArray();
             if (flags.Skip(1).Any(value => value != flags[0]))
             {
-                DrawMixedInput(key, value => ApplyBooleans(components, name, value > .5D));
+                DrawMixedInput(key, value => ApplyBooleans(components, name, value > .5D),
+                    flags.Select((flag, index) =>
+                        (objectNames[index], flag ? 1D : 0D, flag ? "开" : "关")).ToArray());
                 return;
             }
 
@@ -442,12 +470,43 @@ internal sealed partial class ImGuiEditorWindow
         RebuildObjectVoxelWorld();
     }
 
-    /// <summary>混合值输入：显示横线，输入数值后统一写入</summary>
-    private void DrawMixedInput(string key, Action<double> apply)
+    /// <summary>
+    /// 混合值输入：显示横线，输入数值后统一写入。带候选值时提供下拉，
+    /// 对应 Unity 右键属性名「Set to Value of [对象名]」，把某个对象的值应用到全部。
+    /// </summary>
+    private void DrawMixedInput(string key, Action<double> apply,
+        IReadOnlyList<(string Name, double Value, string Text)>? candidates = null)
     {
         if (!_multiMixedText.TryGetValue(key, out var text)) text = "—";
-        ImGui.SetNextItemWidth(-1F);
-        if (ImGui.InputText("##Mixed_" + key, ref text, 32, ImGuiInputTextFlags.AutoSelectAll))
+        var hasCandidates = candidates is { Count: > 0 };
+        var buttonWidth = hasCandidates ? ImGui.GetFrameHeight() : 0F;
+        ImGui.SetNextItemWidth(hasCandidates
+            ? -1F - buttonWidth - ImGui.GetStyle().ItemSpacing.X
+            : -1F);
+        var changed = ImGui.InputText("##Mixed_" + key, ref text, 32, ImGuiInputTextFlags.AutoSelectAll);
+        var appliedFromMenu = false;
+        if (hasCandidates)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button($"▼##MixedPick_{key}", new System.Numerics.Vector2(buttonWidth, 0F)))
+                ImGui.OpenPopup($"##MixedPickPopup_{key}");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("从选中对象取值");
+            if (ImGui.BeginPopup($"##MixedPickPopup_{key}"))
+            {
+                foreach (var (name, value, display) in candidates!)
+                    if (ImGui.MenuItem($"{name}：{display}"))
+                    {
+                        apply(value);
+                        _multiMixedText.Remove(key);
+                        appliedFromMenu = true;
+                    }
+
+                ImGui.EndPopup();
+            }
+        }
+
+        if (appliedFromMenu) return;
+        if (changed)
         {
             _multiMixedText[key] = text;
             if (double.TryParse(text, out var parsed))
@@ -487,7 +546,8 @@ internal sealed partial class ImGuiEditorWindow
                 foreach (var item in objects) write(item, value);
                 MarkSceneDocumentDirty();
                 RebuildObjectVoxelWorld();
-            });
+            }, values.Select((value, index) =>
+                (objects[index].Name, value, value.ToString("0.###"))).ToArray());
             return;
         }
 

@@ -297,11 +297,10 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.Selectable(name, name == _projectSettings.DefaultRenderPreset)) ApplyProjectRenderPreset(name);
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用方案会替换渲染窗口配置，之后的手动修改不会更改方案文件。导出画面单独配置。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用方案会替换渲染窗口配置，手动修改不回写方案");
         ImGui.SetNextItemWidth(Math.Max(80F, Math.Min(300F, ImGui.GetContentRegionAvail().X * .6F)));
         ImGui.InputText("新方案名称", ref _newRenderPresetName, 96, ImGuiInputTextFlags.AutoSelectAll);
         if (ImGui.Button("保存当前画面为新方案")) SaveNewProjectRenderPreset();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("将当前渲染窗口配置保存到项目资产的渲染预设文件夹，不覆盖已有方案。");
     }
 
     private void SaveNewProjectRenderPreset()
@@ -397,7 +396,9 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.SetNextWindowPos(ImGui.GetIO().DisplaySize * .5F, ImGuiCond.FirstUseEver, new Vector2(.5F, .5F));
         ImGui.SetNextWindowSize(new Vector2(1080F, 760F), ImGuiCond.FirstUseEver);
         if (focus) ImGui.SetNextWindowFocus();
-        if (ImGui.Begin(title, ref open, PanelWindowFlags))
+        // ref 参数不能进 lambda，先拷到局部变量：标题栏叉号改它，画完再写回
+        var openState = open;
+        if (BeginToolWindow(title, PanelWindowFlags, () => openState = false))
         {
             if (ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)) _settingsScope = scope;
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(UiScale.Px(9F), UiScale.Px(7F)));
@@ -408,6 +409,7 @@ internal sealed partial class ImGuiEditorWindow
                 _renderSettingsInteractionAt = Environment.TickCount64;
         }
         ImGui.End();
+        open = openState;
     }
     private void DrawEditorSettingsSurface()
     {
@@ -487,18 +489,22 @@ internal sealed partial class ImGuiEditorWindow
         ImGui.EndChild();
     }
 
+    /// <summary>
+    /// 设置页标题，description 参数仅为兼容既有调用保留，标题不显示悬停提示
+    /// </summary>
     private static void DrawSettingsPageHeader(string title, string description)
     {
         ImGui.TextColored(ToColor(EditorPalette.Accent), title);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(description);
         ImGui.Separator();
     }
 
+    /// <summary>
+    /// 设置页分组标题，description 参数仅为兼容既有调用保留，标题不显示悬停提示
+    /// </summary>
     private static void DrawSettingsSectionHeader(string title, string? description = null)
     {
         ImGui.Spacing();
         ImGui.TextColored(ToColor(EditorPalette.Accent), title);
-        if (!string.IsNullOrWhiteSpace(description) && ImGui.IsItemHovered()) ImGui.SetTooltip(description);
 
         ImGui.Separator();
     }
@@ -513,7 +519,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.SetNextItemWidth(-1F);
                 ImGui.InputText("项目根目录", ref _editorSettings.ProjectRootPath, 2048, ImGuiInputTextFlags.AutoSelectAll);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("新建项目与“从 vox 新建”的默认保存位置；打开或创建项目后会自动更新为该项目所在目录");
+                    ImGui.SetTooltip("新建项目的默认保存位置，打开或创建项目后自动更新");
 
                 if (ImGui.Button("恢复默认项目根目录"))
                 {
@@ -529,15 +535,13 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("自动保存", "editor.general.autosave"))
             {
                 var changed = ImGui.Checkbox("启用自动保存", ref _editorSettings.AutoSave);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时，按设定周期使用与手动保存相同的正式项目保存流程。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景有未保存修改时按设定周期自动保存");
                 ImGui.BeginDisabled(!_editorSettings.AutoSave);
                 ImGui.Text("保存方式：正式项目（与手动保存相同）");
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("自动保存直接原子写入正式项目文件；保存成功后清除未保存状态，失败时保留未保存状态。");
                 SetSettingsSliderWidth("间隔（秒）");
                 changed |= ImGui.SliderInt("间隔（秒）", ref _editorSettings.AutoSaveSeconds, 10, 3600);
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    ImGui.SetTooltip("默认 600 秒（10 分钟）；修改设置后从当前时间重新计时。");
+                    ImGui.SetTooltip("默认 600 秒，修改后从当前时间重新计时");
                 ImGui.EndDisabled();
                 if (changed)
                 {
@@ -556,7 +560,6 @@ internal sealed partial class ImGuiEditorWindow
                 changed |= ImGui.SliderInt("持续撤回间隔（毫秒）", ref _editorSettings.UndoRepeatIntervalMs, 20, 500);
                 _editorSettings.Normalize();
                 ImGui.TextDisabled($"当前速度：{1000F / _editorSettings.UndoRepeatIntervalMs:0.0} 次/秒");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("撤销和重做首次按下立即响应，达到延迟后按间隔连续执行；高风险操作会暂停连发并要求确认。");
                 if (changed) SaveEditorSettings();
                 ImGui.EndTabItem();
             }
@@ -573,18 +576,17 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("面板", "editor.layout.panels"))
             {
                 ImGui.TextDisabled("选择一个适合当前任务的工作区，之后仍可手动拖拽面板调整。");
-                foreach (var (name, preset, hint) in new[]
+                foreach (var (name, preset) in new[]
                 {
-                    ("默认布局", LayoutPreset.Default, "保留标准场景、层级、检查器和资产工作区"),
-                    ("建模布局", LayoutPreset.Modeling, "突出场景和调色盘，适合体素编辑"),
-                    ("渲染布局", LayoutPreset.Rendering, "打开渲染视图和渲染配置"),
-                    ("资产布局", LayoutPreset.Assets, "扩大项目资产区域，方便浏览和管理资产"),
-                    ("生成器布局", LayoutPreset.Generator, "打开并停靠生成器，方便编辑脚本和参数"),
-                    ("分析布局", LayoutPreset.Analysis, "打开体素度量和性能分析器"),
+                    ("默认布局", LayoutPreset.Default),
+                    ("建模布局", LayoutPreset.Modeling),
+                    ("渲染布局", LayoutPreset.Rendering),
+                    ("资产布局", LayoutPreset.Assets),
+                    ("生成器布局", LayoutPreset.Generator),
+                    ("分析布局", LayoutPreset.Analysis),
                 })
                 {
                     if (ImGui.Button(name, new Vector2(-1F, 0F))) SelectLayout(preset);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip(hint);
                 }
                 ImGui.EndTabItem();
             }
@@ -593,7 +595,6 @@ internal sealed partial class ImGuiEditorWindow
             {
                 if (ImGui.Button(_editPanelLayout ? "完成面板布局编辑" : "编辑面板布局"))
                     _editPanelLayout = !_editPanelLayout;
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("编辑停靠位置、面板分割线和浮动状态");
                 ImGui.EndTabItem();
             }
 
@@ -613,9 +614,9 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("显示体素轮廓", ref _editorSettings.ShowVoxelOutlines);
                 ImGui.Checkbox("变换数值立即应用", ref _editorSettings.ApplyTransformImmediately);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("开启后，检查器里改旋转/缩放/位置会实时重建场景；关闭时拖动只预览，松手或输入结束后才应用。");
+                    ImGui.SetTooltip("开启后拖动即重建场景，关闭时松开或输入结束才应用");
                 DrawSettingsSectionHeader("场景 LOD", "远距离显示策略");
-                DrawLodSection(_editorSettings.RenderViewSettings);
+                DrawLodSection(_editorSettings.SceneRenderSettings.SceneLod, _editorSettings.RenderViewSettings.RenderLod);
                 DrawSettingsSectionHeader("场景相机", "视口导航和裁剪范围");
                 SliderFloat("移动速度", ref _editorSettings.SceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _editorSettings.SceneNearClip, 0.001F, 1000F, "%.3f 格");
@@ -623,7 +624,7 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("视场角 FOV", ref _editorSettings.SceneFieldOfView, 20F, 120F, "%.0f°");
                 DrawSettingsSectionHeader("场景背景", "未打开项目时的预览底色");
                 DrawColorSlider("场景背景色", ref _editorSettings.SceneRenderSettings.SceneBackgroundColor);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("未打开项目时使用此颜色，新项目会继承该颜色");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("未打开项目时使用此颜色，新项目会继承");
                 ImGui.EndTabItem();
             }
 
@@ -678,7 +679,7 @@ internal sealed partial class ImGuiEditorWindow
                 }
                 ImGui.EndCombo();
             }
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("应用后可以继续手动调整；低和中使用实时光照，高和超高使用路径追踪。所有方案保留完整体素、分辨率、AO及辉光；低档使用更少的阴影和AO采样。导出设置独立。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("低与中用实时光照，高与超高用路径追踪，应用后可手动微调");
         }
 
         DrawRenderSettingsAccordion("backend", "后端", () =>
@@ -707,8 +708,8 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
                     var description = hardwareAvailable
-                        ? "默认按设备能力自动启用 Ray Query，加速部分体素和太阳遮挡求交；光照、后处理和三种太阳方案使用共用管线。工作集过大、持续编辑或初始化失败时会使用软件 BVH。关闭后只影响本项目。"
-                        : "当前设备未启用 Ray Query，或已选择强制 Compute；渲染使用软件 BVH。若刚关闭强制 Compute，需重建设备或重启编辑器后才能检测并启用。";
+                        ? "硬件 Ray Query 加速体素与太阳遮挡求交，工作集过大或初始化失败时回退软件 BVH"
+                        : "设备未启用 Ray Query 或已强制 Compute，改用软件 BVH；刚关闭强制 Compute 需重启编辑器后才检测";
                     if (_pipeline is not null) description += "\n当前渲染视口：" + _pipeline.HardwareShadowStatus;
                     ImGui.SetTooltip(description);
                 }
@@ -747,7 +748,7 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("启用路径追踪", ref settings.PathTracingEnabled);
                 SliderInt("每帧样本数", ref settings.PathSamplesPerFrame, 1, 8);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("导出时每帧写入的路径样本数。渲染窗口的交互预览固定每帧 1 个样本，避免整帧路径追踪把编辑器拖到十几帧；累积样本上限和最终画质不变。");
+                    ImGui.SetTooltip("导出时每帧写入的路径样本数，渲染窗口交互预览固定每帧 1 个");
                 SliderInt("累积样本上限", ref settings.PathMaxAccumulatedSamples, 64, 8192);
                 SliderFloat("内部分辨率倍率", ref settings.ResolutionScale, 0.25F, 1F, "%.2f×");
                 SliderInt("最大弹射次数", ref settings.MaxBounces, 1, 12);
@@ -764,47 +765,46 @@ internal sealed partial class ImGuiEditorWindow
                 SliderFloat("介电反射率 F0", ref settings.PathSpecularF0, 0F, 0.2F, "%.3f");
                 SliderFloat("半透明吸收浓度", ref settings.TransmissiveAbsorption, 0F, 6F, "%.2f");
                 ImGui.Checkbox("薄板玻璃近似", ref settings.ThinGlassApproximation);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射，避免体素化圆柱壳产生棱镜条纹。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("薄壁透明壳只做透射与吸收，不按界面法线折射");
                 SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值即按薄板处理；0 表示关闭判定。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("介质长度不超过该值按薄板处理，0 表示关闭判定");
                 ImGui.Checkbox("玻璃反射追踪场景", ref settings.GlassSceneReflection);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃界面反射真实场景，未命中回退天空；关闭后只反射天空，室内边缘会偏亮。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃反射真实场景，关闭后只反射天空");
                 SliderFloat("玻璃太阳高光强度", ref settings.GlassGlintIntensity, 0F, 24F, "%.1f");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃界面太阳高光倍率，默认 6 与旧版一致。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃界面太阳高光倍率，默认 6");
                 ImGui.Checkbox("透射阴影染色", ref settings.GlassTransmissionShadow);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("太阳穿过半透明体素时按 Beer 吸收累积颜色，有色玻璃得到带色阴影。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("太阳穿过半透明体素时按 Beer 吸收累积颜色");
                 SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("0 等于玻璃不挡光，1 按实际透射率衰减。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("0 为不挡光，1 按实际透射率衰减");
                 SliderInt("玻璃反射分段数", ref settings.GlassReflectionBounces, 1, 3, "%d 段");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("2 段以上允许反射到金属表面后继续反射。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("2 段以上允许反射到金属表面后继续反射");
                 ImGui.Checkbox("反射包含发光体", ref settings.GlassReflectionEmissive);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃反射到灯面时带上灯光颜色；关闭按天空近似。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("反射到灯面时带上灯光颜色，关闭按天空近似");
                 SliderFloat("反射环境光权重", ref settings.GlassReflectionAmbient, 0F, 2F, "%.2f");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("反射点环境光强度，默认 0.5；调低让反射更暗、对比更强。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("反射点环境光强度，默认 0.5");
                 SliderFloat("反射遮挡权重", ref settings.GlassReflectionOcclusion, 0F, 1F, "%.2f");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按反射点半球遮挡比例压暗环境光，室内玻璃边缘不会一片高亮。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按反射点半球遮挡比例压暗环境光");
                 ImGui.Checkbox("拖动视角时降低采样", ref settings.NavigationSamplingRelief);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("转视角时临时降低阴影与反射射线数量，光照和效果保持，松手恢复完整质量。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("转视角时临时降低阴影、反射射线与抗锯齿采样，光照和分辨率不变，松手恢复完整质量");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("主动采样不透明发光面并与反弹命中做 MIS 合并，关闭后仅靠反弹命中");
                 ImGui.Checkbox("光源树重要性采样", ref settings.EmissiveLightTree);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时，根据光源功率与接收点距离选择灯面；关闭后使用均匀采样，便于比较画质收敛与帧成本。不会删除暗灯或降低分辨率。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("超过 32 个发光面时按功率与距离选灯，关闭后均匀采样");
                 SliderFloat("自发光强度", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
                 ImGui.Checkbox("太阳直接光采样", ref settings.SunDirectLighting);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("控制路径追踪中对太阳的直接采样；本地光源和自发光体素不受此开关控制。");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪中对太阳直接采样，不影响本地光源与自发光体素");
         });
 
         DrawRenderSettingsAccordion("performance", "大型场景性能", () =>
         {
             ImGui.Checkbox("自动限制视口采样", ref settings.AutoPerformanceScaling);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("大型工作集限制实时 AO 和阴影采样，超过 70 万格时关闭实时 AO；不改变分辨率或导出设置。");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("大型工作集限制实时 AO 与阴影采样，不改分辨率或导出设置");
         });
 
         DrawRenderSettingsAccordion("lod", "渲染距离 LOD", () =>
         {
             DrawLodGroup("渲染窗口", settings.RenderLod);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("距离 LOD 会简化远处体素，关闭时保留完整模型精度。");
         });
 
         DrawRenderSettingsAccordion("camera", "相机", () =>
@@ -818,7 +818,7 @@ internal sealed partial class ImGuiEditorWindow
                     _pipeline?.ResetAccumulation();
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("正交投影的主射线彼此平行、无近大远小，适合等轴测展示；\n正交时用半高控制取景范围，视场角不再参与主射线计算。");
+                    ImGui.SetTooltip("正交主射线平行无近大远小，用半高控制取景范围");
                 if (projection == 1)
                     SliderFloat("正交半高", ref settings.CameraOrthoHalfHeight, 0.5F, 4096F, "%.1f 格");
                 else
@@ -979,7 +979,7 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("字体", "editor.appearance.font"))
             {
                 SliderFloat("界面缩放", ref _editorSettings.UiScale, 0.75F, 2F, "%.2fx");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按 DPI 使用整数倍字体缩放，降低文字发虚");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("按 DPI 整数倍缩放字体，降低文字发虚");
                 ImGui.EndTabItem();
             }
 
@@ -1021,20 +1021,18 @@ internal sealed partial class ImGuiEditorWindow
             _editorSettings.Normalize();
             SaveEditorSettings();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前 GPU 管线按单任务安全执行；该设置为未来多管线并行保留上限，不会阻塞编辑器输入。");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("当前 GPU 管线按单任务执行，此项为多管线并行预留上限");
         if (ImGui.BeginTabBar("##EditorPerformanceTabs"))
         {
             if (BeginSettingsSubTab("性能策略", "editor.performance.strategy"))
             {
                 ImGui.TextUnformatted("LOD 与稀疏数据");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("场景视图使用 LOD 和稀疏区块，渲染与导出保留完整数据");
                 ImGui.EndTabItem();
             }
 
             if (BeginSettingsSubTab("诊断", "editor.performance.diagnostics"))
             {
                 ImGui.TextUnformatted("显卡诊断");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("检查字体缺字、显卡帧尺寸和绘制顶点数");
                 ImGui.EndTabItem();
             }
 
@@ -1075,7 +1073,7 @@ internal sealed partial class ImGuiEditorWindow
                     ImGui.EndCombo();
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("列表来自 Assets/RenderPresets；选择后会立即应用到当前项目并保存");
+                    ImGui.SetTooltip("来自 Assets/RenderPresets，选择后立即应用并保存");
                 ImGui.EndTabItem();
             }
 
@@ -1094,17 +1092,40 @@ internal sealed partial class ImGuiEditorWindow
                 ImGui.Checkbox("显示场景网格", ref _showGrid);
                 ImGui.Checkbox("显示体素轮廓", ref _showVoxelOutlines);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("只在绘制模式下显示，并且只描边当前正在编辑的模型；远处棱线按屏幕尺寸淡出");
+                    ImGui.SetTooltip("只在绘制模式下描边正在编辑的模型，远处棱线按屏幕尺寸淡出");
                 DrawSettingsSectionHeader("场景相机", "视口导航和裁剪范围");
                 SliderFloat("移动速度", ref _sceneMoveSpeed, 0.1F, 256F, "%.1f 格/秒");
                 SliderFloat("近处裁剪", ref _sceneNearClip, 0.001F, 1000F, "%.3f 格");
                 SliderFloat("远处裁剪", ref _sceneFarClip, 1F, 100000000F, "%.0f 格");
                 SliderFloat("视场角 FOV", ref _sceneFieldOfView, 20F, 120F, "%.0f°");
+                DrawSettingsSectionHeader("场景抗锯齿", "只在项目里开启，不影响渲染窗口与导出");
+                var sceneRender = _projectSettings.SceneRenderSettings;
+                ImGui.Checkbox("实时抗锯齿##SceneAntiAliasing", ref sceneRender.SceneAntiAliasingEnabled);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("默认关闭，转视角最流畅；开启后静止画面边缘更平滑，相机移动时临时按单采样渲染");
+                if (sceneRender.SceneAntiAliasingEnabled)
+                {
+                    var sampleIndex = sceneRender.RealtimeAntiAliasingSamples switch
+                    {
+                        2 => 0,
+                        4 => 1,
+                        8 => 2,
+                        _ => 3,
+                    };
+                    ImGui.SetNextItemWidth(120F);
+                    if (ImGui.Combo("采样数##SceneAntiAliasingSamples", ref sampleIndex, "2\0" + "4\0" + "8\0" + "16\0"))
+                        sceneRender.RealtimeAntiAliasingSamples = sampleIndex switch { 0 => 2, 1 => 4, 2 => 8, _ => 16 };
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("每像素求交次数，采样越多边缘越平滑，单帧耗时按倍数增长");
+                    SliderFloat("采样强度##SceneAntiAliasingSpread", ref sceneRender.RealtimeAntiAliasingSpread,
+                        0.25F, 1F, "%.2f");
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("抖动网格的铺开范围，越大边缘越平滑、远处细节越容易发软");
+                }
                 DrawSettingsSectionHeader("场景背景", "项目打开后的预览底色");
                 ImGui.TextDisabled("场景背景色由编辑器设置统一控制");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("打开项目后优先使用项目级背景色");
                 DrawSettingsSectionHeader("场景 LOD", "远距离显示策略");
-                DrawLodSection(_projectSettings.RenderSettings);
+                DrawLodSection(_projectSettings.SceneRenderSettings.SceneLod, _projectSettings.RenderSettings.RenderLod);
                 ImGui.EndTabItem();
             }
 
@@ -1138,8 +1159,6 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         ImGui.TextUnformatted("场景图层");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("对象在检查器的图层下拉中归属图层；相机组件按图层遮罩决定渲染哪些对象。");
         var usage = document.LayerUsageCounts();
         for (var layerIndex = 0; layerIndex < document.LayerNames.Count; layerIndex++)
         {
@@ -1174,8 +1193,8 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             ImGui.EndDisabled();
-            if (layerIndex == 0 && ImGui.IsItemHovered())
-                ImGui.SetTooltip("默认层不可删除；删除图层时该层对象回到默认层。");
+            if (layerIndex == 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("默认层不可删除");
             ImGui.PopID();
         }
 
@@ -1199,7 +1218,6 @@ internal sealed partial class ImGuiEditorWindow
         _ = newLayerName;
         ImGui.Separator();
         ImGui.TextUnformatted("排序图层");
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("列表由低到高决定同一坐标的模型显示优先级。");
         for (var i = 0; i < document.SortingLayerNames.Count; i++)
         {
             ImGui.PushID($"SortingLayer{i}");
@@ -1242,14 +1260,12 @@ internal sealed partial class ImGuiEditorWindow
             if (BeginSettingsSubTab("目录", "project.asset.directory"))
             {
                 ImGui.TextUnformatted("项目资源目录");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Assets 下的项目资源由目录结构统一管理，体素材质使用调色盘基础色");
                 ImGui.EndTabItem();
             }
 
             if (BeginSettingsSubTab("导入", "project.asset.import"))
             {
                 ImGui.TextUnformatted("导入与导出格式");
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("支持导入导出 .vox、导入网格模型与 Minecraft 存档、读写 .palette");
                 ImGui.EndTabItem();
             }
 

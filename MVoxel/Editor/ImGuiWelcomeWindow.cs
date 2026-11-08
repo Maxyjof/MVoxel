@@ -197,8 +197,6 @@ internal sealed class ImGuiWelcomeContent
         if (ImGui.Button("打开项目", UiScale.Size(200F, 40F))) BeginPathDialog(2);
         ImGui.SameLine();
         if (ImGui.Button("从 .vox 新建", UiScale.Size(200F, 40F))) CreateProjectFromVoxFile();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("选择 MagicaVoxel .vox 文件\n自动在默认项目根目录创建同名项目并导入模型\n当前只支持单模型文件");
 
         ImGui.Dummy(new Vector2(0F, UiScale.Px(12F)));
         ImGui.SetCursorPosX(Math.Max(34F, (display.X - contentWidth) / 2F));
@@ -274,14 +272,12 @@ internal sealed class ImGuiWelcomeContent
                         _errorText = $"打开文件夹失败：{exception.Message}";
                     }
                 }
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("在文件资源管理器中打开项目文件夹");
                 ImGui.SameLine();
                 if (ImGui.Button("删除", new Vector2(deleteWidth, buttonHeight)))
                 {
                     _deleteRecentProject = entry;
                     _requestDeleteRecentPopup = true;
                 }
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("移出列表或将项目文件夹移入回收站");
                 ImGui.SetCursorScreenPos(rowMin + new Vector2(0F, rowHeight));
                 ImGui.Dummy(new Vector2(0F, recentRowGap));
                 ImGui.PopID();
@@ -351,12 +347,22 @@ internal sealed class ImGuiWelcomeContent
             _requestDeleteRecentPopup = false;
             ImGui.OpenPopup("删除最近项目##RecentProjectDelete");
         }
-        if (!CenteredModal.Begin("删除最近项目##RecentProjectDelete", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        // 欢迎窗口为了自绘标题栏把窗口内边距清成了 0；弹窗必须恢复自己的内边距，
+        // 否则标题与正文会紧贴边框，同时给一个舒适的最小宽度让长路径正常换行
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(UiScale.Px(16F), UiScale.Px(14F)));
+        ImGui.SetNextWindowSizeConstraints(new Vector2(UiScale.Px(380F), 0F),
+            new Vector2(UiScale.Px(560F), float.MaxValue));
+        if (!CenteredModal.Begin("删除最近项目##RecentProjectDelete", ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.PopStyleVar();
+            return;
+        }
         if (_deleteRecentProject is { } entry)
         {
             ImGui.TextWrapped($"项目：{entry.Name}");
             ImGui.TextWrapped(entry.Path);
             ImGui.TextWrapped("移出列表会保留项目文件；删除项目会将整个项目文件夹移入回收站。");
+            ImGui.Dummy(new Vector2(0F, UiScale.Px(4F)));
             if (ImGui.Button("仅移出列表"))
             {
                 try
@@ -402,6 +408,7 @@ internal sealed class ImGuiWelcomeContent
             if (ImGui.Button("取消")) { _deleteRecentProject = null; ImGui.CloseCurrentPopup(); }
         }
         ImGui.EndPopup();
+        ImGui.PopStyleVar();
     }
 
     /// <summary>
@@ -715,7 +722,6 @@ internal sealed class ImGuiWelcomeContent
 
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selected.Description}\n规模：{selected.Scale}\n重点：{selected.Focus}\n学习目标：{selected.LearningGoal}");
         TemplateLearningPreview.Draw(_selectedTemplate);
     }
 

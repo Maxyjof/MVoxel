@@ -20,7 +20,34 @@ public static class ModelRotationRule
     /// <param name="error">失败原因</param>
     /// <returns>成功时为 true</returns>
     public static bool TryResample(VoxelWorld source, Quaternion rotation, VoxelCoord64 anchor, out VoxelWorld result,
-        out string error)
+        out string error) =>
+        TryResample(source, null, rotation, anchor, out result, out error);
+
+    /// <summary>
+    /// 建立基准模型的坐标到体素值索引，拖动预览反复重采样时复用同一份索引
+    /// </summary>
+    /// <param name="source">基准模型</param>
+    /// <returns>坐标索引</returns>
+    public static Dictionary<(long X, long Y, long Z), VoxelValue> CreateLookup(VoxelWorld source)
+    {
+        var lookup = new Dictionary<(long X, long Y, long Z), VoxelValue>(source.OccupiedVoxelCount);
+        foreach (var cell in source.EnumerateOccupied())
+            lookup[(cell.Coordinate.X, cell.Coordinate.Y, cell.Coordinate.Z)] = cell.Value;
+        return lookup;
+    }
+
+    /// <summary>
+    /// 按给定四元数对基准模型重新采样，可复用预先建好的坐标索引
+    /// </summary>
+    /// <param name="source">基准模型，坐标已在世界格上</param>
+    /// <param name="lookup">基准模型坐标索引；为空时在本次调用里建立</param>
+    /// <param name="rotation">绕模型几何中心的旋转</param>
+    /// <param name="anchor">结果要对齐到的包围盒最小角</param>
+    /// <param name="result">采样结果</param>
+    /// <param name="error">失败原因</param>
+    /// <returns>成功时为 true</returns>
+    public static bool TryResample(VoxelWorld source, IReadOnlyDictionary<(long X, long Y, long Z), VoxelValue>? lookup,
+        Quaternion rotation, VoxelCoord64 anchor, out VoxelWorld result, out string error)
     {
         result = new VoxelWorld();
         error = string.Empty;
@@ -35,8 +62,7 @@ public static class ModelRotationRule
             (minimum.Y + maximum.Y + 1) * .5F,
             (minimum.Z + maximum.Z + 1) * .5F);
         var inverse = Quaternion.Normalize(Quaternion.Inverse(rotation));
-        var lookup = new Dictionary<(long X, long Y, long Z), VoxelValue>();
-        foreach (var cell in source.EnumerateOccupied()) lookup[(cell.Coordinate.X, cell.Coordinate.Y, cell.Coordinate.Z)] = cell.Value;
+        lookup ??= CreateLookup(source);
 
         // 旋转后的包围盒用 8 个角点估算，保证扫到的格子足够覆盖结果
         var minimumCorner = new Vector3(minimum.X, minimum.Y, minimum.Z);

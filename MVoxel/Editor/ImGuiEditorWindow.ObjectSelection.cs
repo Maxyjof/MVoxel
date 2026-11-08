@@ -21,6 +21,13 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>多选数量大于 1 时检查器走聚合模式</summary>
     private bool HasMultipleSelection => _selectedSceneObjectIds.Count > 1;
 
+    /// <summary>对象是否在当前选择集合里（含主对象）</summary>
+    private bool IsInSceneSelection(StableId id) =>
+        _selectedSceneObjectId == id || _selectedSceneObjectIds.Contains(id);
+
+    /// <summary>对象是否为当前主对象（Unity 里的 active selection）</summary>
+    private bool IsPrimarySceneSelection(StableId id) => _selectedSceneObjectId == id;
+
     /// <summary>
     /// 用一组对象替换当前选择，主对象取最后一个
     /// </summary>
@@ -32,6 +39,9 @@ internal sealed partial class ImGuiEditorWindow
         _selectedSceneObjectId = ids.Count > 0 ? ids[^1] : null;
         _revealHierarchySelection = _selectedSceneObjectId;
         if (_selectedSceneObjectIds.Count <= 1) _selectedSceneObjectIds.Clear();
+        // 选择集合变了，混合值输入草稿全部失效（对应 Unity 的 SetIsDifferentCacheDirty）
+        _multiMixedText.Clear();
+        _multiSelectionCacheKey = string.Empty;
     }
 
     /// <summary>
@@ -42,6 +52,8 @@ internal sealed partial class ImGuiEditorWindow
     {
         _selectedSceneObjectIds.Clear();
         _selectedSceneObjectId = id;
+        _multiMixedText.Clear();
+        _multiSelectionCacheKey = string.Empty;
     }
 
     /// <summary>
@@ -53,20 +65,30 @@ internal sealed partial class ImGuiEditorWindow
     /// <returns>本帧是否消费了这次输入</returns>
     private bool HandleObjectBoxSelection(Vector2 origin, Vector2 size, SceneCamera camera)
     {
-        if (_sceneDocument is null) return false;
+        if (_sceneDocument is null)
+        {
+            _objectBoxSelecting = false;
+            return false;
+        }
+
         var mouse = ImGui.GetIO().MousePos;
         if (!_objectBoxSelecting)
         {
             if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left)) return false;
-            if (!ImGui.IsMouseHoveringRect(origin, origin + size)) return false;
+            // 窗口遮挡优先：插件管理、脚本运行器等浮动窗口压在视口上时，
+            // IsMouseHoveringRect 仍为真，不补窗口判定就会在点窗口时开始框选
+            if (!ImGui.IsWindowHovered() || !ImGui.IsMouseHoveringRect(origin, origin + size)) return false;
             _objectBoxStart = mouse;
             _objectBoxSelecting = true;
+            // 按下的这一帧仍交给体素拾取，拖过阈值后才由框选接管输入
             return false;
         }
 
-        var rectMinimum = Vector2.Min(_objectBoxStart, mouse);
-        var rectMaximum = Vector2.Max(_objectBoxStart, mouse);
-        var hasArea = (rectMaximum - rectMinimum).LengthSquared() > 36F;
+        // 框选矩形夹在视口内：拖到别的面板也不会把框画到窗口外、把框选范围算大
+        var viewMaximum = origin + size;
+        var rectMinimum = Vector2.Clamp(Vector2.Min(_objectBoxStart, mouse), origin, viewMaximum);
+        var rectMaximum = Vector2.Clamp(Vector2.Max(_objectBoxStart, mouse), origin, viewMaximum);
+        var hasArea = rectMaximum.X - rectMinimum.X > 4F || rectMaximum.Y - rectMinimum.Y > 4F;
         if (hasArea)
         {
             var drawList = ImGui.GetWindowDrawList();
@@ -76,7 +98,10 @@ internal sealed partial class ImGuiEditorWindow
                 1.4F);
         }
 
-        if (!ImGui.IsMouseReleased(ImGuiMouseButton.Left)) return hasArea;
+        // 释放事件可能被弹窗、工具面板或焦点切换吞掉；用 !IsMouseDown 兜底收尾，
+        // 否则 _objectBoxSelecting 会卡住，之后每帧都画框且不再响应单击拾取
+        if (!ImGui.IsMouseReleased(ImGuiMouseButton.Left) && ImGui.IsMouseDown(ImGuiMouseButton.Left))
+            return hasArea;
         _objectBoxSelecting = false;
         if (!hasArea) return false;
         var selection = new List<StableId>();

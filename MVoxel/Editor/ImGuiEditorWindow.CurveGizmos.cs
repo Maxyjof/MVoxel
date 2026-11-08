@@ -231,7 +231,8 @@ internal sealed partial class ImGuiEditorWindow
     private bool HandleCurveGizmoInput(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
         if (_project is null || _sceneDocument is null) return false;
-        if (!ImGui.IsMouseHoveringRect(origin, origin + size)) return false;
+        // 浮动窗口压在视口上时不得抢走点击（IsMouseHoveringRect 只看几何，不看遮挡）
+        if (!ImGui.IsWindowHovered() || !ImGui.IsMouseHoveringRect(origin, origin + size)) return false;
         var selected = GetSelectedSceneObject();
         var component = selected is null ? null : GetCurveRendererComponent(selected);
         var data = component is null ? default : SceneComponentTypes.ReadCurveRenderer(component);

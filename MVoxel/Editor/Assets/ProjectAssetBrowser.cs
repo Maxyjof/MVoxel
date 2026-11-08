@@ -145,7 +145,6 @@ internal sealed class ProjectAssetBrowser
         {
             ImGui.SameLine();
             if (ImGui.SmallButton("返回上级")) ActivateFolder(ParentFolder(_selectedFolder));
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("返回上一级资产文件夹");
         }
 
         var filterLabel = FilterLabel(_filter);
@@ -415,7 +414,6 @@ internal sealed class ProjectAssetBrowser
             var min = ImGui.GetItemRectMin();
             var max = ImGui.GetItemRectMax();
             var hovered = ImGui.IsItemHovered();
-            if (hovered) ImGui.SetTooltip(DescribeAssetAction(entry));
             // 只在悬停与选中时铺底色，平时保持干净，避免看起来整排都被选中
             if (selected || hovered)
             {
@@ -597,35 +595,6 @@ internal sealed class ProjectAssetBrowser
         EditingAssetPath.Length > 0 &&
         string.Equals(EditingAssetPath.Replace('\\', '/'), relativePath.Replace('\\', '/'),
             StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>资产平铺的悬停提示，说明单击与双击分别会做什么</summary>
-    /// <param name="entry">资产条目</param>
-    /// <returns>提示文本</returns>
-    private string DescribeAssetAction(ProjectAssetEntry entry)
-    {
-        if (entry.IsFolder) return "单击进入文件夹";
-        var editing = IsEditingAsset(entry.RelativePath) ? "（正在编辑）" : string.Empty;
-        return entry.Kind switch
-        {
-            ProjectAssetKind.VoxelModel when IsExternalVoxelFormat(entry.RelativePath) =>
-                $"双击导入为原生体素资产并进入编辑空间{editing}",
-            ProjectAssetKind.VoxelModel => $"双击进入体素编辑空间{editing}",
-            ProjectAssetKind.Prefab => $"双击进入预制体编辑空间{editing}",
-            ProjectAssetKind.Timeline => "双击在时间轴窗口打开",
-            ProjectAssetKind.Generator => "双击在生成器面板打开",
-            ProjectAssetKind.Material => "单击选中；材质参数在右侧检查器中修改",
-            ProjectAssetKind.Scene => "单击选中；切换场景请用“文件 > 打开场景”",
-            _ => "双击用系统程序打开",
-        };
-    }
-
-    /// <summary>判断是否为需要先导入的外部体素格式</summary>
-    /// <param name="relativePath">资产相对路径</param>
-    /// <returns>是否需要导入</returns>
-    private static bool IsExternalVoxelFormat(string relativePath) =>
-        relativePath.EndsWith(".vox", StringComparison.OrdinalIgnoreCase) ||
-        relativePath.EndsWith(".qb", StringComparison.OrdinalIgnoreCase) ||
-        relativePath.EndsWith(".schem", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 进入重命名状态：输入框只编辑主名，扩展名由对话框固定保留，

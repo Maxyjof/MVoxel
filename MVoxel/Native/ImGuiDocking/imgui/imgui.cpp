@@ -1306,6 +1306,12 @@ static void             UpdateViewportPlatformMonitor(ImGuiViewportP* viewport);
 ImGuiContext*   GImGui = NULL;
 #endif
 
+// [MVoxel] Width of the host-drawn button strip ("..." menu + "x" close) at the right end of a dock node
+// title bar. Presses starting inside this strip must not be treated as "drag title bar", otherwise clicking
+// a header button would also drag the whole window away.
+static float    MvoxelTitleBarDragExcludeRight = 0.0f;
+void ImGui::MvoxelSetTitleBarDragExcludeRight(float width) { MvoxelTitleBarDragExcludeRight = ImMax(width, 0.0f); }
+
 // Memory Allocator functions. Use SetAllocatorFunctions() to change them.
 // - You probably don't want to modify that mid-program, and if you use global/static e.g. ImVector<> instances you may need to keep them accessible during program destruction.
 // - DLL users: read comments above.
@@ -18516,7 +18522,11 @@ static void ImGui::DockNodeUpdateTabBar(ImGuiDockNode* node, ImGuiWindow* host_w
     // When clicking on the title bar outside of tabs, we still focus the selected tab for that node
     // FIXME: TabItems submitted earlier use AllowItemOverlap so we manually perform a more specific test for now (hovered || held) in order to not cover them.
     ImGuiID title_bar_id = host_window->GetID("#TITLEBAR");
-    if (g.HoveredId == 0 || g.HoveredId == title_bar_id || g.ActiveId == title_bar_id)
+    // [MVoxel] The right end of the title bar is the host-drawn "..." / "x" button strip: never start a
+    // title bar drag there, otherwise clicking a header button would also drag the window.
+    const bool title_bar_drag_blocked = MvoxelTitleBarDragExcludeRight > 0.0f
+        && g.IO.MousePos.x >= title_bar_rect.Max.x - MvoxelTitleBarDragExcludeRight;
+    if (!title_bar_drag_blocked && (g.HoveredId == 0 || g.HoveredId == title_bar_id || g.ActiveId == title_bar_id))
     {
         // AllowOverlap mode required for appending into dock node tab bar,
         // otherwise dragging window will steal HoveredId and amended tabs cannot get them.
@@ -18534,7 +18544,22 @@ static void ImGui::DockNodeUpdateTabBar(ImGuiDockNode* node, ImGuiWindow* host_w
 
             // Forward moving request to selected window
             if (ImGuiTabItem* tab = TabBarFindTabByID(tab_bar, tab_bar->SelectedTabId))
-                StartMouseMovingWindowOrNode(tab->Window ? tab->Window : node->HostWindow, node, false); // Undock from tab bar empty space
+            {
+                // [MVoxel] Node docked inside a dockspace: dragging the empty title bar area extracts the
+                // whole node (all of its tabs) into a floating window, matching what dragging a single tab
+                // already does. Floating nodes keep the upstream "move the group, do not undock" behavior.
+                if (root_node->IsDockSpace())
+                {
+                    if (IsMouseDragging(0) && node->VisibleWindow != NULL
+                        && (node->VisibleWindow->Flags & ImGuiWindowFlags_NoMove) == 0
+                        && (node->MergedFlags & ImGuiDockNodeFlags_NoUndocking) == 0)
+                        DockContextQueueUndockNode(&g, node);
+                }
+                else
+                {
+                    StartMouseMovingWindowOrNode(tab->Window ? tab->Window : node->HostWindow, node, false); // Undock from tab bar empty space
+                }
+            }
         }
     }
 
