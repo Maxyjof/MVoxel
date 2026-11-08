@@ -170,6 +170,10 @@ internal sealed partial class ImGuiEditorWindow
              Param("transmissiveAbsorption", "number", false, "半透明吸收浓度"),
              Param("thinGlassApproximation", "boolean", false, "薄板玻璃近似：薄壳只透射与吸收，不按界面法线折射"),
              Param("thinGlassMaxThickness", "number", false, "薄板判定的厚度上限（世界格），0 关闭判定"),
+             Param("glassSceneReflection", "boolean", false, "玻璃界面是否追踪真实场景作为反射来源"),
+             Param("glassGlintIntensity", "number", false, "玻璃界面太阳高光强度倍率"),
+             Param("glassTransmissionShadow", "boolean", false, "是否让半透明体素按透射率给太阳阴影染色"),
+             Param("glassTransmissionShadowStrength", "number", false, "透射阴影强度：0 完全透光，1 按实际透射率"),
              Param("emissiveIntensity", "number", false, "发光体素辐射强度，0 表示关闭发光照明"),
              Param("emissiveVoxels", "boolean", false, "是否把发光体素作为光源"),
              Param("softFillEnabled", "boolean", false, "是否启用环境柔光（对应 MagicaVoxel 的 Area 灯）"),
@@ -1513,6 +1517,10 @@ internal sealed partial class ImGuiEditorWindow
             transmissiveAbsorption = settings.TransmissiveAbsorption,
             thinGlassApproximation = settings.ThinGlassApproximation,
             thinGlassMaxThickness = settings.ThinGlassMaxThickness,
+            glassSceneReflection = settings.GlassSceneReflection,
+            glassGlintIntensity = settings.GlassGlintIntensity,
+            glassTransmissionShadow = settings.GlassTransmissionShadow,
+            glassTransmissionShadowStrength = settings.GlassTransmissionShadowStrength,
             emissiveIntensity = settings.EmissiveIntensity,
             emissiveVoxels = settings.EmissiveVoxels,
             softFillEnabled = settings.SoftFillEnabled,
@@ -1611,6 +1619,14 @@ internal sealed partial class ImGuiEditorWindow
             settings.ThinGlassApproximation = thinGlass;
         if (ReadNumber(arguments, "thinGlassMaxThickness") is { } thinGlassThickness)
             settings.ThinGlassMaxThickness = (float)thinGlassThickness;
+        if (ReadBoolean(arguments, "glassSceneReflection") is { } glassReflection)
+            settings.GlassSceneReflection = glassReflection;
+        if (ReadNumber(arguments, "glassGlintIntensity") is { } glassGlint)
+            settings.GlassGlintIntensity = (float)glassGlint;
+        if (ReadBoolean(arguments, "glassTransmissionShadow") is { } glassShadow)
+            settings.GlassTransmissionShadow = glassShadow;
+        if (ReadNumber(arguments, "glassTransmissionShadowStrength") is { } glassShadowStrength)
+            settings.GlassTransmissionShadowStrength = (float)glassShadowStrength;
         if (ReadNumber(arguments, "emissiveIntensity") is { } emissive) settings.EmissiveIntensity = (float)emissive;
         if (ReadBoolean(arguments, "emissiveVoxels") is { } emissiveVoxels) settings.EmissiveVoxels = emissiveVoxels;
         if (ReadBoolean(arguments, "softFillEnabled") is { } softFill) settings.SoftFillEnabled = softFill;

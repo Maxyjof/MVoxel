@@ -4668,6 +4668,73 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         // 确定性点查询：沿 BVH 只下降包含该点的节点，叶子内做盒包含测试。
         // 与射线求交不同，它既不发射辅助射线也不需要随机方向，结果零方差。
         // 返回该点所在体素的 sRGB 颜色，a > 0 表示不透明实心；空气 / 半透明返回 0。
+        // 玻璃界面反射：优先追踪真实场景，未命中才回退天空。
+        // 只做一次反弹的近似着色，避免为玻璃反射引入完整递归路径。
+        vec3 GlassSceneReflection(vec3 rayOrigin, vec3 rayDirection, inout uint state)
+        {
+            float distance;
+            vec3 normal;
+            vec4 color;
+            uint flags;
+            uint slot;
+            ivec3 cell;
+            ivec3 extent;
+            if (!TraceClosest(rayOrigin + rayDirection * 0.002, rayDirection, distance, normal, color,
+                    flags, slot, cell, extent, false))
+                return Sky(rayDirection);
+            // 反射进半透明或发光体时按天空近似，避免反射链继续展开
+            if ((flags & 3u) != 0u)
+                return Sky(rayDirection);
+            vec3 hitPoint = rayOrigin + rayDirection * (distance + 0.002);
+            if (dot(normal, rayDirection) > 0.0) normal = -normal;
+            vec3 sunDirection = normalize(vec3(values[24], values[25], values[26]));
+            float sunVisibility = values[33] > 0.5
+                ? TraceSoftShadow(hitPoint + normal * 0.002, normal, sunDirection, 10000.0, state)
+                : 0.0;
+            vec3 sun = vec3(values[28], values[29], values[30]) * values[27] *
+                max(dot(normal, sunDirection), 0.0) * sunVisibility;
+            vec3 ambient = vec3(values[43]) * 0.5 + vec3(0.02);
+            return SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0))) * (sun + ambient);
+        }
+
+        // 透射阴影：沿太阳方向穿过半透明体素时按 Beer 吸收累积颜色，
+        // 命中不透明体素即视为被遮挡；步数上限防止穿过多层介质时开销失控
+        vec3 TraceShadowTransmission(vec3 rayOrigin, vec3 rayDirection, float maxDistance, inout uint state)
+        {
+            vec3 tint = vec3(1.0);
+            vec3 cursor = rayOrigin;
+            for (int step = 0; step < 8; step++)
+            {
+                float distance;
+                vec3 normal;
+                vec4 color;
+                uint flags;
+                uint slot;
+                ivec3 cell;
+                ivec3 extent;
+                if (!TraceClosest(cursor, rayDirection, distance, normal, color, flags, slot, cell, extent, false))
+                    return tint;
+                if (distance > maxDistance) return tint;
+                if ((flags & 1u) == 0u) return vec3(0.0);
+                MaterialSlotData mat = materialSlots[int(slot)];
+                vec3 absorbColor = mat.absorption.w > 0.5
+                    ? SrgbToLinear(clamp(mat.absorption.rgb, vec3(0.0), vec3(1.0)))
+                    : SrgbToLinear(clamp(color.rgb, vec3(0.0), vec3(1.0)));
+                float opacity = clamp(mat.optics.z >= 0.0 ? mat.optics.z : color.a, 0.0, 1.0);
+                float stepScale = mat.scalars.w >= 0.0 ? mat.scalars.w : 1.0;
+                float hazeDensity = max(mat.haze.w, 0.0);
+                vec3 sigma = opacity * (max(values[81], 0.0) * 0.25 * stepScale *
+                    (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)) + vec3(0.1)) + vec3(hazeDensity));
+                float normalThickness = max(1.0, abs(dot(vec3(extent), abs(normal))));
+                float chord = min(normalThickness / max(abs(dot(rayDirection, normal)), 0.15),
+                    normalThickness * 6.0);
+                tint *= exp(-sigma * chord);
+                cursor += rayDirection * (distance + 0.002);
+                if (max(max(tint.r, tint.g), tint.b) < 0.01) return vec3(0.0);
+            }
+            return tint;
+        }
+
         vec4 VoxelAt(vec3 point)
         {
             int voxelCount = int(values[94]);
@@ -6005,7 +6072,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         float interfaceF0 = pow((interfaceIor - 1.0) / (interfaceIor + 1.0), 2.0);
                         if (material.optics.y >= 0.0) interfaceF0 = clamp(interfaceF0 * material.optics.y, 0.0, 1.0);
                         float fresnel = clamp(interfaceF0 + (1.0 - interfaceF0) * pow(1.0 - cosView, 5.0), 0.0, 1.0);
-                        radiance += throughput * Sky(reflected) * fresnel;
+                        // 玻璃反射默认追踪真实场景，室内玻璃边缘才能反射身后物体；
+                        // 关闭后回退为只采样天空的旧行为
+                        vec3 reflectionRadiance = values[P_GLASS_SCENE_REFLECTION] > 0.5
+                            ? GlassSceneReflection(hitPoint + hitNormal * 0.002, reflected, state)
+                            : Sky(reflected);
+                        radiance += throughput * reflectionRadiance * fresnel;
                         if (values[33] > 0.5)
                         {
                             float interfaceRoughness = clamp(material.scalars.x >= 0.0
@@ -6018,7 +6090,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                                 float glintVisibility = TraceSoftShadow(
                                     hitPoint + hitNormal * 0.002, hitNormal, sunGlint, 10000.0, state);
                                 radiance += throughput * vec3(1.0, 0.97, 0.92) * glint * values[27]
-                                    * 6.0 * glintVisibility;
+                                    * max(values[P_GLASS_GLINT_INTENSITY], 0.0) * glintVisibility;
                             }
                         }
                         throughput *= 1.0 - fresnel * 0.85;
@@ -6038,12 +6110,14 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                     vec3 sigma = opacity * (max(values[81], 0.0) * 0.25 * stepScale *
                         (vec3(1.0) - clamp(absorbColor, vec3(0.0), vec3(1.0)) + vec3(0.1)) + vec3(hazeDensity));
                     float mediumIor = material.optics.x > 1.001 ? material.optics.x : 1.0;
-                    // 薄板玻璃近似：壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射。
-                    // 体素化的圆柱壳/球壳每一格台阶都有独立法线，逐格折射会把台阶放大成
-                    // 规则棱镜条纹；真实的窗玻璃与灯罩玻璃是薄板，本身不该聚焦成像。
-                    bool thinGlass = false;
+                    // 薄板识别优先看体素盒最小轴厚度：单层薄壳即使掠射时射线行程很长，
+                    // 也不该退回逐格折射，否则边缘会变成暗色噪点
+                    ivec3 absExtent = abs(hitExtent);
+                    bool thinSlabGeometry = min(min(absExtent.x, absExtent.y), absExtent.z) <= 1;
+                    bool thinGlass = values[P_THIN_GLASS_ENABLED] > 0.5 &&
+                        !backfaceHit && mediumIor > 1.0 && thinSlabGeometry;
                     float thinLimit = values[P_THIN_GLASS_MAX_THICKNESS];
-                    if (values[P_THIN_GLASS_ENABLED] > 0.5 && !backfaceHit && mediumIor > 1.0 && thinLimit > 0.0)
+                    if (!thinGlass && values[P_THIN_GLASS_ENABLED] > 0.5 && !backfaceHit && mediumIor > 1.0 && thinLimit > 0.0)
                     {
                         float thinTravel = 0.0;
                         vec3 thinCursor = hitPoint + rayDirection * 0.001;
@@ -6169,7 +6243,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                         mediumExtent = nextExtent;
                         cursor = nextOrigin;
                     }
-                    vec3 layerTransmittance = exp(-sigma * chord);
+                    // 薄板按法向厚度衰减：掠射时若沿用真实弦长，指数衰减会发散成黑边
+                    float attenuationChord = chord;
+                    if (thinGlass || thinSlabGeometry)
+                    {
+                        float normalThickness = max(1.0, abs(dot(vec3(hitExtent), abs(hitNormal))));
+                        float grazing = max(abs(dot(rayDirection, hitNormal)), 0.15);
+                        attenuationChord = min(normalThickness / grazing, normalThickness * 6.0);
+                    }
+                    vec3 layerTransmittance = exp(-sigma * attenuationChord);
                     vec3 scatterColor = material.haze.x >= 0.0
                         ? SrgbToLinear(clamp(material.haze.rgb, vec3(0.0), vec3(1.0))) : hitLinearColor;
                     vec3 bodyAmbient = scatterColor * (Sky(vec3(0.0, 1.0, 0.0))
@@ -6213,8 +6295,16 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 float lightAmount = values[33] > 0.5 ? max(dot(hitNormal, lightDirection), 0.0) : 0.0;
                 if (values[85] > 0.5 && lightAmount > 0.0)
                 {
-                    float shadowVisibility = TraceSoftShadow(
-                        hitPoint + hitNormal * 0.002, hitNormal, lightDirection, 10000.0, state);
+                    vec3 shadowVisibility = vec3(TraceSoftShadow(
+                        hitPoint + hitNormal * 0.002, hitNormal, lightDirection, 10000.0, state));
+                    // 有色玻璃应当把影子染色：按透射率累积后与遮挡混合
+                    if (values[P_GLASS_TRANSMISSION_SHADOW] > 0.5)
+                    {
+                        vec3 transmissionTint = TraceShadowTransmission(
+                            hitPoint + hitNormal * 0.002, lightDirection, 10000.0, state);
+                        shadowVisibility *= mix(vec3(1.0), transmissionTint,
+                            clamp(values[P_GLASS_TRANSMISSION_SHADOW_STRENGTH], 0.0, 1.0));
+                    }
                     vec3 response = SunSurfaceResponse(hitLinearColor, metalness, roughness, hitNormal, -rayDirection, lightDirection);
                     radiance += throughput * response * vec3(values[28], values[29], values[30]) * values[27] * shadowVisibility;
                 }

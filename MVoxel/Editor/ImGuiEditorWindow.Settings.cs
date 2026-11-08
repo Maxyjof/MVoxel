@@ -767,6 +767,14 @@ internal sealed partial class ImGuiEditorWindow
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("壁厚不超过阈值的透明薄壳只做透射与吸收，不按界面法线折射，避免体素化圆柱壳产生棱镜条纹。");
                 SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值即按薄板处理；0 表示关闭判定。");
+                ImGui.Checkbox("玻璃反射追踪场景", ref settings.GlassSceneReflection);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃界面反射真实场景，未命中回退天空；关闭后只反射天空，室内边缘会偏亮。");
+                SliderFloat("玻璃太阳高光强度", ref settings.GlassGlintIntensity, 0F, 24F, "%.1f");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("玻璃界面太阳高光倍率，默认 6 与旧版一致。");
+                ImGui.Checkbox("透射阴影染色", ref settings.GlassTransmissionShadow);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("太阳穿过半透明体素时按 Beer 吸收累积颜色，有色玻璃得到带色阴影。");
+                SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("0 等于玻璃不挡光，1 按实际透射率衰减。");
                 ImGui.Checkbox("自发光体素参与照明", ref settings.EmissiveVoxels);
                 ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("路径追踪主动采样暴露的不透明发光面，并与反弹命中进行 MIS 合并。关闭后仅靠反弹命中，可用于比较收敛。透明介质的传输仍由反弹路径处理。");

@@ -3937,6 +3937,19 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("薄板厚度上限##thin", ref settings.ThinGlassMaxThickness, 0F, 8F, "%.1f 格");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("沿入射方向穿过的同种介质长度不超过该值就按薄板处理；0 表示关闭判定，所有透明介质仍按体折射处理。厚水体、厚冰块超过阈值后仍保留真实折射。");
+        ImGui.SeparatorText("玻璃反射与透射阴影");
+        ImGui.Checkbox("玻璃反射追踪场景", ref settings.GlassSceneReflection);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启后玻璃界面反射真实场景（棋盘、家具等），未命中才回退天空；关闭后沿用只反射天空的旧行为，收敛更省但室内观感偏亮。");
+        SliderFloat("玻璃太阳高光强度", ref settings.GlassGlintIntensity, 0F, 24F, "%.1f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("玻璃界面反射太阳时的强度倍率，默认 6 与旧版一致；调低可消除边缘的强白亮带。");
+        ImGui.Checkbox("透射阴影染色", ref settings.GlassTransmissionShadow);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("太阳光穿过半透明体素时按 Beer 吸收累积颜色，有色玻璃会得到带色阴影；每段阴影最多额外追踪 8 次，关闭可换取采样性能。");
+        SliderFloat("透射阴影强度", ref settings.GlassTransmissionShadowStrength, 0F, 1F, "%.2f");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("0 等于玻璃完全透光不挡光，1 按实际透射率衰减；中间值用于软化玻璃产生的高对比阴影。");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);

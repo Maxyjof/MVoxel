@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text;
 
 namespace MVoxel.Rendering;
@@ -171,7 +171,10 @@ public sealed class VoxelRenderParameters
     public const int DragOffsetX = 233, DragOffsetY = 234, DragOffsetZ = 235;
     /// <summary>拖动对象实例的体素数量与实例自定义索引</summary>
     public const int DragCellCount = 236;
-    public const int SlotCount = 237;
+    /// <summary>玻璃场景反射开关、太阳高光倍率、透射阴影开关与强度</summary>
+    public const int GlassSceneReflection = 237, GlassGlintIntensity = 238;
+    public const int GlassTransmissionShadow = 239, GlassTransmissionShadowStrength = 240;
+    public const int SlotCount = 241;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -219,6 +222,9 @@ public sealed class VoxelRenderParameters
             ("P_FOG_VIEW_DISTANCE", FogViewDistance), ("P_FOG_NOISE_STRENGTH", FogNoiseStrength),
             ("P_FOG_NOISE_SCALE", FogNoiseScale), ("P_FOG_NOISE_SPEED", FogNoiseSpeed),
             ("P_THIN_GLASS_ENABLED", ThinGlassEnabled), ("P_THIN_GLASS_MAX_THICKNESS", ThinGlassMaxThickness),
+            ("P_GLASS_SCENE_REFLECTION", GlassSceneReflection), ("P_GLASS_GLINT_INTENSITY", GlassGlintIntensity),
+            ("P_GLASS_TRANSMISSION_SHADOW", GlassTransmissionShadow),
+            ("P_GLASS_TRANSMISSION_SHADOW_STRENGTH", GlassTransmissionShadowStrength),
             ("P_SATURATION", Saturation), ("P_HUE_SHIFT", HueShift), ("P_CONTRAST", Contrast), ("P_BRIGHTNESS", Brightness),
             ("P_PALETTE_SHADING", PaletteShading), ("P_OUTLINES", Outlines), ("P_HUE_PHASE", HuePhase), ("P_AO_ENABLED", AoEnabled),
             ("P_AO_STRENGTH", AoStrength), ("P_AO_POWER", AoPower), ("P_AO_SAMPLES", AoSamples),
@@ -597,6 +603,11 @@ public sealed class VoxelRenderParameters
         parameters[FogNoiseSpeed] = settings.FogNoiseSpeed;
         parameters[ThinGlassEnabled] = settings.ThinGlassApproximation ? 1F : 0F;
         parameters[ThinGlassMaxThickness] = Math.Clamp(settings.ThinGlassMaxThickness, 0F, 16F);
+        parameters[GlassSceneReflection] = settings.GlassSceneReflection ? 1F : 0F;
+        parameters[GlassGlintIntensity] = Math.Clamp(settings.GlassGlintIntensity, 0F, 64F);
+        parameters[GlassTransmissionShadow] = settings.GlassTransmissionShadow ? 1F : 0F;
+        parameters[GlassTransmissionShadowStrength] =
+            Math.Clamp(settings.GlassTransmissionShadowStrength, 0F, 4F);
 
         for (var index = 0; index < parameters.Length; index++)
         {

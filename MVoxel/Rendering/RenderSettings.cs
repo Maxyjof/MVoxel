@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -534,6 +534,27 @@ public sealed class RenderSettings
     public float ThinGlassMaxThickness = 2F;
 
     /// <summary>
+    /// 玻璃界面反射是否追踪真实场景：开启后玻璃边缘反射身后物体，未命中再回退天空；
+    /// 关闭时沿用只采样天空的旧行为
+    /// </summary>
+    public bool GlassSceneReflection = true;
+
+    /// <summary>
+    /// 玻璃界面太阳高光的强度倍率，1 表示与旧版视觉一致所需的基准值
+    /// </summary>
+    public float GlassGlintIntensity = 6F;
+
+    /// <summary>
+    /// 半透明体素是否按透射率与颜色衰减太阳阴影，得到带色的玻璃阴影
+    /// </summary>
+    public bool GlassTransmissionShadow = true;
+
+    /// <summary>
+    /// 透射阴影的强度：0 等于玻璃不挡光，1 按实际透射率衰减
+    /// </summary>
+    public float GlassTransmissionShadowStrength = 1F;
+
+    /// <summary>
     /// 景深开关
     /// </summary>
     public bool DepthOfField;
@@ -802,6 +823,8 @@ public sealed class RenderSettings
         EmissiveIntensity = Math.Clamp(EmissiveIntensity, 0F, 64F);
         TransmissiveAbsorption = Math.Clamp(TransmissiveAbsorption, 0F, 8F);
         ThinGlassMaxThickness = Math.Clamp(ThinGlassMaxThickness, 0F, 16F);
+        GlassGlintIntensity = Math.Clamp(GlassGlintIntensity, 0F, 64F);
+        GlassTransmissionShadowStrength = Math.Clamp(GlassTransmissionShadowStrength, 0F, 4F);
         PathDenoiseStrength = Math.Clamp(PathDenoiseStrength, 0F, 1F);
         BloomIntensity = Math.Clamp(BloomIntensity, 0F, 2F);
         BloomThreshold = Math.Clamp(BloomThreshold, 0F, 8F);
@@ -945,6 +968,8 @@ public sealed class RenderSettings
         EmissiveIntensity = Safe(EmissiveIntensity, 12F);
         TransmissiveAbsorption = Safe(TransmissiveAbsorption, 1F);
         ThinGlassMaxThickness = Safe(ThinGlassMaxThickness, 2F);
+        GlassGlintIntensity = Safe(GlassGlintIntensity, 6F);
+        GlassTransmissionShadowStrength = Safe(GlassTransmissionShadowStrength, 1F);
         PathDenoiseStrength = Safe(PathDenoiseStrength, 0.65F);
         BloomIntensity = Safe(BloomIntensity, 0.35F);
         BloomThreshold = Safe(BloomThreshold, 1F);
