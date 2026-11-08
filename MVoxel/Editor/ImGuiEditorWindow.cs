@@ -70,6 +70,12 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
     private string? _voxelModelReferenceCacheRoot;
     private bool _showProjectAssets = true;
     private bool _showInspector = true;
+    /// <summary>场景窗口是否可见；浮动窗口点关闭后由窗口菜单重新打开</summary>
+    private bool _showSceneWindow = true;
+    /// <summary>渲染窗口是否可见</summary>
+    private bool _showRenderWindow = true;
+    /// <summary>调色盘窗口是否可见</summary>
+    private bool _showPaletteWindow = true;
     private volatile bool _openWindowMenuRequested;
     private volatile bool _openInspectorPanelMenuRequested;
     private bool _showRenderConfig;
@@ -1457,16 +1463,16 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         {
             if (ImGui.BeginMenu("常规"))
             {
-                if (ImGui.MenuItem("场景", "F1")) _requestedCenterTab = 0;
+                if (ImGui.MenuItem("场景", "F1")) { _showSceneWindow = true; _requestedCenterTab = 0; ImGui.SetWindowFocus("场景##场景窗口"); }
                 if (ImGui.MenuItem("层级")) { _showHierarchy = true; ImGui.SetWindowFocus("层级##层级面板"); }
                 if (ImGui.MenuItem("检查器")) { _showInspector = true; _requestedInspectorTab = 0; }
-                if (ImGui.MenuItem("调色盘")) { _showModelingTools = true; _focusModelingTools = true; }
+                if (ImGui.MenuItem("调色盘")) { _showModelingTools = true; _showPaletteWindow = true; _focusModelingTools = true; }
                 if (ImGui.MenuItem("项目资产")) { _showProjectAssets = true; ImGui.SetWindowFocus("项目资产##资源浏览器"); }
                 ImGui.EndMenu();
             }
             if (ImGui.BeginMenu("渲染"))
             {
-                if (ImGui.MenuItem("渲染", "F2")) _requestedCenterTab = 1;
+                if (ImGui.MenuItem("渲染", "F2")) { _showRenderWindow = true; _requestedCenterTab = 1; ImGui.SetWindowFocus("渲染##渲染窗口"); }
                 if (ImGui.MenuItem("渲染配置")) { _showRenderConfig = true; _requestedInspectorTab = 1; }
                 if (ImGui.MenuItem("环境配置")) OpenEnvironmentWindow();
                 if (ImGui.MenuItem("探针体积")) _showProbeVolumeWindow = true;
@@ -1675,7 +1681,7 @@ DockId=0x6A3C3007,0
             return;
         }
 
-        if (!ImGui.Begin("层级##层级面板", PanelWindowFlags))
+        if (!ImGui.Begin("层级##层级面板", ref _showHierarchy, PanelWindowFlags))
         {
             ImGui.End();
             return;
@@ -1999,7 +2005,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
         if (_requestedCenterTab == 0) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("场景##场景窗口", PanelWindowFlags))
+        if (!ImGui.Begin("场景##场景窗口", ref _showSceneWindow, PanelWindowFlags))
         {
         }
         else
@@ -2013,7 +2019,7 @@ DockId=0x6A3C3007,0
 
         SetPanelDefaults(new Vector2(layout.LeftWidth, WorkspaceTop + 1F), new Vector2(layout.CenterWidth, layout.MainHeight));
         if (_requestedCenterTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染##渲染窗口", PanelWindowFlags))
+        if (!ImGui.Begin("渲染##渲染窗口", ref _showRenderWindow, PanelWindowFlags))
         {
             _requestedCenterTab = null;
         }
@@ -4096,7 +4102,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 0) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("检查器##检查器窗口", PanelWindowFlags))
+        if (!ImGui.Begin("检查器##检查器窗口", ref _showInspector, PanelWindowFlags))
         {
         }
         else
@@ -5692,7 +5698,7 @@ DockId=0x6A3C3007,0
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(display.X - layout.RightWidth, WorkspaceTop + 1F), new Vector2(layout.RightWidth, layout.MainHeight));
         if (_requestedInspectorTab == 1) ImGui.SetNextWindowFocus();
-        if (!ImGui.Begin("渲染配置##渲染配置窗口", PanelWindowFlags))
+        if (!ImGui.Begin("渲染配置##渲染配置窗口", ref _showRenderConfig, PanelWindowFlags))
         {
             _requestedInspectorTab = null;
         }
@@ -5749,7 +5755,7 @@ DockId=0x6A3C3007,0
         var display = ImGui.GetIO().DisplaySize;
         var layout = GetLayoutMetrics(display);
         SetPanelDefaults(new Vector2(layout.LeftWidth, display.Y - layout.AssetsHeight - StatusHeight), new Vector2(display.X - layout.LeftWidth, layout.AssetsHeight));
-        if (!ImGui.Begin("项目资产##资源浏览器", PanelWindowFlags & ~ImGuiWindowFlags.HorizontalScrollbar))
+        if (!ImGui.Begin("项目资产##资源浏览器", ref _showProjectAssets, PanelWindowFlags & ~ImGuiWindowFlags.HorizontalScrollbar))
         {
             ImGui.End();
             return;
@@ -5927,7 +5933,8 @@ DockId=0x6A3C3007,0
     private static float WorkspaceTop => MenuHeight;
     private static float StatusHeight => ImGui.GetTextLineHeight() + 16F;
 
-    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.HorizontalScrollbar;
+    // 浮动时保留标题栏折叠箭头，停靠时由标签栏承担标题；关闭按钮由各面板的 ref 可见性提供
+    private ImGuiWindowFlags PanelWindowFlags => ImGuiWindowFlags.HorizontalScrollbar;
 
     private LayoutMetrics GetLayoutMetrics(Vector2 display)
     {

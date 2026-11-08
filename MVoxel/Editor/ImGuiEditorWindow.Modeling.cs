@@ -341,11 +341,13 @@ internal sealed partial class ImGuiEditorWindow
             new Vector2(layout.RightWidth, layout.MainHeight));
         if (_focusModelingTools) ImGui.SetNextWindowFocus();
         _focusModelingTools = false;
-        if (ImGui.Begin("调色盘##建模工具窗口", PanelWindowFlags))
+        if (ImGui.Begin("调色盘##建模工具窗口", ref _showPaletteWindow, PanelWindowFlags))
         {
             DrawPanelWindowMenu();
             DrawPaletteContents();
         }
+        // 关闭按钮与窗口菜单共用可见性：关闭后菜单仍可重新打开
+        if (!_showPaletteWindow) _showModelingTools = false;
         ImGui.End();
     }
 
