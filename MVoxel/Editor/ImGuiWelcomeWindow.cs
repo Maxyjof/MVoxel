@@ -306,6 +306,38 @@ internal sealed class ImGuiWelcomeContent
         }
     }
 
+    /// <summary>
+    /// 删除项目后清理编辑器侧按项目 ID 保存的崩溃恢复缓存，避免留下垃圾目录
+    /// </summary>
+    /// <param name="projectRoot">已被移入回收站的项目根目录</param>
+    private static void CleanProjectRecoveryCache(string projectRoot)
+    {
+        try
+        {
+            var project = ProjectLayout.Open(projectRoot, ensureDirectories: false);
+            var suffix = "-" + project.Manifest.ProjectId;
+            var recoveryRoot = Path.Combine(AppPaths.DataDirectory, "Recovery");
+            if (!Directory.Exists(recoveryRoot)) return;
+            foreach (var directory in Directory.EnumerateDirectories(recoveryRoot))
+            {
+                if (!Path.GetFileName(directory).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+                try
+                {
+                    Directory.Delete(directory, true);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    MVoxelLog.Warn($"删除项目恢复缓存失败：{directory}，{exception.Message}");
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                              InvalidDataException or System.Text.Json.JsonException)
+        {
+            MVoxelLog.Warn($"读取项目清单以清理恢复缓存失败：{exception.Message}");
+        }
+    }
+
     private void DrawRecentProjectDeleteDialog()
     {
         if (_requestDeleteRecentPopup)
@@ -346,6 +378,7 @@ internal sealed class ImGuiWelcomeContent
                         throw new IOException("项目文件夹无效或已不存在");
                     FileSystem.DeleteDirectory(fullPath, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin,
                         UICancelOption.ThrowException);
+                    CleanProjectRecoveryCache(fullPath);
                     RecentProjects.Remove(fullPath);
                     _errorText = string.Empty;
                     _deleteRecentProject = null;
