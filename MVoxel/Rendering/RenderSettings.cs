@@ -559,6 +559,12 @@ public sealed class RenderSettings
     /// </summary>
     public int GlassReflectionBounces = 1;
 
+
+    /// <summary>
+    /// 拖动视角时降低阴影与反射的采样数，松手立即恢复完整质量；不改变分辨率与开关
+    /// </summary>
+    public bool NavigationSamplingRelief = true;
+
     /// <summary>
     /// 玻璃反射是否把发光体计入反射结果；关闭时反射到灯面按天空处理
     /// </summary>
@@ -659,6 +665,24 @@ public sealed class RenderSettings
         preview.PathSamplesPerFrame = 1;
         preview.SceneLod = SceneLod.Clone();
         preview.RenderLod = RenderLod.Clone();
+        return preview;
+    }
+
+    /// <summary>
+    /// 拖动视角时使用的采样降级副本：只降低阴影与反射的射线数量，
+    /// 光照、阴影、反射开关与分辨率全部保留，松手后立即回到完整采样
+    /// </summary>
+    internal RenderSettings CreateNavigationPreview()
+    {
+        var preview = (RenderSettings)MemberwiseClone();
+        preview.SceneLod = SceneLod.Clone();
+        preview.RenderLod = RenderLod.Clone();
+        if (NavigationSamplingRelief)
+        {
+            preview.ShadowSamples = Math.Min(preview.ShadowSamples, 2);
+            preview.GlassReflectionOcclusion = 0F;
+            preview.GlassReflectionBounces = 1;
+        }
         return preview;
     }
 

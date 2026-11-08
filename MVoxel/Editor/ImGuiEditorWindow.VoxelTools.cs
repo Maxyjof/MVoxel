@@ -2380,10 +2380,11 @@ internal sealed partial class ImGuiEditorWindow
                 DrawPipelineImage(drawList, pipeline, frameOrigin, frameSize);
                 return true;
             }
-            // 相机移动同样使用完整路径追踪配置；不能因导航临时关闭照明或减少反弹。
+            // 相机移动保留全部光照与效果；拖动期间只降低阴影与反射的射线采样数，
+            // 松手后立即回到完整采样，不改变分辨率也不关闭任何效果
             var renderSettings = settingsInteracting
                 ? previewSettings.CreateInteractionPreview()
-                : previewSettings;
+                : cameraNavigating ? previewSettings.CreateNavigationPreview() : previewSettings;
             var state = BuildFrameState(camera, frameSize, scale, width, height, pathMode: true, outlines: false);
             pathFrameStateMs = pathFrameWatch.Elapsed.TotalMilliseconds;
             // 样本上限变化不丢弃已经完成的样本：提高上限继续采样，降低上限只收敛计数
@@ -3998,6 +3999,9 @@ internal sealed partial class ImGuiEditorWindow
         SliderFloat("反射遮挡权重", ref settings.GlassReflectionOcclusion, 0F, 1F, "%.2f");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("按反射点半球方向的遮挡比例压暗环境光：室内被墙挡住的部分更暗，玻璃边缘不会一片高亮。");
+        ImGui.Checkbox("拖动视角时降低采样", ref settings.NavigationSamplingRelief);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("转视角时临时降低阴影与反射的射线数量，光照、阴影、反射和分辨率保持不变，松手立即恢复完整质量。");
         SliderFloat("自发光强度（灯）", ref settings.EmissiveIntensity, 0F, 40F, "%.1f");
         Toggle("自发光体素参与光照", ref _settingsToggleEmissive, value => settings.EmissiveVoxels = value);
         ImGui.Checkbox("发光面直接采样", ref settings.EmissiveDirectSampling);
