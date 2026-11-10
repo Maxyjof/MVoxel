@@ -10,6 +10,8 @@ namespace MVoxel.Voxels;
 /// </summary>
 public static class ModelRotationRule
 {
+    /// <summary>单次旋转重采样允许扫描的最大包围盒格数，避免稀疏大模型拖拽卡死</summary>
+    private const long MaximumSampleCells = 8_000_000;
     /// <summary>
     /// 按给定四元数对基准模型重新采样
     /// </summary>
@@ -80,10 +82,27 @@ public static class ModelRotationRule
             maximumRotated = Vector3.Max(maximumRotated, rotated);
         }
 
+        var startX = (long)MathF.Floor(minimumRotated.X);
+        var startY = (long)MathF.Floor(minimumRotated.Y);
+        var startZ = (long)MathF.Floor(minimumRotated.Z);
+        var endX = (long)MathF.Ceiling(maximumRotated.X);
+        var endY = (long)MathF.Ceiling(maximumRotated.Y);
+        var endZ = (long)MathF.Ceiling(maximumRotated.Z);
+        var sizeX = endX - startX + 1;
+        var sizeY = endY - startY + 1;
+        var sizeZ = endZ - startZ + 1;
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0 ||
+            sizeX > MaximumSampleCells || sizeY > MaximumSampleCells / sizeX ||
+            sizeZ > MaximumSampleCells / (sizeX * sizeY))
+        {
+            error = $"旋转后的包围盒超过 {MaximumSampleCells:N0} 格采样上限；请先拆分模型或缩小模型范围";
+            return false;
+        }
+
         var sampled = new VoxelWorld();
-        for (var x = (long)MathF.Floor(minimumRotated.X); x <= (long)MathF.Ceiling(maximumRotated.X); x++)
-        for (var y = (long)MathF.Floor(minimumRotated.Y); y <= (long)MathF.Ceiling(maximumRotated.Y); y++)
-        for (var z = (long)MathF.Floor(minimumRotated.Z); z <= (long)MathF.Ceiling(maximumRotated.Z); z++)
+        for (var x = startX; x <= endX; x++)
+        for (var y = startY; y <= endY; y++)
+        for (var z = startZ; z <= endZ; z++)
         {
             var worldCenter = new Vector3(x + .5F, y + .5F, z + .5F);
             var local = Vector3.Transform(worldCenter - center, inverse) + center;

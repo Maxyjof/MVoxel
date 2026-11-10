@@ -98,6 +98,12 @@ internal sealed partial class ImGuiEditorWindow
     {
         var (currentRotation, currentScale) = ReadGeneratedTransform(component);
         WriteGeneratedTransform(component, rotation ?? currentRotation, scale ?? currentScale);
+        if (SceneComponentTypes.IsTileLayer(component))
+        {
+            RebuildGeneratedVoxels(sceneObject, component, "已更新瓷砖对象变换");
+            ResetAfterVoxelTransform();
+            return;
+        }
         _objectVoxels.Remove(sceneObject.Id);
         EnsureGeneratedVoxelWorlds();
         MarkSceneDocumentDirty();

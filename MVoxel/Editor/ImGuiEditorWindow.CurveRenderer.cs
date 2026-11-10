@@ -373,85 +373,101 @@ internal sealed partial class ImGuiEditorWindow
     {
         ImGui.Separator();
         ImGui.TextDisabled("生成体素");
-        BeginInspectorField("截面形状", "方块管与圆管沿曲线铺开，珠链按采样间距排成球珠，十字管适合栏杆和窗棂。");
-        var shape = (int)state.Data.Shape;
+        BeginInspectorField("输出方式", "管体按截面扫掠成连续形状；沿曲线摆放会把体素源等距放在曲线上，适合路灯、围栏与阵列。");
+        var output = (int)state.Data.Output;
         ImGui.SetNextItemWidth(-1F);
-        if (ImGui.Combo("##CurveBrushShape", ref shape, "方块管\0圆管\0珠链\0十字管\0"))
+        if (ImGui.Combo("##CurveOutputMode", ref output, "管体\0沿曲线摆放\0"))
         {
-            state.Data = state.Data with { Shape = (CurveBrushShape)shape };
+            state.Data = state.Data with { Output = (CurveOutputMode)output };
             state.GeometryChanged = true;
         }
 
-        var radius = state.Data.Radius;
-        if (InspectorDragFloatField("半径（格）", ref radius, .05F, .1F, 64F, "%.2f",
-                "截面半径，乘以每个控制点的宽度倍率得到实际粗细。"))
+        if (state.Data.Output == CurveOutputMode.Tube)
         {
-            state.Data = state.Data with { Radius = radius };
-            state.GeometryChanged = true;
-        }
-
-        // 只有珠链按间距排布球珠；方块管、圆管与十字管沿连线扫掠，间距不再影响结果
-        if (state.Data.Shape == CurveBrushShape.Beads)
-        {
-            var step = state.Data.Step;
-            if (InspectorDragFloatField("采样间距（格）", ref step, .02F, .1F, 8F, "%.2f",
-                    "珠链沿曲线排布球珠的间距；调大可以做出断续的点线效果。"))
+            BeginInspectorField("截面形状", "方块管与圆管沿曲线铺开，珠链按采样间距排成球珠，十字管适合栏杆和窗棂。");
+            var shape = (int)state.Data.Shape;
+            ImGui.SetNextItemWidth(-1F);
+            if (ImGui.Combo("##CurveBrushShape", ref shape, "方块管\0圆管\0珠链\0十字管\0"))
             {
-                state.Data = state.Data with { Step = step };
+                state.Data = state.Data with { Shape = (CurveBrushShape)shape };
+                state.GeometryChanged = true;
+            }
+
+            var radius = state.Data.Radius;
+            if (InspectorDragFloatField("半径（格）", ref radius, .05F, .1F, 64F, "%.2f",
+                    "截面半径，乘以每个控制点的宽度倍率得到实际粗细。"))
+            {
+                state.Data = state.Data with { Radius = radius };
+                state.GeometryChanged = true;
+            }
+
+            // 只有珠链按间距排布球珠；方块管、圆管与十字管沿连线扫掠，间距不再影响结果
+            if (state.Data.Shape == CurveBrushShape.Beads)
+            {
+                var step = state.Data.Step;
+                if (InspectorDragFloatField("采样间距（格）", ref step, .02F, .1F, 8F, "%.2f",
+                        "珠链沿曲线排布球珠的间距；调大可以做出断续的点线效果。"))
+                {
+                    state.Data = state.Data with { Step = step };
+                    state.GeometryChanged = true;
+                }
+            }
+
+            // 直线插值直接连接控制点，细分只影响贝塞尔的平滑程度
+            if (state.Data.Interpolation != CurveInterpolation.Linear)
+            {
+                var resolution = state.Data.Resolution;
+                if (InspectorSliderIntField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。", ref resolution,
+                        CurveRendererComponentData.MinimumResolution, CurveRendererComponentData.MaximumResolution))
+                {
+                    state.Data = state.Data with { Resolution = resolution };
+                    state.GeometryChanged = true;
+                }
+            }
+
+            BeginInspectorField("体素颜色", "生成体素统一使用的颜色；透明度小于 255 会自动加半透明标记。");
+            var color = new Vector4(state.Data.ColorR / 255F, state.Data.ColorG / 255F,
+                state.Data.ColorB / 255F, state.Data.ColorA / 255F);
+            var pickerWidth = MathF.Max(ImGui.GetFontSize() * 4F, ImGui.GetContentRegionAvail().X -
+                ImGui.CalcTextSize("取笔刷色").X - ImGui.GetStyle().FramePadding.X * 2F -
+                ImGui.GetStyle().ItemSpacing.X);
+            ImGui.SetNextItemWidth(pickerWidth);
+            if (ImGui.ColorEdit4("##CurveColor", ref color, ImGuiColorEditFlags.Float | ImGuiColorEditFlags.AlphaBar))
+            {
+                state.Data = state.Data with
+                {
+                    ColorR = ToByte(color.X), ColorG = ToByte(color.Y), ColorB = ToByte(color.Z), ColorA = ToByte(color.W),
+                };
+                state.GeometryChanged = true;
+            }
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("取笔刷色"))
+            {
+                var brush = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
+                state.Data = state.Data with { ColorR = brush.R, ColorG = brush.G, ColorB = brush.B, ColorA = brush.A };
+                state.GeometryChanged = true;
+            }
+
+            var emissive = state.Data.Emissive;
+            if (ImGui.Checkbox("自发光", ref emissive))
+            {
+                state.Data = state.Data with { Emissive = emissive };
+                state.GeometryChanged = true;
+            }
+
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("给生成体素加自发光标记");
+            var materialSlot = (int)state.Data.MaterialSlot;
+            if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
+                    ushort.MaxValue))
+            {
+                state.Data = state.Data with { MaterialSlot = (ushort)Math.Clamp(materialSlot, 0, ushort.MaxValue) };
                 state.GeometryChanged = true;
             }
         }
-
-        // 直线插值直接连接控制点，细分只影响贝塞尔的平滑程度
-        if (state.Data.Interpolation != CurveInterpolation.Linear)
+        else
         {
-            var resolution = state.Data.Resolution;
-            if (InspectorSliderIntField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。", ref resolution,
-                    CurveRendererComponentData.MinimumResolution, CurveRendererComponentData.MaximumResolution))
-            {
-                state.Data = state.Data with { Resolution = resolution };
-                state.GeometryChanged = true;
-            }
-        }
-
-        BeginInspectorField("体素颜色", "生成体素统一使用的颜色；透明度小于 255 会自动加半透明标记。");
-        var color = new Vector4(state.Data.ColorR / 255F, state.Data.ColorG / 255F,
-            state.Data.ColorB / 255F, state.Data.ColorA / 255F);
-        var pickerWidth = MathF.Max(ImGui.GetFontSize() * 4F, ImGui.GetContentRegionAvail().X -
-            ImGui.CalcTextSize("取笔刷色").X - ImGui.GetStyle().FramePadding.X * 2F -
-            ImGui.GetStyle().ItemSpacing.X);
-        ImGui.SetNextItemWidth(pickerWidth);
-        if (ImGui.ColorEdit4("##CurveColor", ref color, ImGuiColorEditFlags.Float | ImGuiColorEditFlags.AlphaBar))
-        {
-            state.Data = state.Data with
-            {
-                ColorR = ToByte(color.X), ColorG = ToByte(color.Y), ColorB = ToByte(color.Z), ColorA = ToByte(color.W),
-            };
-            state.GeometryChanged = true;
-        }
-
-        ImGui.SameLine();
-        if (ImGui.SmallButton("取笔刷色"))
-        {
-            var brush = _sampledBrushColor ?? _palette[Math.Clamp(_paletteIndex, 0, VoxelPalette.EntryCount - 1)];
-            state.Data = state.Data with { ColorR = brush.R, ColorG = brush.G, ColorB = brush.B, ColorA = brush.A };
-            state.GeometryChanged = true;
-        }
-
-        var emissive = state.Data.Emissive;
-        if (ImGui.Checkbox("自发光", ref emissive))
-        {
-            state.Data = state.Data with { Emissive = emissive };
-            state.GeometryChanged = true;
-        }
-
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("给生成体素加自发光标记");
-        var materialSlot = (int)state.Data.MaterialSlot;
-        if (InspectorDragIntField("材质槽", "生成体素使用的本地材质槽；0 表示使用全局材质。", ref materialSlot, .2F, 0,
-                ushort.MaxValue))
-        {
-            state.Data = state.Data with { MaterialSlot = (ushort)Math.Clamp(materialSlot, 0, ushort.MaxValue) };
-            state.GeometryChanged = true;
+            DrawCurveScatterSection(state);
         }
 
         BeginInspectorField("排序图层", "同一坐标按排序图层、排序顺序和层级顺序决定显示优先级。");
@@ -485,10 +501,19 @@ internal sealed partial class ImGuiEditorWindow
         BeginInspectorField("数据体积", "场景文件里隐藏负载的大小，坐标差值压缩后通常只有体素数量的几分之一。");
         var payloadLength = SceneComponentTypes.GetGeneratedVoxelPayloadLength(component);
         ImGui.TextDisabled($"{payloadLength / 1024F:0.0} KB");
-        if (world == 0) ImGui.TextDisabled("没有生成体素：检查控制点数量、半径与采样间距");
+        if (world == 0) ImGui.TextDisabled("没有生成体素：检查控制点数量、截面半径或体素源与间距");
         else if (_generatedVoxelTruncated.TryGetValue(sceneObject.Id, out var truncated) && truncated)
             ImGui.TextColored(new Vector4(1F, .65F, .2F, 1F),
-                $"已超过 {ProceduralVoxelBudget:N0} 格上限，曲线末端被截断");
+                "生成结果已截断，请检查站点数量和体素数量上限");
+        if (state.Data.Output == CurveOutputMode.Scatter)
+        {
+            var stations = SceneComponentTypes.LastScatterStations;
+            var placed = SceneComponentTypes.LastScatterPlaced;
+            if (stations > 0) ImGui.TextDisabled($"站点 {stations:N0} · 已放置 {placed:N0}");
+            var scatterMessage = SceneComponentTypes.LastScatterMessage;
+            if (!string.IsNullOrWhiteSpace(scatterMessage))
+                ImGui.TextColored(new Vector4(1F, .55F, .45F, 1F), scatterMessage);
+        }
         var half = MathF.Max(ImGui.GetFontSize() * 4F,
             MathF.Floor((ImGui.GetContentRegionAvail().X - ImGui.GetStyle().ItemSpacing.X) * .5F) - 1F);
         if (ImGui.Button("重新生成体素", new Vector2(half, 0F)))
@@ -508,6 +533,166 @@ internal sealed partial class ImGuiEditorWindow
             MarkSceneDocumentDirty();
             _pipeline?.ResetAccumulation();
             SetStatus("已清空曲线生成的体素；曲线本身保留，修改参数或点“重新生成体素”即可恢复");
+        }
+    }
+
+    /// <summary>
+    /// 沿曲线摆放的参数区：源、间距、朝向、抖动与贴地
+    /// </summary>
+    /// <param name="state">编辑缓冲</param>
+    private void DrawCurveScatterSection(CurveEditState state)
+    {
+        var source = state.Data.ScatterSource;
+        var sourceLabel = source.Kind switch
+        {
+            VoxelSourceKind.ModelAsset => $"模型资产 · {source.DisplayName}",
+            VoxelSourceKind.PrefabAsset => $"预制体 · {source.DisplayName}",
+            _ => "未指定",
+        };
+        BeginInspectorField("体素源", "沿曲线摆放的物件来源：项目内的模型资产或预制体，不需要先拆成场景对象。");
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.BeginCombo("##CurveScatterSource", sourceLabel))
+        {
+            foreach (var relativePath in GetTileSourceAssets())
+            {
+                var kind = relativePath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)
+                    ? VoxelSourceKind.PrefabAsset : VoxelSourceKind.ModelAsset;
+                if (!ImGui.Selectable(relativePath, source.Kind == kind &&
+                                                  string.Equals(source.AssetPath, relativePath, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                state.Data = state.Data with { ScatterSource = new VoxelSourceRef(kind, relativePath) };
+                state.GeometryChanged = true;
+            }
+
+            ImGui.EndCombo();
+        }
+
+        BeginInspectorField("间距方式", "按固定弧长间距排布，或在起止范围内均分指定数量。");
+        var spacingMode = (int)state.Data.SpacingMode;
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.Combo("##ScatterSpacingMode", ref spacingMode, "按间距\0按数量\0"))
+        {
+            state.Data = state.Data with { SpacingMode = (ScatterSpacingMode)spacingMode };
+            state.GeometryChanged = true;
+        }
+
+        if (state.Data.SpacingMode == ScatterSpacingMode.Distance)
+        {
+            var spacing = state.Data.Spacing;
+            if (InspectorDragFloatField("间距（格）", "相邻两个物件沿曲线弧长的距离。", ref spacing, .05F, .5F, 256F, "%.2f"))
+            {
+                state.Data = state.Data with { Spacing = spacing };
+                state.GeometryChanged = true;
+            }
+        }
+        else
+        {
+            var count = state.Data.ScatterCount;
+            if (InspectorDragIntField("数量", "在起止范围内均分摆放的物件数量。", ref count, 1, 4096))
+            {
+                state.Data = state.Data with { ScatterCount = count };
+                state.GeometryChanged = true;
+            }
+        }
+
+        BeginInspectorField("对齐方式", "跟随切线会连同俯仰一起旋转；只绕竖轴转适合路灯与围栏；固定则保持源朝向。");
+        var align = (int)state.Data.Align;
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.Combo("##ScatterAlign", ref align, "跟随切线\0只绕竖轴\0固定朝向\0"))
+        {
+            state.Data = state.Data with { Align = (ScatterAlign)align };
+            state.GeometryChanged = true;
+        }
+
+        BeginInspectorField("支点", "中心让物件中心落在曲线上；底部让物件站在曲线上，配合贴地更自然。");
+        var pivot = (int)state.Data.Pivot;
+        ImGui.SetNextItemWidth(-1F);
+        if (ImGui.Combo("##ScatterPivot", ref pivot, "包围盒中心\0底部中心\0"))
+        {
+            state.Data = state.Data with { Pivot = (ScatterPivot)pivot };
+            state.GeometryChanged = true;
+        }
+
+        var roll = state.Data.RollDegrees;
+        if (InspectorDragFloatField("滚转角", "绕朝向轴旋转的角度，用来对齐朝向细节。", ref roll, .5F, -180F, 180F, "%.1f°"))
+        {
+            state.Data = state.Data with { RollDegrees = roll };
+            state.GeometryChanged = true;
+        }
+
+        var startOffset = state.Data.StartOffset;
+        if (InspectorDragFloatField("起点留空", "曲线起点跳过的一段弧长，避免物件贴墙或卡在地面边缘。", ref startOffset, .1F,
+                0F, 1000F, "%.2f"))
+        {
+            state.Data = state.Data with { StartOffset = startOffset };
+            state.GeometryChanged = true;
+        }
+
+        var endOffset = state.Data.EndOffset;
+        if (InspectorDragFloatField("终点留空", null, ref endOffset, .1F, 0F, 1000F, "%.2f"))
+        {
+            state.Data = state.Data with { EndOffset = endOffset };
+            state.GeometryChanged = true;
+        }
+
+        var jitterDistance = state.Data.JitterDistance;
+        if (InspectorDragFloatField("间距抖动", "每个物件沿切线随机浮动的最长距离，固定种子保证可复现。", ref jitterDistance,
+                .05F, 0F, 64F, "%.2f"))
+        {
+            state.Data = state.Data with { JitterDistance = jitterDistance };
+            state.GeometryChanged = true;
+        }
+
+        var jitterAngle = state.Data.JitterAngle;
+        if (InspectorDragFloatField("角度抖动", "每个物件在朝向上随机偏转的最大角度。", ref jitterAngle, .5F, 0F, 180F, "%.1f°"))
+        {
+            state.Data = state.Data with { JitterAngle = jitterAngle };
+            state.GeometryChanged = true;
+        }
+
+        var seed = state.Data.ScatterSeed;
+        if (InspectorDragIntField("随机种子", "固定后抖动结果每次生成完全一致。", ref seed, 0, 65535))
+        {
+            state.Data = state.Data with { ScatterSeed = seed };
+            state.GeometryChanged = true;
+        }
+
+        var groundSnap = state.Data.GroundSnap;
+        if (ImGui.Checkbox("贴地", ref groundSnap))
+        {
+            state.Data = state.Data with { GroundSnap = groundSnap };
+            state.GeometryChanged = true;
+        }
+
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("沿竖直方向向下探测场景体素，把物件放到地面上");
+        if (state.Data.GroundSnap)
+        {
+            var groundOffset = state.Data.GroundOffset;
+            if (InspectorDragIntField("贴地偏移", "贴地后整体上下偏移的格数。", ref groundOffset, -64, 64))
+            {
+                state.Data = state.Data with { GroundOffset = groundOffset };
+                state.GeometryChanged = true;
+            }
+        }
+
+        BeginInspectorField("闭合曲线首尾相连", "闭合且起终点留空均为零时沿整圈均分，避免首尾重复；设置留空时按开放区间摆放。");
+        var closedWrap = state.Data.ClosedWrap;
+        if (ImGui.Checkbox("##ScatterClosedWrap", ref closedWrap))
+        {
+            state.Data = state.Data with { ClosedWrap = closedWrap };
+            state.GeometryChanged = true;
+        }
+
+        // 细分决定沿曲线的采样密度，摆放与管体共用
+        if (state.Data.Interpolation != CurveInterpolation.Linear)
+        {
+            var resolution = state.Data.Resolution;
+            if (InspectorSliderIntField("曲线细分", "每段曲线的折线采样数；转弯越急越需要更高的细分。", ref resolution,
+                    CurveRendererComponentData.MinimumResolution, CurveRendererComponentData.MaximumResolution))
+            {
+                state.Data = state.Data with { Resolution = resolution };
+                state.GeometryChanged = true;
+            }
         }
     }
 

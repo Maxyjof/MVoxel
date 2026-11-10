@@ -196,6 +196,17 @@ internal sealed partial class ImGuiEditorWindow
              Param("scaleY", "number", true, "Y 轴倍率"), Param("scaleZ", "number", true, "Z 轴倍率")]),
         new("model.mirrorX", "模型", "设置 X 镜像", "绕模型局部 X 轴镜像；缩放须为 1，可撤销",
             [.. TargetIdOrName, Param("enabled", "boolean", true, "是否镜像")]),
+        new("model.mirror", "模型", "设置模型镜像", "按轴绕模型局部包围盒中心镜像；缩放须为 1，可撤销",
+            [.. TargetIdOrName, Param("axis", "integer", true, "局部轴：0 为 X、1 为 Y、2 为 Z"),
+             Param("enabled", "boolean", true, "是否镜像")]),
+        new("voxel.stroke", "编辑动作", "模拟体素笔画",
+            "按屏幕点列复现一次绘制，默认只计算落格不写入；返回平面法线、层值与格子明细，便于验证一笔是否锁在同一平面",
+            [Param("points", "number[][]", true, "屏幕坐标点列，相对场景视口左上角"),
+             Param("tool", "string", false, "draw、erase、recolor 或 box，默认 draw"),
+             Param("shift", "boolean", false, "按住 Shift，画笔与橡皮擦互换"),
+             Param("commit", "boolean", false, "是否真正写入，默认 false 只计算"),
+             Param("radius", "integer", false, "笔刷半径，默认用当前笔刷设置"),
+             Param("target", "string", false, "目标对象标识或名称，省略时用当前绘制目标")]),
         new("timeline.list", "时间轴", "列出时间轴", "列出Assets目录下的时间轴资产", []),
         new("timeline.get", "时间轴", "读取时间轴", "读取一个时间轴资产", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径")]),
         new("timeline.create", "时间轴", "新建时间轴", "创建默认时间轴资产，不覆盖已有文件", [Param("path", "string", true, "相对Assets目录的.mvtimeline.json路径"), Param("name", "string", false, "时间轴名称")]),
@@ -316,6 +327,23 @@ internal sealed partial class ImGuiEditorWindow
              Param("sortingLayer", "string", false, "排序图层"),
              Param("sortingOrder", "integer", false, "排序顺序"),
              Param("editing", "boolean", false, "是否处于曲线编辑模式"),
+             Param("output", "string", false, "输出方式：Tube 或 Scatter"),
+             Param("sourceKind", "string", false, "沿曲线摆放的体素源：ModelAsset/PrefabAsset"),
+             Param("sourcePath", "string", false, "体素源资产路径"),
+             Param("spacingMode", "string", false, "Distance 或 Count"),
+             Param("spacing", "number", false, "沿弧长的摆放间距（格）"),
+             Param("scatterCount", "integer", false, "按数量均分时的物件数量"),
+             Param("scatterAlign", "string", false, "Tangent/Horizontal/Fixed"),
+             Param("scatterPivot", "string", false, "Center 或 Bottom"),
+             Param("roll", "number", false, "绕朝向轴的滚转角（度）"),
+             Param("jitterDistance", "number", false, "沿切线的间距抖动上限（格）"),
+             Param("jitterAngle", "number", false, "朝向抖动上限（度）"),
+             Param("startOffset", "number", false, "起点留空弧长"),
+             Param("endOffset", "number", false, "终点留空弧长"),
+             Param("groundSnap", "boolean", false, "是否沿竖直方向贴地"),
+             Param("groundOffset", "integer", false, "贴地后的上下偏移格数"),
+             Param("scatterSeed", "integer", false, "抖动随机种子"),
+             Param("closedWrap", "boolean", false, "闭合曲线是否首尾相连"),
              Param("generate", "boolean", false, "是否立即重建体素，默认 true")]),
         new("curve.generate", "程序化体素", "重建曲线体素", "按当前曲线参数重新生成体素",
             [.. TargetIdOrName]),
@@ -365,6 +393,82 @@ internal sealed partial class ImGuiEditorWindow
              Param("parentId", "string", false, "父对象标识，缺省挂到场景根"),
              Param("position", "integer[3]", false, "对象格位置"),
              Param("style", "string", false, "树风格，默认 Broadleaf")]),
+        new("tilelayer.create", "程序化体素", "新建瓷砖对象", "新建带瓷砖铺设组件的对象；需要已有模型对象提供墙面",
+            [Param("name", "string", false, "对象名称，默认“瓷砖铺设”"),
+             Param("parentId", "string", false, "父对象标识，缺省挂到场景根"),
+             Param("position", "integer[3]", false, "对象格位置"),
+             Param("origin", "integer[3]", false, "盒体最小角，对象局部坐标"),
+             Param("size", "integer[3]", false, "盒体三轴格数"),
+             Param("facing", "string", false, "朝向：NegZ/PosZ/PosX/NegX/PosY/NegY，默认 NegZ"),
+             Param("sourceKind", "string", false, "体素源：ModelAsset/PrefabAsset/Embedded"),
+             Param("sourcePath", "string", false, "体素源资产路径，形如 Assets/Worlds/瓷砖.mvmodel"),
+             Param("sourceOffset", "integer[3]", false, "从源的哪一角开始取瓷砖"),
+             Param("tileWidth", "integer", false, "瓷砖 U 方向格数，0 表示跟随源"),
+             Param("tileHeight", "integer", false, "瓷砖 V 方向格数，0 表示跟随源"),
+             Param("tileDepth", "integer", false, "瓷砖 W 方向取源的前几层，默认 1"),
+             Param("gap", "integer", false, "缝宽格数"),
+             Param("stagger", "boolean", false, "是否错缝"),
+             Param("rotation", "string", false, "None/QuarterRandom/RowAlternate"),
+             Param("variantCount", "integer", false, "沿源 U 等分的变体数"),
+             Param("seed", "integer", false, "随机种子"),
+             Param("jitterU", "integer", false, "横向抖动上限"),
+             Param("jitterV", "integer", false, "纵向抖动上限"),
+             Param("fit", "string", false, "PerColumn/BlockFront/BlockBack"),
+             Param("surfaceTolerance", "integer", false, "共面容差格数"),
+             Param("maxDepth", "integer", false, "沿朝向往里找墙的最大格数"),
+             Param("offset", "integer", false, "整体外凸格数，可为负"),
+             Param("edge", "string", false, "Clip/SkipTile"),
+             Param("sourceObjectId", "string", false, "把该模型对象的体素抓成内嵌瓷砖源"),
+             Param("fitObjectId", "string", false, "把该模型对象的包围盒外扩一格作为盒体"),
+             Param("generate", "boolean", false, "是否立即生成，默认 true")]),
+        new("tilelayer.get", "程序化体素", "读取瓷砖组件", "读取盒体、朝向、体素源、排布参数与生成统计",
+            [.. TargetIdOrName]),
+        new("tilelayer.set", "程序化体素", "写入瓷砖组件", "写入瓷砖参数，默认立即重新生成",
+            [.. TargetIdOrName,
+             Param("origin", "integer[3]", false, "盒体最小角，对象局部坐标"),
+             Param("size", "integer[3]", false, "盒体三轴格数"),
+             Param("facing", "string", false, "朝向：NegZ/PosZ/PosX/NegX/PosY/NegY"),
+             Param("sourceKind", "string", false, "体素源：ModelAsset/PrefabAsset/Embedded"),
+             Param("sourcePath", "string", false, "体素源资产路径"),
+             Param("sourceOffset", "integer[3]", false, "从源的哪一角开始取瓷砖"),
+             Param("tileWidth", "integer", false, "瓷砖 U 方向格数，0 表示跟随源"),
+             Param("tileHeight", "integer", false, "瓷砖 V 方向格数，0 表示跟随源"),
+             Param("tileDepth", "integer", false, "瓷砖 W 方向取源的前几层，默认 1"),
+             Param("gap", "integer", false, "缝宽格数"),
+             Param("stagger", "boolean", false, "是否错缝"),
+             Param("rotation", "string", false, "None/QuarterRandom/RowAlternate"),
+             Param("variantCount", "integer", false, "变体数"),
+             Param("seed", "integer", false, "随机种子"),
+             Param("jitterU", "integer", false, "横向抖动上限"),
+             Param("jitterV", "integer", false, "纵向抖动上限"),
+             Param("fit", "string", false, "PerColumn/BlockFront/BlockBack"),
+             Param("surfaceTolerance", "integer", false, "共面容差格数"),
+             Param("maxDepth", "integer", false, "最大探测深度"),
+             Param("offset", "integer", false, "整体外凸格数"),
+             Param("edge", "string", false, "Clip/SkipTile"),
+             Param("autoRebuild", "boolean", false, "参数改动后是否自动重算"),
+             Param("sourceObjectId", "string", false, "把该模型对象的体素抓成内嵌瓷砖源"),
+             Param("fitObjectId", "string", false, "把该模型对象的包围盒外扩一格作为盒体"),
+             Param("generate", "boolean", false, "是否立即重新生成，默认 true")]),
+        new("tilelayer.generate", "程序化体素", "重新生成瓷砖", "按当前参数重新贴着墙生成瓷砖",
+            [.. TargetIdOrName]),
+        new("tilelayer.instantiate", "程序化体素", "实例化瓷砖为模型", "把瓷砖组件替换成体素模型组件，之后可以进入绘制模式",
+            [.. TargetIdOrName]),
+        new("tilelayer.captureSource", "程序化体素", "抓取瓷砖源", "把场景中另一个模型对象的体素抓成组件的内嵌瓷砖源",
+            [.. TargetIdOrName, Param("sourceId", "string", false, "提供体素的模型对象标识或名称")]),
+        new("scene.array.get", "编辑动作", "读取对象阵列设定", "读取阵列方式、份数、间距与选中对象的包围盒，并预估副本份数",
+            [Param("ids", "string[]", false, "参与阵列的对象标识或名称，省略时用当前选择")]),
+        new("scene.array.apply", "编辑动作", "执行对象阵列", "按方式复制选中对象：副本是独立对象，一步撤销可全退回",
+            [Param("mode", "string", false, "Rectangular/Ring/Mirror"),
+             Param("counts", "integer[3]", false, "矩形三轴份数，含原件"),
+             Param("steps", "integer[3]", false, "矩形三轴间距（格）"),
+             Param("gap", "integer", false, "按包围盒间距时的额外空隙"),
+             Param("spacing", "string", false, "间距口径：Cells/BoundingBox"),
+             Param("axis", "integer", false, "环形与镜像的轴，0 为 X、1 为 Y、2 为 Z"),
+             Param("ringCount", "integer", false, "环形份数，含原件"),
+             Param("center", "number[3]", false, "环形与镜像的中心点，省略时按选中内容自动"),
+             Param("group", "boolean", false, "是否把副本打到一个新建父对象下"),
+             Param("ids", "string[]", false, "参与阵列的对象标识或名称，省略时用当前选择")]),
     ];
 
     /// <summary>
@@ -452,6 +556,8 @@ internal sealed partial class ImGuiEditorWindow
             "render.resetAccumulation" => ResetRenderAccumulation(),
             "model.scale" => SetModelScale(payload),
             "model.mirrorX" => SetModelMirrorX(payload),
+            "model.mirror" => SetModelMirrorAxis(payload),
+            "voxel.stroke" => SimulateVoxelStroke(payload),
             "timeline.list" => ListTimelineAssets(),
             "timeline.get" => GetTimelineAsset(payload),
             "timeline.create" => CreateTimelineAsset(payload),
@@ -544,6 +650,14 @@ internal sealed partial class ImGuiEditorWindow
             "tree.generate" => GenerateTreeGenerator(payload),
             "tree.instantiate" => InstantiateTreeGenerator(payload),
             "tree.create" => CreateTreeObject(payload),
+            "tilelayer.create" => CreateTileObject(payload),
+            "tilelayer.get" => DescribeTileLayer(payload),
+            "tilelayer.set" => SetTileLayer(payload),
+            "tilelayer.generate" => GenerateTileLayer(payload),
+            "tilelayer.instantiate" => InstantiateTileLayer(payload),
+            "tilelayer.captureSource" => CaptureTileSource(payload),
+            "scene.array.get" => DescribeObjectArray(payload),
+            "scene.array.apply" => ApplyObjectArrayCommand(payload),
             _ => throw new InvalidOperationException($"不支持的编辑器命令：{commandId}"),
         };
     }
@@ -1766,8 +1880,24 @@ internal sealed partial class ImGuiEditorWindow
             ?? throw new InvalidOperationException("对象没有体素模型组件");
         var enabled = ReadBoolean(arguments, "enabled") ?? throw new ArgumentException("缺少 enabled");
         if (SceneComponentTypes.ReadVoxelModel(component).MirrorX != enabled)
-            MirrorModelLocalX(target, component, enabled);
+            MirrorModelLocalAxis(target, component, 0, enabled);
         return new { enabled = SceneComponentTypes.ReadVoxelModel(component).MirrorX };
+    });
+
+    /// <summary>命令入口：按轴设置模型镜像，轴 0 为 X、1 为 Y、2 为 Z</summary>
+    private object SetModelMirrorAxis(JsonElement arguments) => RunOnUi(() =>
+    {
+        var target = RequireObject(arguments);
+        var component = target.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel)
+            ?? throw new InvalidOperationException("对象没有体素模型组件");
+        var axis = ReadInteger(arguments, "axis") ?? throw new ArgumentException("缺少 axis");
+        if (axis is < 0 or > 2) throw new ArgumentException("axis 只能是 0、1、2");
+        var enabled = ReadBoolean(arguments, "enabled") ?? throw new ArgumentException("缺少 enabled");
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        var current = axis switch { 0 => data.MirrorX, 1 => data.MirrorY, _ => data.MirrorZ };
+        if (current != enabled) MirrorModelLocalAxis(target, component, axis, enabled);
+        data = SceneComponentTypes.ReadVoxelModel(component);
+        return new { axis, enabled = axis switch { 0 => data.MirrorX, 1 => data.MirrorY, _ => data.MirrorZ } };
     });
 
     private static readonly (string Id, string Title)[] PanelIds =
@@ -1778,6 +1908,7 @@ internal sealed partial class ImGuiEditorWindow
         ("renderStatistics", "渲染统计"), ("generator", "生成器"), ("framePreset", "画面预设"),
         ("exportDialog", "导出对话框"), ("performance", "性能分析"), ("guide", "入门指引"),
         ("pluginManager", "插件管理"), ("scriptRunner", "脚本运行器"),
+        ("array", "阵列填充"),
     ];
 
     private bool GetPanelVisible(string id) => id switch
@@ -1799,6 +1930,7 @@ internal sealed partial class ImGuiEditorWindow
         "guide" => _showGettingStarted,
         "pluginManager" => _showPluginManagerWindow,
         "scriptRunner" => _showScriptRunnerWindow,
+        "array" => _showArrayWindow,
         _ => throw new ArgumentException($"未知面板：{id}"),
     };
 
@@ -1828,6 +1960,9 @@ internal sealed partial class ImGuiEditorWindow
             case "scriptRunner":
                 if (visible) OpenScriptRunnerWindow();
                 else _showScriptRunnerWindow = false;
+                break;
+            case "array":
+                _showArrayWindow = visible;
                 break;
             default: throw new ArgumentException($"未知面板：{id}");
         }

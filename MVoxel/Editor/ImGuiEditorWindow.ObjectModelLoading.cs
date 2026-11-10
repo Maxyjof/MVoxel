@@ -28,7 +28,8 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     if (item.Transform.Mode != TransformMode.Grid || !item.Transform.Grid.Rotation.Equals(OrthogonalRotation.Identity) ||
                         item.Transform.ScaleX != 1F || item.Transform.ScaleY != 1F || item.Transform.ScaleZ != 1F ||
-                        data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F || data.MirrorX)
+                        data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F ||
+                        data.MirrorX || data.MirrorY || data.MirrorZ)
                         throw new InvalidOperationException($"对象“{item.Name}”带有旋转、缩放或镜像，无法自动同步片段位置");
                     var origin = new VoxelCoord64(checked(key.Origin.X + segment.Origin.X - oldOrigin.X),
                         checked(key.Origin.Y + segment.Origin.Y - oldOrigin.Y), checked(key.Origin.Z + segment.Origin.Z - oldOrigin.Z));

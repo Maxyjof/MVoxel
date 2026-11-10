@@ -213,8 +213,8 @@ internal sealed partial class ImGuiEditorWindow
     private bool _gizmoRotationPreviewActive;
     // 预览把角度量化到固定档位后才重采样体素，档内剩余角度交给拖动实例的旋转变换补足。
     // 这样体素形态只在跨档时更新一次，画面运动仍然逐帧连续，不会每度都重建 BLAS
-    private const float RotationPreviewAngleStep = 3F;
-    // 两次重采样之间的最小间隔，避免一次鼠标事件里反复重采样
+    private const float RotationPreviewAngleStep = 8F;
+    // GPU 工作集与加速结构重建成本较高，限制拖动期间的重采样频率
     private const long RotationPreviewResampleIntervalMs = 16;
     private bool _gizmoRotationPreviewNeedsMaterialRemap;
     // 拖动实例当前叠加的残差旋转与枢轴，场景视口按它更新实例变换
@@ -233,7 +233,17 @@ internal sealed partial class ImGuiEditorWindow
         if (_project is null || _sceneDocument is null) return false;
         if (sceneObject.Transform.Mode != TransformMode.Grid) return false;
         var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return false;
+        if (component is null)
+        {
+            var generated = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent);
+            if (generated is null) return false;
+            _gizmoRotationStartDegrees = ReadGeneratedTransform(generated).Rotation;
+            _gizmoRotationPreviewQuantizedDegrees = _gizmoRotationStartDegrees;
+            _gizmoRotationPreviewPivot = new Vector3(
+                _sceneGizmoDragStartPosition.X, _sceneGizmoDragStartPosition.Y, _sceneGizmoDragStartPosition.Z);
+            _gizmoRotationPreviewActive = true;
+            return true;
+        }
         var world = _objectVoxels.GetOrCreate(sceneObject.Id);
         if (!world.TryGetBounds(out var origin, out _)) return false;
         var source = PrepareRotationSource(sceneObject, component, origin, world);
@@ -273,8 +283,13 @@ internal sealed partial class ImGuiEditorWindow
     /// <param name="radians">本次累计角度</param>
     private void UpdateModelRotationPreview(SceneObject sceneObject, int axis, float radians)
     {
-        if (!_gizmoRotationPreviewActive || _gizmoRotationSource is null) return;
+        if (!_gizmoRotationPreviewActive) return;
         var degrees = AddAxisRotation(_gizmoRotationStartDegrees, axis, radians);
+        if (_gizmoRotationSource is null)
+        {
+            SetStatus($"旋转中：X {degrees.X:0.#}°  Y {degrees.Y:0.#}°  Z {degrees.Z:0.#}°（松手后重建）");
+            return;
+        }
         // 没有可用的拖动实例时只刷新状态栏，等松手后按最终角度提交
         if (_dragInstanceStaticWorld is null || _dragInstanceObjectId != sceneObject.Id)
         {
@@ -299,7 +314,11 @@ internal sealed partial class ImGuiEditorWindow
             var anchor = ResolveRotationAnchor(_gizmoRotationSource, _gizmoRotationOrigin, rotation,
                 _gizmoRotationPreviewPivot);
             if (!ModelRotationRule.TryResample(_gizmoRotationSource, _gizmoRotationLookup, rotation, anchor,
-                    out var rotated, out _)) return;
+                    out var rotated, out var error))
+            {
+                SetStatus($"旋转预览未更新：{error}");
+                return;
+            }
             _gizmoRotationPreviewQuantizedDegrees = quantized;
             _gizmoRotationPreviewAtMs = now;
             _dragInstanceObjectWorld = _gizmoRotationPreviewNeedsMaterialRemap
@@ -401,7 +420,16 @@ internal sealed partial class ImGuiEditorWindow
         }
 
         var component = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsVoxelModel);
-        if (component is null) return;
+        if (component is null)
+        {
+            var generated = sceneObject.Components.FirstOrDefault(SceneComponentTypes.IsGeneratedVoxelComponent);
+            if (generated is not null)
+            {
+                ApplyGeneratedObjectTransform(sceneObject, generated, rotation: degrees);
+                StartSceneSettle();
+            }
+            return;
+        }
         ApplyModelRotation(sceneObject, component, RotationFromDegrees(degrees), degrees,
             _gizmoRotationPreviewPivot);
         // 最后角度的拖动实例先留着显示，后台换好正式工作集再切过去

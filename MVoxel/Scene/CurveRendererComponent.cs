@@ -115,6 +115,57 @@ public readonly record struct CurvePointData(
 }
 
 /// <summary>
+/// 曲线组件的输出方式：扫掠成管体，或沿曲线摆放体素源
+/// </summary>
+public enum CurveOutputMode
+{
+    /// <summary>按截面扫掠成管体</summary>
+    Tube,
+
+    /// <summary>沿曲线等距摆放体素源</summary>
+    Scatter,
+}
+
+/// <summary>
+/// 沿曲线摆放时的朝向对齐方式
+/// </summary>
+public enum ScatterAlign
+{
+    /// <summary>跟随切线，含俯仰，适合坡道与水管</summary>
+    Tangent,
+
+    /// <summary>只绕竖直轴转，物体保持竖直，适合路灯与围栏</summary>
+    Horizontal,
+
+    /// <summary>不旋转，保持源朝向</summary>
+    Fixed,
+}
+
+/// <summary>
+/// 沿曲线摆放时的支点
+/// </summary>
+public enum ScatterPivot
+{
+    /// <summary>用源的包围盒中心对齐曲线</summary>
+    Center,
+
+    /// <summary>用源的底部中心对齐曲线，适合立在地上的物件</summary>
+    Bottom,
+}
+
+/// <summary>
+/// 沿曲线摆放的间距口径
+/// </summary>
+public enum ScatterSpacingMode
+{
+    /// <summary>按固定弧长间距摆放</summary>
+    Distance,
+
+    /// <summary>在起止范围内均分指定数量</summary>
+    Count,
+}
+
+/// <summary>
 /// 曲线渲染器组件数据：控制点、插值参数、生成参数与编辑状态
 /// </summary>
 /// <remarks>
@@ -153,13 +204,29 @@ public readonly record struct CurveRendererComponentData(
     ushort MaterialSlot = 0,
     string SortingLayer = "默认",
     int SortingOrder = 0,
-    bool Editing = false)
+    bool Editing = false,
+    CurveOutputMode Output = CurveOutputMode.Tube,
+    VoxelSourceRef ScatterSource = default,
+    ScatterSpacingMode SpacingMode = ScatterSpacingMode.Distance,
+    float Spacing = 4F,
+    int ScatterCount = 8,
+    ScatterAlign Align = ScatterAlign.Tangent,
+    ScatterPivot Pivot = ScatterPivot.Center,
+    float RollDegrees = 0F,
+    float JitterDistance = 0F,
+    float JitterAngle = 0F,
+    float StartOffset = 0F,
+    float EndOffset = 0F,
+    bool GroundSnap = false,
+    int GroundOffset = 0,
+    int ScatterSeed = 0,
+    bool ClosedWrap = false)
 {
     /// <summary>控制点数量上限，避免一次生成把界面拖死</summary>
     public const int MaximumPointCount = 512;
 
     /// <summary>光栅化算法版本；算法改动时提升，使旧负载按新规则重建</summary>
-    private const int RasterVersion = 2;
+    private const int RasterVersion = 3;
 
     /// <summary>每段采样数上限</summary>
     public const int MaximumResolution = 64;
@@ -195,7 +262,23 @@ public readonly record struct CurveRendererComponentData(
             float.IsFinite(Radius) ? Math.Clamp(Radius, 0.1F, 64F) : 2F,
             ColorR, ColorG, ColorB, ColorA, Emissive, MaterialSlot,
             string.IsNullOrWhiteSpace(SortingLayer) ? "默认" : SortingLayer.Trim(),
-            Math.Clamp(SortingOrder, -100_000, 100_000), Editing);
+            Math.Clamp(SortingOrder, -100_000, 100_000), Editing,
+            Enum.IsDefined(Output) ? Output : CurveOutputMode.Tube,
+            ScatterSource.Kind == VoxelSourceKind.None ? VoxelSourceRef.None : ScatterSource with
+            {
+                AssetPath = (ScatterSource.AssetPath ?? string.Empty).Replace('\\', '/').Trim(),
+            },
+            Enum.IsDefined(SpacingMode) ? SpacingMode : ScatterSpacingMode.Distance,
+            float.IsFinite(Spacing) ? Math.Clamp(Spacing, 0.5F, 256F) : 4F,
+            Math.Clamp(ScatterCount, 1, 4096),
+            Enum.IsDefined(Align) ? Align : ScatterAlign.Tangent,
+            Enum.IsDefined(Pivot) ? Pivot : ScatterPivot.Center,
+            float.IsFinite(RollDegrees) ? Math.Clamp(RollDegrees, -180F, 180F) : 0F,
+            float.IsFinite(JitterDistance) ? Math.Clamp(JitterDistance, 0F, 64F) : 0F,
+            float.IsFinite(JitterAngle) ? Math.Clamp(JitterAngle, 0F, 180F) : 0F,
+            float.IsFinite(StartOffset) ? Math.Clamp(StartOffset, 0F, 100_000F) : 0F,
+            float.IsFinite(EndOffset) ? Math.Clamp(EndOffset, 0F, 100_000F) : 0F,
+            GroundSnap, Math.Clamp(GroundOffset, -64, 64), Math.Clamp(ScatterSeed, 0, 65535), ClosedWrap);
         return normalization;
     }
 
@@ -237,6 +320,25 @@ public readonly record struct CurveRendererComponentData(
         MixInt(ref hash, data.ColorB); MixInt(ref hash, data.ColorA);
         MixInt(ref hash, data.Emissive ? 1 : 0);
         MixInt(ref hash, data.MaterialSlot);
+        // 沿曲线摆放的输出方式与参数也要进指纹，否则切换模式后旧负载不会重建
+        MixInt(ref hash, (int)data.Output);
+        MixInt(ref hash, (int)data.ScatterSource.Kind);
+        if (!string.IsNullOrEmpty(data.ScatterSource.AssetPath))
+            foreach (var character in data.ScatterSource.AssetPath) MixInt(ref hash, character);
+        MixInt(ref hash, (int)data.SpacingMode);
+        MixFloat(ref hash, data.Spacing);
+        MixInt(ref hash, data.ScatterCount);
+        MixInt(ref hash, (int)data.Align);
+        MixInt(ref hash, (int)data.Pivot);
+        MixFloat(ref hash, data.RollDegrees);
+        MixFloat(ref hash, data.JitterDistance);
+        MixFloat(ref hash, data.JitterAngle);
+        MixFloat(ref hash, data.StartOffset);
+        MixFloat(ref hash, data.EndOffset);
+        MixInt(ref hash, data.GroundSnap ? 1 : 0);
+        MixInt(ref hash, data.GroundOffset);
+        MixInt(ref hash, data.ScatterSeed);
+        MixInt(ref hash, data.ClosedWrap ? 1 : 0);
         return hash;
 
         static void MixFloat(ref ulong hash, float value) => MixInt(ref hash, BitConverter.SingleToInt32Bits(value));
@@ -277,6 +379,23 @@ internal static class CurveRendererJson
     internal const string SortingLayerName = "sortingLayer";
     internal const string SortingOrderName = "sortingOrder";
     internal const string EditingName = "editing";
+    internal const string OutputName = "output";
+    internal const string ScatterSourceKindName = "scatterSourceKind";
+    internal const string ScatterSourcePathName = "scatterSourcePath";
+    internal const string SpacingModeName = "spacingMode";
+    internal const string SpacingName = "scatterSpacing";
+    internal const string ScatterCountName = "scatterCount";
+    internal const string AlignName = "scatterAlign";
+    internal const string PivotName = "scatterPivot";
+    internal const string RollName = "scatterRoll";
+    internal const string JitterDistanceName = "jitterDistance";
+    internal const string JitterAngleName = "jitterAngle";
+    internal const string StartOffsetName = "startOffset";
+    internal const string EndOffsetName = "endOffset";
+    internal const string GroundSnapName = "groundSnap";
+    internal const string GroundOffsetName = "groundOffset";
+    internal const string ScatterSeedName = "scatterSeed";
+    internal const string ClosedWrapName = "closedWrap";
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { IncludeFields = true };
 
@@ -325,7 +444,30 @@ internal static class CurveRendererJson
             (ushort)Math.Clamp(Int(data, MaterialSlotName, 0), 0, ushort.MaxValue),
             String(data, SortingLayerName, "默认"),
             Int(data, SortingOrderName, 0),
-            Bool(data, EditingName, false)).Normalize();
+            Bool(data, EditingName, false),
+            Int(data, OutputName, 0) is var output && Enum.IsDefined((CurveOutputMode)output)
+                ? (CurveOutputMode)output : CurveOutputMode.Tube,
+            new VoxelSourceRef(
+                Int(data, ScatterSourceKindName, 0) is var sourceKind && Enum.IsDefined((VoxelSourceKind)sourceKind)
+                    ? (VoxelSourceKind)sourceKind : VoxelSourceKind.None,
+                String(data, ScatterSourcePathName, string.Empty)),
+            Int(data, SpacingModeName, 0) is var spacingMode && Enum.IsDefined((ScatterSpacingMode)spacingMode)
+                ? (ScatterSpacingMode)spacingMode : ScatterSpacingMode.Distance,
+            Float(data, SpacingName, 4F),
+            Int(data, ScatterCountName, 8),
+            Int(data, AlignName, 0) is var align && Enum.IsDefined((ScatterAlign)align)
+                ? (ScatterAlign)align : ScatterAlign.Tangent,
+            Int(data, PivotName, 0) is var pivot && Enum.IsDefined((ScatterPivot)pivot)
+                ? (ScatterPivot)pivot : ScatterPivot.Center,
+            Float(data, RollName, 0F),
+            Float(data, JitterDistanceName, 0F),
+            Float(data, JitterAngleName, 0F),
+            Float(data, StartOffsetName, 0F),
+            Float(data, EndOffsetName, 0F),
+            Bool(data, GroundSnapName, false),
+            Int(data, GroundOffsetName, 0),
+            Int(data, ScatterSeedName, 0),
+            Bool(data, ClosedWrapName, false)).Normalize();
     }
 
     /// <summary>
@@ -365,6 +507,23 @@ internal static class CurveRendererJson
         merged[SortingLayerName] = normalized.SortingLayer;
         merged[SortingOrderName] = normalized.SortingOrder;
         merged[EditingName] = normalized.Editing;
+        merged[OutputName] = (int)normalized.Output;
+        merged[ScatterSourceKindName] = (int)normalized.ScatterSource.Kind;
+        merged[ScatterSourcePathName] = normalized.ScatterSource.AssetPath;
+        merged[SpacingModeName] = (int)normalized.SpacingMode;
+        merged[SpacingName] = normalized.Spacing;
+        merged[ScatterCountName] = normalized.ScatterCount;
+        merged[AlignName] = (int)normalized.Align;
+        merged[PivotName] = (int)normalized.Pivot;
+        merged[RollName] = normalized.RollDegrees;
+        merged[JitterDistanceName] = normalized.JitterDistance;
+        merged[JitterAngleName] = normalized.JitterAngle;
+        merged[StartOffsetName] = normalized.StartOffset;
+        merged[EndOffsetName] = normalized.EndOffset;
+        merged[GroundSnapName] = normalized.GroundSnap;
+        merged[GroundOffsetName] = normalized.GroundOffset;
+        merged[ScatterSeedName] = normalized.ScatterSeed;
+        merged[ClosedWrapName] = normalized.ClosedWrap;
         component.Data = JsonSerializer.SerializeToElement(merged, Options);
     }
 

@@ -180,7 +180,12 @@ public sealed class VoxelRenderParameters
     /// <summary>玻璃反射分段数、发光体反射开关、环境光权重与遮挡权重</summary>
     public const int GlassReflectionBounces = 241, GlassReflectionEmissive = 242;
     public const int GlassReflectionAmbient = 243, GlassReflectionOcclusion = 244;
-    public const int SlotCount = 252;
+    /// <summary>
+    /// 编辑区域体素数量：笔划进行中工作集不重建，区域内改由这份小缓冲做软件求交，
+    /// 每笔只需上传区域内的几十到几百格，不必重传整份体素缓冲与 BVH
+    /// </summary>
+    public const int EditRegionCellCount = 252;
+    public const int SlotCount = 256;
 
     /// <summary>
     /// 生成 GLSL 的 #define 常量表，保证着色器与 C# 槽位、光源容量常量同源
@@ -191,6 +196,7 @@ public sealed class VoxelRenderParameters
         var names = new (string, int)[]
         {
             ("P_PARAMETER_COUNT", SlotCount),
+            ("P_EDIT_REGION_CELL_COUNT", EditRegionCellCount),
             ("P_WEATHER_SEED", WeatherSeed), ("P_WEATHER_TIME", WeatherTime),
             ("P_WEATHER_VIEW_DISTANCE", WeatherViewDistance),
             ("P_SURFACE_DEPOSIT_COUNT", SurfaceDepositCount),

@@ -379,6 +379,7 @@ public static class ShortcutCommands
         new("edit.undo", "撤销", "Ctrl+Z", "编辑"),
         new("edit.redo", "重做", "Ctrl+Y", "编辑"),
         new("edit.redoAlternate", "重做（备用）", "Ctrl+Shift+Z", "编辑"),
+        new("edit.delete", "删除选中对象", "Delete", "编辑"),
         new("project.new", "新建项目", "Ctrl+N", "项目"),
         new("project.open", "打开项目", "Ctrl+O", "项目"),
         new("project.save", "保存项目", "Ctrl+S", "项目"),

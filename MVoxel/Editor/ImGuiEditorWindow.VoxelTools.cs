@@ -30,6 +30,8 @@ internal enum EditorTool
     Box,
     Fill,
     Eyedropper,
+    /// <summary>换色：把点中的已有方块改成当前笔刷色，不增删方块</summary>
+    Recolor,
 }
 
 /// <summary>
@@ -87,13 +89,17 @@ internal sealed partial class ImGuiEditorWindow
     private VoxelValue _pendingFloodValue;
     private StableId? _pendingFloodTargetId;
     private bool _pendingFloodOpen;
+    /// <summary>场景视口最近一次的矩形与相机，供自动化模拟笔画复用同一套投影</summary>
+    private Vector2 _lastVoxelViewportOrigin;
+    private Vector2 _lastVoxelViewportSize;
 
     /// <summary>
     /// 当前是否处于体素绘制模式：已绑定编辑目标且工具属于绘制类。
     /// 绘制期间收起对象的选中外轮廓，避免描边盖住正在编辑的体素边界
     /// </summary>
     private bool IsVoxelDrawingMode => _voxelEditTargetId is not null &&
-        _activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box or EditorTool.Fill;
+        _activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Line or EditorTool.Box
+            or EditorTool.Fill or EditorTool.Recolor;
 
     /// <summary>
     /// 是否处于体素编辑模式：已绑定编辑目标即可，具体工具（选择/相机等）不影响体素描边显示。
@@ -114,12 +120,26 @@ internal sealed partial class ImGuiEditorWindow
     private bool _strokeErase;
     private long _strokeLastFlushTicks;
     /// <summary>
+    /// 本笔划锁定的绘制平面：法线为单轴单位向量，深度是沿该轴的绘制层格坐标。
+    /// 与 MagicaVoxel 一致，一次按住拖动只在一个平面内铺格，射线扫过不同深度的物体也不会跳层
+    /// </summary>
+    private VoxelCoord64 _strokePlaneNormal;
+    private long _strokePlaneCell;
+    private bool _strokePlaneActive;
+    /// <summary>
     /// 本次笔划改动覆盖的世界坐标范围（含端点）。拖动绘制期间加速结构保留笔划开始时的版本，
     /// 视口只在这个范围内用当前工作集的软件 BVH 求交，因此不必每次提交都重建整份 BLAS
     /// </summary>
     private bool _strokeEditRegionActive;
     private VoxelCoord64 _strokeEditRegionMinimum;
     private VoxelCoord64 _strokeEditRegionMaximum;
+    /// <summary>
+    /// 自动化模拟的笔划保持：命令画完一笔后维持冻结状态，便于截图验证区域缓冲是否真的显示新方块。
+    /// 真实鼠标笔划不使用它
+    /// </summary>
+    private bool _simulatedStrokeHold;
+    /// <summary>上次上传的笔划区域内容签名，用来避免每帧重复上传</summary>
+    private int _strokeRegionSignature;
     /// <summary>笔划提交间隔：一次提交会重建对象体素世界与场景合成世界，太频繁会直接掉到二十帧</summary>
     private const double StrokeFlushIntervalMs = 120.0;
 
@@ -543,8 +563,10 @@ internal sealed partial class ImGuiEditorWindow
                 if (generatedComponent is null) continue;
                 try
                 {
+                    var context = BuildGeneratedContext(scene, item.Id, id => worlds.GetValueOrDefault(id),
+                        project, GetObjectGridOrigin(item));
                     if (!SceneComponentTypes.TryPrepareGeneratedVoxels(generatedComponent, ProceduralVoxelBudget,
-                            out var local, out var regenerated, out var truncated)) continue;
+                            context, out var local, out var regenerated, out var truncated)) continue;
                     var origin = GetObjectGridOrigin(item);
                     worlds[item.Id] = origin == VoxelCoord64.Zero
                         ? local
@@ -2029,9 +2051,33 @@ internal sealed partial class ImGuiEditorWindow
             // 笔划期间把改动范围告诉管线：加速结构保留笔划开始时的版本，
             // 视口只在这个范围内改走当前工作集的软件求交，拖动绘制因此不必每笔重建 BLAS。
             // 鼠标一旦松开就结束区域，管线会立即重建一次加速结构恢复整帧硬件求交
-            var strokeEditing = _strokeEditRegionActive && ImGui.IsMouseDown(ImGuiMouseButton.Left);
+            var strokeEditing = (_strokeEditRegionActive && ImGui.IsMouseDown(ImGuiMouseButton.Left)) ||
+                                _simulatedStrokeHold;
             if (_strokeEditRegionActive && !strokeEditing) _strokeEditRegionActive = false;
             pipeline.SetEditRegion(strokeEditing, _strokeEditRegionMinimum, _strokeEditRegionMaximum);
+            // 冻结笔划期间的工作集：区域内新几何单独上传，每笔只传几十到几百格，
+            // 不再重建整份工作集与 BVH；松手后解除冻结，下一帧恢复一次全量同步
+            if (strokeEditing)
+            {
+                // 只有区域内容真的变化才重新上传：每帧同步上传会把帧率拖到个位数，
+                // 表现就是画面几乎不动、像没画出来
+                var regionSignature = HashCode.Combine(_world.ContentVersion,
+                    _strokeEditRegionMinimum, _strokeEditRegionMaximum);
+                if (regionSignature != _strokeRegionSignature)
+                {
+                    _strokeRegionSignature = regionSignature;
+                    pipeline.SetEditRegionCells(BuildEditRegionCells(pipeline, _strokeEditRegionMinimum,
+                        _strokeEditRegionMaximum));
+                }
+
+                pipeline.SetEditRegionFrozen(true);
+            }
+            else
+            {
+                _strokeRegionSignature = 0;
+                pipeline.SetEditRegionCells(null);
+                pipeline.SetEditRegionFrozen(false);
+            }
             var settings = CurrentSceneRenderSettings.CreateScenePreview();
             settings.SceneBackgroundColor = _editorSettings.SceneRenderSettings.SceneBackgroundColor;
             var coreWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -2701,8 +2747,16 @@ internal sealed partial class ImGuiEditorWindow
         if (!capsLockMode && !navigatingCamera)
         {
             var hoverHit = PickVoxel(mouse, origin, size, camera);
-            var hoverErase = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
-            _brushPreview = hoverHit ?? (!hoverErase ? PickShapeSurface(mouse, origin, size, camera, erase: false) : null);
+            var hoverErase = ResolveBrushErase(_activeTool, leftAction, ImGuiMouseButton.Left, shiftPressed);
+            _brushPreview = hoverHit;
+            if (hoverHit is null && !hoverErase &&
+                TryResolveBrushCell(null, mouse, origin, size, camera, out var hoverNormal, out var hoverCell))
+            {
+                // 虚空预览与长按落笔共用同一套平面解析，框显示在哪就画在哪
+                _brushPreview = new VoxelDda.Hit(hoverCell - hoverNormal, hoverNormal, 0F,
+                    new NumVector3(hoverCell.X + 0.5F, hoverCell.Y + 0.5F, hoverCell.Z + 0.5F));
+            }
+
             _brushPreviewErase = hoverErase;
         }
         else if (!capsLockMode)
@@ -2734,6 +2788,77 @@ internal sealed partial class ImGuiEditorWindow
         _ = ApplyMouseVoxelAction(rightAction, ImGuiMouseButton.Right, mouse, origin, size, camera);
     }
 
+    /// <summary>
+    /// 绘制模式内的工具切换行：画笔、橡皮擦、换色、框选填充，同一时间只选中一个
+    /// </summary>
+    private void DrawVoxelToolRow()
+    {
+        var tools = new (string Label, EditorTool Tool)[]
+        {
+            ("画笔", EditorTool.Draw),
+            ("橡皮擦", EditorTool.Erase),
+            ("换色", EditorTool.Recolor),
+            ("框选填充", EditorTool.Box),
+        };
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var width = MathF.Max(ImGui.GetFontSize() * 3.1F,
+            MathF.Floor((ImGui.GetContentRegionAvail().X - spacing * (tools.Length - 1)) / tools.Length));
+        for (var index = 0; index < tools.Length; index++)
+        {
+            var active = _activeTool == tools[index].Tool;
+            if (active)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Button, ToColor(EditorPalette.Accent));
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ToColor(EditorPalette.Accent));
+            }
+
+            if (ImGui.Button(tools[index].Label, new Vector2(width, 0F))) _activeTool = tools[index].Tool;
+            if (active) ImGui.PopStyleColor(2);
+            if (index < tools.Length - 1) ImGui.SameLine();
+        }
+    }
+
+    /// <summary>
+    /// 收集笔划编辑区域内的当前体素，供冻结期间的区域求交使用。
+    /// 坐标换算成相对工作集原点，与工作集体素同一口径
+    /// </summary>
+    /// <param name="pipeline">场景渲染管线</param>
+    /// <param name="minimum">区域最小角（世界格）</param>
+    /// <param name="maximum">区域最大角（世界格）</param>
+    /// <returns>区域内体素</returns>
+    private List<VoxelGpuCell> BuildEditRegionCells(VulkanVoxelRenderPipeline pipeline,
+        VoxelCoord64 minimum, VoxelCoord64 maximum)
+    {
+        var cells = new List<VoxelGpuCell>();
+        foreach (var (coordinate, value) in _world.EnumerateOccupied())
+        {
+            if (coordinate.X < minimum.X || coordinate.Y < minimum.Y || coordinate.Z < minimum.Z ||
+                coordinate.X > maximum.X || coordinate.Y > maximum.Y || coordinate.Z > maximum.Z) continue;
+            // 区域体素直接使用世界格坐标，着色器按同一口径求交，不再依赖工作集原点换算
+            cells.Add(new VoxelGpuCell(
+                checked((int)coordinate.X), checked((int)coordinate.Y), checked((int)coordinate.Z), value));
+        }
+
+        return cells;
+    }
+
+    /// <summary>
+    /// 解析一次体素操作实际是绘制还是擦除：橡皮擦与画笔在按住 Shift 左键时互换。
+    /// 悬停预览和真实落笔共用这一处判断，预览框颜色不会和结果对不上
+    /// </summary>
+    /// <param name="tool">当前工具</param>
+    /// <param name="action">当前鼠标动作</param>
+    /// <param name="button">按下的鼠标键</param>
+    /// <param name="shift">是否按住 Shift</param>
+    /// <returns>true 表示擦除</returns>
+    private static bool ResolveBrushErase(EditorTool tool, ViewportMouseAction action, ImGuiMouseButton button,
+        bool shift)
+    {
+        var erase = tool == EditorTool.Erase || action == ViewportMouseAction.Destroy;
+        if (button == ImGuiMouseButton.Left && tool == EditorTool.Erase && shift) erase = false;
+        return erase;
+    }
+
     private bool ApplyMouseVoxelAction(ViewportMouseAction action, ImGuiMouseButton button,
         Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera)
     {
@@ -2749,6 +2874,7 @@ internal sealed partial class ImGuiEditorWindow
                 _strokeTargetId = null;
                 _strokeErase = false;
                 _strokeLastFlushTicks = 0;
+                _strokePlaneActive = false;
                 ResetStrokeEditRegion();
             }
             else if (!ImGui.IsMouseDown(button))
@@ -2760,6 +2886,7 @@ internal sealed partial class ImGuiEditorWindow
                 _strokeTargetId = null;
                 _strokeErase = false;
                 _strokeLastFlushTicks = 0;
+                _strokePlaneActive = false;
                 ResetStrokeEditRegion();
             }
         }
@@ -2771,26 +2898,54 @@ internal sealed partial class ImGuiEditorWindow
             return false;
         }
 
-        var erase = _activeTool == EditorTool.Erase || action == ViewportMouseAction.Destroy;
+        var erase = ResolveBrushErase(_activeTool, action, button, IsShiftPressed());
+        //换色本身不改平面铺格；画笔与「橡皮擦+Shift」都走平面绘制
+        var painting = _activeTool != EditorTool.Recolor && !erase;
+        //拖动中沿用锁定平面，不再做整场景 DDA：既省掉每帧拾取开销，也保证不会因为命中变化换层
+        if (painting && button == ImGuiMouseButton.Left && !ImGui.IsMouseClicked(button) &&
+            _strokePlaneActive && TryPickCellOnStrokePlane(mouse, origin, size, camera, out var draggedCell))
+        {
+            ApplyPlaneStroke(draggedCell, _voxelEditTargetId);
+            return true;
+        }
+
         var hit = PickVoxel(mouse, origin, size, camera);
         var targetId = ResolveVoxelEditTarget(hit?.Coordinate);
+        //换色：把点中的方块刷成当前笔刷色；按住 Shift 时改为擦除同一批格子
+        if (_activeTool == EditorTool.Recolor)
+        {
+            if (hit is not { } recolorHit)
+            {
+                SetStatus(erase ? "未命中可擦除的体素" : "换色需要点中已有方块");
+                _brushPreview = null;
+                return true;
+            }
+
+            _brushPreview = recolorHit;
+            _brushPreviewErase = erase;
+            var recolorRadius = erase ? Math.Max(1, (_brushRadius + 1) / 2) : Math.Clamp(_brushRadius, 1, 8);
+            CommitStroke(VoxelBrush.CellsAround(recolorHit.Coordinate, _brushShape, recolorRadius), erase, targetId);
+            return true;
+        }
+
+        //绘制：按下时锁定一个平面，之后的拖动都投影到该平面，不会跟着射线在不同深度之间跳层
+        if (painting && button == ImGuiMouseButton.Left && ImGui.IsMouseClicked(button))
+        {
+            if (TryBeginStrokePlane(hit, mouse, origin, size, camera, out var planeCell))
+            {
+                _brushPreview = null;
+                ApplyPlaneStroke(planeCell, targetId);
+                return true;
+            }
+
+            SetStatus("射线未命中模型或网格平面，请调整视角后绘制");
+            _brushPreview = null;
+            return true;
+        }
+
         if (hit is null)
         {
-            // 地面平面放置只允许发生在本笔的第一次按下：拖动过程中射线打空说明画笔已经离开模型，
-            // 此时再往地面格子落方块会在笔划沿途留下零散的新方块
-            if (!erase && ImGui.IsMouseClicked(button))
-            {
-                var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
-                var origin3 = new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z);
-                var direction3 = new NumVector3(ray.X, ray.Y, ray.Z);
-                if (VoxelDda.TryGroundHit(origin3, direction3, _sceneCameraDistance * 8F + 256F, out var groundPoint))
-                {
-                    var cells = VoxelBrush.CellsForGround(groundPoint, _brushShape, _brushRadius);
-                    CommitStroke(cells, erase: false, targetId);
-                }
-                else SetStatus("射线未命中模型或网格平面，请调整视角后绘制");
-            }
-            else if (erase) SetStatus("未命中可擦除的体素");
+            if (erase) SetStatus("未命中可擦除的体素");
 
             _brushPreview = null;
             return true;
@@ -2805,7 +2960,7 @@ internal sealed partial class ImGuiEditorWindow
     /// <summary>命中模型自动成为编辑目标；锁定模型时始终固定归属，不随命中切换。</summary>
     private StableId? ResolveVoxelEditTarget(VoxelCoord64? hitCoordinate)
     {
-        if (_activeTool == EditorTool.Draw || _activeTool == EditorTool.Erase)
+        if (_activeTool is EditorTool.Draw or EditorTool.Erase or EditorTool.Recolor)
             return _voxelEditTargetId;
         if (hitCoordinate is { } hit && _sceneDocument is not null &&
             _objectVoxels.TryGetVisibleVoxel(_sceneDocument, uint.MaxValue, true, hit, out var owner, out _))
@@ -2818,6 +2973,220 @@ internal sealed partial class ImGuiEditorWindow
         }
         return null;
     }
+
+    /// <summary>
+    /// 建立本笔划的绘制平面。命中实体时贴住命中面外侧那一层；落空时优先用 y=0 地面，
+    /// 视线接近水平再退到相机正前方的平面，保证任何视角下都能起笔
+    /// </summary>
+    /// <param name="hit">本帧的 DDA 命中，可为空</param>
+    /// <param name="mouse">鼠标屏幕坐标</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="cell">平面内的起始绘制格</param>
+    /// <returns>平面可用时为 true</returns>
+    private bool TryBeginStrokePlane(VoxelDda.Hit? hit, Vector2 mouse, Vector2 origin, Vector2 size,
+        SceneCamera camera, out VoxelCoord64 cell)
+    {
+        cell = default;
+        _strokePlaneActive = false;
+        if (!TryResolveStrokePlane(hit, mouse, origin, size, camera, out var normal, out var planeCell)) return false;
+        _strokePlaneNormal = normal;
+        _strokePlaneCell = planeCell;
+        _strokePlaneActive = true;
+        return TryPickCellOnStrokePlane(mouse, origin, size, camera, out cell);
+    }
+
+    /// <summary>
+    /// 计算笔划平面的法线（单轴单位向量）与绘制层格坐标
+    /// </summary>
+    /// <param name="hit">本帧的 DDA 命中，可为空</param>
+    /// <param name="mouse">鼠标屏幕坐标</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="normal">平面法线</param>
+    /// <param name="planeCell">绘制层沿法线轴的格坐标</param>
+    /// <returns>解析成功时为 true</returns>
+    private bool TryResolveStrokePlane(VoxelDda.Hit? hit, Vector2 mouse, Vector2 origin, Vector2 size,
+        SceneCamera camera, out VoxelCoord64 normal, out long planeCell)
+    {
+        normal = default;
+        planeCell = 0;
+        if (hit is { } solid)
+        {
+            var axis = AxisIndexOf(solid.Normal);
+            if (axis < 0) return false;
+            normal = solid.Normal;
+            planeCell = AxisValue(solid.Coordinate, axis) + AxisValue(solid.Normal, axis);
+            return true;
+        }
+
+        var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
+        var maximumDistance = _sceneCameraDistance * 8F + 256F;
+        //虚空优先落在 y=0 地面：俯视时和 MagicaVoxel 一样在空画布上直接铺一层
+        if (MathF.Abs(ray.Y) > 0.02F)
+        {
+            var t = -camera.Position.Y / ray.Y;
+            if (t > 0F && t <= maximumDistance)
+            {
+                normal = new VoxelCoord64(0, 1, 0);
+                planeCell = 0;
+                return true;
+            }
+        }
+
+        //视线几乎平行地面时改用相机正前方的平面，任何朝向都能连续画线
+        var forward = camera.Forward;
+        var forwardAxis = MathF.Abs(forward.X) >= MathF.Abs(forward.Y) &&
+                          MathF.Abs(forward.X) >= MathF.Abs(forward.Z)
+            ? 0
+            : MathF.Abs(forward.Y) >= MathF.Abs(forward.Z) ? 1 : 2;
+        var sign = (forwardAxis == 0 ? forward.X : forwardAxis == 1 ? forward.Y : forward.Z) >= 0F ? 1 : -1;
+        normal = forwardAxis switch
+        {
+            0 => new VoxelCoord64(sign, 0, 0),
+            1 => new VoxelCoord64(0, sign, 0),
+            _ => new VoxelCoord64(0, 0, sign),
+        };
+        var originValue = forwardAxis == 0 ? camera.Position.X
+            : forwardAxis == 1 ? camera.Position.Y : camera.Position.Z;
+        planeCell = (long)MathF.Floor(originValue) + sign * 32L;
+        return true;
+    }
+
+    /// <summary>
+    /// 把屏幕射线投到锁定的绘制平面，得到平面内的绘制格
+    /// </summary>
+    /// <param name="mouse">鼠标屏幕坐标</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="cell">平面内的绘制格</param>
+    /// <returns>射线与平面在有效距离内相交时为 true</returns>
+    private bool TryPickCellOnStrokePlane(Vector2 mouse, Vector2 origin, Vector2 size, SceneCamera camera,
+        out VoxelCoord64 cell)
+    {
+        cell = default;
+        return _strokePlaneActive &&
+               TryPickCellOnPlane(_strokePlaneNormal, _strokePlaneCell, mouse, origin, size, camera, out cell);
+    }
+
+    /// <summary>
+    /// 把屏幕射线投到指定平面，得到平面内的绘制格
+    /// </summary>
+    /// <param name="normal">平面法线，单轴单位向量</param>
+    /// <param name="planeCell">绘制层沿法线轴的格坐标</param>
+    /// <param name="mouse">鼠标屏幕坐标</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="cell">平面内的绘制格</param>
+    /// <returns>射线与平面在有效距离内相交时为 true</returns>
+    private bool TryPickCellOnPlane(VoxelCoord64 normal, long planeCell, Vector2 mouse, Vector2 origin,
+        Vector2 size, SceneCamera camera, out VoxelCoord64 cell)
+    {
+        cell = default;
+        var axis = AxisIndexOf(normal);
+        if (axis < 0) return false;
+        var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
+        var direction = axis == 0 ? ray.X : axis == 1 ? ray.Y : ray.Z;
+        if (MathF.Abs(direction) < 1e-5F) return false;
+        var originValue = axis == 0 ? camera.Position.X : axis == 1 ? camera.Position.Y : camera.Position.Z;
+        var t = (planeCell + 0.5F - originValue) / direction;
+        if (t <= 0F || t > _sceneCameraDistance * 8F + 256F) return false;
+        var point = camera.Position + ray * t;
+        cell = axis switch
+        {
+            0 => new VoxelCoord64(planeCell, (long)MathF.Floor(point.Y), (long)MathF.Floor(point.Z)),
+            1 => new VoxelCoord64((long)MathF.Floor(point.X), planeCell, (long)MathF.Floor(point.Z)),
+            _ => new VoxelCoord64((long)MathF.Floor(point.X), (long)MathF.Floor(point.Y), planeCell),
+        };
+        return true;
+    }
+
+    /// <summary>
+    /// 解析鼠标对应的绘制格与平面：命中实体时贴命中面外侧，落空时退到虚空平面。
+    /// 悬停预览、直线工具与长按笔划共用同一套解析，避免预览与落笔方向不一致
+    /// </summary>
+    /// <param name="hit">本帧的 DDA 命中，可为空</param>
+    /// <param name="mouse">鼠标屏幕坐标</param>
+    /// <param name="origin">视口左上角</param>
+    /// <param name="size">视口尺寸</param>
+    /// <param name="camera">观察相机</param>
+    /// <param name="normal">平面法线</param>
+    /// <param name="cell">平面内的绘制格</param>
+    /// <returns>解析成功时为 true</returns>
+    private bool TryResolveBrushCell(VoxelDda.Hit? hit, Vector2 mouse, Vector2 origin, Vector2 size,
+        SceneCamera camera, out VoxelCoord64 normal, out VoxelCoord64 cell)
+    {
+        normal = default;
+        cell = default;
+        if (hit is { } solid)
+        {
+            if (AxisIndexOf(solid.Normal) < 0) return false;
+            normal = solid.Normal;
+            cell = solid.Coordinate + solid.Normal;
+            return true;
+        }
+
+        if (!TryResolveStrokePlane(null, mouse, origin, size, camera, out var planeNormal, out var planeCell))
+            return false;
+        if (!TryPickCellOnPlane(planeNormal, planeCell, mouse, origin, size, camera, out cell)) return false;
+        normal = planeNormal;
+        return true;
+    }
+
+    /// <summary>
+    /// 平面笔划落点：同笔划内去重，跨帧时补三维直线，保证快速拖动也连续
+    /// </summary>
+    /// <param name="cell">平面内的绘制格</param>
+    /// <param name="targetId">编辑目标</param>
+    private void ApplyPlaneStroke(VoxelCoord64 cell, StableId? targetId)
+    {
+        if (_strokeAppliedCells.Contains(cell)) return;
+        var radius = _brushRadius;
+        //拖动中的落点框跟着平面格走，和悬停预览保持同一套坐标
+        _brushPreview = new VoxelDda.Hit(cell - _strokePlaneNormal, _strokePlaneNormal, 0F,
+            new NumVector3(cell.X + 0.5F, cell.Y + 0.5F, cell.Z + 0.5F));
+        _brushPreviewErase = false;
+        if (_strokeLastCell is { } previous && previous != cell)
+        {
+            foreach (var lineCell in VoxelEditingTools.LineCells(previous, cell))
+            {
+                if (lineCell == previous || lineCell == cell) continue;
+                AddPlaneCells(lineCell, radius);
+            }
+        }
+
+        _strokeLastCell = cell;
+        AddPlaneCells(cell, radius);
+        _strokeErase = false;
+        _strokeTargetId = targetId;
+        FlushVoxelStrokeIfDue();
+    }
+
+    /// <summary>
+    /// 把平面笔刷覆盖的格子并入本笔划待提交列表，已记入的格子自动跳过
+    /// </summary>
+    /// <param name="center">笔刷中心格</param>
+    /// <param name="radius">笔刷半径</param>
+    private void AddPlaneCells(VoxelCoord64 center, int radius)
+    {
+        foreach (var cell in VoxelBrush.CellsAround(center, _brushShape, Math.Clamp(radius, 1, 8)))
+        {
+            if (!_strokeAppliedCells.Add(cell)) continue;
+            _strokePendingCells.Add(cell);
+            ExtendStrokeEditRegion(cell);
+        }
+    }
+
+    /// <summary>单轴法线对应的轴序号，不是单轴时返回 -1</summary>
+    private static int AxisIndexOf(VoxelCoord64 axisNormal) =>
+        axisNormal.X != 0 ? 0 : axisNormal.Y != 0 ? 1 : axisNormal.Z != 0 ? 2 : -1;
+
+    /// <summary>取坐标在指定轴上的分量</summary>
+    private static long AxisValue(VoxelCoord64 value, int axis) => axis == 0 ? value.X : axis == 1 ? value.Y : value.Z;
 
     private void ApplyStroke(VoxelDda.Hit hit, bool erase, StableId? targetId)
     {
@@ -3013,7 +3382,7 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("已取消绘制");
             return true;
         }
-        var destroy = _activeTool == EditorTool.Erase || leftAction == ViewportMouseAction.Destroy;
+        var destroy = ResolveBrushErase(_activeTool, leftAction, ImGuiMouseButton.Left, IsShiftPressed());
         var place = !destroy && leftAction == ViewportMouseAction.Place;
         if (!place && !destroy)
         {
@@ -3025,33 +3394,61 @@ internal sealed partial class ImGuiEditorWindow
         if (ioState.MouseClicked[(int)button])
         {
             var hit = PickShapeSurface(mouse, origin, size, camera, destroy);
-            if (hit is null)
+            if (destroy)
             {
+                if (hit is null) return true;
+                _toolDragTargetId = _voxelEditTargetId ?? ResolveVoxelEditTarget(hit.Value.Coordinate);
+                _strokePlaneActive = false;
+                var eraseCell = hit.Value.Coordinate;
+                _toolDragAnchor = eraseCell;
+                _toolDragCurrent = eraseCell;
+                _toolDragErase = true;
+                _toolDragForceLine = forceLine;
+                _brushPreview = null;
                 return true;
             }
 
-            _toolDragTargetId = ResolveVoxelEditTarget(hit.Value.Coordinate);
-            var cell = destroy ? hit.Value.Coordinate : hit.Value.Coordinate + hit.Value.Normal;
-            _toolDragAnchor = cell;
-            _toolDragCurrent = cell;
-            _toolDragErase = destroy;
+            //绘制：先锁定平面，拖动与松手都投影到同一平面，不会沿射线在不同深度跳层
+            if (!TryBeginStrokePlane(hit, mouse, origin, size, camera, out var planeCell)) return true;
+            _toolDragTargetId = _voxelEditTargetId ?? ResolveVoxelEditTarget(hit?.Coordinate);
+            _toolDragAnchor = planeCell;
+            _toolDragCurrent = planeCell;
+            _toolDragErase = false;
             _toolDragForceLine = forceLine;
             _brushPreview = null;
         }
         else if (ImGui.IsMouseDown(button) && _toolDragAnchor is not null)
         {
-            var hit = PickShapeSurface(mouse, origin, size, camera, _toolDragErase);
-            if (hit is not null)
+            if (!_toolDragErase)
             {
-                _toolDragCurrent = _toolDragErase ? hit.Value.Coordinate : hit.Value.Coordinate + hit.Value.Normal;
+                if (TryPickCellOnStrokePlane(mouse, origin, size, camera, out var draggedCell))
+                    _toolDragCurrent = draggedCell;
+            }
+            else
+            {
+                var hit = PickShapeSurface(mouse, origin, size, camera, true);
+                if (hit is not null) _toolDragCurrent = hit.Value.Coordinate;
             }
         }
         else if (ioState.MouseReleased[(int)button] && _toolDragAnchor is { } anchor)
         {
-            var releaseHit = PickShapeSurface(mouse, origin, size, camera, _toolDragErase);
-            var to = releaseHit is { } finalHit
-                ? (_toolDragErase ? finalHit.Coordinate : finalHit.Coordinate + finalHit.Normal)
-                : _toolDragCurrent ?? anchor;
+            var to = _toolDragCurrent ?? anchor;
+            VoxelDda.Hit? releaseHit = null;
+            if (!_toolDragErase)
+            {
+                if (TryPickCellOnStrokePlane(mouse, origin, size, camera, out var releaseCell))
+                {
+                    to = releaseCell;
+                    releaseHit = new VoxelDda.Hit(releaseCell - _strokePlaneNormal, _strokePlaneNormal, 0F,
+                        new NumVector3(releaseCell.X + 0.5F, releaseCell.Y + 0.5F, releaseCell.Z + 0.5F));
+                }
+            }
+            else
+            {
+                releaseHit = PickShapeSurface(mouse, origin, size, camera, true);
+                if (releaseHit is { } finalHit) to = finalHit.Coordinate;
+            }
+
             var lineShape = _toolDragForceLine || _activeTool == EditorTool.Line;
             var cells = lineShape
                 ? VoxelEditingTools.LineCells(anchor, to)
@@ -3064,6 +3461,7 @@ internal sealed partial class ImGuiEditorWindow
             _toolDragCurrent = null;
             _toolDragTargetId = null;
             _toolDragForceLine = false;
+            _strokePlaneActive = false;
             // 仅第一人称：松手提交后留下蓝色放置框或红色擦除框；
             // 普通模式继续由下一帧的悬停框接管，不改动原有外观
             if (IsCapsLockEnabled())
@@ -3080,12 +3478,10 @@ internal sealed partial class ImGuiEditorWindow
     {
         var hit = PickVoxel(mouse, origin, size, camera);
         if (hit is not null || erase) return hit;
-        var ray = SceneProjection.RayFromScreen(mouse, origin, size, camera);
-        if (!VoxelDda.TryGroundHit(new NumVector3(camera.Position.X, camera.Position.Y, camera.Position.Z),
-                new NumVector3(ray.X, ray.Y, ray.Z), _sceneCameraDistance * 8F + 256F, out var point)) return null;
-        var above = camera.Position.Y >= 0F;
-        return new VoxelDda.Hit(new VoxelCoord64((long)MathF.Floor(point.X), above ? -1 : 0, (long)MathF.Floor(point.Z)),
-            new VoxelCoord64(0, above ? 1 : -1, 0), 0F, point);
+        if (!TryResolveBrushCell(null, mouse, origin, size, camera, out var normal, out var cell)) return null;
+        //伪命中：Coordinate 放在绘制格前一格，调用方加 Normal 得到同一个绘制格
+        return new VoxelDda.Hit(cell - normal, normal, 0F,
+            new NumVector3(cell.X + 0.5F, cell.Y + 0.5F, cell.Z + 0.5F));
     }
 
     /// <summary>
@@ -3399,6 +3795,10 @@ internal sealed partial class ImGuiEditorWindow
         if (ShortcutBindingRouter.IsPressed(scheme, "project.new")) ShowProjectPathDialog(create: true);
         if (ShortcutBindingRouter.IsPressed(scheme, "project.open")) ShowProjectPathDialog(create: false);
         if (ShortcutBindingRouter.IsPressed(scheme, "project.save")) SaveProject();
+        //Delete 删除选中对象：体素编辑与曲线控制点编辑有各自的删除语义，这里避开
+        if (ShortcutBindingRouter.IsPressed(scheme, "edit.delete") && !IsVoxelEditingMode &&
+            GetSelectedSceneObject() is { } deleteTarget && !IsCurveEditing(deleteTarget))
+            DeleteSelectedObject();
         if (ShortcutBindingRouter.IsPressed(scheme, "viewport.camera")) _activeTool = EditorTool.Camera;
         if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.draw")) _activeTool = EditorTool.Draw;
         if (_voxelEditTargetId is not null && ShortcutBindingRouter.IsPressed(scheme, "viewport.erase")) _activeTool = EditorTool.Erase;
@@ -3511,8 +3911,9 @@ internal sealed partial class ImGuiEditorWindow
         _previewShapeCells = [];
         if (_brushPreview is not { } hit) return;
         // 两种模式共用同一套单格描边：放置蓝色框落在新格子，破坏红色框落在被删格子。
-        // 第一人称只是不刷新悬停框，破坏后的红色框照常显示。
-        var previewCell = _brushPreviewErase ? hit.Coordinate : hit.Coordinate + hit.Normal;
+        // 换色没有“外侧”概念，框直接落在被点中的格子上
+        var previewCell = _brushPreviewErase ? hit.Coordinate
+            : _activeTool == EditorTool.Recolor ? hit.Coordinate : hit.Coordinate + hit.Normal;
         DrawCellWireframe(drawList, origin, size, camera, previewCell, 0.52F,
             ToPackedColor(Color.FromArgb(_brushPreviewErase ? 210 : 235,
                 _brushPreviewErase ? 255 : 93, _brushPreviewErase ? 112 : 187, _brushPreviewErase ? 120 : 255)), 1.6F);
@@ -3674,7 +4075,8 @@ internal sealed partial class ImGuiEditorWindow
 
     private void DrawPaletteSelector()
     {
-        var available = ImGui.GetContentRegionAvail().X;
+        //列数按扣掉滚动条后的稳定宽度计算：滚动条出现与否不再改变列数，色板高度因此不抖
+        var available = StableContentWidth();
         var minimumCell = Math.Max(14F, ImGui.GetTextLineHeight());
         var columns = Math.Clamp((int)((available + 1F) / (minimumCell + 1F)), 1, 16);
         var cellSize = Math.Max(4F, Math.Min(26F, (available - (columns - 1)) / columns));

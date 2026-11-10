@@ -14,6 +14,15 @@ public static partial class SceneComponentTypes
     /// </summary>
     public const string TreeGenerator = "mvoxel.treegenerator";
 
+    /// <summary>沿曲线摆放最近一次的失败或降级原因，供检查器与自动化读取</summary>
+    internal static string LastScatterMessage { get; private set; } = string.Empty;
+
+    /// <summary>沿曲线摆放最近一次的站点数量</summary>
+    internal static int LastScatterStations { get; private set; }
+
+    /// <summary>沿曲线摆放最近一次实际放下的站点数量</summary>
+    internal static int LastScatterPlaced { get; private set; }
+
     /// <summary>
     /// 判断组件记录是否为树生成器组件
     /// </summary>
@@ -72,9 +81,9 @@ public static partial class SceneComponentTypes
     /// 判断组件是否会自行生成体素
     /// </summary>
     /// <param name="component">组件记录</param>
-    /// <returns>曲线渲染器或树生成器时为真</returns>
+    /// <returns>曲线渲染器、树生成器或瓷砖铺设时为真</returns>
     public static bool IsGeneratedVoxelComponent(ComponentRecord? component) =>
-        IsCurveRenderer(component) || IsTreeGenerator(component);
+        IsCurveRenderer(component) || IsTreeGenerator(component) || IsTileLayer(component);
 
     /// <summary>
     /// 场景对象上第一个启用的程序化体素组件
@@ -115,17 +124,52 @@ public static partial class SceneComponentTypes
     /// <param name="maximumVoxels">体素数量上限</param>
     /// <param name="truncated">是否因达到上限而截断</param>
     /// <returns>局部坐标的体素世界</returns>
-    public static VoxelWorld BuildGeneratedVoxels(ComponentRecord component, int maximumVoxels, out bool truncated)
+    public static VoxelWorld BuildGeneratedVoxels(ComponentRecord component, int maximumVoxels, out bool truncated) =>
+        BuildGeneratedVoxels(component, maximumVoxels, null, out truncated);
+
+    /// <summary>
+    /// 按当前参数重新生成体素并写回隐藏负载，可传入场景采样上下文
+    /// </summary>
+    /// <param name="component">组件记录</param>
+    /// <param name="maximumVoxels">体素数量上限</param>
+    /// <param name="context">生成上下文，树与曲线管体不需要</param>
+    /// <param name="truncated">是否因达到上限而截断</param>
+    /// <returns>局部坐标的体素世界</returns>
+    public static VoxelWorld BuildGeneratedVoxels(ComponentRecord component, int maximumVoxels,
+        GeneratedVoxelContext? context, out bool truncated)
     {
         truncated = false;
         VoxelWorld world;
         if (IsCurveRenderer(component))
         {
-            world = CurveSpline.Rasterize(ReadCurveRenderer(component), maximumVoxels, out truncated);
+            var curve = ReadCurveRenderer(component);
+            if (curve.Output == CurveOutputMode.Scatter)
+            {
+                var source = curve.ScatterSource.IsNone
+                    ? new VoxelSource { Error = "未指定体素源" }
+                    : context?.ResolveSource?.Invoke(curve.ScatterSource)
+                      ?? new VoxelSource { Error = "无法读取体素源资产" };
+                world = SplineScatter.Generate(curve, source, context, maximumVoxels, out truncated,
+                    out var message, out var stationCount, out var placedCount);
+                LastScatterMessage = message;
+                LastScatterStations = stationCount;
+                LastScatterPlaced = placedCount;
+            }
+            else
+            {
+                world = CurveSpline.Rasterize(curve, maximumVoxels, out truncated);
+                LastScatterMessage = string.Empty;
+                LastScatterStations = 0;
+                LastScatterPlaced = 0;
+            }
         }
         else if (IsTreeGenerator(component))
         {
             world = ProceduralTree.Generate(ReadTreeGenerator(component), maximumVoxels, out truncated);
+        }
+        else if (IsTileLayer(component))
+        {
+            world = BuildTileLayerVoxels(component, maximumVoxels, context);
         }
         else
         {
@@ -133,8 +177,10 @@ public static partial class SceneComponentTypes
         }
 
         var signature = ComputeGeneratedSignature(component);
-        // 树允许逐格颜色不同，必须连体素值一起保存，重开场景才能原样还原
-        GeneratedVoxelData.Write(component, world, signature, includeValues: IsTreeGenerator(component));
+        // 曲线散布与树、瓷砖的结果可能逐格不同，必须保存颜色、材质与标记
+        GeneratedVoxelData.Write(component, world, signature,
+            includeValues: IsTreeGenerator(component) || IsTileLayer(component) ||
+                           IsCurveRenderer(component) && ReadCurveRenderer(component).Output == CurveOutputMode.Scatter);
         return world;
     }
 
@@ -148,7 +194,9 @@ public static partial class SceneComponentTypes
     {
         if (!IsGeneratedVoxelComponent(component))
             throw new ArgumentException("组件记录不生成体素", nameof(component));
-        GeneratedVoxelData.Write(component, world, signature, includeValues: IsTreeGenerator(component));
+        GeneratedVoxelData.Write(component, world, signature,
+            includeValues: IsTreeGenerator(component) || IsTileLayer(component) ||
+                           IsCurveRenderer(component) && ReadCurveRenderer(component).Output == CurveOutputMode.Scatter);
     }
 
     /// <summary>
@@ -190,6 +238,7 @@ public static partial class SceneComponentTypes
     {
         if (IsCurveRenderer(component)) return ReadCurveRenderer(component).GenerationSignature();
         if (IsTreeGenerator(component)) return ReadTreeGenerator(component).GenerationSignature();
+        if (IsTileLayer(component)) return ReadTileLayer(component).GenerationSignature(component);
         return 0UL;
     }
 
@@ -207,20 +256,35 @@ public static partial class SceneComponentTypes
     /// <param name="truncated">重建时是否被截断</param>
     /// <returns>组件是否程序化生成体素</returns>
     public static bool TryPrepareGeneratedVoxels(ComponentRecord component, int maximumVoxels, out VoxelWorld world,
-        out bool regenerated, out bool truncated)
+        out bool regenerated, out bool truncated) =>
+        TryPrepareGeneratedVoxels(component, maximumVoxels, null, out world, out regenerated, out truncated);
+
+    /// <summary>
+    /// 取用生成体素，可传入场景采样上下文
+    /// </summary>
+    /// <param name="component">组件记录</param>
+    /// <param name="maximumVoxels">体素数量上限</param>
+    /// <param name="context">生成上下文</param>
+    /// <param name="world">局部坐标的体素世界</param>
+    /// <param name="regenerated">是否发生了重建</param>
+    /// <param name="truncated">重建时是否被截断</param>
+    /// <returns>组件是否程序化生成体素</returns>
+    public static bool TryPrepareGeneratedVoxels(ComponentRecord component, int maximumVoxels,
+        GeneratedVoxelContext? context, out VoxelWorld world, out bool regenerated, out bool truncated)
     {
         world = new VoxelWorld();
         regenerated = false;
         truncated = false;
         if (!IsGeneratedVoxelComponent(component)) return false;
         if (TryReadGeneratedVoxels(component, out var stored, out var storedSignature) &&
+            !IsTileLayer(component) &&
             (IsTreeGenerator(component) || storedSignature == ComputeGeneratedSignature(component)))
         {
             world = stored;
             return true;
         }
 
-        world = BuildGeneratedVoxels(component, maximumVoxels, out truncated);
+        world = BuildGeneratedVoxels(component, maximumVoxels, context, out truncated);
         regenerated = true;
         return true;
     }

@@ -225,6 +225,15 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private VkBuffer _stagingBuffer;
     private DeviceMemory _stagingMemory;
     private ulong _stagingCapacity;
+    // 编辑区域体素缓冲：笔划进行中工作集与 BVH 保持不动，区域内改由这份小缓冲求交。
+    // 每笔只需上传区域内的几十到几百格，避免重传整份体素与 BVH
+    private VkBuffer _regionCellBuffer;
+    private DeviceMemory _regionCellMemory;
+    private ulong _regionCellCapacity;
+    private int _regionCellCount;
+    private bool _editRegionFrozen;
+    /// <summary>区域缓冲的持久映射指针：笔划期间直接写主机可见内存，不走命令提交，避免阻塞帧</summary>
+    private unsafe byte* _regionCellMapped;
     private VkBuffer _environmentBuffer;
     private DeviceMemory _environmentMemory;
     private int _environmentWidth;
@@ -627,6 +636,13 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             return;
         }
 
+        // 笔划冻结：区域内新几何由 SetEditRegionCells 单独上传，工作集与 BVH 保持不动，
+        // 因此内容版本每帧变化也不再重建
+        if (_editRegionFrozen && _voxelBuffer.Handle != 0 && ReferenceEquals(_lastSyncSource, world))
+        {
+            return;
+        }
+
         // 砖路径资格：无采样预算、无 LOD、开启贪心合并（砖恒合并，场景视图不走砖）、硬件 RT 关闭。
         // 区块级可见性过滤时改走可见区块常驻池，因此不再受整份世界格数上限约束
         using var syncPhase = StartupTimeline.Begin("同步工作集");
@@ -736,7 +752,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// </summary>
     internal bool CanUseDragPreview(int voxelCount)
     {
-        if (!SupportsDragPreviewInstance || voxelCount <= 0) return false;
+        // 只有当前帧已经确认走硬件路径时，才能把目标对象从静态世界中排除。
+        // 设备支持 ray query 不等于拖动实例一定创建成功；软件 BVH、强制 Compute、
+        // 管线初始化失败或加速结构容量不足时必须保留完整场景世界。
+        if (!SupportsDragPreviewInstance || !_usingHardwareRayTracing || voxelCount <= 0) return false;
         var capacity = _shadowAcceleration?.MaxAccelerationVoxels ??
             VulkanHardwareRayTracingPipeline.MaxHardwareRayTracingVoxels;
         // 拖动时静态世界会排除被拖对象，所以占用是“对象格数 + 其余对象格数”，
@@ -1649,6 +1668,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             parameters[VoxelRenderParameters.EditRegionMaxZ] = _editRegionMaximum.Z + 1;
         }
 
+        // 区域体素数量大于零时，区域求交改读独立缓冲，工作集可以保持冻结
+        parameters[VoxelRenderParameters.EditRegionCellCount] = _regionCellCount;
+
         if (_shadowAccelerationOriginValid)
         {
             parameters[VoxelRenderParameters.ShadowOriginX] = _shadowAccelerationOrigin.X;
@@ -2296,11 +2318,112 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 上传编辑区域内的当前体素。笔划期间工作集与加速结构保持不动，
+    /// 区域求交改读这份小缓冲，每笔只传几十到几百格
+    /// </summary>
+    /// <param name="cells">区域内的体素，坐标相对工作集原点</param>
+    internal void SetEditRegionCells(IReadOnlyList<VoxelGpuCell>? cells)
+    {
+        var count = cells?.Count ?? 0;
+        if (_context is null || _api is null || _context.IsDeviceLost) return;
+        if (count == 0)
+        {
+            _regionCellCount = 0;
+            return;
+        }
+
+        var required = checked((ulong)count * PackedCellSize);
+        var created = EnsureRegionCellBuffer(required);
+        var bytes = new byte[count * PackedCellSize];
+        // 区域内的格子都属于当前编辑目标，标记位直接写描边，笔划期间新方块也会带棱线
+        var outlinedMark = 1u;
+        for (var index = 0; index < count; index++)
+        {
+            PackCellInto(bytes, index * PackedCellSize, cells![index]);
+            MemoryMarshal.Write(bytes.AsSpan(index * PackedCellSize + 40, 4), in outlinedMark);
+        }
+
+        // 直接写持久映射的主机可见内存：笔划每帧都要更新，走命令提交会把帧率拖到个位数
+        unsafe
+        {
+            if (_regionCellMapped is not null)
+            {
+                fixed (byte* source = bytes)
+                {
+                    System.Buffer.MemoryCopy(source, _regionCellMapped, (long)_regionCellCapacity, bytes.Length);
+                }
+            }
+        }
+
+        if (created) UpdateComputeDescriptors();
+        if (_regionCellCount != count)
+        {
+            var first = cells![0];
+            MVoxelLog.Info($"笔划区域体素：{count} 格，首格 ({first.X},{first.Y},{first.Z})，" +
+                $"区域 {_editRegionMinimum}..{_editRegionMaximum}");
+        }
+
+        _regionCellCount = count;
+        // 区域内容变了必须重渲染：参数比较若判定无变化会整帧跳过，画面就会停在旧几何上
+        _lastParameters = null;
+        if (created) UpdateComputeDescriptors();
+    }
+
+    /// <summary>
+    /// 冻结工作集同步：笔划进行中内容版本每帧都在变，冻结后不再重建整份工作集与 BVH，
+    /// 区域内的新几何改由 <see cref="SetEditRegionCells"/> 提供
+    /// </summary>
+    /// <param name="frozen">是否冻结</param>
+    internal void SetEditRegionFrozen(bool frozen) => _editRegionFrozen = frozen;
+
+    /// <summary>
+    /// 确认编辑区域体素缓冲容量，不足时重建
+    /// </summary>
+    /// <param name="required">需要的字节数</param>
+    /// <returns>是否新建了缓冲</returns>
+    private bool EnsureRegionCellBuffer(ulong required)
+    {
+        var api = _api!;
+        if (_regionCellBuffer.Handle != 0 && _regionCellCapacity >= required) return false;
+        WaitForComputeIdle();
+        if (_regionCellBuffer.Handle != 0)
+        {
+            unsafe
+            {
+                if (_regionCellMapped is not null)
+                {
+                    api.UnmapMemory(_device, _regionCellMemory);
+                    _regionCellMapped = null;
+                }
+            }
+
+            api.DestroyBuffer(_device, _regionCellBuffer, null);
+            api.FreeMemory(_device, _regionCellMemory, null);
+            _regionCellBuffer = default;
+            _regionCellMemory = default;
+        }
+
+        var capacity = NextCapacity(required);
+        // 主机可见且一致性内存：笔划期间直接 memcpy，不需要上传命令与 GPU 等待
+        (_regionCellBuffer, _regionCellMemory) = CreateBuffer(capacity,
+            BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        _regionCellCapacity = capacity;
+        unsafe
+        {
+            void* mapped = null;
+            Check(api.MapMemory(_device, _regionCellMemory, 0, capacity, 0, &mapped), "映射笔划区域体素缓冲");
+            _regionCellMapped = (byte*)mapped;
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 加速结构是否足以配合编辑区域使用：必须来自同一个工作集原点，
     /// 且当前不是砖驻留路径（砖池索引与加速结构不一致）
     /// </summary>
-    private bool CanUseEditRegionAcceleration() =>
-        !_usingBrickPath && _worksetMaximumCells == 0 &&
+    private bool CanUseEditRegionAcceleration() =>        !_usingBrickPath && _worksetMaximumCells == 0 &&
         _shadowAcceleration is { HasAccelerationStructure: true, AccelerationCellCount: > 0 } &&
         _shadowAccelerationOriginValid;
 
@@ -3559,8 +3682,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <returns>Compute 描述符布局</returns>
     private DescriptorSetLayout CreateComputeDescriptorLayout()
     {
-        var bindingCount = 17;
-        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[17];
+        var bindingCount = 18;
+        DescriptorSetLayoutBinding* bindings = stackalloc DescriptorSetLayoutBinding[18];
         bindings[0] = new(0, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[1] = new(1, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         bindings[2] = new(2, DescriptorType.StorageImage, 1, ShaderStageFlags.ComputeBit);
@@ -3582,6 +3705,8 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             // binding 16 是拖动对象实例的体素快照，二者都只在光追设备上加入布局
             bindings[15] = new(15, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
             bindings[16] = new(16, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
+            // binding 17 是笔划编辑区域内的当前体素：工作集冻结期间用它做区域求交
+            bindings[17] = new(17, DescriptorType.StorageBuffer, 1, ShaderStageFlags.ComputeBit);
         }
         else bindingCount = 15;
         DescriptorSetLayoutCreateInfo createInfo = new()
@@ -3604,9 +3729,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         var hardwareRayQuery = _context?.SupportsHardwareRayQuery == true;
         DescriptorPoolSize* sizes = stackalloc DescriptorPoolSize[4]
         {
-            // 0、1、5、6、7、9、10、14，光追设备再多一个 15（加速结构同序体素快照）
-            // 与 16（拖动对象实例体素快照）
-            new(DescriptorType.StorageBuffer, 10 * TileRingDepth),
+            // 0、1、5、6、7、9、10、14，光追设备再多一个 15（加速结构同序体素快照）、
+            // 16（拖动对象实例体素快照）与 17（编辑区域当前体素）
+            new(DescriptorType.StorageBuffer, 11 * TileRingDepth),
             new(DescriptorType.StorageImage, 5 * TileRingDepth),
             new(DescriptorType.UniformBuffer, TileRingDepth),
             new(DescriptorType.AccelerationStructureKhr, hardwareRayQuery ? (uint)TileRingDepth : 0U)
@@ -3718,6 +3843,25 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     private void BindComputeTile(CommandBuffer commandBuffer, DescriptorSet descriptorSet, int tileX, int tileY)
     {
         var api = _api!;
+        // 笔划区域体素写在主机可见内存里，提交前必须让 GPU 看到最新内容；
+        // 少了这一步，着色器会一直读缓冲初值，区域内就看不到新方块
+        if (_regionCellCount > 0 && _regionCellBuffer.Handle != 0 && _regionCellCapacity > 0)
+        {
+            BufferMemoryBarrier regionBarrier = new()
+            {
+                SType = StructureType.BufferMemoryBarrier,
+                SrcAccessMask = AccessFlags.HostWriteBit,
+                DstAccessMask = AccessFlags.ShaderReadBit,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Buffer = _regionCellBuffer,
+                Offset = 0,
+                Size = _regionCellCapacity
+            };
+            api.CmdPipelineBarrier(commandBuffer, PipelineStageFlags.HostBit,
+                PipelineStageFlags.ComputeShaderBit, 0, 0, null, 1, in regionBarrier, 0, null);
+        }
+
         // 两个变体共用管线布局与描述符集；硬件变体加速部分求交，着色和后处理共用。
         var pipeline = _hardwareShadowsActive && _hardwareShadowPipeline.Handle != 0
             ? _hardwareShadowPipeline : _computePipeline;
@@ -3746,7 +3890,7 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         DescriptorImageInfo accumulationInfo = new(default, _accumulationView, ImageLayout.General);
         DescriptorImageInfo guideInfo = new(default, _guideView, ImageLayout.General);
         // 写描述符数组在栈上分配一次，循环内复用，避免 stackalloc-in-loop 的栈溢出隐患
-        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[17];
+        WriteDescriptorSet* writes = stackalloc WriteDescriptorSet[18];
         // binding 13 只有设备支持 Ray Query 时才出现在布局里；加速结构尚未建好时
         // 不写该绑定，软件管线本来也不读取它
         AccelerationStructureKHR accelerationStructure = _shadowAcceleration?.AccelerationStructure ?? default;
@@ -3773,6 +3917,9 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         var withDragCells = writeAcceleration && dragCellBuffer.Handle != 0 && dragCellCount > 0;
         DescriptorBufferInfo dragCellInfo = withDragCells
             ? new(dragCellBuffer, 0, (ulong)dragCellCount * PackedCellSize) : shadowCellInfo;
+        // binding 17 只在冻结笔划时才有内容；无区域缓冲时沿用同序快照占位
+        var regionCellInfo = _regionCellBuffer.Handle != 0 && _regionCellCapacity > 0
+            ? new DescriptorBufferInfo(_regionCellBuffer, 0, _regionCellCapacity) : shadowCellInfo;
         if (writeAcceleration)
         {
             writes[14] = new()
@@ -3804,6 +3951,17 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
                 DescriptorCount = 1,
                 DescriptorType = DescriptorType.StorageBuffer,
                 PBufferInfo = &dragCellInfo
+            };
+            // binding 17 是笔划编辑区域体素；没有区域缓冲时用体素缓冲占位，
+            // 着色器按 P_EDIT_REGION_CELL_COUNT 为 0 直接跳过
+            writes[17] = new()
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = default,
+                DstBinding = 17,
+                DescriptorCount = 1,
+                DescriptorType = DescriptorType.StorageBuffer,
+                PBufferInfo = &regionCellInfo
             };
         }
         for (var slot = 0; slot < TileRingDepth; slot++)
@@ -3924,8 +4082,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             if (withAcceleration) writes[15].DstSet = _ringSets[slot];
             // binding 16 与布局同生：有加速结构时始终写入，没有拖动对象时绑定占位缓冲
             if (withAcceleration) writes[16].DstSet = _ringSets[slot];
-            // 加速结构可用时 binding 15/16 必须一起写入：硬件着色器会引用它们
-            var writeCount = withAcceleration ? 17U : 14U;
+            // binding 17 是笔划编辑区域体素，和 15/16 一样只在光追布局里存在
+            if (withAcceleration) writes[17].DstSet = _ringSets[slot];
+            // 加速结构可用时 binding 15/16/17 必须一起写入：硬件着色器会引用它们
+            var writeCount = withAcceleration ? 18U : 14U;
             _api!.UpdateDescriptorSets(_device, writeCount, writes, 0, null);
         }
     }
@@ -4096,6 +4256,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
         layout(set = 0, binding = 16, std430) readonly buffer HardwareDragCellBuffer
         {
             VoxelCell hardwareDragCells[];
+        };
+        // 笔划编辑区域内的当前体素：工作集与加速结构冻结期间，区域求交改读这份小缓冲，
+        // 每笔只传区域内的几十到几百格，不必重传整份体素与 BVH
+        layout(set = 0, binding = 17, std430) readonly buffer EditRegionCellBuffer
+        {
+            VoxelCell editRegionCells[];
         };
         #endif
 
@@ -4303,6 +4469,51 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             vec3 regionOrigin = vec3(values[16], values[17], values[18]);
             vec3 editMin = vec3(values[P_EDIT_REGION_MIN_X], values[P_EDIT_REGION_MIN_Y], values[P_EDIT_REGION_MIN_Z]);
             vec3 editMax = vec3(values[P_EDIT_REGION_MAX_X], values[P_EDIT_REGION_MAX_Y], values[P_EDIT_REGION_MAX_Z]);
+            // 冻结笔划时区域体素单独上传，这里直接遍历它：区域内格子数量很小，
+            // 先用区域包围盒把射线之外的像素挡掉，再逐格求交
+            // 冻结笔划的区域体素缓冲只存在于硬件变体，软件变体继续走 BVH 区域求交
+            #ifdef P_HW_RT
+            int regionCellCount = int(values[P_EDIT_REGION_CELL_COUNT]);
+            if (regionCellCount > 0)
+            {
+                float regionDistance;
+                vec3 regionNormal;
+                if (!IntersectBox(rayOrigin, rayDirection, editMin, editMax, regionDistance, regionNormal, true))
+                    return false;
+                for (int index = 0; index < regionCellCount; index++)
+                {
+                    VoxelCell cell = editRegionCells[index];
+                    if (cell.color.a <= 0.0) continue;
+                    ivec3 packedExtent = ivec3(
+                        max(cell.position.w & 0xFF, 1),
+                        max((cell.position.w >> 8) & 0xFF, 1),
+                        max((cell.position.w >> 16) & 0xFF, 1));
+                    vec3 voxelMin = vec3(cell.position.xyz);
+                    vec3 voxelMax = voxelMin + vec3(packedExtent);
+                    float distance;
+                    vec3 normal;
+                    bool intersects = IntersectBox(rayOrigin, rayDirection, voxelMin, voxelMax,
+                        distance, normal, !anyHit);
+                    if (intersects && distance < closestDistance &&
+                        !(ignoreTranslucent && (cell.metadata.x >> 16 & 1u) != 0u))
+                    {
+                        closestDistance = distance;
+                        hitNormal = normal;
+                        hitColor = cell.color;
+                        hitFlags = (cell.metadata.x >> 16) | (cell.metadata.y != 0u ? 256u : 0u) |
+                            (cell.metadata.z != 0u ? 512u : 0u);
+                        hitSlot = cell.metadata.x & 0xFFFFu;
+                        // 描边等后续逻辑按"相对工作集原点"的 hitCell 还原世界坐标，
+                        // 区域缓冲存的是绝对世界坐标，这里换回同一口径
+                        hitCell = ivec3(vec3(cell.position.xyz) - regionOrigin);
+                        hitExtent = packedExtent;
+                        if (anyHit && hitColor.a > 0.0) return true;
+                    }
+                }
+
+                return hitColor.a > 0.0;
+            }
+            #endif
             while (stackSize > 0)
             {
                 ivec2 pendingNode = stack[--stackSize];
@@ -7463,8 +7674,12 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
             _bvhBufferCapacity = NextCapacity(bvhRequired);
         }
 
-        UploadBytes(bytes, _voxelBuffer, 0);
-        UploadBytes(nodeBytes, _bvhBuffer, 0);
+        // 体素与 BVH 合并成一次提交：分开上传会各等一次 GPU 完成，笔刷提交时延迟翻倍
+        UploadBytesBatch(new[]
+        {
+            (bytes, _voxelBuffer, 0L),
+            (nodeBytes, _bvhBuffer, 0L),
+        });
 
         _bvhNodeCount = bvh.NodeCount;
         _usingBrickPath = false;
@@ -7927,6 +8142,57 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     }
 
     /// <summary>
+    /// 把多段数据合并成一次暂存写入与一次提交。
+    /// 每段单独走 UploadBytes 会各等一次 GPU 完成，笔刷提交时体素与 BVH 两段叠加起来就是双倍等待
+    /// </summary>
+    /// <param name="batches">各段数据、目标缓冲与目标偏移</param>
+    private void UploadBytesBatch(IReadOnlyList<(byte[] Bytes, VkBuffer Destination, long DestinationOffset)> batches)
+    {
+        if (batches.Count == 0 || _context is null || _api is not { } api || _context.IsDeviceLost) return;
+        var total = 0L;
+        foreach (var item in batches)
+        {
+            if (item.Bytes.Length > 0) total += item.Bytes.Length;
+        }
+
+        if (total <= 0) return;
+        EnsureStagingCapacity((ulong)total);
+        void* mapped = null;
+        Check(api.MapMemory(_device, _stagingMemory, 0, (ulong)total, 0, &mapped), "映射上传暂存缓冲");
+        try
+        {
+            var stagingOffset = 0L;
+            foreach (var item in batches)
+            {
+                if (item.Bytes.Length == 0) continue;
+                fixed (byte* source = item.Bytes)
+                {
+                    System.Buffer.MemoryCopy(source, (byte*)mapped + stagingOffset,
+                        total - stagingOffset, item.Bytes.Length);
+                }
+
+                stagingOffset += item.Bytes.Length;
+            }
+        }
+        finally
+        {
+            api.UnmapMemory(_device, _stagingMemory);
+        }
+
+        _context.ExecuteImmediate(commandBuffer =>
+        {
+            var stagingOffset = 0L;
+            foreach (var item in batches)
+            {
+                if (item.Bytes.Length == 0) continue;
+                RecordUploadRange(commandBuffer, _stagingBuffer, item.Destination, item.Bytes.Length,
+                    item.DestinationOffset, stagingOffset);
+                stagingOffset += item.Bytes.Length;
+            }
+        });
+    }
+
+    /// <summary>
     /// 确保上传暂存缓冲容量足够，不足时扩容复用
     /// </summary>
     /// <param name="required">本次上传需要的字节数</param>
@@ -8001,10 +8267,10 @@ internal sealed unsafe partial class VulkanVoxelRenderPipeline : IDisposable
     /// <param name="byteCount">复制字节数</param>
     /// <param name="destinationByteOffset">目标字节偏移</param>
     private void RecordUploadRange(CommandBuffer commandBuffer, VkBuffer stagingBuffer, VkBuffer destination,
-        int byteCount, long destinationByteOffset)
+        int byteCount, long destinationByteOffset, long stagingByteOffset = 0)
     {
         var api = _api!;
-        var copy = new BufferCopy(0, (ulong)destinationByteOffset, (ulong)byteCount);
+        var copy = new BufferCopy((ulong)stagingByteOffset, (ulong)destinationByteOffset, (ulong)byteCount);
         api.CmdCopyBuffer(commandBuffer, stagingBuffer, destination, 1, in copy);
         BufferMemoryBarrier barrier = new()
         {

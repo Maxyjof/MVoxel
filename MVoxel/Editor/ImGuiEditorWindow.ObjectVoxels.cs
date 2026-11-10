@@ -143,7 +143,8 @@ internal sealed partial class ImGuiEditorWindow
                 {
                     if (item.Transform.Mode != TransformMode.Grid || !item.Transform.Grid.Rotation.Equals(OrthogonalRotation.Identity) ||
                         item.Transform.ScaleX != 1F || item.Transform.ScaleY != 1F || item.Transform.ScaleZ != 1F ||
-                        data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F || data.MirrorX)
+                        data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F ||
+                        data.MirrorX || data.MirrorY || data.MirrorZ)
                     {
                         unsupported.Add(item.Name);
                         continue;

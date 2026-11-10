@@ -24,14 +24,6 @@ internal static class GeneratedVoxelData
     /// <summary>生成参数指纹在组件 JSON 里的字段名</summary>
     internal const string SignaturePropertyName = "generatedSignature";
 
-    /// <summary>负载格式版本</summary>
-    private const int FormatVersion = 2;
-
-    /// <summary>负载标志位：坐标之后是否逐格保存体素值</summary>
-    private const byte ValueFlags = 1;
-
-    private const int MaximumCellCount = 16_000_000;
-    private static readonly byte[] Magic = [(byte)'M', (byte)'V', (byte)'G', (byte)'V'];
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 
     /// <summary>
@@ -64,46 +56,7 @@ internal static class GeneratedVoxelData
         var payload = component.Data.GetProperty(DataPropertyName);
         if (!payload.TryGetProperty("cells", out var cellsElement) || cellsElement.ValueKind != JsonValueKind.String)
             return false;
-        try
-        {
-            var compressed = Convert.FromBase64String(cellsElement.GetString() ?? string.Empty);
-            using var input = new MemoryStream(compressed);
-            using var gzip = new GZipStream(input, CompressionMode.Decompress);
-            using var reader = new BinaryReader(gzip);
-            Span<byte> header = stackalloc byte[6];
-            if (reader.Read(header) != header.Length) return false;
-            for (var index = 0; index < Magic.Length; index++)
-                if (header[index] != Magic[index]) return false;
-            if (header[4] != FormatVersion) return false;
-            var flags = header[5];
-            var hasValues = (flags & ValueFlags) != 0;
-            var count = reader.ReadInt32();
-            if (count < 0 || count > MaximumCellCount) return false;
-            var writer = world.CreateBulkWriter();
-            long x = 0;
-            long y = 0;
-            long z = 0;
-            for (var index = 0; index < count; index++)
-            {
-                x = checked(x + ReadSigned(reader));
-                y = checked(y + ReadSigned(reader));
-                z = checked(z + ReadSigned(reader));
-                var value = fallbackValue;
-                if (hasValues)
-                    value = new VoxelValue(
-                        new Rgba32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()),
-                        reader.ReadUInt16(), reader.ReadByte());
-                writer.Set(new VoxelCoord64(x, y, z), value);
-            }
-
-            return true;
-        }
-        catch (Exception exception) when (exception is FormatException or IOException or InvalidDataException or
-            OverflowException or EndOfStreamException or ArgumentException)
-        {
-            world = new VoxelWorld();
-            return false;
-        }
+        return VoxelPayloadCodec.TryDecode(cellsElement.GetString() ?? string.Empty, fallbackValue, out world, out _);
     }
 
     /// <summary>
@@ -119,12 +72,12 @@ internal static class GeneratedVoxelData
         var cells = world.EnumerateOccupied()
             .OrderBy(item => item.Coordinate.X).ThenBy(item => item.Coordinate.Y).ThenBy(item => item.Coordinate.Z)
             .ToArray();
-        var encoded = Encode(cells, includeValues);
+        var encoded = VoxelPayloadCodec.Encode(cells, includeValues);
         var merged = component.Data.ValueKind == JsonValueKind.Object
             ? JsonNode.Parse(component.Data.GetRawText())!.AsObject() : new JsonObject();
         merged[DataPropertyName] = new JsonObject
         {
-            ["version"] = FormatVersion,
+            ["version"] = VoxelPayloadCodec.FormatVersion,
             ["count"] = cells.Length,
             ["values"] = includeValues,
             ["cells"] = encoded,
@@ -171,73 +124,5 @@ internal static class GeneratedVoxelData
         var payload = component.Data.GetProperty(DataPropertyName);
         return payload.TryGetProperty("cells", out var cells) && cells.ValueKind == JsonValueKind.String
             ? (cells.GetString()?.Length ?? 0) : 0;
-    }
-
-    /// <summary>
-    /// 坐标与可选体素值编码成压缩 Base64
-    /// </summary>
-    /// <param name="cells">已排序的坐标与值</param>
-    /// <param name="includeValues">是否写入体素值</param>
-    /// <returns>Base64 文本</returns>
-    private static string Encode((VoxelCoord64 Coordinate, VoxelValue Value)[] cells, bool includeValues)
-    {
-        using var output = new MemoryStream();
-        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
-        using (var writer = new BinaryWriter(gzip))
-        {
-            writer.Write(Magic);
-            writer.Write((byte)FormatVersion);
-            writer.Write(includeValues ? ValueFlags : (byte)0);
-            writer.Write(cells.Length);
-            long x = 0;
-            long y = 0;
-            long z = 0;
-            foreach (var (coordinate, value) in cells)
-            {
-                WriteSigned(writer, coordinate.X - x);
-                WriteSigned(writer, coordinate.Y - y);
-                WriteSigned(writer, coordinate.Z - z);
-                x = coordinate.X;
-                y = coordinate.Y;
-                z = coordinate.Z;
-                if (!includeValues) continue;
-                writer.Write(value.Color.R);
-                writer.Write(value.Color.G);
-                writer.Write(value.Color.B);
-                writer.Write(value.Color.A);
-                writer.Write(value.MaterialSlot);
-                writer.Write(value.Flags);
-            }
-        }
-
-        return Convert.ToBase64String(output.ToArray());
-    }
-
-    private static void WriteSigned(BinaryWriter writer, long value)
-    {
-        var zigzag = (ulong)((value << 1) ^ (value >> 63));
-        while (zigzag >= 0x80)
-        {
-            writer.Write((byte)(zigzag | 0x80));
-            zigzag >>= 7;
-        }
-
-        writer.Write((byte)zigzag);
-    }
-
-    private static long ReadSigned(BinaryReader reader)
-    {
-        ulong result = 0;
-        var shift = 0;
-        while (true)
-        {
-            if (shift > 63) throw new InvalidDataException("生成体素坐标差值过长");
-            var current = reader.ReadByte();
-            result |= (ulong)(current & 0x7F) << shift;
-            if ((current & 0x80) == 0) break;
-            shift += 7;
-        }
-
-        return (long)(result >> 1) ^ -(long)(result & 1);
     }
 }

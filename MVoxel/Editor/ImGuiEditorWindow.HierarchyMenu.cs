@@ -6,6 +6,49 @@ namespace MVoxel.Editor;
 
 internal sealed partial class ImGuiEditorWindow
 {
+    /// <summary>
+    /// 删除当前选中的对象及其全部子对象，并清理对应的对象体素与编辑状态。
+    /// 帧末的快照历史会把这次结构变化记成一步撤销
+    /// </summary>
+    private void DeleteSelectedObject()
+    {
+        if (_sceneDocument is null || GetSelectedSceneObject() is not { } target) return;
+        if (target.Locked)
+        {
+            SetStatus("对象已锁定，先解锁再删除");
+            return;
+        }
+
+        var removed = new List<StableId> { target.Id };
+        // 子对象随父对象一起删除，避免留下孤儿层级
+        for (var index = 0; index < removed.Count; index++)
+            foreach (var item in _sceneDocument.Objects.Where(item => item.ParentId == removed[index]))
+                removed.Add(item.Id);
+        _sceneDocument.Objects.RemoveAll(item => removed.Contains(item.Id));
+        foreach (var id in removed)
+        {
+            _objectVoxels.Remove(id);
+            _generatedVoxelTruncated.Remove(id);
+            _tileRebuildPending.Remove(id);
+        }
+
+        if (_selectedSceneObjectId is { } selected && removed.Contains(selected)) _selectedSceneObjectId = null;
+        _selectedSceneObjectIds.RemoveAll(removed.Contains);
+        if (_voxelEditTargetId is { } editTarget && removed.Contains(editTarget))
+        {
+            _voxelEditTargetId = null;
+            _activeTool = EditorTool.Pick;
+        }
+
+        _selectedVoxel = null;
+        _curvePointObjectId = StableId.Empty;
+        _curvePointIndex = -1;
+        MarkSceneDocumentDirty();
+        RebuildObjectVoxelWorld();
+        ResetAfterVoxelTransform();
+        SetStatus($"已删除 {removed.Count} 个对象");
+    }
+
     private void DrawHierarchyCreateMenu(SceneObject? parent)
     {
         if (_sceneDocument is null) return;

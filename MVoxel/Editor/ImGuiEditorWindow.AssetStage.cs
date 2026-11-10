@@ -552,7 +552,8 @@ internal sealed partial class ImGuiEditorWindow
             item.Components.Count(SceneComponentTypes.IsVoxelModel) != 1 || !component.Enabled ||
             transform.Mode != TransformMode.Grid || !transform.Grid.Rotation.Equals(OrthogonalRotation.Identity) ||
             transform.ScaleX != 1F || transform.ScaleY != 1F || transform.ScaleZ != 1F ||
-            data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F || data.MirrorX ||
+            data.ScaleX != 1F || data.ScaleY != 1F || data.ScaleZ != 1F ||
+            data.MirrorX || data.MirrorY || data.MirrorZ ||
             data.SortingLayer != "默认" || data.SortingOrder != 0)
             throw new InvalidOperationException($"“{item.Name}”含有原生对象片段无法保存的层级、变换或组件；请还原这些属性后保存");
     }

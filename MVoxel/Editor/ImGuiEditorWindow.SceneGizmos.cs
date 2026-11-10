@@ -65,8 +65,11 @@ internal sealed partial class ImGuiEditorWindow
     private int _gizmoHoverRotateAxis = -1;
     private bool _gizmoHoverScale;
 
-    /// <summary>网格对象拖动预览：是否处于拖动状态、起始格变换与累计格位移</summary>
+    /// <summary>普通Grid对象是否正在进行变换拖动</summary>
     private bool _sceneGizmoGridDragActive;
+
+    /// <summary>真实体素对象是否正在进行体素拖动预览</summary>
+    private bool _sceneGizmoVoxelDragPreviewActive;
 
     /// <summary>
     /// 拖动实例预热：选中网格对象后利用空闲帧分批准备材质重映射副本，
@@ -458,21 +461,21 @@ internal sealed partial class ImGuiEditorWindow
 
         // 曲线编辑期间不叠对象变换手柄，避免和曲线控制点的点击区域互相抢输入
         if (IsCurveEditing(selected)) return;
-        UpdateGizmoHover(pivot, pivotScreen, unitsPerPixel, origin, size, camera);
+        UpdateGizmoHover(pivot, pivotScreen, unitsPerPixel, origin, size, camera, selected);
         switch (_sceneGizmoMode)
         {
             case SceneGizmoMode.Move:
                 DrawMoveGizmo(drawList, origin, size, camera, pivot, pivotScreen, unitsPerPixel, selected);
                 break;
             case SceneGizmoMode.Rotate:
-                DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel);
+                DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel, selected);
                 break;
             case SceneGizmoMode.Scale:
                 DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
                 break;
             case SceneGizmoMode.All:
                 DrawMoveGizmo(drawList, origin, size, camera, pivot, pivotScreen, unitsPerPixel, selected);
-                DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel);
+                DrawRotateGizmo(drawList, origin, size, camera, pivot, unitsPerPixel, selected);
                 DrawScaleGizmo(drawList, origin, size, camera, selected, pivot, pivotScreen);
                 break;
         }
@@ -482,7 +485,7 @@ internal sealed partial class ImGuiEditorWindow
     /// 计算鼠标当前悬停的手柄，供绘制时高亮；拖动中由拖动状态决定高亮
     /// </summary>
     private void UpdateGizmoHover(Vector3 pivot, Vector2 pivotScreen, float unitsPerPixel, Vector2 origin,
-        Vector2 size, SceneCamera camera)
+        Vector2 size, SceneCamera camera, SceneObject selected)
     {
         _gizmoHoverAxis = -1;
         _gizmoHoverPlane = -1;
@@ -505,9 +508,9 @@ internal sealed partial class ImGuiEditorWindow
 
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
         {
-            if (!TryProjectAxis(origin, size, camera, pivot, AxisVector(axisIndex), out var end, out _)) continue;
-            if (DistanceToSegment(mouse, pivotScreen, end) <= 9F) _gizmoHoverAxis = axisIndex;
-            var (u, v) = AxisPlane(axisIndex);
+            if (TryProjectAxis(origin, size, camera, pivot, GizmoAxisFor(selected, axisIndex), out var end, out _) &&
+                DistanceToSegment(mouse, pivotScreen, end) <= 9F) _gizmoHoverAxis = axisIndex;
+            var (u, v) = GizmoRotationPlaneFor(selected, axisIndex);
             var radius = unitsPerPixel * 58F;
             var best = float.MaxValue;
             for (var step = 0; step < 32; step++)
@@ -917,7 +920,7 @@ internal sealed partial class ImGuiEditorWindow
     }
 
     private void DrawRotateGizmo(ImDrawListPtr drawList, Vector2 origin, Vector2 size, SceneCamera camera,
-        Vector3 pivot, float unitsPerPixel)
+        Vector3 pivot, float unitsPerPixel, SceneObject selected)
     {
         var radius = unitsPerPixel * 58F;
         for (var axisIndex = 0; axisIndex < 3; axisIndex++)
@@ -926,7 +929,7 @@ internal sealed partial class ImGuiEditorWindow
             var color = ToPackedColor(highlighted
                 ? Color.FromArgb(255, EditorPalette.Accent)
                 : AxisColor(axisIndex));
-            var (u, v) = AxisPlane(axisIndex);
+            var (u, v) = GizmoRotationPlaneFor(selected, axisIndex);
             DrawWorldCircle(drawList, origin, size, camera, pivot, u, v, radius, color, highlighted ? 3.4F : 2F);
         }
     }
@@ -1026,6 +1029,14 @@ internal sealed partial class ImGuiEditorWindow
         var transformed = System.Numerics.Vector3.Transform(
             new System.Numerics.Vector3(axis.X, axis.Y, axis.Z), matrix);
         return new Vector3(transformed.X, transformed.Y, transformed.Z);
+    }
+
+    private (Vector3 U, Vector3 V) GizmoRotationPlaneFor(SceneObject sceneObject, int axisIndex)
+    {
+        if (sceneObject.Transform.Mode != TransformMode.Free || !_editorSettings.GizmoLocalSpace)
+            return AxisPlane(axisIndex);
+        return (GizmoAxisFor(sceneObject, (axisIndex + 1) % 3),
+            GizmoAxisFor(sceneObject, (axisIndex + 2) % 3));
     }
 
     private static Color AxisColor(int axisIndex) =>
@@ -1261,7 +1272,7 @@ internal sealed partial class ImGuiEditorWindow
             case SceneGizmoMode.Rotate:
                 for (var axisIndex = 0; axisIndex < 3; axisIndex++)
                 {
-                    var (u, v) = AxisPlane(axisIndex);
+                    var (u, v) = GizmoRotationPlaneFor(selected, axisIndex);
                     var radius = unitsPerPixel * 58F;
                     var bestDistance = float.MaxValue;
                     for (var index = 0; index < 32; index++)
@@ -1274,6 +1285,8 @@ internal sealed partial class ImGuiEditorWindow
 
                     if (bestDistance > 10F) continue;
                     _sceneGizmoDragAxis = axisIndex;
+                    _sceneGizmoDragAxisWorld = selected.Transform.Mode == TransformMode.Free
+                        ? GizmoAxisFor(selected, axisIndex) : AxisVector(axisIndex);
                     _sceneGizmoDragStartMouse = mouse;
                     _sceneGizmoPivotScreen = pivotScreen;
                     _sceneGizmoDragStartPosition = pivot;
@@ -1399,7 +1412,7 @@ internal sealed partial class ImGuiEditorWindow
             }
             if (selected.Transform.Mode == TransformMode.Free)
             {
-                var axis = AxisVector(_sceneGizmoDragAxis);
+                var axis = _sceneGizmoDragAxisWorld;
                 var delta = Quaternion.CreateFromAxisAngle(new System.Numerics.Vector3(axis.X, axis.Y, axis.Z), _sceneGizmoRotationDelta);
                 var rotation = Quaternion.Normalize(delta * _sceneGizmoStartRotation);
                 if (_editorSettings.GizmoPivotCenter)
@@ -1425,8 +1438,10 @@ internal sealed partial class ImGuiEditorWindow
         }
         if (selected.Transform.Mode == TransformMode.Grid && _sceneGizmoGridDragActive)
         {
-            // 网格对象拖动时实时预览：直接把对象体素副本按整格位移摆到位，松手时才记一次撤销
-            UpdateGridDragPreview(selected, mouse, origin, size, camera);
+            if (_sceneGizmoVoxelDragPreviewActive)
+                UpdateGridDragPreview(selected, mouse, origin, size, camera);
+            else
+                UpdateGridTransformOnly(selected, mouse, origin, size, camera);
             return;
         }
         if (_sceneGizmoDragPlane >= 0)
@@ -1516,15 +1531,14 @@ internal sealed partial class ImGuiEditorWindow
         _sceneGizmoGridDragRotation = Quaternion.Identity;
         _sceneGizmoGridDragPivot = default;
         _sceneGizmoGridDragStartTransform = sceneObject.Transform.Grid;
-        // 只记状态不复制体素：拖动期间对象世界不会被修改，松手时才真正平移；
-        // 这里克隆 29 万体素会在按下的瞬间产生明显卡顿
         _sceneGizmoGridDragActive = sceneObject.Transform.Mode == TransformMode.Grid;
-        _sceneGizmoGridDragObjectId = sceneObject.Transform.Mode == TransformMode.Grid ? sceneObject.Id : null;
+        _sceneGizmoGridDragObjectId = _sceneGizmoGridDragActive ? sceneObject.Id : null;
         var prepareStart = watch.Elapsed.TotalMilliseconds;
         PrepareGridDragInstanceWorlds(sceneObject);
-        MVoxelLog.Info($"拖动开始准备：总计 {watch.Elapsed.TotalMilliseconds:0.0}ms，" +
-            $"实例世界 {watch.Elapsed.TotalMilliseconds - prepareStart:0.0}ms，" +
-            $"体素 {_dragInstanceObjectWorld?.OccupiedVoxelCount ?? 0:N0}");
+        _sceneGizmoVoxelDragPreviewActive = _dragInstanceObjectWorld is not null &&
+            _dragInstanceStaticWorld is not null;
+        _sceneGizmoGridDragActive = sceneObject.Transform.Mode == TransformMode.Grid;
+        _sceneGizmoGridDragObjectId = _sceneGizmoVoxelDragPreviewActive ? sceneObject.Id : null;
     }
 
     /// <summary>
@@ -1624,8 +1638,23 @@ internal sealed partial class ImGuiEditorWindow
         _dragInstanceObjectId = sceneObject.Id;
     }
 
-    private void UpdateGridDragPreview(SceneObject sceneObject, Vector2 mouse, Vector2 origin, Vector2 size,
-        SceneCamera camera)
+    private void UpdateGridTransformOnly(SceneObject sceneObject, Vector2 mouse, Vector2 origin,
+        Vector2 size, SceneCamera camera)
+    {
+        var cells = ComputeGridDragCells(mouse, origin, size, camera);
+        if (cells == _sceneGizmoGridDragCells) return;
+        _sceneGizmoGridDragCells = cells;
+        sceneObject.Transform.SetGrid(new GridTransform(
+            _sceneGizmoGridDragStartTransform.Position + cells, _sceneGizmoGridDragStartTransform.Rotation));
+        UpdateTransformMarker(sceneObject);
+        MarkSceneDocumentDirty();
+        _pickVersion++;
+        _pipeline?.ResetAccumulation();
+        SetStatus($"移动中：{cells.X}, {cells.Y}, {cells.Z}");
+    }
+
+    private void UpdateGridDragPreview(SceneObject sceneObject, Vector2 mouse, Vector2 origin,
+        Vector2 size, SceneCamera camera)
     {
         if (!_sceneGizmoGridDragActive) return;
         var cells = ComputeGridDragCells(mouse, origin, size, camera);
@@ -1637,9 +1666,9 @@ internal sealed partial class ImGuiEditorWindow
             _sceneGizmoGridDragStartTransform.Position + cells, _sceneGizmoGridDragStartTransform.Rotation));
         UpdateTransformMarker(sceneObject);
         MarkSceneDocumentDirty();
-        // 拖动实例路径下场景视口用静态世界 + 实例平移，组合世界缓存不参与绘制；
-        // 每步清空缓存会让坐标轴遮挡等位置重新合成整份世界，直接拖低帧率
-        if (_dragInstanceStaticWorld is null) InvalidateComposedWorldCache();
+        // 只有真正启用体素拖动实例时才需要让组合世界失效；
+        // 空对象没有体素世界，保持场景体素缓存可复用
+        if (_dragInstanceObjectWorld is not null) InvalidateComposedWorldCache();
         _pickVersion++;
         _pipeline?.ResetAccumulation();
         SetStatus($"移动中：{cells.X}, {cells.Y}, {cells.Z}");
@@ -1774,7 +1803,9 @@ internal sealed partial class ImGuiEditorWindow
         }
         else if (result.Error.Length > 0)
         {
+            // 后台构建失败时不能停在空预览：清掉拖动实例后立即回退到固定场景世界
             MVoxelLog.Warn($"松手后后台工作集构建失败，回退整份同步：{result.Error}");
+            pipeline.SyncWorld(world!, 0, lod, null, greedyMerge: false, includeInterior: false);
         }
 
         _sceneSettleBuild = null;
@@ -1894,9 +1925,13 @@ internal sealed partial class ImGuiEditorWindow
             return;
         }
 
-        if (selected.Transform.Mode == TransformMode.Grid) FinishGridDragPreview(selected);
+        if (_sceneGizmoVoxelDragPreviewActive)
+            FinishGridDragPreview(selected);
         else
         {
+            _sceneGizmoGridDragActive = false;
+            _sceneGizmoGridDragObjectId = null;
+            _sceneGizmoGridDragCells = VoxelCoord64.Zero;
             MarkSceneDocumentDirty();
         }
     }
@@ -1911,8 +1946,12 @@ internal sealed partial class ImGuiEditorWindow
         return axisU * ((d.X * v.Y - d.Y * v.X) / determinant) + axisV * ((u.X * d.Y - u.Y * d.X) / determinant);
     }
 
-    /// <summary>绕局部 X 轴对应的世界轴镜像对象体素，保留材质并支持撤销。</summary>
-    private void MirrorModelLocalX(SceneObject sceneObject, ComponentRecord component, bool mirrored)
+    /// <summary>绕指定局部轴的包围盒中心镜像对象体素，保留材质并支持撤销。</summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="component">模型组件</param>
+    /// <param name="localAxis">局部轴，0 为 X、1 为 Y、2 为 Z</param>
+    /// <param name="enabled">勾选后的目标状态</param>
+    private void MirrorModelLocalAxis(SceneObject sceneObject, ComponentRecord component, int localAxis, bool enabled)
     {
         if (_worldLoadFailed)
         {
@@ -1930,21 +1969,47 @@ internal sealed partial class ImGuiEditorWindow
             SetStatus("请先将模型缩放恢复为 1，再进行镜像");
             return;
         }
+        //把局部轴换算成对象朝向下的世界轴：取旋转矩阵里该局部轴对应的那一列
         var rotation = sceneObject.Transform.Grid.Rotation;
-        var axis = rotation[0, 0] != 0 ? 0 : rotation[1, 0] != 0 ? 1 : 2;
-        var command = _objectVoxels.CreateTransform(sceneObject.Id, "镜像模型", coordinate => axis switch
+        var worldAxis = rotation[0, localAxis] != 0 ? 0 : rotation[1, localAxis] != 0 ? 1 : 2;
+        var command = _objectVoxels.CreateTransform(sceneObject.Id, "镜像模型", coordinate => worldAxis switch
         {
             0 => new VoxelCoord64(minimum.X + maximum.X - coordinate.X, coordinate.Y, coordinate.Z),
             1 => new VoxelCoord64(coordinate.X, minimum.Y + maximum.Y - coordinate.Y, coordinate.Z),
             _ => new VoxelCoord64(coordinate.X, coordinate.Y, minimum.Z + maximum.Z - coordinate.Z),
         }, ObjectEditCallback(sceneObject.Id, forward =>
-            SceneComponentTypes.WriteVoxelModel(component, SceneComponentTypes.ReadVoxelModel(component) with
-            { MirrorX = forward ? mirrored : !mirrored })));
+            SceneComponentTypes.WriteVoxelModel(component, localAxis switch
+            {
+                0 => SceneComponentTypes.ReadVoxelModel(component) with { MirrorX = forward ? enabled : !enabled },
+                1 => SceneComponentTypes.ReadVoxelModel(component) with { MirrorY = forward ? enabled : !enabled },
+                _ => SceneComponentTypes.ReadVoxelModel(component) with { MirrorZ = forward ? enabled : !enabled },
+            })));
         _voxelHistory.Execute(command);
         InvalidateScaleBase(sceneObject.Id);
         MarkSceneDocumentDirty();
         ResetAfterVoxelTransform();
-        SetStatus(mirrored ? "已镜像模型" : "已取消模型镜像");
+        SetStatus(enabled ? $"已镜像模型的 {AxisName(localAxis)} 轴" : $"已取消模型的 {AxisName(localAxis)} 轴镜像");
+    }
+
+    /// <summary>把轴序号换成 X/Y/Z 文案</summary>
+    private static string AxisName(int axis) => axis == 0 ? "X" : axis == 1 ? "Y" : "Z";
+
+    /// <summary>
+    /// 检查器里的镜像三轴勾选框：X、Y、Z 横排一行，各自独立翻转
+    /// </summary>
+    /// <param name="sceneObject">目标对象</param>
+    /// <param name="component">模型组件</param>
+    private void DrawModelMirrorChecks(SceneObject sceneObject, ComponentRecord component)
+    {
+        var data = SceneComponentTypes.ReadVoxelModel(component);
+        var mirrorX = data.MirrorX;
+        if (ImGui.Checkbox("X##VoxelMirrorX", ref mirrorX)) MirrorModelLocalAxis(sceneObject, component, 0, mirrorX);
+        ImGui.SameLine();
+        var mirrorY = data.MirrorY;
+        if (ImGui.Checkbox("Y##VoxelMirrorY", ref mirrorY)) MirrorModelLocalAxis(sceneObject, component, 1, mirrorY);
+        ImGui.SameLine();
+        var mirrorZ = data.MirrorZ;
+        if (ImGui.Checkbox("Z##VoxelMirrorZ", ref mirrorZ)) MirrorModelLocalAxis(sceneObject, component, 2, mirrorZ);
     }
 
     /// <summary>平移格变换模型的所有体素，并同步对象原点</summary>

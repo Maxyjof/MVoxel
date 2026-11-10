@@ -44,6 +44,39 @@ internal sealed partial class ImGuiEditorWindow
         if (ReadEnum(arguments, "shape", data.Shape, out CurveBrushShape shape))
             data = data with { Shape = shape };
         if (ReadBoolean(arguments, "closed") is { } closed) data = data with { Closed = closed };
+        if (ReadEnum(arguments, "output", data.Output, out CurveOutputMode output)) data = data with { Output = output };
+        if (ReadString(arguments, "sourceKind") is { Length: > 0 } sourceKindText)
+        {
+            if (!Enum.TryParse<VoxelSourceKind>(sourceKindText, ignoreCase: true, out var sourceKind))
+                throw new ArgumentException($"不支持的体素源种类：{sourceKindText}");
+            data = data with
+            {
+                ScatterSource = new VoxelSourceRef(sourceKind,
+                    ReadString(arguments, "sourcePath") ?? data.ScatterSource.AssetPath),
+            };
+        }
+        else if (ReadString(arguments, "sourcePath") is { Length: > 0 } sourcePath)
+        {
+            data = data with { ScatterSource = new VoxelSourceRef(VoxelSourceKind.ModelAsset, sourcePath) };
+        }
+
+        if (ReadEnum(arguments, "spacingMode", data.SpacingMode, out ScatterSpacingMode spacingMode))
+            data = data with { SpacingMode = spacingMode };
+        if (ReadEnum(arguments, "scatterAlign", data.Align, out ScatterAlign scatterAlign))
+            data = data with { Align = scatterAlign };
+        if (ReadEnum(arguments, "scatterPivot", data.Pivot, out ScatterPivot scatterPivot))
+            data = data with { Pivot = scatterPivot };
+        if (ReadNumber(arguments, "spacing") is { } spacing) data = data with { Spacing = (float)spacing };
+        if (ReadNumber(arguments, "scatterCount") is { } scatterCount) data = data with { ScatterCount = (int)scatterCount };
+        if (ReadNumber(arguments, "roll") is { } roll) data = data with { RollDegrees = (float)roll };
+        if (ReadNumber(arguments, "jitterDistance") is { } jitterDistance) data = data with { JitterDistance = (float)jitterDistance };
+        if (ReadNumber(arguments, "jitterAngle") is { } jitterAngle) data = data with { JitterAngle = (float)jitterAngle };
+        if (ReadNumber(arguments, "startOffset") is { } startOffset) data = data with { StartOffset = (float)startOffset };
+        if (ReadNumber(arguments, "endOffset") is { } endOffset) data = data with { EndOffset = (float)endOffset };
+        if (ReadNumber(arguments, "groundOffset") is { } groundOffset) data = data with { GroundOffset = (int)groundOffset };
+        if (ReadNumber(arguments, "scatterSeed") is { } scatterSeed) data = data with { ScatterSeed = (int)scatterSeed };
+        if (ReadBoolean(arguments, "groundSnap") is { } groundSnap) data = data with { GroundSnap = groundSnap };
+        if (ReadBoolean(arguments, "closedWrap") is { } closedWrap) data = data with { ClosedWrap = closedWrap };
         if (ReadBoolean(arguments, "emissive") is { } emissive) data = data with { Emissive = emissive };
         if (ReadBoolean(arguments, "editing") is { } editing) data = data with { Editing = editing };
         if (ReadNumber(arguments, "resolution") is { } resolution)
@@ -299,6 +332,26 @@ internal sealed partial class ImGuiEditorWindow
             sortingLayer = data.SortingLayer,
             sortingOrder = data.SortingOrder,
             editing = data.Editing,
+            output = data.Output.ToString(),
+            scatterSourceKind = data.ScatterSource.Kind.ToString(),
+            scatterSourcePath = data.ScatterSource.AssetPath,
+            spacingMode = data.SpacingMode.ToString(),
+            spacing = data.Spacing,
+            scatterCount = data.ScatterCount,
+            scatterAlign = data.Align.ToString(),
+            scatterPivot = data.Pivot.ToString(),
+            roll = data.RollDegrees,
+            jitterDistance = data.JitterDistance,
+            jitterAngle = data.JitterAngle,
+            startOffset = data.StartOffset,
+            endOffset = data.EndOffset,
+            groundSnap = data.GroundSnap,
+            groundOffset = data.GroundOffset,
+            scatterSeed = data.ScatterSeed,
+            closedWrap = data.ClosedWrap,
+            scatterMessage = SceneComponentTypes.LastScatterMessage,
+            scatterStations = SceneComponentTypes.LastScatterStations,
+            scatterPlaced = SceneComponentTypes.LastScatterPlaced,
             generation = DescribeGenerationState(target, component),
         };
     }

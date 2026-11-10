@@ -1383,6 +1383,7 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
         DrawAnalysisWindows();
         DrawEnvironmentWindow();
         DrawProbeVolumeWindow();
+        DrawArrayWindow();
         DrawAnimationWindow();
         DrawTimelineWindow();
         DrawStatusBar();
@@ -1489,6 +1490,8 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             if (ImGui.MenuItem(selected?.Visible == false ? "显示选中对象" : "隐藏选中对象", enabled: selected is not null) && selected is not null)
             { selected.Visible = !selected.Visible; MarkSceneDocumentDirty(); _pipeline?.ResetAccumulation(); }
             if (ImGui.MenuItem(selected?.Locked == true ? "解锁选中对象" : "锁定选中对象", enabled: selected is not null) && selected is not null) ToggleSceneObjectLock(selected);
+            if (ImGui.MenuItem("删除选中对象", bindings.GetValueOrDefault("edit.delete"), false,
+                    selected is not null && !selected.Locked)) DeleteSelectedObject();
             if (ImGui.MenuItem("取消选择", enabled: selected is not null)) _selectedSceneObjectId = null;
             ImGui.Separator();
             if (ImGui.BeginMenu("设置"))
@@ -1554,7 +1557,9 @@ internal sealed partial class ImGuiEditorWindow : GameWindow, IEditorWelcomeHost
             ImGui.TextDisabled("体素编辑工具");
             if (ImGui.MenuItem("绘制", null, _activeTool == EditorTool.Draw, _voxelEditTargetId is not null)) _activeTool = EditorTool.Draw;
             if (ImGui.MenuItem("擦除", null, _activeTool == EditorTool.Erase, _voxelEditTargetId is not null)) _activeTool = EditorTool.Erase;
+            if (ImGui.MenuItem("换色", null, _activeTool == EditorTool.Recolor, _voxelEditTargetId is not null)) _activeTool = EditorTool.Recolor;
             ImGui.Separator();
+            if (ImGui.MenuItem("阵列填充…", enabled: _project is not null)) _showArrayWindow = true;
             if (ImGui.MenuItem("验证当前场景", enabled: _project is not null)) ValidateCurrentScene();
             ImGui.EndMenu();
         }
@@ -1825,8 +1830,14 @@ DockId=0x6A3C3007,0
         var expanded = ImGui.TreeNodeEx(nodeId, nodeFlags);
         if (hidden) ImGui.PopStyleColor();
         ImGui.PopStyleColor(3);
+        const float iconWidth = HierarchyRowIconSize;
+        const float iconGap = 2F;
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
+        // 行高取文本行高与图标高度的较大者，文字和图标按同一个垂直中心对齐
+        var textCenterY = (rowMin.Y + rowMax.Y) * 0.5F;
+        var rowHeight = MathF.Max(rowMax.Y - rowMin.Y, iconWidth + 1F);
+        var rowTop = textCenterY - rowHeight * 0.5F;
         if (_revealHierarchySelection == sceneObject.Id)
         {
             ImGui.SetScrollHereY(0.5F);
@@ -1834,23 +1845,21 @@ DockId=0x6A3C3007,0
         }
         var rowClicked = ImGui.IsItemClicked();
         var treeCursor = ImGui.GetCursorScreenPos();
-        const float iconWidth = HierarchyRowIconSize;
-        var iconGap = 2F;
         var rightEdge = ImGui.GetWindowPos().X + ImGui.GetWindowWidth() - ImGui.GetStyle().WindowPadding.X -
                         (ImGui.GetScrollMaxY() > 0F ? ImGui.GetStyle().ScrollbarSize : 0F) - ImGui.GetScrollX();
         var minimumIconStart = rowMin.X + ImGui.GetTreeNodeToLabelSpacing() + ImGui.CalcTextSize(sceneObject.Name).X + ImGui.GetStyle().ItemSpacing.X;
         var iconsStart = Math.Max(minimumIconStart, rightEdge - iconWidth * 2F - iconGap);
         var rowWidth = Math.Max(1F, iconsStart + iconWidth * 2F + iconGap - rowMin.X);
-        ImGui.SetCursorScreenPos(rowMin);
+        ImGui.SetCursorScreenPos(new Vector2(rowMin.X, rowTop));
         var rowSelectableClicked = ImGui.InvisibleButton($"##SceneObjectRow_{sceneObject.Id}",
-            new Vector2(Math.Max(1F, rowWidth - 48F), rowMax.Y - rowMin.Y));
+            new Vector2(Math.Max(1F, rowWidth - 48F), rowHeight));
         var rowSelectableHovered = ImGui.IsItemHovered();
         ImGui.SetCursorScreenPos(treeCursor);
 
-        var fullRowMax = rowMin + new Vector2(rowWidth, rowMax.Y - rowMin.Y);
+        var fullRowMax = new Vector2(rowMin.X + rowWidth, rowTop + rowHeight);
         // 几何命中不含遮挡：浮动窗口盖住层级时，行不应该显示悬停底色，也不该被双击聚焦
         var rowHovered = ImGui.IsWindowHovered() &&
-                         (rowSelectableHovered || ImGui.IsMouseHoveringRect(rowMin, fullRowMax));
+                         (rowSelectableHovered || ImGui.IsMouseHoveringRect(new Vector2(rowMin.X, rowTop), fullRowMax));
         // Unity 的 Hierarchy 会把多选里的每一行都标出来，主对象用更实的底色区分
         var inSelection = IsInSceneSelection(sceneObject.Id);
         if (rowHovered || inSelection)
@@ -1860,13 +1869,13 @@ DockId=0x6A3C3007,0
                 ? Color.FromArgb(150, EditorPalette.Accent)
                 : inSelection ? Color.FromArgb(78, EditorPalette.Accent)
                     : Color.FromArgb(42, EditorPalette.AccentSoft);
-            drawList.AddRectFilled(rowMin, fullRowMax,
+            drawList.AddRectFilled(new Vector2(rowMin.X, rowTop), fullRowMax,
                 ToPackedColor(rowColor), 2F);
         }
 
         var rowDoubleClicked = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left) && rowHovered &&
                                ImGui.GetIO().MousePos.X < iconsStart;
-        ImGui.SetCursorScreenPos(new Vector2(iconsStart, rowMin.Y + 1F));
+        ImGui.SetCursorScreenPos(new Vector2(iconsStart, textCenterY - iconWidth * 0.5F));
         var visibilityClicked = DrawHierarchyIconButton($"##Visibility_{sceneObject.Id}", "显示对象", "隐藏对象",
             sceneObject.Visible, DrawVisibilityIcon, iconWidth);
         if (visibilityClicked)
@@ -2239,6 +2248,9 @@ DockId=0x6A3C3007,0
             {
                 // 中途切工具或进入范围盒编辑时，别把半途的框选状态留到下次回到选择工具
                 if (!boxSelectAllowed) _objectBoxSelecting = false;
+                // 自动化模拟笔画要用与真实鼠标完全相同的视口矩形和相机
+                _lastVoxelViewportOrigin = origin;
+                _lastVoxelViewportSize = size;
                 HandleVoxelToolInput(origin, size, camera);
             }
 
@@ -2252,6 +2264,7 @@ DockId=0x6A3C3007,0
                 ImGui.GetIO().MousePos.Y >= objectMinimum.Y && ImGui.GetIO().MousePos.Y <= objectMaximum.Y)
                 FocusHierarchyObject(doubleClicked);
             DrawVoxelBrushPreview(drawList, origin, size, camera);
+            DrawTileLayerGizmo(drawList, origin, size, camera);
         }
         else if (_project is null && !gizmoHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left) &&
                  viewportHovered)
@@ -4705,17 +4718,21 @@ DockId=0x6A3C3007,0
                     var hasModel = selectedObject.Components.Any(SceneComponentTypes.IsVoxelModel);
                     var hasCurveRenderer = selectedObject.Components.Any(SceneComponentTypes.IsCurveRenderer);
                     var hasTreeGenerator = selectedObject.Components.Any(SceneComponentTypes.IsTreeGenerator);
+                    var hasTileLayer = selectedObject.Components.Any(SceneComponentTypes.IsTileLayer);
+                    var hasGenerated = hasCurveRenderer || hasTreeGenerator || hasTileLayer;
                     var reason = alreadyPresent ? "同一对象不能重复添加此组件" :
                         definition.TypeId == SceneComponentTypes.VoxelModel && selectedObject.Components.Any(SceneComponentTypes.IsCamera)
                             ? "模型组件与相机组件不能同时挂载" :
-                        definition.TypeId == SceneComponentTypes.VoxelModel && (hasCurveRenderer || hasTreeGenerator)
+                        definition.TypeId == SceneComponentTypes.VoxelModel && hasGenerated
                             ? "程序化生成组件已经负责产生体素，不能再挂模型组件" :
                         definition.TypeId == SceneComponentTypes.Camera && hasModel
                             ? "相机组件与模型组件不能同时挂载" :
-                        definition.TypeId == SceneComponentTypes.CurveRenderer && (hasModel || hasTreeGenerator)
-                            ? "曲线渲染器会自己生成体素，不能和模型或树生成器同时挂载" :
-                        definition.TypeId == SceneComponentTypes.TreeGenerator && (hasModel || hasCurveRenderer)
-                            ? "树生成器会自己生成体素，不能和模型或曲线渲染器同时挂载" : null;
+                        definition.TypeId == SceneComponentTypes.CurveRenderer && (hasModel || hasTreeGenerator || hasTileLayer)
+                            ? "曲线渲染器会自己生成体素，不能和模型、树生成器或瓷砖组件同时挂载" :
+                        definition.TypeId == SceneComponentTypes.TreeGenerator && (hasModel || hasCurveRenderer || hasTileLayer)
+                            ? "树生成器会自己生成体素，不能和模型、曲线渲染器或瓷砖组件同时挂载" :
+                        definition.TypeId == SceneComponentTypes.TileLayer && (hasModel || hasCurveRenderer || hasTreeGenerator)
+                            ? "瓷砖组件会自己生成体素，不能和模型、曲线渲染器或树生成器同时挂载" : null;
                     ImGui.BeginDisabled(reason is not null);
                     var addSelected = ImGui.Selectable(definition.DisplayName);
                     ImGui.EndDisabled();
@@ -4723,7 +4740,7 @@ DockId=0x6A3C3007,0
                     if (!addSelected) continue;
                     _componentWarning = null;
                     if (definition.TypeId is SceneComponentTypes.VoxelModel or SceneComponentTypes.CurveRenderer
-                        or SceneComponentTypes.TreeGenerator)
+                        or SceneComponentTypes.TreeGenerator or SceneComponentTypes.TileLayer)
                     {
                         selectedObject.Transform.SetGrid(selectedObject.Transform.ToGrid());
                         var transform = selectedObject.Components.FirstOrDefault(SceneComponentTypes.IsTransform);
@@ -4747,6 +4764,7 @@ DockId=0x6A3C3007,0
                             CurveRendererComponentData.CreateDefault()),
                         SceneComponentTypes.TreeGenerator => SceneComponentTypes.CreateTreeGenerator(
                             TreeGeneratorComponentData.Default),
+                        SceneComponentTypes.TileLayer => SceneComponentTypes.CreateTileLayer(TileLayerComponentData.Default),
                         _ => SceneComponentTypes.CreateTransform(selectedObject.Transform),
                     };
                     selectedObject.Components.Add(addedComponent);
@@ -4754,6 +4772,8 @@ DockId=0x6A3C3007,0
                         InitializeCurveRendererObject(selectedObject, addedComponent);
                     else if (SceneComponentTypes.IsTreeGenerator(addedComponent))
                         InitializeTreeGeneratorObject(selectedObject, addedComponent);
+                    else if (SceneComponentTypes.IsTileLayer(addedComponent))
+                        InitializeTileLayerObject(selectedObject, addedComponent);
                     MarkSceneDocumentDirty();
                 }
 
@@ -5227,7 +5247,8 @@ DockId=0x6A3C3007,0
 
         if (SceneComponentTypes.IsVoxelModel(component))
         {
-            var editing = _voxelEditTargetId == selectedObject.Id && _activeTool == EditorTool.Draw;
+            //进入绘制模式后工具可以自由切换，按钮标题只取决于编辑目标是否属于该对象
+            var editing = _voxelEditTargetId == selectedObject.Id;
             if (ImGui.Button(editing ? "退出绘制模式" : "绘制模式", new Vector2(-1F, 0F)))
             {
                 _voxelEditTargetId = editing ? null : selectedObject.Id;
@@ -5241,11 +5262,10 @@ DockId=0x6A3C3007,0
                 _sceneGizmoMode = editing ? _lastTransformMode : SceneGizmoMode.Select;
                 if (!editing) _selectedSceneObjectId = selectedObject.Id;
             }
+            if (editing) DrawVoxelToolRow();
             var data = SceneComponentTypes.ReadVoxelModel(component);
-            var mirrored = data.MirrorX;
-            BeginInspectorField("镜像 X", "绕模型局部 X 轴的包围盒中心翻转体素；操作可撤销，编辑共享资产时保留原始资产。请先将模型缩放恢复为 1。");
-            if (ImGui.Checkbox("##VoxelMirrorX", ref mirrored))
-                MirrorModelLocalX(selectedObject, component, mirrored);
+            BeginInspectorField("镜像", "勾选后绕模型局部轴、以包围盒中心翻转体素；操作可撤销，编辑共享资产时保留原始资产。请先将模型缩放恢复为 1。");
+            DrawModelMirrorChecks(selectedObject, component);
             data = SceneComponentTypes.ReadVoxelModel(component);
             BeginInspectorField("体素数据", "一个组件对应一份体素数据。可从资产窗口拖入模型，或选择资产；编辑引用实例会转为内嵌数据，保留共享源文件。点击“剥离为独立资产…”可把内嵌数据写成外部文件。");
             var hasEmbeddedData = string.IsNullOrWhiteSpace(data.Model) &&
@@ -5317,6 +5337,12 @@ DockId=0x6A3C3007,0
         if (SceneComponentTypes.IsTreeGenerator(component))
         {
             DrawTreeGeneratorComponent(selectedObject, component);
+            return;
+        }
+
+        if (SceneComponentTypes.IsTileLayer(component))
+        {
+            DrawTileLayerComponent(selectedObject, component);
             return;
         }
 

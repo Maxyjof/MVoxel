@@ -95,7 +95,7 @@ internal sealed partial class ImGuiEditorWindow
                     if (forward)
                     {
                         SceneComponentTypes.WriteVoxelModel(active, current with
-                        { Model = reference, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = loaded.OccupiedVoxelCount, MirrorX = false });
+                        { Model = reference, SourceSegment = string.Empty, SourceOrigin = null, VoxelCount = loaded.OccupiedVoxelCount, MirrorX = false, MirrorY = false, MirrorZ = false });
                         EmbeddedVoxelData.Remove(active);
                     }
                     //新模型按 1x 载入，重置缩放标记并丢弃旧基准，避免下次缩放拿旧基准替换掉刚载入的模型

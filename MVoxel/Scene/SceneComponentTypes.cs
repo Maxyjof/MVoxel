@@ -58,6 +58,7 @@ public static partial class SceneComponentTypes
         new(VoxelSelection, "体素框选", "体素", true),
         new(CurveRenderer, "曲线渲染器", "体素", true),
         new(TreeGenerator, "树生成器", "体素", true),
+        new(TileLayer, "瓷砖铺设", "体素", true),
         new(Camera, "相机", "视图", true),
         new(Light, "光照", "渲染", true),
         new(ProbeVolume, "自动探针", "渲染", true),
@@ -275,7 +276,9 @@ public static partial class SceneComponentTypes
             ReadVoxelSourceOrigin(data),
             ReadModelRotation(data, "rotationX"),
             ReadModelRotation(data, "rotationY"),
-            ReadModelRotation(data, "rotationZ"));
+            ReadModelRotation(data, "rotationZ"),
+            ReadBool(data, "mirrorY", false),
+            ReadBool(data, "mirrorZ", false));
     }
 
     /// <summary>把旋转角规范到 -180 到 180 度，非有限值按 0 处理</summary>
@@ -597,7 +600,8 @@ public readonly record struct VoxelModelComponentData(
     float ScaleX = 1F, float ScaleY = 1F, float ScaleZ = 1F,
     string SortingLayer = "默认", int SortingOrder = 0,
     MaterialSlotBinding[]? MaterialSlots = null, bool MirrorX = false, string SourceSegment = "", VoxelCoord64? SourceOrigin = null,
-    float RotationX = 0F, float RotationY = 0F, float RotationZ = 0F)
+    float RotationX = 0F, float RotationY = 0F, float RotationZ = 0F,
+    bool MirrorY = false, bool MirrorZ = false)
 {
     public static VoxelModelComponentData Default => new(string.Empty, "模型", 0, string.Empty);
 }

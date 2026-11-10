@@ -88,7 +88,7 @@ internal sealed partial class ImGuiEditorWindow
         }
         var selected = FindCurrentBrushMaterial();
         var display = _brushMaterialSlot == 0 ? "槽0 · 默认材质" : $"槽{_brushMaterialSlot} · {selected?.Name}";
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.SetNextItemWidth(StableContentWidth());
         if (ImGui.BeginCombo("##绘制材质", display))
         {
             if (ImGui.Selectable("槽0 · 默认材质", _brushMaterialSlot == 0)) SetModelBrushMaterialSlot(0);
@@ -138,7 +138,7 @@ internal sealed partial class ImGuiEditorWindow
             var countLabel = $"{count:N0}个方块";
             ContinueMaterialControl(ImGui.CalcTextSize(countLabel).X);
             ImGui.TextDisabled(countLabel);
-            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+            ImGui.SetNextItemWidth(StableContentWidth());
             var slotLabel = material is null && bound ? "资产缺失 · 诊断外观" : material?.Name ?? (bound ? "资产缺失" : "未绑定");
             if (ImGui.BeginCombo("##slot-asset", slotLabel))
             {
@@ -177,7 +177,7 @@ internal sealed partial class ImGuiEditorWindow
             ImGui.PopID();
         }
         ImGui.Separator();
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.SetNextItemWidth(StableContentWidth());
         if (ImGui.BeginCombo("##add-material-slot", "添加材质槽位…"))
         {
             DrawMaterialAssetChoices(candidate =>
@@ -256,10 +256,22 @@ internal sealed partial class ImGuiEditorWindow
 
     private static float MaterialButtonWidth(string label) => ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2F;
 
-    //按实际字体和剩余空间换行，避免固定尺寸挤占面板
+    /// <summary>
+    /// 面板内容的稳定可用宽度：始终扣掉滚动条宽度。
+    /// 直接用 GetContentRegionAvail 会形成“内容变高出现滚动条→可用宽变窄→列数减少→内容更高”的震荡，
+    /// 表现就是滚动条反复出现消失、色板左右抽搐
+    /// </summary>
+    private static float StableContentWidth()
+    {
+        var style = ImGui.GetStyle();
+        return MathF.Max(1F, ImGui.GetWindowWidth() - style.WindowPadding.X * 2F - style.ScrollbarSize);
+    }
+
+    //按实际字体和稳定剩余空间换行，避免固定尺寸挤占面板
     private static void ContinueMaterialControl(float width)
     {
-        var right = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
+        var left = ImGui.GetWindowPos().X + ImGui.GetStyle().WindowPadding.X;
+        var right = left + StableContentWidth();
         if (ImGui.GetItemRectMax().X + ImGui.GetStyle().ItemSpacing.X + width <= right) ImGui.SameLine();
     }
 }

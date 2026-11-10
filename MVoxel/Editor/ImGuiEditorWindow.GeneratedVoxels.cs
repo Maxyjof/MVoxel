@@ -1,5 +1,6 @@
 using ImGuiNET;
 using MVoxel.Core;
+using MVoxel.Project;
 using MVoxel.Scene;
 using MVoxel.Voxels;
 
@@ -94,8 +95,12 @@ internal sealed partial class ImGuiEditorWindow
         bool refreshWorld = true)
     {
         if (_sceneDocument is null || !SceneComponentTypes.IsGeneratedVoxelComponent(component)) return;
-        var local = SceneComponentTypes.BuildGeneratedVoxels(component, ProceduralVoxelBudget, out var truncated);
+        var local = SceneComponentTypes.BuildGeneratedVoxels(component, ProceduralVoxelBudget,
+            BuildGeneratedContext(sceneObject.Id), out var truncated);
         _generatedVoxelTruncated[sceneObject.Id] = truncated;
+        //瓷砖采样已经应用对象变换，其他生成器仍在这里套用变换
+        if (!SceneComponentTypes.IsTileLayer(component))
+            local = ApplyGeneratedRenderTransform(component, local);
         // 体素数据按局部坐标保存，进入对象世界时补上格原点，对象平移后仍能对上
         var origin = GetObjectGridOrigin(sceneObject);
         _objectVoxels.AssignWorld(sceneObject.Id, origin == VoxelCoord64.Zero
@@ -111,6 +116,93 @@ internal sealed partial class ImGuiEditorWindow
 
         if (!string.IsNullOrEmpty(action))
             SetStatus($"{action} · {local.OccupiedVoxelCount:N0} 格" + (truncated ? "（已截断）" : string.Empty));
+    }
+
+    /// <summary>
+    /// 组装程序化组件的生成上下文：对象原点、其他对象的真实几何与体素源解析
+    /// </summary>
+    /// <remarks>
+    /// 只收集有启用模型组件、可见且图层可见的对象，且排除正在生成的对象自己。
+    /// 生成器组件的输出不进去：否则瓷砖铺在瓷砖上会形成互相依赖的重算链
+    /// </remarks>
+    /// <param name="selfId">正在生成的对象标识，采样时排除</param>
+    /// <returns>生成上下文</returns>
+    private GeneratedVoxelContext BuildGeneratedContext(StableId selfId) =>
+        BuildGeneratedContext(_sceneDocument, selfId,
+            id => _objectVoxels.TryGetWorld(id, out var world) ? world : null,
+            _project,
+            _sceneDocument?.Objects.FirstOrDefault(item => item.Id == selfId) is { } owner
+                ? GetObjectGridOrigin(owner)
+                : VoxelCoord64.Zero);
+
+    /// <summary>
+    /// 静态版生成上下文：预读项目时对象世界还没进 ObjectVoxelStore，由调用方提供查询
+    /// </summary>
+    /// <param name="scene">场景文档，为空时只有空采样器</param>
+    /// <param name="selfId">正在生成的对象标识</param>
+    /// <param name="getWorld">按对象标识取体素世界</param>
+    /// <param name="project">项目，用于解析体素源资产</param>
+    /// <param name="origin">当前对象的格原点</param>
+    /// <returns>生成上下文</returns>
+    private static GeneratedVoxelContext BuildGeneratedContext(SceneDocument? scene, StableId selfId,
+        Func<StableId, VoxelWorld?> getWorld, ProjectHandle? project, VoxelCoord64 origin)
+    {
+        var worlds = new List<(StableId Id, VoxelWorld World)>();
+        if (scene is not null)
+        {
+            var byId = scene.Objects.ToDictionary(item => item.Id);
+            foreach (var item in scene.Objects)
+            {
+                if (item.Id == selfId || !IsVisibleInScene(item, byId) || !scene.IsLayerVisible(item.LayerIndex))
+                    continue;
+                if (!item.Components.Any(component => component.Enabled && SceneComponentTypes.IsVoxelModel(component)))
+                    continue;
+                if (getWorld(item.Id) is { OccupiedVoxelCount: > 0 } world) worlds.Add((item.Id, world));
+            }
+        }
+
+        var owner = scene?.Objects.FirstOrDefault(item => item.Id == selfId);
+        var generated = owner?.Components.FirstOrDefault(SceneComponentTypes.IsTileLayer);
+        var (rotation, scale) = generated is null
+            ? (System.Numerics.Vector3.Zero, System.Numerics.Vector3.One)
+            : ReadGeneratedTransform(generated);
+        var ownerTransformRotation = owner is null || owner.Transform.Mode != TransformMode.Grid
+            ? System.Numerics.Quaternion.Identity
+            : System.Numerics.Quaternion.Normalize(System.Numerics.Quaternion.CreateFromRotationMatrix(
+                new System.Numerics.Matrix4x4(
+                    owner.Transform.Grid.Rotation.M00, owner.Transform.Grid.Rotation.M01, owner.Transform.Grid.Rotation.M02, 0F,
+                    owner.Transform.Grid.Rotation.M10, owner.Transform.Grid.Rotation.M11, owner.Transform.Grid.Rotation.M12, 0F,
+                    owner.Transform.Grid.Rotation.M20, owner.Transform.Grid.Rotation.M21, owner.Transform.Grid.Rotation.M22, 0F,
+                    0F, 0F, 0F, 1F)));
+        var objectRotation = System.Numerics.Quaternion.Normalize(ownerTransformRotation * RotationFromDegrees(rotation));
+        return new GeneratedVoxelContext
+        {
+            ObjectOrigin = origin,
+            ObjectRotation = objectRotation,
+            ObjectScale = scale,
+            Surface = new SceneSurfaceSampler(worlds),
+            ResolveSource = source => project is null
+                ? new VoxelSource { Error = "请先打开项目" }
+                : VoxelSourceLoader.Load(project.AssetsPath, source),
+        };
+    }
+
+    /// <summary>
+    /// 沿父级链判断对象是否可见，父级隐藏时子对象也视为隐藏
+    /// </summary>
+    /// <param name="sceneObject">待判断对象</param>
+    /// <param name="byId">场景对象表</param>
+    /// <returns>是否可见</returns>
+    private static bool IsVisibleInScene(SceneObject sceneObject, IReadOnlyDictionary<StableId, SceneObject> byId)
+    {
+        var visited = new HashSet<StableId>();
+        for (SceneObject? current = sceneObject; current is not null;)
+        {
+            if (!current.Visible || !visited.Add(current.Id)) return false;
+            current = current.ParentId is { } parent && byId.TryGetValue(parent, out var found) ? found : null;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -135,10 +227,11 @@ internal sealed partial class ImGuiEditorWindow
             }
 
             if (component is null || _objectVoxels.TryGetWorld(sceneObject.Id, out _)) continue;
-            if (!SceneComponentTypes.TryPrepareGeneratedVoxels(component, ProceduralVoxelBudget, out var local,
-                    out var regenerated, out var truncated)) continue;
-            // 生成规则只产出基准形态；对象级的浮点旋转与缩放在这里套用，重新生成也不会丢
-            local = ApplyGeneratedRenderTransform(component, local);
+            if (!SceneComponentTypes.TryPrepareGeneratedVoxels(component, ProceduralVoxelBudget,
+                    BuildGeneratedContext(sceneObject.Id), out var local, out var regenerated, out var truncated)) continue;
+            //瓷砖负载已经应用对象变换
+            if (!SceneComponentTypes.IsTileLayer(component))
+                local = ApplyGeneratedRenderTransform(component, local);
             var origin = GetObjectGridOrigin(sceneObject);
             _objectVoxels.AssignWorld(sceneObject.Id,
                 origin == VoxelCoord64.Zero ? local : local.CloneShifted(origin.X, origin.Y, origin.Z));
@@ -189,7 +282,8 @@ internal sealed partial class ImGuiEditorWindow
         if (world.OccupiedVoxelCount == 0)
         {
             // 还没有生成过或生成结果为空：按当前参数先生成一次，避免实例化出空模型
-            var local = SceneComponentTypes.BuildGeneratedVoxels(component, ProceduralVoxelBudget, out _);
+            var local = SceneComponentTypes.BuildGeneratedVoxels(component, ProceduralVoxelBudget,
+                BuildGeneratedContext(sceneObject.Id), out _);
             var origin = GetObjectGridOrigin(sceneObject);
             world = origin == VoxelCoord64.Zero ? local : local.CloneShifted(origin.X, origin.Y, origin.Z);
         }
@@ -200,6 +294,8 @@ internal sealed partial class ImGuiEditorWindow
             SceneComponentTypes.ReadTreeSorting(component, out sortingLayer, out sortingOrder);
         else if (SceneComponentTypes.IsCurveRenderer(component))
             SceneComponentTypes.ReadCurveSorting(component, out sortingLayer, out sortingOrder);
+        else if (SceneComponentTypes.IsTileLayer(component))
+            SceneComponentTypes.ReadTileSorting(component, out sortingLayer, out sortingOrder);
         sceneObject.Components.Remove(component);
         var model = SceneComponentTypes.CreateVoxelModel(string.Empty, world.OccupiedVoxelCount, partName,
             string.IsNullOrWhiteSpace(sceneObject.Name) ? partName : sceneObject.Name);
