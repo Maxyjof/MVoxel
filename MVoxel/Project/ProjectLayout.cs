@@ -26,7 +26,7 @@ public sealed class ProjectManifest
     /// <summary>
     /// 写入清单的引擎版本，用于识别项目结构
     /// </summary>
-    public string EngineVersion { get; set; } = "0.1.4";
+    public string EngineVersion { get; set; } = "0.1.5";
 }
 
 /// <summary>
