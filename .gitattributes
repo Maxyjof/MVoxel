@@ -11,6 +11,9 @@
 *.png binary
 *.jpg binary
 *.jpeg binary
+*.ico binary
+*.ttf binary
+*.otf binary
 *.hdr binary
 *.exr binary
 *.vox binary
@@ -24,3 +27,6 @@
 *.mvenvironment text
 *.mvrenderpreset text
 *.mvgenerator text
+
+# Vendored third-party sources are excluded from GitHub language statistics
+MVoxel/Native/ImGuiDocking/** linguist-vendored=true
