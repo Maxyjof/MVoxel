@@ -23,6 +23,10 @@
         <Content Include="Editor\Fonts\*.ttf" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Fonts\*.txt" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Editor\Rendering\LICENSE.Bytesized.txt" CopyToOutputDirectory="PreserveNewest" />
+        <!--开源许可与第三方声明随发布物分发，勿删-->
+        <Content Include="..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="..\Licenses\*.txt" Link="Licenses\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Plugins\**\*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 

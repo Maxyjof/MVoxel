@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$PlanOnly,
     [int]$KeepArchives = 0
 )
@@ -63,6 +63,22 @@ try {
     $license = Join-Path $package 'Editor\Rendering\LICENSE.Bytesized.txt'
     if (-not (Test-Path -LiteralPath $license -PathType Leaf)) {
         throw "Self-contained publish output missing rendering license: $license"
+    }
+    # 开源许可与第三方声明是分发合规的硬要求，任何一份缺失都中止打包
+    $requiredLicenses = @(
+        'LICENSE',
+        'THIRD-PARTY-NOTICES.md',
+        'Licenses\MIT.txt',
+        'Licenses\MIT-FluentUI.txt',
+        'Licenses\Apache-2.0.txt',
+        'Licenses\BSD-2-Clause.txt',
+        'Licenses\BSD-3-Clause.txt',
+        'Licenses\zlib.txt'
+    )
+    foreach ($relative in $requiredLicenses) {
+        if (-not (Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) {
+            throw "Self-contained publish output missing license file: $relative"
+        }
     }
     Get-ChildItem -LiteralPath $package -Recurse -File -Filter '*.pdb' | Remove-Item -Force
     $readme = @"

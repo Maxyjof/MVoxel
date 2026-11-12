@@ -61,6 +61,18 @@ coverage-report/
 *.coverage
 *.coveragexml
 
+# Author's private notes and planning docs, not part of the public repository
+/Docs/
+
+# Author's local sample projects and captures, not part of the public repository
+/示例项目/
+/截图/
+/.screenshots/
+
+# Crash dumps and ad hoc logs
+*.log
+*.dmp
+
 # Keep source, documentation, Assets, project settings, and plugin manifests tracked.
 
 # Local scratch used by capture harness runs
